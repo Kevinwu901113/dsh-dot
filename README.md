@@ -20,7 +20,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 ```bash
 osascript -e 'quit app "DeepSeek Harness"'
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add dsh-computer-0.4.0.tgz
+  plugin --profile desktop add github:Kevinwu901113/dsh-computer
 open -a "DeepSeek Harness"
 ```
 
@@ -65,7 +65,7 @@ Status: v0.4.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Desig
 ```bash
 osascript -e 'quit app "DeepSeek Harness"'      # 先退出桌面版
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add ~/Downloads/dsh-computer-0.3.1.tgz
+  plugin --profile desktop add github:Kevinwu901113/dsh-computer
 open -a "DeepSeek Harness"
 ```
 
@@ -75,7 +75,7 @@ open -a "DeepSeek Harness"
 
 ```bash
 npm i -g @deepseek-ai/dsh@0.2.0-rc.2
-dsh plugin --profile web add ~/Downloads/dsh-computer-0.3.1.tgz
+dsh plugin --profile web add github:Kevinwu901113/dsh-computer
 cd ~/某个项目 && dsh web
 ```
 
