@@ -1,0 +1,59 @@
+{
+  "name": "dsh-computer",
+  "version": "0.4.0",
+  "description": "Give DeepSeek Harness its own persistent computer: a bundled microVM (no Docker needed) with shell, browser, live view and approval-gated actions.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "agent",
+    "computer-use",
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "microsandbox",
+    "microvm",
+    "sandbox"
+  ],
+  "exports": {
+    ".": "./src/ui-host.js",
+    "./client": "./lib/client.js",
+    "./vm": "./src/vm.js",
+    "./subprocess": "./src/subprocess.js",
+    "./gate": "./src/gate.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess-local": ">=0.2.0-rc.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "dependencies": {
+    "microsandbox": "0.7.8"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kevinwu901113/dsh-computer.git"
+  },
+  "homepage": "https://github.com/Kevinwu901113/dsh-computer#readme"
+}
