@@ -1,5 +1,39 @@
 # dsh-computer
 
+**English** | [中文](#中文说明)
+
+Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) its own computer: a persistent Linux microVM with a browser, a live desktop view, and approval gates. No Docker required.
+
+![dsh-computer demo](docs/demo.gif)
+
+*The agent runs commands and opens a page inside its own VM; the Computer panel in dsh shows its desktop live. (Recorded with a scripted model.)*
+
+- **Every agent command runs in the VM**, never on your machine. The session's workspace folder is shared into the VM at the same path.
+- **Its own browser** (`mcp__vm__browser_*` tools), with logins that persist across restarts.
+- **Live view inside dsh**: a monitor button in the session header opens a Computer tab in the right sidebar. Watch, click, type, or take over for a QR login or CAPTCHA.
+- **Approval gates** for risky actions (`sudo`, `rm -rf`, `curl | sh`, `git push`, payment/login/delete clicks), with a link to the live view.
+- **Always there**: the VM keeps running after dsh quits and dsh reconnects to the same machine on next start.
+- **Lightweight**: a bundled [microsandbox](https://github.com/microsandbox/microsandbox) microVM (Hypervisor.framework on Apple silicon, WHP on Windows, KVM on Linux); Intel Macs fall back to Docker.
+
+### Install (dsh desktop, macOS)
+
+```bash
+osascript -e 'quit app "DeepSeek Harness"'
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
+  plugin --profile desktop add dsh-computer-0.4.0.tgz
+open -a "DeepSeek Harness"
+```
+
+The first start pulls the VM image (a few GB); agent commands queue until it is ready. Choose the **Computer** permission preset under the input box.
+
+Status: v0.4.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Design notes and roadmap: [docs/DESIGN.md](docs/DESIGN.md) (Chinese). MIT licensed.
+
+---
+
+<a id="中文说明"></a>
+
+## 中文说明
+
 给 DeepSeek Harness（dsh）一台自己的电脑：一台常驻的 Linux 微型虚拟机，带浏览器、实时桌面画面和审批闸门。不需要装 Docker。
 
 - agent 的 bash 命令在虚拟机里执行，不碰你的系统。
