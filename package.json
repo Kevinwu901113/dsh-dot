@@ -1,0 +1,46 @@
+{
+  "name": "dsh-dot",
+  "version": "0.1.0",
+  "description": "A Dots-style always-on agent for DeepSeek Harness: its own computer (dsh-computer), reachable over IM (dsh-bridge), scheduled and change-triggered work, hard budget limits.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "dsh",
+    "dsh-plugin",
+    "deepseek-harness",
+    "always-on",
+    "agent",
+    "dots"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Kevinwu901113/dsh-dot.git"
+  },
+  "homepage": "https://github.com/Kevinwu901113/dsh-dot#readme",
+  "exports": {
+    "./core": "./src/core.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "src",
+    "templates",
+    "cordis.patch.yml",
+    "README.md",
+    "LICENSE",
+    "docs"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "test": "node --test test/"
+  }
+}
