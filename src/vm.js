@@ -237,13 +237,19 @@ export function apply(ctx, config = {}) {
   logger.info(`backend: ${backend.kind} (${backend.bin}); shared folders: ${computer.mounts.join(', ')}`);
   ensureShell(cfg, computer, logger).then(
     async (result) => {
-      if (disallowedBound.length && backend.remount && !result?.fresh) {
-        logger.warn(`unsharing folder(s) that may not be shared: ${disallowedBound.join(', ')}`);
+      // An existing VM is bound to what it was bound to before, not to this run's defaults:
+      // backends that know the real bindings report them; otherwise trust the recorded state.
+      if (!result?.fresh && result?.mounts) computer.mounts = result.mounts.filter(allowed);
+      const bound = result?.mounts ?? recorded;
+      const missing = result?.fresh ? [] : computer.mounts.filter((m) => !bound.includes(m));
+      if ((disallowedBound.length || missing.length) && backend.remount && !result?.fresh) {
+        if (disallowedBound.length) logger.warn(`unsharing folder(s) that may not be shared: ${disallowedBound.join(', ')}`);
+        if (missing.length) logger.info(`sharing folder(s) not yet bound to the existing computer: ${missing.join(', ')}`);
         // Hold every command (incl. the host-side readiness probe) until the VM is back.
         try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
         await backend.remount({ mounts: computer.mounts, previous: recorded, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms) })
-          .then(() => { logger.info(`now shared: ${computer.mounts.join(', ')}`); computer.audit({ kind: 'mount', action: 'unshare', dirs: disallowedBound, mounts: computer.mounts }); })
-          .catch((err) => { computer.mounts = recorded; logger.error(`could not rebind folders: ${err.message}`); })
+          .then(() => { logger.info(`now shared: ${computer.mounts.join(', ')}`); computer.audit({ kind: 'mount', action: 'rebind', unshared: disallowedBound, shared: missing, mounts: computer.mounts }); })
+          .catch((err) => { computer.mounts = bound.filter(allowed); logger.error(`could not rebind folders: ${err.message}`); })
           .finally(() => { try { rmSync(computer.lockFile, { force: true }); } catch {} });
       }
       writeState({ mounts: computer.mounts });

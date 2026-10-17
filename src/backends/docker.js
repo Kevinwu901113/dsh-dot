@@ -55,10 +55,17 @@ export function createDockerBackend(config, logger) {
         args.push(config.image);
         logger.info(`creating computer "${name}" (mounts: ${mounts.join(', ')})`);
         await docker(bin, args);
-      } else if (state !== 'running') {
+        return { fresh: true };
+      }
+      if (state !== 'running') {
         logger.info(`waking computer "${name}" (was ${state})`);
         await docker(bin, ['start', name]);
       }
+      // Docker cannot add mounts later: report what this container was created with.
+      const label = await docker(bin, ['inspect', '-f', '{{index .Config.Labels "dsh-computer.mounts"}}', name]).catch(() => '');
+      let bound = [];
+      try { bound = JSON.parse(label); } catch {}
+      return { fresh: false, mounts: Array.isArray(bound) ? bound : [] };
     },
   };
 }
