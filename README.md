@@ -11,6 +11,8 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 - **Every agent command runs in the VM**, never on your machine. The session's workspace folder is shared into the VM at the same path.
 - **Its own browser** (`mcp__vm__browser_*` tools), with logins that persist across restarts.
 - **Live view inside dsh**: a monitor button in the session header opens a Computer tab in the right sidebar. Watch, click, type, or take over for a QR login or CAPTCHA.
+- **Audit log**: every command, VM tool call, approval and folder change is appended to `~/.dsh/dsh-computer-audit.jsonl`.
+- **Phone-friendly live view**: set `publicUrl` (e.g. via `tailscale serve`) and approval messages — including IM approval cards — link to it.
 - **Approval gates** for risky actions (`sudo`, `rm -rf`, `curl | sh`, `git push`, payment/login/delete clicks), with a link to the live view.
 - **Always there**: the VM keeps running after dsh quits and dsh reconnects to the same machine on next start.
 - **Lightweight**: a bundled [microsandbox](https://github.com/microsandbox/microsandbox) microVM (Hypervisor.framework on Apple silicon, WHP on Windows, KVM on Linux); Intel Macs fall back to Docker.
@@ -26,7 +28,7 @@ open -a "DeepSeek Harness"
 
 The first start pulls the VM image (a few GB); agent commands queue until it is ready. Choose the **Computer** permission preset under the input box.
 
-Status: v0.4.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Design notes and roadmap: [docs/DESIGN.md](docs/DESIGN.md) (Chinese). MIT licensed.
+Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want a Dots-style always-on agent on top of this (IM, schedules, budget caps)? See **[dsh-dot](https://github.com/Kevinwu901113/dsh-dot)**. Design notes and roadmap: [docs/DESIGN.md](docs/DESIGN.md) (Chinese). MIT licensed.
 
 ---
 
@@ -43,7 +45,7 @@ Status: v0.4.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Desig
 - 会话所在的工作区文件夹自动共享进虚拟机，路径不变。
 - dsh 退出后虚拟机继续运行；下次启动自动连回同一台。
 
-当前版本 0.4.0，在 dsh 桌面版 0.2.0-rc.2（macOS，Apple 芯片）上验证通过。
+当前版本 0.5.0，在 dsh 桌面版 0.2.0-rc.2（macOS，Apple 芯片）上验证通过。
 
 ## 一、要求
 
@@ -106,6 +108,16 @@ http://127.0.0.1:18080/vnc/index.html?autoconnect=true&resize=scale
 
 看到的就是 agent 的电脑桌面，可以直接点击、输入。
 
+**在手机上（不在电脑旁时）**：端口只监听本机，不要直接暴露到公网。推荐用 [Tailscale](https://tailscale.com) 把它安全地转发到你自己的设备：
+
+```bash
+tailscale serve --bg --https=443 http://127.0.0.1:18080   # 只在你的 tailnet 内可见
+```
+
+然后把得到的地址（如 `https://my-mac.tailnet-xxxx.ts.net`）写进设置文件的 `publicUrl`。之后审批消息（包括转发到 IM 的审批卡片）里的实时画面链接会用这个地址，在手机上点开就能看和接管。
+
+> 风险：虚拟机的 web 服务本身没有鉴权。`tailscale serve` 只对你 tailnet 里的设备开放；不要用 `tailscale funnel`、端口转发或任何公网隧道直接暴露 18080。
+
 ## 五、配置
 
 桌面版拿不到终端环境变量（只能用 `launchctl setenv` 设置），推荐写设置文件 `~/.dsh/dsh-computer.json`，改完重启 dsh：
@@ -122,6 +134,7 @@ http://127.0.0.1:18080/vnc/index.html?autoconnect=true&resize=scale
 |---|---|---|
 | `mounts` / `DSH_COMPUTER_MOUNTS` | 自动（见第三节） | 固定共享的文件夹；环境变量用 `:` 分隔（Windows 用 `;`） |
 | `memory` / `cpus` | `4G` / `2` | 虚拟机资源上限 |
+| `publicUrl` / `DSH_COMPUTER_PUBLIC_URL` | 空 | 从别的设备访问虚拟机 web 服务的地址（见第四节），用于审批消息和状态接口 |
 | `DSH_COMPUTER_PORT` | `18080` | 虚拟机服务在本机的端口（仅监听 127.0.0.1）；只能用环境变量设置 |
 | `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |
@@ -171,3 +184,26 @@ tail -n 50 ~/.dsh/dsh-computer.log
 ## 九、开发：界面部分
 
 界面代码在 `ui/`，必须用 dsh 官方仓库的 tsdown 预设编译。把 `ui/` 放进官方仓库的 `packages/client/dsh-computer-ui/`，执行 `pnpm install --filter "dsh-computer..."`，然后在该目录运行 `npx tsc -p tsconfig.json --noCheck && npx tsdown`，把生成的 `lib/client.js` 复制到本插件的 `lib/`。虚拟机端口固定读 18080；改了 `DSH_COMPUTER_PORT` 时，标签页暂时仍连 18080。
+
+## 十、审计日志与状态接口
+
+**审计日志** `~/.dsh/dsh-computer-audit.jsonl`，每行一条 JSON，超过 10MB 轮转为 `.1`：
+
+| `kind` | 何时记录 | 主要字段 |
+|---|---|---|
+| `exec` / `terminal` | 每个在虚拟机里启动的进程 | `argv`、`cwd` |
+| `tool` | 每次 bash 或虚拟机工具调用结束（被拒绝的审批也在这里，`ok: false`） | `tool`、`session`、`args`、`ok`、`error` |
+| `approval-asked` | 审批闸门要求审批 | `tool`、`session`、`args`、`reason` |
+| `mount` | 共享 / 取消共享文件夹 | `action`、`dir`、`mounts` |
+| `status` | 虚拟机状态变化 | `state`、`error` |
+
+**状态接口**（给同一 dsh 里的其他插件用，例如 [dsh-dot](https://github.com/Kevinwu901113/dsh-dot)）：注入 `dshComputer` 服务后，
+
+```js
+ctx.dshComputer.status()
+// { state: 'starting' | 'shell-only' | 'ready' | 'remounting' | 'error',
+//   backend, liveViewUrl, publicLiveViewUrl, mounts, error }
+const stop = ctx.dshComputer.onStatus((snapshot) => { /* 状态变化时调用 */ })
+```
+
+`dshComputer.audit(entry)` 也可以被其他插件用来往同一份审计日志里追加记录。

@@ -8,6 +8,7 @@ import { existsSync } from 'node:fs';
 import { promisify } from 'node:util';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess';
+import { clip } from './audit.js';
 
 const run = promisify(execFile);
 const PROC_DIR = '/tmp/.dsh-computer-procs';
@@ -79,6 +80,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
   spawn(spec) {
     const id = randomUUID();
     const cwd = this.vmCwd(spec.cwd);
+    this.vm.audit?.({ kind: 'exec', argv: clip(spec.argv.join(' ')), cwd });
     const inner = this.backend.execArgv({ user: this.vm.user, cwd, env: spec.env, argv: this.wrap(spec.argv, id) });
     const argv = this.holdUntilReady(inner);
     const handle = super.spawn({ ...spec, argv, cwd: process.cwd(), env: undefined });
@@ -94,6 +96,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     const shared = this.vm.isShared(spec.cwd) ? null : this.vm.ensureShared?.(spec.cwd);
     if (shared) await shared;
     const argv = this.backend.execArgv({ user: this.vm.user, cwd: this.vmCwd(spec.cwd), env: spec.env, argv: spec.argv, tty: true });
+    this.vm.audit?.({ kind: 'terminal', argv: clip(spec.argv.join(' ')) });
     return super.spawnTerminal({ ...spec, argv, cwd: process.cwd(), env: undefined });
   }
 }

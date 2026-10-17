@@ -8,6 +8,7 @@ import { homedir } from 'node:os';
 import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { createMicrosandboxBackend } from './backends/microsandbox.js';
 import { createDockerBackend } from './backends/docker.js';
+import { createAudit } from './audit.js';
 
 export const name = 'dsh-computer-vm';
 
@@ -21,6 +22,9 @@ export const defaults = {
   cpus: 2,
   mounts: [],
   readyTimeoutMs: 240_000,
+  // Base URL that reaches the computer's web services from elsewhere (e.g. `tailscale serve` →
+  // https://my-mac.tailnet.ts.net). Used in approval messages and status; unset = local only.
+  publicUrl: '',
   // Turn off AIO services the agent does not use (Jupyter, code-server, Node REPLs).
   slim: true,
   // docker backend only
@@ -29,6 +33,7 @@ export const defaults = {
 };
 
 const PROFILE_DIR = '/home/gem/.config/browser';
+const LIVE_VIEW_PATH = '/vnc/index.html?autoconnect=true&resize=scale';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -59,6 +64,7 @@ function withFileLog(logger) {
 
 const stateFile = () => join(dshHome(), 'dsh-computer-state.json');
 export const lockFile = () => join(dshHome(), 'dsh-computer.remount.lock');
+export const auditFile = () => join(dshHome(), 'dsh-computer-audit.jsonl');
 
 function readState() {
   try { return JSON.parse(readFileSync(stateFile(), 'utf8')); } catch { return {}; }
@@ -166,11 +172,35 @@ export function apply(ctx, config = {}) {
     lockFile: lockFile(),
     port: cfg.port,
     baseUrl: base,
-    liveViewUrl: `${base}/vnc/index.html?autoconnect=true&resize=scale`,
+    liveViewUrl: `${base}${LIVE_VIEW_PATH}`,
+    publicLiveViewUrl: cfg.publicUrl ? `${String(cfg.publicUrl).replace(/\/+$/, '')}${LIVE_VIEW_PATH}` : undefined,
     cdpUrl: `${base}/cdp`,
     mcpUrl: `${base}/mcp`,
     isReady: false,
   };
+  computer.audit = createAudit(auditFile());
+
+  // Status for other plugins (dot, IM bridges): one snapshot shape plus change notifications.
+  const listeners = new Set();
+  computer.status = () => ({
+    state: computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : 'shell-only',
+    backend: backend.kind,
+    liveViewUrl: computer.liveViewUrl,
+    publicLiveViewUrl: computer.publicLiveViewUrl,
+    mounts: [...computer.mounts],
+    error: (computer.error || computer.servicesError)?.message,
+  });
+  computer.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  let lastState;
+  const changed = () => {
+    const snap = computer.status();
+    if (snap.state === lastState) return;
+    lastState = snap.state;
+    computer.audit({ kind: 'status', state: snap.state, error: snap.error });
+    for (const fn of listeners) { try { fn(snap); } catch {} }
+  };
+  computer.notifyStatus = changed;
+
   let markReady;
   computer.ready = new Promise((r) => (markReady = r));
   try { rmSync(computer.lockFile, { force: true }); } catch {}
@@ -189,13 +219,15 @@ export function apply(ctx, config = {}) {
     const next = [...previous.filter((m) => !inside(dir, m)), dir]; // a parent replaces its children
     computer.mounts = next; // later spawns map paths as shared; they wait on the lock meanwhile
     try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
+    computer.remounting = true; changed();
     const run = (pending || computer.ready).then(() =>
       backend.remount({ mounts: next, previous, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms) }));
     pending = run.then(
-      () => { writeState({ mounts: next }); logger.info(`shared with the computer: ${dir}`); },
-      (err) => { computer.mounts = previous; writeState({ mounts: previous }); logger.error(`could not share ${dir}: ${err.message}`); },
+      () => { writeState({ mounts: next }); logger.info(`shared with the computer: ${dir}`); computer.audit({ kind: 'mount', action: 'share', dir, mounts: next }); },
+      (err) => { computer.mounts = previous; writeState({ mounts: previous }); logger.error(`could not share ${dir}: ${err.message}`); computer.audit({ kind: 'mount', action: 'share-failed', dir, error: err.message }); },
     ).finally(() => {
       try { rmSync(computer.lockFile, { force: true }); } catch {}
+      computer.remounting = false; changed();
       ensureServices(cfg, computer, logger).catch((e) => logger.warn(e.message));
     });
     return pending;
@@ -210,18 +242,18 @@ export function apply(ctx, config = {}) {
         // Hold every command (incl. the host-side readiness probe) until the VM is back.
         try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
         await backend.remount({ mounts: computer.mounts, previous: recorded, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms) })
-          .then(() => logger.info(`now shared: ${computer.mounts.join(', ')}`))
+          .then(() => { logger.info(`now shared: ${computer.mounts.join(', ')}`); computer.audit({ kind: 'mount', action: 'unshare', dirs: disallowedBound, mounts: computer.mounts }); })
           .catch((err) => { computer.mounts = recorded; logger.error(`could not rebind folders: ${err.message}`); })
           .finally(() => { try { rmSync(computer.lockFile, { force: true }); } catch {} });
       }
       writeState({ mounts: computer.mounts });
-      computer.isReady = true; markReady(true);
+      computer.isReady = true; markReady(true); changed();
       logger.info('computer shell ready');
       return ensureServices(cfg, computer, logger).then(
-        () => { computer.servicesReady = true; logger.info(`computer ready — live view: ${computer.liveViewUrl}`); },
-        (err) => { computer.servicesError = err; logger.error(err.message); },
+        () => { computer.servicesReady = true; logger.info(`computer ready — live view: ${computer.liveViewUrl}`); changed(); },
+        (err) => { computer.servicesError = err; logger.error(err.message); changed(); },
       );
     },
-    (err) => { computer.error = err; markReady(false); logger.error(err.message); },
+    (err) => { computer.error = err; markReady(false); logger.error(err.message); changed(); },
   );
 }

@@ -27,6 +27,8 @@
         backend: !!js "process.env.DSH_COMPUTER_BACKEND ?? ''"
         port: !!js "Number(process.env.DSH_COMPUTER_PORT ?? 18080)"
         image: !!js "process.env.DSH_COMPUTER_IMAGE ?? ''"
+        # Base URL reaching the VM's web services from elsewhere (e.g. `tailscale serve`), used in approval messages.
+        publicUrl: !!js "process.env.DSH_COMPUTER_PUBLIC_URL ?? ''"
         # Folders shared with the VM at the same path (':' separated; ';' on Windows). Default: each session's workspace, shared on first use (see README).
         mounts: !!js "process.env.DSH_COMPUTER_MOUNTS ? process.env.DSH_COMPUTER_MOUNTS.split(process.platform === 'win32' ? ';' : ':').filter(Boolean) : []"
     - id: dsh-computer-subprocess
