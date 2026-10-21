@@ -12,7 +12,7 @@
 | 免打扰、积压队列、webhook 兜底 | 删除。预检查删掉后，dot 不再主动唤醒 agent，也就不需要它们 |
 | 预算拦截通知、零点解除 | 保留：dsh-budget 不提供这两项 |
 
-结果：dsh-dot 从约 400 行降到约 150 行，依赖组合变为 dsh-computer、dsh-im、dsh-budget、官方 schedule。云端在真实 dsh 上验证了定时任务的投递和静默两条路径。
+结果：dsh-dot 从约 400 行降到约 200 行，依赖组合变为 dsh-computer、dsh-im、dsh-budget、官方 schedule。云端在真实 dsh 上验证了定时任务的投递和静默两条路径。
 
 以下为 v0.1 的原始设计记录。
 

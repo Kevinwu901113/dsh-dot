@@ -13,7 +13,7 @@ dsh-dot is assembled from existing plugins. It adds only the glue none of them h
 | Scheduled work (daily / weekly / cron, survives restarts) | official `@deepseek-ai/dsh-experimental-schedule-bundle` |
 | Hard spending cap | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block` |
 | Identity and duties | dsh's own `AGENTS.md` loading |
-| **Glue (this repo, ~150 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
+| **Glue (this repo, ~200 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer \
@@ -39,7 +39,7 @@ dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得�
 | 定时任务（每天 / 每周 / cron，重启后补发） | 官方「自动化任务」`@deepseek-ai/dsh-experimental-schedule-bundle` |
 | 预算硬上限 | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block` |
 | 身份和职责 | dsh 自带的 `AGENTS.md` 加载 |
-| **dsh-dot 本身（约 150 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
+| **dsh-dot 本身（约 200 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
 
 ### 二、安装
 
