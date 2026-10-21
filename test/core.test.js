@@ -1,67 +1,113 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import http from 'node:http';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { apply, isSilent, stripSilent, contentText } from '../src/core.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function harness({ blocked = [], state = {}, budget = true } = {}) {
+function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 'Kevin' }] } = {}) {
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
   writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify(state));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
-  const effects = [], followups = [], audit = [], hooks = [];
-  const server = http.createServer((req, res) => { let b = ''; req.on('data', (c) => (b += c)); req.on('end', () => { hooks.push(JSON.parse(b)); res.end('ok'); }); }).listen(0);
+  const effects = [], audit = [], sent = [], listeners = [];
   const budgetSvc = { blockedScopes: [...blocked], status() { return { blockedScopes: this.blockedScopes }; }, unblock(s) { this.blockedScopes = this.blockedScopes.filter((x) => x !== s); } };
+  const dshIm = {
+    listBots: async () => ['bot_1'],
+    listTargets: async () => targets,
+    send: async (bot, target, text) => { sent.push({ bot, target, text }); return { sent: true }; },
+  };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
-    on() {},
+    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
     effect(fn) { effects.push(fn()); },
-    get: (name) => (name === 'budget' && budget ? budgetSvc : name === 'schedule' ? {} : undefined),
-    sessionController: { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, text: m.content[0].text }) } }) },
-    sessions: { flush: async () => true },
-    dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },
+    get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm }[name]),
+    dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
   };
-  return { ctx, home, effects, followups, audit, hooks, budgetSvc, server, dsh,
-    config: { home, mainSession: 's-main', quietHours: '', budgetPollSeconds: 0.05, precheckSeconds: 3600, notifyWebhook: `http://127.0.0.1:${server.address().port}/` } };
+  const emit = (cwd, type, data) => listeners.forEach((fn) => fn({ id: 's1', header: { cwd } }, { type, data }));
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, config: { home, budgetPollSeconds: 0.05 } };
 }
-const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); h.server.close(); };
+const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
+const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
 
-test('creates home with templates, never overwrites', async () => {
-  const { apply } = await import('../src/core.js');
+test('silence marker detection', () => {
+  for (const t of ['DOT_SILENT', '`DOT_SILENT`', '**DOT_SILENT**', ' DOT_SILENT。']) assert.ok(isSilent(t), t);
+  assert.ok(!isSilent('新版本 1.2 发布了 DOT_SILENT'));
+  assert.equal(stripSilent('新版本 1.2 发布了\nDOT_SILENT'), '新版本 1.2 发布了');
+  assert.equal(contentText([{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }]), 'ab');
+});
+
+test('creates AGENTS.md once, never overwrites', () => {
   const h = harness();
   apply(h.ctx, h.config);
-  assert.ok(existsSync(join(h.home, 'AGENTS.md')) && existsSync(join(h.home, 'watch.json')));
+  assert.ok(existsSync(join(h.home, 'AGENTS.md')));
   writeFileSync(join(h.home, 'AGENTS.md'), 'mine');
   apply(h.ctx, h.config);
   assert.equal(readFileSync(join(h.home, 'AGENTS.md'), 'utf8'), 'mine');
   stop(h);
 });
 
-test('budget block: notifies, holds wake-ups; unblock delivers them', async () => {
-  const { apply } = await import('../src/core.js');
-  const h = harness({ blocked: ['daily'], state: { blockedOn: undefined, pending: [] } });
+test('scheduled turn in home: result goes to IM; DOT_SILENT stays silent; other turns ignored', async () => {
+  const h = harness();
   apply(h.ctx, h.config);
-  await wait(200);
-  assert.match(h.hooks[0]?.title ?? '', /预算已用完/);
-  // a held item, then the user lifts the block
-  const st = join(h.dsh, 'dsh-dot-state.json');
-  h.budgetSvc.blockedScopes = [];
-  await wait(200);
-  assert.ok(h.hooks.some((x) => /已解除/.test(x.title)));
+  const run = (cwd, source, reply) => {
+    h.emit(cwd, 'turn/start', { turn: 1 });
+    h.emit(cwd, 'user/message', { source: { kind: source } });
+    h.emit(cwd, 'assistant/message', msg('正在检查…'));
+    h.emit(cwd, 'assistant/message', msg(reply));
+    h.emit(cwd, 'turn/end', { turn: 1, reason: 'completed' });
+  };
+  run(h.home, 'schedule', 'X 更新了 v2.0：https://x.example');
+  run(h.home, 'schedule', 'DOT_SILENT');
+  run(h.home, 'user', '普通对话回复');
+  run('/elsewhere', 'schedule', '别的目录');
+  await wait(20);
+  assert.deepEqual(h.sent.map((s) => s.text), ['X 更新了 v2.0：https://x.example']);
+  assert.deepEqual(h.sent[0], { bot: 'bot_1', target: 'me', text: 'X 更新了 v2.0：https://x.example' });
+  assert.ok(h.audit.some((e) => e.event === 'silent'));
   stop(h);
 });
 
-test('midnight: yesterday\'s daily block is lifted automatically and held items delivered', async () => {
-  const { apply } = await import('../src/core.js');
-  const h = harness({ blocked: ['daily'], state: { blockedOn: '2000-1-1', pending: [{ key: 'k', text: 'held item', at: 'x' }] } });
+test('approval during a scheduled turn is announced with the live view link', async () => {
+  const h = harness();
   apply(h.ctx, h.config);
-  await wait(250);
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'user/message', { source: { kind: 'schedule' } });
+  h.emit(h.home, 'approval/asked', { title: '登录 example.com' });
+  await wait(20);
+  assert.match(h.sent[0].text, /审批[\s\S]*登录 example\.com[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
+  stop(h);
+});
+
+test('budget block and unblock are announced once', async () => {
+  const h = harness({ blocked: ['daily'] });
+  apply(h.ctx, h.config);
+  await wait(200);
+  assert.equal(h.sent.filter((s) => /预算已用完/.test(s.text)).length, 1);
+  h.budgetSvc.blockedScopes = [];
+  await wait(150);
+  assert.ok(h.sent.some((s) => /已解除/.test(s.text)));
+  stop(h);
+});
+
+test('midnight: yesterday\'s daily block is lifted automatically', async () => {
+  const h = harness({ blocked: ['daily'], state: { blocked: ['daily'], blockedOn: '2000-1-1' } });
+  apply(h.ctx, h.config);
+  await wait(150);
   assert.deepEqual(h.budgetSvc.blockedScopes, []);
-  assert.ok(h.hooks.some((x) => /新的一天/.test(x.title)), JSON.stringify(h.hooks));
-  assert.deepEqual(h.followups, [{ id: 's-main', text: 'held item' }]);
-  assert.ok(h.audit.some((e) => e.event === 'budget-auto-unblock'));
+  assert.ok(h.sent.some((s) => /新的一天/.test(s.text)));
+  assert.ok(!h.sent.some((s) => /预算已用完/.test(s.text)), 'a standing block is not re-announced');
+  stop(h);
+});
+
+test('no saved target: nothing sent, /dot explains', async () => {
+  const h = harness({ targets: [] });
+  let cmd;
+  h.ctx.get = ((get) => (n) => (n === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : get(n)))(h.ctx.get);
+  apply(h.ctx, h.config);
+  const out = await cmd.handler({ rawInput: '' });
+  assert.match(out.text, /IM: not ready \(no saved delivery target/);
   stop(h);
 });

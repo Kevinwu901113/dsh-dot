@@ -1,12 +1,9 @@
 # dsh-dot: turn dsh into an always-on personal agent. Installed together with
-# dsh-computer, dsh-bridge, dsh-budget and the official schedule bundle (see README).
+# dsh-computer, dsh-im, dsh-budget and the official schedule bundle (see README).
 
 - insert:
     - id: dsh-dot
       name: 'dsh-dot/core'
       config:
-        # Where AGENTS.md (the dot's identity and duties) and watch.json live; sessions started here load it.
+        # Where AGENTS.md (the dot's identity and duties) lives; sessions started here load it.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
-        # Fallback channel when the IM bridge can't be used (budget blocked, bridge offline):
-        # feishu / wecom bot webhook, ServerChan send key, or any URL receiving JSON {title, text}.
-        notifyWebhook: !!js "process.env.DSH_DOT_NOTIFY_WEBHOOK ?? ''"

@@ -2,28 +2,23 @@
 
 **English** | [中文](#中文说明)
 
-Turn [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) into a **Dots / Grok-Bot-style always-on agent**: it has its own computer, you reach it over WeChat / Feishu / QQ / Telegram, it works on a schedule or when a page you watch changes, and it stops itself when the day's budget is spent.
+Turn [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) into a **Dots / Grok-Bot-style always-on agent**: it has its own computer, you talk to it over Feishu / WeChat / DingTalk / QQ / Telegram…, it works on a schedule, tells you only when there is something worth telling, and stops itself when the day's budget is spent.
 
-dsh-dot is mostly composition plus a few hundred lines of glue:
+dsh-dot is assembled from existing plugins. It adds only the glue none of them has:
 
-| Layer | Plugin | Role |
-|---|---|---|
-| Its own computer | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) | microVM with shell, browser, live view, approval gates, audit log |
-| Reachable over IM | [dsh-bridge](https://github.com/wenbin-wb/dsh-bridge) | WeChat / Feishu / QQ / Telegram, card approvals, files |
-| Scheduled work | official `@deepseek-ai/dsh-experimental-schedule-bundle` | daily / weekly / cron, survives restarts, wakes cold sessions |
-| Hard spending limit | [dsh-budget](https://github.com/PerryLink/dsh-budget) | session / daily / monthly caps, `block` policy |
-| Glue | **dsh-dot** (this repo) | identity file, model-free page watching, silence protocol, budget → pause + IM notice, midnight reset |
-
-### Install
+| Need | Provided by |
+|---|---|
+| Its own computer, approval gates, live view, audit log | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
+| Reachable over IM (9 platforms), approvals by reply | [dsh-im](https://github.com/xmanrui/dsh-im), the most-starred dsh IM plugin |
+| Scheduled work (daily / weekly / cron, survives restarts) | official `@deepseek-ai/dsh-experimental-schedule-bundle` |
+| Hard spending cap | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block` |
+| Identity and duties | dsh's own `AGENTS.md` loading |
+| **Glue (this repo, ~150 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
 
 ```bash
-# dsh desktop (quit the app first)
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
-  github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer @wenbin_wb/dsh-bridge dsh-budget \
-  @deepseek-ai/dsh-experimental-schedule-bundle
+dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer \
+  @xmanrui/dsh-im dsh-budget @deepseek-ai/dsh-experimental-schedule-bundle
 ```
-
-All five go in one command: dsh only layers bundles that are direct dependencies of the profile. Then set `overLimit: block` and a daily cap in **Settings → Plugins → Budget**, and connect an IM account in **Settings → Remote access** (dsh-bridge).
 
 ---
 
@@ -31,73 +26,80 @@ All five go in one command: dsh only layers bundles that are direct dependencies
 
 ## 中文说明
 
-dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得到、会定时和在页面变化时主动做事、花钱和危险操作有硬约束**。
+dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得到、会定时主动做事、没事不打扰、花钱和危险操作有硬约束**。
 
-北极星场景：在微信或飞书里说一句"每天早上看看 X 有没有更新，有就告诉我"。第二天到点，它在自己的电脑里打开网页检查；有更新就推到 IM，没更新就不打扰；遇到登录页推审批卡片，附实时画面链接；当天花费超限就自动暂停并通知你。
+北极星场景：在飞书或微信里说"每天早上看看 X 有没有更新，有就告诉我"。第二天到点，它在自己的电脑里检查；有更新推到 IM，没更新不出声；遇到需要审批的操作，IM 里收到提醒和实时画面链接；当天花费超限就自动暂停并通知。
 
-### 一、安装
+### 一、组成：能用现成的就不自己写
 
-先退出 dsh 桌面版，再用**一条命令**装齐五个包。dsh 只把 profile 的直接依赖加进层栈，所以必须一起装：
+| 需要 | 用谁 |
+|---|---|
+| 自己的电脑、审批、实时画面、审计日志 | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
+| IM（飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp），回复文字审批 | [dsh-im](https://github.com/xmanrui/dsh-im)，dsh 社区星数最多的 IM 插件 |
+| 定时任务（每天 / 每周 / cron，重启后补发） | 官方「自动化任务」`@deepseek-ai/dsh-experimental-schedule-bundle` |
+| 预算硬上限 | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block` |
+| 身份和职责 | dsh 自带的 `AGENTS.md` 加载 |
+| **dsh-dot 本身（约 150 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
+
+### 二、安装
+
+先退出 dsh 桌面版，再用**一条命令**装齐（dsh 只把 profile 的直接依赖加进层栈）：
 
 ```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
-  github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer @wenbin_wb/dsh-bridge dsh-budget \
-  @deepseek-ai/dsh-experimental-schedule-bundle
+  github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer \
+  @xmanrui/dsh-im dsh-budget @deepseek-ai/dsh-experimental-schedule-bundle
 open -a "DeepSeek Harness"
 ```
 
-命令行版把 `--profile desktop` 换成 `--profile web`，用 `dsh web` 启动。
+### 三、第一次设置
 
-### 二、第一次设置
+1. **预算**：在 profile 的 `cordis.patch.yml` 末尾加上（金额是美元）：
+   ```yaml
+   - id: budget
+     name: dsh-budget
+     config:
+       budgets: { session: 3, daily: 3, monthly: 90 }
+       overLimit: block
+   ```
+   不设 `block` 的话，dsh-budget 只提醒、不拦截。
+2. **IM**：设置 → IM 机器人，接入一个机器人（飞书可扫码一键创建）。
+3. **dot 的工作目录**：把这个机器人的工作区设为 `~/dot`。这样 IM 里开的会话会读 `~/dot/AGENTS.md`，定时任务也会跑在这里。编辑 `AGENTS.md`，写它负责什么、你的偏好。
+4. **投递目标**：在机器人设置里点「新建目标」，选你和机器人的私聊，保存。dot 用 dsh-im 的公开接口往这个目标发消息。保持「会话双向同步」**关闭**，由 dot 决定发不发。
+5. 在 dsh 里发送 `/dot test`，IM 里收到测试消息就说明通了。
+6. **公网实时画面（可选）**：按 dsh-computer README 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
 
-1. **预算**：设置 → 插件 → Budget，把超限策略设为 `block`，填一个日预算。不设的话 dsh-budget 默认只提醒、不拦截。
-2. **IM**：设置 → 远程访问（dsh-bridge），连接微信、飞书、QQ 或 Telegram。建议开发送者白名单，只听你的。
-3. **dot 的身份**：编辑 `~/dot/AGENTS.md`，写它叫什么、长期负责什么、你的偏好。在 `~/dot` 里开的会话会自动读这个文件。
-4. **主会话**：在 IM 里和 dot 说一句话，或者在 dsh 里从 `~/dot` 新建会话。dot 会把定时提醒以外的主动消息（页面变化）投递到 IM 当前绑定的会话；没有绑定 IM 时，投递到 `~/dot` 里最近的会话。建议在 IM 里用 `/sessions` 切到 `~/dot` 的会话。
-5. **公网实时画面（可选）**：按 dsh-computer README 用 `tailscale serve` 暴露实时画面，审批卡片里的链接在手机上才能打开。
+### 四、工作原理
 
-### 三、怎么用
+dsh-dot 只做现成插件都不做的四件事：
 
-| 你说 | 发生什么 |
-|---|---|
-| "每天早上 8 点看看 X 有没有更新" | agent 用官方 `schedule_create` 建任务；到点在虚拟机里检查 |
-| "盯着这个页面" | agent 把它写进 `~/dot/watch.json`；dot 定期抓取比较，不调模型；变了才叫醒 agent |
-| 发送 `/dot` | 查看 dot 状态：主会话、虚拟机、IM、预算、免打扰、关注项、积压事项 |
-| 发送 `/dot check` | 立即检查一遍关注项 |
+1. **定时结果推送和静默**：`~/dot` 里由定时任务触发的一轮结束后，dot 取最终回复。内容只是 `DOT_SILENT` 就不发；否则通过 dsh-im 的 `ctx.dshIm.send()` 发到你的 IM。用户主动发起的对话由 dsh-im 自己回复，dot 不管。
+2. **审批提醒**：定时任务那一轮里出现审批时，IM 里收到提醒和实时画面链接。
+3. **预算**：dsh-budget 拦截后在 IM 通知你；日预算的拦截在本地零点自动解除，第二天的定时任务照常运行。
+4. **虚拟机出错**时在 IM 通知你。
 
-**静默协议**：被定时任务或页面变化叫醒时，检查后没有值得说的，agent 只回复 `DOT_SILENT`，这条不会发到 IM。
+`/dot` 查看状态，`/dot test` 发测试消息。dot 的事件写进 dsh-computer 的审计日志 `~/.dsh/dsh-computer-audit.jsonl`（`kind: "dot"`）。
 
-**预算**：dsh-budget 拦截后，dot 不再叫醒 agent，并在 IM 里通知你（模型不可用时直接发，不经过模型）；拦截期间的事项会攒着，解除后一并处理。日预算的拦截会在本地零点自动解除，第二天的定时任务照常运行。
-
-**免打扰**：默认 23:00–08:00。期间检测到的变化先攒着，结束后再处理（官方定时任务不受影响）。
-
-### 四、配置
-
-在 profile 的 `cordis.patch.yml` 里覆盖 `dsh-dot` 行的 config，或用环境变量：
-
-| 配置项 / 环境变量 | 默认值 | 作用 |
+| 配置项 | 默认值 | 作用 |
 |---|---|---|
-| `home` / `DSH_DOT_HOME` | `~/dot` | `AGENTS.md` 和 `watch.json` 所在目录 |
-| `mainSession` | 自动 | 固定一个主会话 id |
-| `quietHours` | `23:00-08:00` | 免打扰时段，空字符串关闭 |
-| `autoUnblockDaily` | `true` | 本地零点自动解除日预算拦截 |
-| `notifyWebhook` / `DSH_DOT_NOTIFY_WEBHOOK` | 空 | IM 不可用时的备用通知：飞书机器人、企业微信机器人、Server酱（`https://sctapi.ftqq.com/<key>.send`）或任意接收 JSON `{title, text}` 的地址 |
-| `precheckSeconds` / `budgetPollSeconds` | `60` / `15` | 扫描关注列表、查询预算的间隔 |
+| `home` / `DSH_DOT_HOME` | `~/dot` | `AGENTS.md` 所在目录；只处理这个目录里的会话 |
+| `imBot` / `imTarget` | 自动 | dsh-im 的 Bot ID 和 Target ID；默认用第一个有已保存目标的机器人 |
+| `autoUnblockDaily` | `true` | 零点自动解除日预算拦截 |
 
-`watch.json` 格式见 `~/dot/AGENTS.md`。
+### 五、限制
 
-### 五、工作原理与限制
-
-- **和 dsh-bridge 的衔接**：dsh-bridge 会把绑定会话里的所有助手回复转发到 IM，但没有对外接口。dot 在运行时包装了它会话桥基类的两个方法，实现静默、读取绑定会话、不经模型直接发消息。会先检测类的结构，对不上就关闭这部分并提示，退回 webhook。计划给 dsh-bridge 提 PR，把这三个能力做成正式接口。
-- **必须有 dsh-computer**：没有虚拟机隔离，"放心不管"就不成立，所以 dot 依赖它，缺了就不启动。dot 的唤醒、预算事件都写进 dsh-computer 的审计日志 `~/.dsh/dsh-computer-audit.jsonl`（`kind: "dot"`）。
-- **页面检查在本机发起**：用一个普通 GET 请求，不经过虚拟机。需要登录或 JS 渲染的页面看到的是空壳，这类页面请用定时任务让 agent 在虚拟机里看。
-- **不做**：长期记忆、多个 dot、自我进化、自己的 IM 桥接或心跳框架。
-- **需要电脑开着**：桌面版关窗口后仍在后台运行，但电脑休眠或退出 App 就停了；24 小时在线请部署到服务器。
+- 必须有 dsh-computer，缺了 dot 不启动：没有虚拟机隔离，"放心不管"就不成立。
+- 审批要回到 DeepSeek Harness 里点；IM 里只是提醒。IM 里自己发起的对话，审批按 dsh-im 的方式回复文字。
+- 电脑休眠或退出 App 后不运行；24 小时在线需要部署到服务器。
+- 不做：长期记忆、多个 dot、自我进化、自己的 IM 或定时框架。
 
 ### 六、验证情况
 
-在 dsh 0.2.0-rc.2 上已验证（云端，Docker 后端，模拟模型）：五个包同装无冲突；`~/dot/AGENTS.md` 被模型读到；`schedule_create` 建的任务到点投递进 dot 会话；页面变化被检测到并叫醒主会话；预算拦截后 dot 发通知、暂停唤醒、攒着事项；零点自动解除并补发事项；静默、会话绑定、直接发消息在真实 dsh-bridge 类上通过单元测试。
+dsh 0.2.0-rc.2，云端 Docker 后端，脚本化模拟模型：
+- dsh-computer、dsh-im、dsh-budget、官方 schedule、dsh-dot 同装无冲突。
+- 真实的 `schedule_create` 任务到点后：回复有内容，dot 走投递；回复是 `DOT_SILENT`，dot 记为静默、不发。
+- 单元测试覆盖投递目标选择、审批提醒、预算拦截和解除通知、零点自动解除、重启不重复通知。
 
-待在真实 IM 上验证：飞书或微信里的审批卡片和回传；公网实时画面链接在手机上能否打开。
+待在真实 IM 上验证：飞书里收到推送；审批提醒里的实时画面链接在手机上能否打开。
 
 MIT License.

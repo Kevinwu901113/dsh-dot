@@ -1,7 +1,7 @@
 {
   "name": "dsh-dot",
-  "version": "0.1.0",
-  "description": "A Dots-style always-on agent for DeepSeek Harness: its own computer (dsh-computer), reachable over IM (dsh-bridge), scheduled and change-triggered work, hard budget limits.",
+  "version": "0.2.0",
+  "description": "A Dots-style always-on agent for DeepSeek Harness, assembled from existing plugins: its own computer (dsh-computer), IM (dsh-im), official schedules, hard budget (dsh-budget), plus the glue none of them has.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -34,13 +34,10 @@
       "patch": "./cordis.patch.yml"
     }
   },
-  "peerDependencies": {
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
-  },
   "engines": {
     "node": ">=22"
   },
   "scripts": {
-    "test": "node --test test/"
+    "test": "node --test test/*.test.js"
   }
 }
