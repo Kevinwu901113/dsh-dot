@@ -10,6 +10,9 @@ export const inject = ['tools', 'dshComputer'];
 export const defaults = {
   // off: never ask · risky: ask for risky shell commands and sensitive browser actions · browser: ask for every VM browser action
   mode: 'risky',
+  // Tools whose arguments reach a shell in the VM. dsh's own `bash` is routed into the VM; the VM's
+  // MCP server also exposes its own shell and code runners, which must pass the same gate.
+  shellTools: ['bash', 'mcp__vm__sandbox_execute_bash', 'mcp__vm__sandbox_execute_code'],
   shellPatterns: [
     String.raw`\brm\s+-[a-zA-Z]*[rf]`, String.raw`\bsudo\b`, String.raw`\b(curl|wget)\b[^|]*\|\s*(ba)?sh`,
     String.raw`\bssh\b`, String.raw`\bscp\b`, String.raw`\bgit\s+push\b`, String.raw`\bdd\s+if=`, String.raw`\bmkfs`,
@@ -51,7 +54,7 @@ export function apply(ctx, config = {}) {
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     const args = JSON.stringify(exec.input ?? exec.args ?? exec.arguments ?? {});
-    if (exec.name === 'bash' && shell.some((r) => r.test(args))) {
+    if (cfg.shellTools.includes(exec.name) && shell.some((r) => r.test(args))) {
       return ask(exec, 'dsh-computer: risky shell command in the VM');
     }
     if (exec.name.startsWith('mcp__vm__browser_')) {

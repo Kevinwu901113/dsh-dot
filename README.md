@@ -41,7 +41,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 - agent 的 bash 命令在虚拟机里执行，不碰你的系统。
 - agent 的浏览器（`mcp__vm__browser_*` 工具）在虚拟机里，登录态长期保留。
 - 你随时可以打开实时画面观看或接手操作（扫码、验证码）。
-- 危险操作（`sudo`、`rm -rf`、`curl | sh`、`git push`，以及涉及支付、登录、删除的浏览器动作）先弹审批，审批信息附实时画面链接。
+- 危险操作（`sudo`、`rm -rf`、`curl | sh`、`git push`，以及涉及支付、登录、删除的浏览器动作）先弹审批，审批信息附实时画面链接。闸门同时覆盖 dsh 的 `bash` 和虚拟机自带的 `sandbox_execute_bash` / `sandbox_execute_code`。
 - 会话所在的工作区文件夹自动共享进虚拟机，路径不变。
 - dsh 退出后虚拟机继续运行；下次启动自动连回同一台。
 

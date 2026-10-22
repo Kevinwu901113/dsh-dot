@@ -55,5 +55,8 @@
     "type": "git",
     "url": "git+https://github.com/Kevinwu901113/dsh-computer.git"
   },
-  "homepage": "https://github.com/Kevinwu901113/dsh-computer#readme"
+  "homepage": "https://github.com/Kevinwu901113/dsh-computer#readme",
+  "scripts": {
+    "test": "node --test test/*.test.js"
+  }
 }
