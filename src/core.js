@@ -4,7 +4,7 @@
 //   identity     → dsh loads <home>/AGENTS.md for sessions in <home>
 //   schedules    → official schedule service, built into dsh >= 0.2.1 (schedule_create, cron, restores cold sessions)
 //   IM           → dsh-im (chats, approvals by reply, proactive delivery service `dshIm`)
-//   spending cap → dsh-budget (`overLimit: block`)
+//   spending cap (optional) → dsh-budget (`overLimit: block`)
 //   computer     → dsh-computer (VM, approval gates, live view, audit log)
 // What is left, because no plugin does it:
 //   1. results of scheduled turns in <home> go to IM through dsh-im's public `send()`,
@@ -110,9 +110,10 @@ export function apply(ctx, config = {}) {
   // Identity file, editable, never overwritten.
   mkdirSync(home, { recursive: true });
   if (!existsSync(join(home, 'AGENTS.md'))) { try { copyFileSync(join(TEMPLATES, 'AGENTS.md'), join(home, 'AGENTS.md')); } catch (error) { void error; } }
-  for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['budget', 'dsh-budget'], ['schedule', 'the schedule service (built into dsh >= 0.2.1)']]) {
+  for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['schedule', 'the schedule service (built into dsh >= 0.2.1)']]) {
     if (ctx.get(svc) === undefined) logger.warn(`${pkg} is not installed (see the dsh-dot README install command)`);
   }
+  if (ctx.get('budget') === undefined) logger.info('dsh-budget not installed: no spending cap, budget notices disabled (optional)');
 
   // 1 + 2. Scheduled turns in <home>: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text }
@@ -218,7 +219,7 @@ export function apply(ctx, config = {}) {
           `home: ${home}`,
           `computer: ${vm.state ?? '?'}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}`,
           `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
-          `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed'}`,
+          `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];
         return { kind: 'success', text: lines.join('\n') + test };
