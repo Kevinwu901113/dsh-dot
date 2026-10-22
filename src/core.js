@@ -79,35 +79,107 @@ export function describeNow(input = new Date()) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 星期${wd} ${period}`;
 }
 
-/** The round's instructions. Phase decides what the model is asked to do with the gap. */
-export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak }) {
-  const gap = cursor ? `从 ${describeNow(new Date(cursor))} 到 ${describeNow(now)}` : `到 ${describeNow(now)} 为止的这段时间`;
+// ── HDSI prompt blocks, verbatim (HDS-Interlude 1.0.1-rc57, src/narrator.ts and src/specialization.ts,
+// AGPL-3.0 © MOMOR1A/MomoiCore). The round prompt below is assembled from them the way HDSI's "lite"
+// tier assembles its own; only the JSON field list is this plugin's.
+export const HDSI = {
+  LIVED_WRITING_PROMPT: 'Write this as a living stage script in prose: begin from the protagonist’s surroundings, actions, rhythms, practical pressures, inner motives and relationships. Let daily life itself create movement. A user message is one event entering that life; it can matter deeply, lightly, or not yet change anything, but it does not replace the protagonist’s world as the center of the scene.',
+  LIVED_LENGTH_PROMPT: 'Length follows what actually happens: give actions and shifts of attention room to develop, including during a rapid exchange; a quiet interval has its own occupation, pace and texture, and may carry ordinary life forward to the next meaningful beat. Continue from established circumstances rather than performing the previous passage again.',
+  LENGTH_DEEPSEEK: 'Length follows what actually happens: give actions and shifts of attention room to develop, including during a rapid exchange. Keep the narration plain and concrete: most sentences need no figurative language at all, and a metaphor is occasional rather than a habit — otherwise prefer the unadorned noun, the specific number, the plain verb. In Chinese prose one fitting idiom is enough; never chain four-character idioms. A quiet interval has its own occupation, pace and texture, and may carry ordinary life forward to the next meaningful beat. Continue from established circumstances rather than performing the previous passage again.',
+  LENGTH_CLAUDE: 'Length follows what actually happens: give actions and shifts of attention room to develop, including during a rapid exchange. Ground each passage in concrete sensory detail — what she is physically doing, touching, eating, hearing — rather than in commentary about it; open on her body and her immediate task, and let anything abstract enter only after that anchor. A quiet interval has its own occupation, pace and texture, and may carry ordinary life forward to the next meaningful beat. Continue from established circumstances rather than performing the previous passage again.',
+  LENGTH_GEMINI_FLASH: 'Length follows what actually happens. Prefer concrete, sensory detail over elevated wording: plain nouns and specific verbs carry the scene; use everyday words unless the moment itself is extraordinary. Choose one specific detail over several general ones; do not stack adjectives or reach for rare, showy vocabulary. Give actions and shifts of attention room to develop, including during a rapid exchange; a quiet interval has its own occupation and texture. Continue from established circumstances rather than performing the previous passage again.',
+  LENGTH_GPT: 'Length follows what actually happens, and each passage keeps moving: finish the thing underway, then let time advance to the next. Do not stretch one short moment into many paragraphs — when nothing new happens, move the clock forward instead; a rapid exchange stays rapid. A quiet interval has its own occupation and texture, briefly told; prefer ending a passage earlier over padding it. Continue from established circumstances rather than performing the previous passage again.',
+  EXTRA_GLM: 'Emotional register: let mood follow its actual causes and stay ordinary. Do not drift toward warmth, comfort or reassurance unless the events themselves justify it: no unearned encouragement, no softening a bad mood before the passage ends, no bright side the events did not produce. A neutral or low mood is as common in real life as a good one, and difficult feelings do not need to resolve within the same passage.',
+  TYPED_MESSAGES_BASE: 'WRITING BELIEVABLE TYPED MESSAGES: In the script, portray online messages as text the character chooses to type, not spoken dialogue transcribed. Keep typing and speaking aloud distinct. Each reply is an independent choice — the number of messages in previous replies does not constrain this one; let this moment alone decide whether she sends one bubble or several. Stickers and emoji-like images are a metalanguage: infer the sender attitude, acknowledgement, hesitation, irony or emotional framing from the concrete image and its conversational context rather than stopping at the depicted subject. A cat sticker may mean "seen" or "confirmed", not that the sender is commenting on a cute cat. Sending the same sticker repeatedly is also an intentional expressive act — insistence, emphasis, playfulness, impatience or deliberate noise.',
+  LITE_INTERVAL: 'The script covers the supplied interval and stops at now. Future possibilities remain possibilities, not accomplished events. The interval object is the authoritative clock: use interval.nowLocal for time-of-day words, not recentScript wording. If older prose says night but interval.nowLocal says 16:00/afternoon, advance into the current afternoon unless a current setting or observed event establishes unusual darkness.',
+  LITE_NEVER_INVENT: 'Never invent an incoming message, phone vibration, notification, or quoted sentence absent from the observed-event ledger; do not write "the phone vibrated" or "X sent a message" unless that exact external event is in the supplied context.',
+  LITE_OWNERSHIP: 'Every recentScript item carries an ownership label that is authoritative for who thought, narrated, observed or actually sent the content; a thought about the user is not a thought by the user.',
+  LITE_EVENT_SOURCES: 'Treat currentEvent, groupContext.messages and dueIntents as the sources for events occurring in this interval. Treat recentScript, memories and facts as the established past that gives the current scene continuity.',
+  PHASE_FOLLOW_UP: 'CURRENT PHASE: CONVERSATION FOLLOW-UP. currentEvent.type is none, while recentScript and currentParticipant carry the immediate aftertaste of a just-ended relationship scene. Continue from whatever remains alive there. If that movement naturally becomes a private follow-up by now, place its exact words at the sending action in script; otherwise let attention return to the life already in progress. If the just-ended exchange touched something she genuinely cares about — a topic she finds interesting, something she suddenly wants to add, an experience she wants to continue venting about, or something worth sharing — she is more willing to speak up on her own now. A warm conversational aftertaste is a valid reason to send another message; do not let an engaging topic die only because the other side stopped typing.',
+  PHASE_INTENT_DUE: 'CURRENT PHASE: DUE INTENT. dueIntents are plans whose earliest moment has arrived. Continue the surrounding life to now and decide whether each actually happens in the protagonist’s present circumstances. Use interaction.reply.mode=immediate only when a message is genuinely sent now.',
+  PHASE_ADVANCE: 'CURRENT PHASE: INDEPENDENT LIFE ADVANCE. currentEvent.type is none. Use the whole interval to write a complete, connected passage of the protagonist’s life: current occupation, concrete changes, encounters, unresolved matters and quiet shifts. End at now on an action, observation, decision, pause or settled thought.',
+  CONTACT_RULE: 'Return an action only for a concrete present reason grounded in the scene. Include willingness from 0 to 1 and a short reason. Let a consideration, draft, or later possibility remain part of the protagonist’s inner or practical life until a matching action carries it outward. When no concrete motive exists, return an empty array.',
+  AGENCY_SEPARATION: 'Write the protagonist’s life first; assess contact only after the script. A long user silence is never enough by itself. A life event, promise, practical update or relationship follow-up must ground the motive — and the life she just lived counts: a thought that reminded her of someone, something funny that happened, a topic she wants to continue, or genuine curiosity about what they are doing are all valid life-grounded motives.',
+  CONTINUITY_REFRESH: 'POST-COMMIT CONTINUITY REFRESH: after writing script and transport, include {"continuity":{"current":"...","recent":["..."],"salient":["..."]}} rebuilt from established past and present only. Do not copy or create free-text future plans. Scheduled future work is supplied separately through upcomingPlans, dueIntents and Schedule Preplan.',
+  MAIN_PROMPT_DEFAULT: '以主角为中心，持续创作一部正在发生的生活剧本。让具体的日常、偶然的事件、人际互动、现实压力、未完成的事情和细微的心境变化共同推动故事；聊天只是其中自然可能出现的一个事件。',
+  DEFAULT_STYLE_PROMPT: [
+    '你正在持续创作一部以主角为中心的现实主义生活剧本，每次推进约400多字，可长可短，重点展现变化。',
+    '',
+    '每次写作时，请先感受主角在这段真实时间里正在经历怎样的生活：她的日程、行动、身体状态、心情、环境、正在处理的事情，以及与周围人物之间自然流动的关系。让剧本从这些真实而具体的生活质感中展开。',
+    '',
+    '用户消息是发生在当前时刻的一项外部事件。把它自然放入（如没有注意到/无条件注意也可不放入）主角原本正在继续的现实中，结合她当下的处境、注意力、情绪和人与人之间的关系，呈现这条消息带来的影响。主角可以很快注意到，也可以在完成手头的事、与别人相处、整理情绪或改变计划后才处理它。',
+    '',
+    '为当前时间段补充一些属于主角自己的生活内容，例如丰富感的日常事务、与身边人的小互动、工作或学业、兴趣、身体感受、心理想法、偶遇、配角互动、临时变化、尚未解决的小事、环境细节或内在念头。让这些内容与既有剧情保持因果和连续性，并自然留下后续的空间。',
+    '',
+    '鼓励生活保留适度的不确定性与变化：突变可能发生，计划可能调整，邀约可能出现，配角能带来新的情绪或信息，旧问题也可能以平静的方式重新浮现。事件保持克制、可信，并让主角的选择具有现实动机。',
+    '',
+    '主角遇到有意思与想要分享/诉苦的事情，完全可以选择主动联系熟悉的用户。',
+    '',
+    '采用贴近主角的第三人称限知视角，一部持续上演的话剧。外部事件丰富度高、叙事连贯，关注主角心理、具体行动、人物来往、情绪余波与关系的缓慢变化。',
+    '',
+    '叙事推进至当前时刻结束。可以保留正在进行的事情、未说出口的念头、尚未解决的关系线索和未来意图；请将已经发生的内容写得完整而自然。',
+    '',
+    '主角线上聊天喜欢用简洁和省字数的方式交流。',
+  ].join('\n'),
+};
+
+/** HDSI's model-family detection (specialization.ts): the length block differs per family. */
+export function lengthBlockFor(model = '') {
+  const m = String(model).toLowerCase();
+  if (/deepseek/.test(m)) return HDSI.LENGTH_DEEPSEEK;
+  if (/claude/.test(m)) return HDSI.LENGTH_CLAUDE;
+  if (/gemini/.test(m) && /flash|lite|mini/.test(m)) return HDSI.LENGTH_GEMINI_FLASH;
+  if (/gpt|o\d/.test(m)) return HDSI.LENGTH_GPT;
+  return HDSI.LIVED_LENGTH_PROMPT;
+}
+
+/** The round's prompt: HDSI's lite-tier assembly. `entries` are recentScript items with owner labels. */
+export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [] }) {
+  const isDeepseek = /deepseek/i.test(String(model));
+  const isGlm = /glm/i.test(String(model));
+  const phaseText = phase === 'follow-up' ? HDSI.PHASE_FOLLOW_UP : phase === 'intent' ? HDSI.PHASE_INTENT_DUE : HDSI.PHASE_ADVANCE;
   const system = [
-    identity ? `# 主角（Canon）\n${identity.trim()}` : '',
-    '# 现在是幕间',
-    '聊天在幕前发生，生活在幕间继续。你是接手这部进行中的剧本的作者，主角生活在此时此刻。从历史剧本的时间点继续衔接书写；让已发生的事情留下可能的后果，让已完成的动作留在过去；把叙事的注意力放在主角此刻正在感知的地方。写完后留下接下来需要的连续性。',
-    `时间：${gap}。写到现在为止，不写未来；未来的事只能放进 intents。`,
-    phase === 'follow-up' ? '这一轮是「对话后续」：刚才的对话结束了，写它在主角生活里留下的余波，以及主角接着做了什么。' : '',
-    phase === 'advance' ? '这一轮是「生活推进」：这段时间没有对话。写主角自己在做的事。没有用户消息，不要编造用户说了什么。' : '',
-    phase === 'seed' ? '这一轮是「开场」：剧本还没有开始，没有历史。写主角到现在为止的最近一天：3 到 5 段，每段以 [MM-DD HH:MM] 开头、按时间先后、最后一段写到现在。这是她自己的日子（配角、地点、习惯都从设定来），和用户没有对话，不要编造用户说了什么。state 写现在的状态，intents 放她接下来一两天确实打算做的事。' : '',
-    phase === 'intent' && intent ? `这一轮是「到期的意图」：${intent.text}（${intent.kind}，定于 ${describeNow(new Date(intent.at))}）。重新看看现在的生活，决定是履行、延后还是放下；延后要给新的时间，放下要在 script 里说明。` : '',
-    '只输出一个 JSON 对象（可放在 ```json 代码块里）：',
-    `- "script": 这段时间的剧本，第三人称当代生活剧，${phase === 'seed' ? '600' : '300'} 字以内。围绕主角的日常动作、不规律事件和人际交流展开，用具体动作和感官细节代替给心情命名；不复述幕前的对话原文；主角若真的发了消息，把原话写进剧本。`,
-    '- "state": { "mood": "此刻的状态一句话", "now": "正在做或刚做完的事", "next": "接下来打算", "threads": ["进行中、未完成的事，最多 5 条"] }',
-    '- "overlay": ["这段时间形成的稳定变化：新的习惯、对某事的看法、关系上的变化。没有就空数组；一般为空。"]',
-    '- "intents": [{ "at": "ISO 8601 本地时间", "kind": "reminder | reply | contact", "text": "到时候要做什么", "willingness": 0~1 }]，只放确实需要在未来某个时刻处理的事；没有就空数组。',
+    identity ? `STORY SETTING (Canon):\n${identity.trim()}` : '',
+    HDSI.LIVED_WRITING_PROMPT,
+    lengthBlockFor(model),
+    HDSI.TYPED_MESSAGES_BASE,
+    'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
+    // The field list is this plugin's; everything around it is HDSI's.
+    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents and contact. Do not wrap it in Markdown fences.',
+    `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she actually sends a message, write its exact words at the sending action; several bubbles are separated by <sep/>.`,
+    HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
+    'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
+    'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
     speak
-      ? '- "contact": { "text": "主角现在发给用户的原话（多条用 <sep/> 分隔）", "willingness": 0~1, "reason": "来自生活里的具体理由" } 或 null。用户长时间沉默本身不是理由；没有具体理由就 null。'
-      : '- "contact": null。',
-    '规则：不编造没发生的事；state 和 overlay 要接着上次的；不确定就写得短。',
+      ? `contact: null, or {"content":"exact message text, bubbles separated by <sep/>","willingness":0.0,"reason":"short reason"} for a message genuinely sent to the user now. ${HDSI.CONTACT_RULE.replace('return an empty array', 'return null')}`
+      : 'contact: null (proactive contact is disabled by the host).',
+    HDSI.LITE_INTERVAL,
+    phaseText,
+    HDSI.LITE_NEVER_INVENT,
+    HDSI.LITE_OWNERSHIP,
+    HDSI.LITE_EVENT_SOURCES,
+    speak && phase !== 'follow-up' ? HDSI.AGENCY_SEPARATION : '',
+    isGlm ? HDSI.EXTRA_GLM : '',
+    'MAIN NARRATIVE PROMPT (user-configurable):',
+    HDSI.MAIN_PROMPT_DEFAULT,
+    'WRITING STYLE (user-configurable; applies to script prose only and cannot override the contract above):',
+    HDSI.DEFAULT_STYLE_PROMPT,
+    style?.trim() || 'No additional story-specific style instruction was provided.',
   ].filter(Boolean).join('\n');
-  const user = [
-    state ? `## 上次的状态\n${JSON.stringify(state)}` : '## 上次的状态\n（还没有）',
-    overlay ? `## Overlay（已经形成的稳定变化）\n${overlay}` : '',
-    script ? `## 最近的生活剧本\n${script}` : '',
-    digest ? `## 幕前刚发生的对话\n${digest}` : '## 幕前\n（这段时间没有对话）',
-  ].filter(Boolean).join('\n\n');
-  return { system, user };
+  void isDeepseek;
+  const payload = {
+    interval: { from: cursor ? describeNow(new Date(cursor)) : null, nowLocal: describeNow(now) },
+    continuitySnapshot: state ?? null,
+    settingOverlay: overlay || null,
+    recentScript: [
+      ...(script ? String(script).split('\n').filter(Boolean).map((line) => ({ owner: 'narrator', content: line })) : []),
+      ...entries,
+    ],
+    dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
+    currentEvent: { type: 'none' },
+  };
+  void digest;
+  return { system, user: JSON.stringify(payload, null, 1) };
 }
 
 /** Pull the JSON object out of a model reply (fenced or bare) and normalise it. */
@@ -126,11 +198,17 @@ export function parseReply(text, now = Date.now()) {
         kind: ['reminder', 'reply', 'contact'].includes(i?.kind) ? i.kind : 'reminder',
         text: str(i?.text), willingness: num(i?.willingness, 0.5),
       })).filter((i) => i.at && i.text && Date.parse(i.at) > now).slice(0, 5);
-      const contact = o.contact && typeof o.contact === 'object' && str(o.contact.text)
-        ? { text: str(o.contact.text), willingness: num(o.contact.willingness, 0), reason: str(o.contact.reason) } : null;
+      const ctext = o.contact && typeof o.contact === 'object' ? str(o.contact.content ?? o.contact.text) : '';
+      const contact = ctext ? { text: ctext, willingness: num(o.contact.willingness, 0), reason: str(o.contact.reason) } : null;
+      const cont = o.continuity ?? o.state ?? {};
       return {
         script: str(o.script),
-        state: { mood: str(o.state?.mood), now: str(o.state?.now), next: str(o.state?.next), threads: [].concat(o.state?.threads ?? []).map(str).filter(Boolean).slice(0, 5) },
+        // HDSI continuity snapshot: current / recent / salient (older replies' mood/now/next/threads are folded in).
+        state: {
+          current: str(cont.current ?? cont.now ?? cont.mood),
+          recent: [].concat(cont.recent ?? cont.next ?? []).map(str).filter(Boolean).slice(0, 5),
+          salient: [].concat(cont.salient ?? cont.threads ?? []).map(str).filter(Boolean).slice(0, 5),
+        },
         overlay: [].concat(o.overlay ?? []).map(str).filter(Boolean).slice(0, 3),
         intents, contact,
       };
@@ -144,22 +222,19 @@ export function parseReply(text, now = Date.now()) {
   return null;
 }
 
-/** Render the context later acts see. */
+/** Render the context later acts see: HDSI's continuity fields as data, no added prose. */
 export function renderContext({ state, overlay, entries, intents, cursor, restarted, now = Date.now() }) {
   if (!state && !entries.length) return '';
-  const ago = cursor ? Math.round((now - cursor) / 60000) : null;
-  const lines = ['<interlude>', '幕前开始。下面是你在幕间写下的连续性，只有你自己看得到；像真实经历一样使用它，不要向用户复述。'];
-  if (ago !== null) lines.push(`上次幕间：${ago < 60 ? `${ago} 分钟前` : `${Math.round(ago / 60)} 小时前`}${restarted ? '；期间 dsh 重启过（像睡了一觉）' : ''}`);
-  if (state?.mood) lines.push(`状态：${state.mood}`);
-  if (state?.now) lines.push(`刚才在做：${state.now}`);
-  if (state?.next) lines.push(`接下来：${state.next}`);
-  if (state?.threads?.length) lines.push(`进行中：${state.threads.join('；')}`);
-  if (overlay) lines.push(`已形成的变化：${overlay}`);
-  const due = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000);
-  if (due.length) lines.push(`近期的打算：${due.map((i) => `${i.text}（${describeNow(new Date(i.at))}）`).join('；')}`);
-  if (entries.length) lines.push('最近的生活：', ...entries.map((e) => `- ${e}`));
-  lines.push('</interlude>');
-  return clip(lines.join('\n'), 2400);
+  const upcoming = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text }));
+  const payload = {
+    continuitySnapshot: state ? { current: state.current ?? state.now ?? state.mood ?? '', recent: state.recent ?? (state.next ? [state.next] : []), salient: state.salient ?? state.threads ?? [] } : null,
+    continuitySnapshotAgeMinutes: cursor ? Math.round((now - cursor) / 60000) : null,
+    hostRestartedSinceSnapshot: Boolean(restarted),
+    settingOverlay: overlay || null,
+    recentScript: entries.map((content) => ({ owner: 'narrator', content })),
+    upcomingPlans: upcoming,
+  };
+  return clip(`<interlude>\n${JSON.stringify(payload, null, 1)}\n</interlude>`, 2400);
 }
 
 function readJson(file, fallback) {
@@ -311,12 +386,17 @@ export function apply(ctx, config = {}) {
     busy = true;
     const now = Date.now();
     try {
-      const identity = canonText({ withStyle: true });
-      const { system, user } = buildPrompt({
-        phase, identity: clip(identity, 4000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
-        digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak,
-      });
+      const identity = canonText();
       const sel = ctx.agentDefaultModel.currentSelection();
+      // Acts become recentScript entries with HDSI ownership labels.
+      const entries = items.flatMap((i) => [
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.assistant ? { owner: 'character', content: i.assistant } : null,
+      ]).filter(Boolean);
+      const { system, user } = buildPrompt({
+        phase, identity: clip(identity, 6000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
+        digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
+      });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
       const reply = await collectText(ctx.llm.stream(options));
@@ -458,7 +538,7 @@ export function apply(ctx, config = {}) {
         const lines = [
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
-          `state: ${state?.mood || '(none yet)'}${state?.now ? ` · ${state.now}` : ''}`,
+          `continuity: ${state?.current || state?.mood || '(none yet)'}`,
           `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
           `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,

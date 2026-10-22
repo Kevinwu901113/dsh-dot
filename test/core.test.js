@@ -54,12 +54,12 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
 
 const soon = new Date(Date.now() + 3600000).toISOString();
 const GOOD = `\`\`\`json
-{"script":"他让我看了两次提交，第二次没变化，我按静默规则没出声。之后我把 dsh-computer 那个锁的问题记在了便签上。","state":{"mood":"平静","now":"整理便签","next":"晚点看看锁的修复有没有合进去","threads":["盯 dsh-dot 的提交"]},"overlay":[],"intents":[{"at":"${soon}","kind":"reminder","text":"看看锁的修复合进去没有","willingness":0.7}],"contact":null}
+{"script":"他让我看了两次提交，第二次没变化，我按静默规则没出声。之后我把 dsh-computer 那个锁的问题记在了便签上。","continuity":{"current":"整理便签","recent":["晚点看看锁的修复有没有合进去"],"salient":["盯 dsh-dot 的提交"]},"overlay":[],"intents":[{"at":"${soon}","kind":"reminder","text":"看看锁的修复合进去没有","willingness":0.7}],"contact":null}
 \`\`\``;
 
 test('parseReply normalises intents, overlay, contact; rejects past intents and garbage', () => {
   const p = parseReply(GOOD);
-  assert.equal(p.state.now, '整理便签');
+  assert.equal(p.state.current, '整理便签');
   assert.equal(p.intents.length, 1);
   assert.equal(p.intents[0].kind, 'reminder');
   assert.equal(parseReply('{"script":"x","intents":[{"at":"2000-01-01T00:00:00Z","text":"old"}],"contact":{"text":"hi","willingness":2}}').intents.length, 0);
@@ -78,9 +78,11 @@ test('inHours and describeNow', () => {
 test('renderContext: empty before the first round; restart and near intents shown after', () => {
   assert.equal(renderContext({ state: null, overlay: '', entries: [], intents: [], cursor: 0 }), '');
   const t = renderContext({ state: { mood: 'ok', now: 'x', next: 'y', threads: ['a'] }, overlay: '- 2026-10-1 喜欢上早起', entries: ['e1'], intents: [{ at: soon, text: '提醒他' }], cursor: Date.now() - 90 * 60000, restarted: true });
-  assert.match(t, /上次幕间：2 小时前；期间 dsh 重启过/);
-  assert.match(t, /已形成的变化：- 2026-10-1 喜欢上早起/);
-  assert.match(t, /近期的打算：提醒他/);
+  assert.match(t, /"continuitySnapshotAgeMinutes": 90/);
+  assert.match(t, /"hostRestartedSinceSnapshot": true/);
+  assert.match(t, /"settingOverlay": "- 2026-10-1 喜欢上早起"/);
+  assert.match(t, /"upcomingPlans"[\s\S]*提醒他/);
+  assert.match(t, /"current": "x"/);
   assert.ok(t.length <= 2400);
 });
 
@@ -92,24 +94,24 @@ test('follow-up round: writes script, state, intents; later acts in home see the
   const r = await h.cmd().handler({ rawInput: 'now' });
   assert.match(r.text, /ran: 他让我看了两次提交/);
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /Canon[\s\S]*# 你是 dot[\s\S]*不打句号/);
+  assert.match(h.calls[0].system, /STORY SETTING \(Canon\)[\s\S]*# 你是 dot[\s\S]*不打句号/);
   assert.match(h.canonText(), /^# 你是 dot/, 'the Canon is a prompt section for home sessions');
   assert.equal(h.canonText('x', '/elsewhere'), '', 'and absent elsewhere');
-  assert.match(h.calls[0].system, /对话后续/);
-  assert.match(h.calls[0].system, /"contact": null/);
+  assert.match(h.calls[0].system, /CURRENT PHASE: CONVERSATION FOLLOW-UP/);
+  assert.match(h.calls[0].system, /contact: null \(proactive contact is disabled/);
   const user = h.calls[0].messages[0].content[0].text;
-  assert.match(user, /定时任务\][\s\S]*DOT_SILENT/);
+  assert.match(user, /"owner": "scheduled-task"[\s\S]*DOT_SILENT/);
   const script = readFileSync(join(h.home, 'interlude', 'script.md'), 'utf8');
   assert.match(script, /^## .* · follow-up\n他让我看了两次提交/m);
   const state = JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8'));
-  assert.equal(state.threads[0], '盯 dsh-dot 的提交');
+  assert.equal(state.salient[0], '盯 dsh-dot 的提交');
   const intents = JSON.parse(readFileSync(join(h.home, 'interlude', 'intents.json'), 'utf8'));
   assert.equal(intents.length, 1);
   assert.equal(readFileSync(join(h.home, 'interlude', 'pending.jsonl'), 'utf8'), '');
   const text = h.ctxText();
-  assert.match(text, /状态：平静/);
-  assert.match(text, /刚才在做：整理便签/);
-  assert.match(text, /近期的打算：看看锁的修复合进去没有/);
+  assert.match(text, /"current": "整理便签"/);
+  assert.match(text, /"salient": \[\s*"盯 dsh-dot 的提交"/);
+  assert.match(text, /"upcomingPlans"[\s\S]*看看锁的修复合进去没有/);
   assert.equal(h.ctxText('elsewhere', '/tmp/x'), '');
   const r2 = await h.cmd().handler({ rawInput: 'now' });
   assert.match(r2.text, /not run: nothing happened/);
@@ -120,8 +122,8 @@ test('advance round runs without any conversation and says so to the model', asy
   const h = harness({ reply: GOOD.replace('"overlay":[]', '"overlay":["开始习惯在下午整理便签"]') });
   const r = await h.cmd().handler({ rawInput: 'advance' });
   assert.match(r.text, /ran:/);
-  assert.match(h.calls[0].system, /生活推进[\s\S]*不要编造用户说了什么/);
-  assert.match(h.calls[0].messages[0].content[0].text, /这段时间没有对话/);
+  assert.match(h.calls[0].system, /CURRENT PHASE: INDEPENDENT LIFE ADVANCE/);
+  assert.match(h.calls[0].messages[0].content[0].text, /"currentEvent": \{\s*"type": "none"/);
   assert.match(readFileSync(join(h.home, 'interlude', 'overlay.md'), 'utf8'), /开始习惯在下午整理便签/);
   h.stop();
 });
@@ -135,7 +137,8 @@ test('a due intent is resolved by an intent round and removed', async () => {
   h.tick();
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /到期的意图[\s\S]*提醒他喝水/);
+  assert.match(h.calls[0].system, /CURRENT PHASE: DUE INTENT/);
+  assert.match(h.calls[0].messages[0].content[0].text, /提醒他喝水/);
   assert.deepEqual(JSON.parse(readFileSync(join(seeded.home, 'interlude', 'intents.json'), 'utf8')), []);
   assert.match(readFileSync(join(seeded.home, 'interlude', 'script.md'), 'utf8'), /· intent\n/);
   h.stop();
@@ -156,7 +159,7 @@ test('scheduler: follow-up after quiet acts, advance on interval, nothing while 
   h.tick();
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /对话后续/);
+  assert.match(h.calls[0].system, /CONVERSATION FOLLOW-UP/);
   h.stop();
   const adv = harness({ reply: GOOD, config: { advanceEveryMinutes: 1 } });
   adv.tick();
@@ -219,8 +222,14 @@ test('daily round cap', async () => {
 
 test('buildPrompt phases', () => {
   const now = Date.now();
-  assert.match(buildPrompt({ phase: 'intent', identity: '', state: null, overlay: '', script: '', digest: '', cursor: now - 3600000, now, intent: { text: '提醒他喝水', kind: 'reminder', at: new Date(now).toISOString() }, speak: true }).system, /到期的意图[\s\S]*提醒他喝水[\s\S]*"contact": \{/);
-  assert.match(buildPrompt({ phase: 'advance', identity: '', state: null, overlay: '', script: '', digest: '', cursor: 0, now, speak: false }).system, /到 .* 为止的这段时间/);
+  const ip = buildPrompt({ phase: 'intent', identity: '', state: null, overlay: '', script: '', digest: '', cursor: now - 3600000, now, intent: { text: '提醒他喝水', kind: 'reminder', at: new Date(now).toISOString() }, speak: true, model: 'deepseek-flash' });
+  assert.match(ip.system, /contact: null, or \{"content"[\s\S]*CURRENT PHASE: DUE INTENT/);
+  assert.match(ip.system, /never chain four-character idioms/, 'DeepSeek length block');
+  assert.match(ip.user, /提醒他喝水/);
+  const ap = buildPrompt({ phase: 'advance', identity: '', state: null, overlay: '', script: '', digest: '', cursor: 0, now, speak: false, model: 'claude-x' });
+  assert.match(ap.system, /INDEPENDENT LIFE ADVANCE/);
+  assert.match(ap.system, /open on her body and her immediate task/, 'Claude length block');
+  assert.match(ap.user, /"from": null/);
 });
 
 test('renderCanon and fetchPreset: HDSI storyDefaults become the Canon; share codes resolve via the hub API', async () => {
@@ -278,11 +287,11 @@ test('prompt trim: dsh openers are dropped for the character\'s sessions only; c
 });
 
 test('/interlude seed opens an empty script with dated entries and refuses once entries exist', async () => {
-  const seed = JSON.stringify({ script: '[10-21 23:40] 她把练习册翻过去一页，台灯还亮着\n[10-22 07:50] 闹钟响了三遍才起来，早饭是楼下的包子\n[10-22 12:10] 希绘发来奶茶店的链接，她回了个问号', state: { mood: '困', now: '吃午饭', next: '下午去文具店', threads: ['奶茶店'] }, overlay: [], intents: [], contact: null });
+  const seed = JSON.stringify({ script: '[10-21 23:40] 她把练习册翻过去一页，台灯还亮着\n[10-22 07:50] 闹钟响了三遍才起来，早饭是楼下的包子\n[10-22 12:10] 希绘发来奶茶店的链接，她回了个问号', continuity: { current: '吃午饭', recent: ['下午去文具店'], salient: ['奶茶店'] }, overlay: [], intents: [], contact: null });
   const h = harness({ reply: seed });
   const r = await h.cmd().handler({ rawInput: 'seed' });
   assert.match(r.text, /ran:/);
-  assert.match(h.calls[0].system, /「开场」/);
+  assert.match(h.calls[0].system, /covering the last day in 3 to 5 segments/);
   const script = readFileSync(join(h.home, 'interlude', 'script.md'), 'utf8');
   assert.equal((script.match(/^## /gm) || []).length, 3);
   assert.match(script, /10-21 23:40 .* seed\n她把练习册翻过去一页/);
