@@ -47,7 +47,7 @@ test('working rules are a prompt section for sessions in home; no AGENTS.md is w
   apply(h.ctx, h.config);
   assert.ok(!existsSync(join(h.home, 'AGENTS.md')));
   const sec = h.ctx.sections.find((s) => s.name === 'dot:rules');
-  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*DOT_SILENT[\s\S]*<sep\/>/);
+  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*DOT_SILENT[\s\S]*一句一行/);
   assert.equal(sec.text({ agent: { session: { id: 'b', header: { cwd: '/elsewhere' } } } }), '');
   stop(h);
 });
