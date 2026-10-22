@@ -110,6 +110,6 @@ dsh-dot 只做现成插件都不做的四件事：
 
 待在真机上验证：审批提醒推到 QQ；预算超限通知推到 QQ。
 
-想让它在两次对话之间也有连续性（日记、状态），装 [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude)（幕间），和 dot 共用 `~/dot`。
+想让它在两次对话之间也"活着"（生活剧本、状态、打算，按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude) 的幕间思路），装 [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude)，和 dot 共用 `~/dot`。
 
 MIT License.
