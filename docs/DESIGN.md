@@ -14,6 +14,24 @@
 
 结果：dsh-dot 从约 400 行降到约 200 行，依赖组合变为 dsh-computer、dsh-im、dsh-budget、官方 schedule。云端在真实 dsh 上验证了定时任务的投递和静默两条路径。
 
+## 2026-10-22 真机排错记录
+
+真机：Mac，App 自动升到 0.2.1-rc.2，IM 换成 dsh-im（QQ 官方机器人）。跑北极星缩短版时发现并修掉的问题：
+
+| 现象 | 原因 | 修法 |
+|---|---|---|
+| "2 分钟后看 X"被马上执行 | AGENTS.md 里定时规则太软 | 模板改为"带未来时间点或周期的一律 `schedule_create`，现在不做" |
+| 没新内容时仍然汇报"没有新提交" | 静默规则只在 AGENTS.md，模型到点时没当回事 | dot 在定时触发的那一轮加一条 `systemPrompt.context`（只加这一轮）。定时提醒在轮次开始前以 `agent/inbox/spliced` 进入收件箱，而提示在轮次开始时组装、早于 `user/message` 事件，所以从 spliced 事件识别 |
+| `/dot` 命令没注册 | dot 的 inject 不再含 sessionController，启动早于 commands 服务 | `ctx.inject(['commands'], …)` 等服务就绪再注册 |
+| `IM: Invalid bot id` | dsh-im 的 `listBots()` 返回 `{ botId, channel }` 对象 | 取 `botId` |
+| 审批提醒内容为空 | `approval/asked` 载荷是 `{ id, toolName, reason }` | 用 `toolName` + `reason`；gate 的 reason 已含实时画面链接，不重复 |
+| 虚拟机重启后桌面和浏览器起不来（agent 自己花 token 排查） | `/tmp/.X99-lock` 残留，X 服务起不来 | dsh-computer 启动前清锁；浏览器不在时若 X 也不在，清锁并拉起 tigervnc/openbox 再启浏览器（云端复现并验证） |
+| 虚拟机里 `rm -f` 没触发审批 | gate 只看 dsh 的 `bash`，没看虚拟机自带的 `sandbox_execute_bash` / `sandbox_execute_code` | gate 加 `shellTools`，三个都过同一套规则（dsh-computer 加了测试） |
+| 定时任务插件装了但起不来 | 0.2.1 把定时内置进 web-app；实验插件没有 0.2.1 版本，旧版 `dsh-schedule` 挡住内置的 | 卸掉实验插件；安装命令从五个包减到四个 |
+| pnpm 在 Done 之后卡住 | 去拉 microsandbox 其他平台的构建，网络失败重试 | 安装脚本检测到 Done 后 60 秒仍在跑就终止；不影响已装文件 |
+
+运行时热替换的文件（`node_modules/dsh-dot/src/core.js` 等）在下一次 `dsh plugin` 操作时会被重装覆盖，GitHub 上已是同样内容。
+
 以下为 v0.1 的原始设计记录。
 
 ---
