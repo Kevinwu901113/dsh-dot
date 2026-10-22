@@ -224,7 +224,7 @@ test('daily round cap', async () => {
 test('buildPrompt phases', () => {
   const now = Date.now();
   const ip = buildPrompt({ phase: 'intent', identity: '', state: null, overlay: '', script: '', digest: '', cursor: now - 3600000, now, intent: { text: '提醒他喝水', kind: 'reminder', at: new Date(now).toISOString() }, speak: true, model: 'deepseek-flash' });
-  assert.match(ip.system, /contact: null, or \{"content"[\s\S]*CURRENT PHASE: DUE INTENT/);
+  assert.match(ip.system, /CURRENT PHASE: DUE INTENT[\s\S]*contact: null, or \{"content"/);
   assert.match(ip.system, /never chain four-character idioms/, 'DeepSeek length block');
   assert.match(ip.user, /提醒他喝水/);
   const ap = buildPrompt({ phase: 'advance', identity: '', state: null, overlay: '', script: '', digest: '', cursor: 0, now, speak: false, model: 'claude-x' });

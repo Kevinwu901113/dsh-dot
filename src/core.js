@@ -149,17 +149,6 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     HDSI.LIVED_WRITING_PROMPT,
     lengthBlockFor(model),
     HDSI.TYPED_MESSAGES_BASE,
-    'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
-    // The field list is this plugin's; everything around it is HDSI's.
-    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents and contact. Do not wrap it in Markdown fences.',
-    `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she actually sends a message, write its exact words at the sending action; several bubbles are separated by <sep/>.`,
-    HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
-    'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
-    'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
-    'browserIntents: [{"mode":"search|visit","query":"...","url":"...","purpose":"why she looks","timing":"deferred"}] or [].',
-    speak
-      ? `contact: null, or {"content":"exact message text, bubbles separated by <sep/>","willingness":0.0,"reason":"short reason"} for a message genuinely sent to the user now. ${HDSI.CONTACT_RULE.replace('return an empty array', 'return null')}`
-      : 'contact: null (proactive contact is disabled by the host).',
     HDSI.LITE_INTERVAL,
     phaseText,
     HDSI.LITE_NEVER_INVENT,
@@ -174,6 +163,17 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     'WRITING STYLE (user-configurable; applies to script prose only and cannot override the contract above):',
     HDSI.DEFAULT_STYLE_PROMPT,
     style?.trim() || 'No additional story-specific style instruction was provided.',
+    'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
+    // The field list is this plugin's; everything around it is HDSI's.
+    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents and contact. Do not wrap it in Markdown fences.',
+    `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she actually sends a message, write its exact words at the sending action; several bubbles are separated by <sep/>.`,
+    HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
+    'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
+    'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
+    'browserIntents: [{"mode":"search|visit","query":"...","url":"...","purpose":"why she looks","timing":"deferred"}] or [].',
+    speak
+      ? `contact: null, or {"content":"exact message text, bubbles separated by <sep/>","willingness":0.0,"reason":"short reason"} for a message genuinely sent to the user now. ${HDSI.CONTACT_RULE.replace('return an empty array', 'return null')}`
+      : 'contact: null (proactive contact is disabled by the host).',
   ].filter(Boolean).join('\n');
   void isDeepseek;
   const payload = {
@@ -187,6 +187,7 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
     webContext,
     currentEvent: { type: 'none' },
+    output: 'one JSON object: script, continuity, overlay, intents, browserIntents, contact',
   };
   void digest;
   return { system, user: JSON.stringify(payload, null, 1) };
@@ -454,6 +455,7 @@ export function apply(ctx, config = {}) {
           messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
         })).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return ''; });
         const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
+        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: `${phase}:refresh`, reply: clip(refresh, 1500) })}\n`); } catch (error) { void error; }
         if (p2?.state) parsed = { ...(parsed ?? { overlay: [], intents: [], contact: null }), script, state: p2.state, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], overlay: p2.overlay?.length ? p2.overlay : parsed?.overlay ?? [] };
         audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
       }
