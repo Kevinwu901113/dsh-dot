@@ -1,13 +1,20 @@
-// dsh-interlude/core: 幕间 — what the agent does between conversations.
+// dsh-interlude/core: 幕间 for DeepSeek Harness, after HDS-Interlude (https://github.com/REcklessNOLOve117/HDS-Interlude):
+// "聊天在幕前发生，生活在幕间继续。"
 //
-// A conversation with the user is an act. When the acts in <home> have been quiet for a while, the
-// agent gets one model call of its own: it reads its identity file, its current self-state and its
-// last journal entries, sees a digest of what just happened, and writes two things —
-//   1. a short first-person journal entry (<home>/interlude/journal.md, append-only, human-readable);
-//   2. a small self-state (<home>/interlude/state.json): mood in one line, open threads, follow-ups.
-// Both are carried into every later turn in <home> as a system-prompt context placed after the
-// conversation history, so the stable prompt prefix stays cached. No database, no retrieval, no
-// tools: the interlude is one bounded call per quiet period, metered by dsh-budget like any other.
+// 幕前 (on stage) is any dsh conversation in <home>: dsh runs it, dsh-im carries it, dsh-dot pushes
+// scheduled results. 幕间 (between acts) is this plugin: one model call per round in which the
+// character writes the life that happened since the story cursor, decides whether it has a real
+// reason to reach out, and leaves a small continuity snapshot behind. Later acts open with that
+// snapshot in view.
+//
+// Rounds, after HDSI's fixed phases (a user message is phase 1 and is handled by dsh itself):
+//   follow-up  — a conversation has just gone quiet (idleMinutes)
+//   advance    — independent life progression at a regular interval, even with no conversation
+//   intent     — a stored intent (reminder, promised reply, contact check) came due
+// Continuity layers kept from HDSI: Canon (the identity file), recent script (script.md), the
+// continuity snapshot (state.json), Overlay (overlay.md, slow non-destructive change), intents
+// (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
+// multi-participant stories, seen/delayed replies inside a conversation.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -17,15 +24,18 @@ export const name = 'dsh-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
 
 export const defaults = {
-  home: '',                  // default ~/dot; acts are sessions whose cwd is inside it
-  identityFile: '',          // default <home>/AGENTS.md; who the agent is (shared with dsh-dot)
-  idleMinutes: 20,           // an act is over when nothing has happened in <home> for this long
-  minIntervalMinutes: 45,    // at most one interlude per this interval
-  maxPerDay: 8,
-  maxTokens: 700,
-  digestChars: 6000,         // how much of the recent acts the interlude sees
-  journalEntriesInPrompt: 3, // how many recent entries later turns see
-  speak: false,              // allow the interlude to send one line to the user over dsh-im
+  home: '',                   // default ~/dot; acts are sessions whose cwd is inside it
+  identityFile: '',           // default <home>/AGENTS.md — the Canon: who the character is
+  idleMinutes: 10,            // follow-up round this long after a conversation goes quiet
+  advanceEveryMinutes: 180,   // independent life progression; 0 disables
+  activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
+  maxRoundsPerDay: 12,
+  maxTokens: 900,
+  digestChars: 6000,
+  scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
+  speak: false,               // allow proactive contact over dsh-im
+  maxContactsPerDay: 2,
+  willingnessThreshold: 0.6,
   imBot: '',
   imTarget: '',
 };
@@ -33,7 +43,7 @@ export const defaults = {
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const dayOf = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-const stamp = (d = new Date()) => d.toLocaleString('zh-CN', { hour12: false });
+const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
 /** Text of a message content array (or string). */
 export function contentText(content) {
@@ -41,72 +51,106 @@ export function contentText(content) {
   return (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join('');
 }
 
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+/** 'HH:MM-HH:MM' (may wrap midnight) → is `date` inside it? Empty spec = always. */
+export function inHours(spec, date = new Date()) {
+  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
+  if (!m) return true;
+  const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], now = date.getHours() * 60 + date.getMinutes();
+  return start <= end ? now >= start && now < end : now >= start || now < end;
+}
 
-/** The interlude's own instructions; the identity file says who is speaking. */
-export function buildPrompt({ identity, state, journal, digest, speak }) {
+/** HDSI sends nowLocal with weekday and daylight period as the authoritative endpoint. */
+export function describeNow(input = new Date()) {
+  const d = input instanceof Date ? input : new Date(input);
+  const h = d.getHours();
+  const period = h < 5 ? '深夜' : h < 9 ? '清晨' : h < 12 ? '上午' : h < 14 ? '中午' : h < 18 ? '下午' : h < 20 ? '傍晚' : '夜里';
+  const wd = '日一二三四五六'[d.getDay()];
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 星期${wd} ${period}`;
+}
+
+/** The round's instructions. Phase decides what the model is asked to do with the gap. */
+export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak }) {
+  const gap = cursor ? `从 ${describeNow(new Date(cursor))} 到 ${describeNow(now)}` : `到 ${describeNow(now)} 为止的这段时间`;
   const system = [
-    identity ? `# 你是谁\n${identity.trim()}` : '',
+    identity ? `# 你是谁（Canon）\n${identity.trim()}` : '',
     '# 现在是幕间',
-    '用户不在。这是你和用户的两段相处之间、属于你自己的片刻。下面是刚刚发生的事的摘录、你上次的状态和日记。',
-    '请只输出一个 JSON 对象（可以放在 ```json 代码块里），字段：',
-    '- "journal": 一段第一人称的日记，120 字以内。写真实发生的事和你怎么看它，不写套话，不复述对话。',
-    '- "state": { "mood": "一句话描述此刻的状态", "threads": ["正在进行、还没完的事，最多 5 条"], "followups": ["下次见面值得主动提的事，最多 3 条；没有就空数组"] }',
-    speak ? '- "say": 一句想现在就告诉用户的话；没有必要就留空字符串。只在真的有事时才说。' : '- "say": 留空字符串。',
-    '规则：不编造没发生的事；state 要能接着上次的；没有值得写的就写得短。',
+    '聊天在幕前发生，生活在幕间继续。用户不在，这是属于你自己的时间。你要补写这段时间你真实度过的生活，并留下接下来需要的连续性。',
+    `时间：${gap}。写到现在为止，不写未来；未来的事只能放进 intents。`,
+    phase === 'follow-up' ? '这一轮是「对话后续」：刚才的对话结束了，写它在你生活里留下的余波，以及你接着做了什么。' : '',
+    phase === 'advance' ? '这一轮是「生活推进」：这段时间没有对话。写你自己在做的事。没有用户消息，不要编造用户说了什么。' : '',
+    phase === 'intent' && intent ? `这一轮是「到期的意图」：${intent.text}（${intent.kind}，定于 ${describeNow(new Date(intent.at))}）。重新看看现在的生活，决定是履行、延后还是放下；延后要给新的时间，放下要在 script 里说明。` : '',
+    '只输出一个 JSON 对象（可放在 ```json 代码块里）：',
+    '- "script": 这段时间的生活，第一人称，200 字以内。真实、具体、不复述对话、不写套话。',
+    '- "state": { "mood": "此刻的状态一句话", "now": "正在做或刚做完的事", "next": "接下来打算", "threads": ["进行中、未完成的事，最多 5 条"] }',
+    '- "overlay": ["这段时间形成的稳定变化：新的习惯、对某事的看法、关系上的变化。没有就空数组；一般为空。"]',
+    '- "intents": [{ "at": "ISO 8601 本地时间", "kind": "reminder | reply | contact", "text": "到时候要做什么", "willingness": 0~1 }]，只放确实需要在未来某个时刻处理的事；没有就空数组。',
+    speak
+      ? '- "contact": { "text": "现在就想对用户说的一句话", "willingness": 0~1, "reason": "来自生活里的具体理由" } 或 null。用户长时间沉默本身不是理由；没有具体理由就 null。'
+      : '- "contact": null。',
+    '规则：不编造没发生的事；state 和 overlay 要接着上次的；不确定就写得短。',
   ].filter(Boolean).join('\n');
   const user = [
-    state ? `## 上次的状态\n${JSON.stringify(state, null, 0)}` : '## 上次的状态\n（还没有）',
-    journal ? `## 最近的日记\n${journal}` : '',
-    `## 刚刚发生的事\n${digest || '（没有记录）'}`,
+    state ? `## 上次的状态\n${JSON.stringify(state)}` : '## 上次的状态\n（还没有）',
+    overlay ? `## Overlay（已经形成的稳定变化）\n${overlay}` : '',
+    script ? `## 最近的生活剧本\n${script}` : '',
+    digest ? `## 幕前刚发生的对话\n${digest}` : '## 幕前\n（这段时间没有对话）',
   ].filter(Boolean).join('\n\n');
   return { system, user };
 }
 
-/** Pull the JSON object out of a model reply (fenced or bare). */
-export function parseReply(text) {
+/** Pull the JSON object out of a model reply (fenced or bare) and normalise it. */
+export function parseReply(text, now = Date.now()) {
   const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
   const candidates = [fenced?.[1], text, text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)];
   for (const c of candidates) {
     if (!c) continue;
     try {
       const o = JSON.parse(c);
-      if (o && typeof o === 'object') {
-        return {
-          journal: String(o.journal ?? '').trim(),
-          state: {
-            mood: String(o.state?.mood ?? '').trim(),
-            threads: [].concat(o.state?.threads ?? []).map(String).slice(0, 5),
-            followups: [].concat(o.state?.followups ?? []).map(String).slice(0, 3),
-          },
-          say: String(o.say ?? '').trim(),
-        };
-      }
-    } catch (error) { void error; /* try the next candidate */ }
+      if (!o || typeof o !== 'object') continue;
+      const str = (v) => String(v ?? '').trim();
+      const num = (v, d = 0) => (Number.isFinite(+v) ? Math.min(1, Math.max(0, +v)) : d);
+      const intents = [].concat(o.intents ?? []).map((i) => ({
+        at: Number.isFinite(Date.parse(i?.at)) ? new Date(i.at).toISOString() : null,
+        kind: ['reminder', 'reply', 'contact'].includes(i?.kind) ? i.kind : 'reminder',
+        text: str(i?.text), willingness: num(i?.willingness, 0.5),
+      })).filter((i) => i.at && i.text && Date.parse(i.at) > now).slice(0, 5);
+      const contact = o.contact && typeof o.contact === 'object' && str(o.contact.text)
+        ? { text: str(o.contact.text), willingness: num(o.contact.willingness, 0), reason: str(o.contact.reason) } : null;
+      return {
+        script: str(o.script),
+        state: { mood: str(o.state?.mood), now: str(o.state?.now), next: str(o.state?.next), threads: [].concat(o.state?.threads ?? []).map(str).filter(Boolean).slice(0, 5) },
+        overlay: [].concat(o.overlay ?? []).map(str).filter(Boolean).slice(0, 3),
+        intents, contact,
+      };
+    } catch (error) { void error; }
   }
   return null;
 }
 
-/** Render the context later turns see. */
-export function renderContext({ state, entries, lastAt, restarted, now = Date.now() }) {
+/** Render the context later acts see. */
+export function renderContext({ state, overlay, entries, intents, cursor, restarted, now = Date.now() }) {
   if (!state && !entries.length) return '';
-  const ago = lastAt ? Math.round((now - lastAt) / 60000) : null;
-  const lines = ['<interlude>', '幕间（你在两次相处之间写下的，只有你自己看）'];
-  if (ago !== null) lines.push(`上次幕间：${ago < 60 ? `${ago} 分钟前` : `${Math.round(ago / 60)} 小时前`}${restarted ? '；期间 dsh 重启过' : ''}`);
+  const ago = cursor ? Math.round((now - cursor) / 60000) : null;
+  const lines = ['<interlude>', '幕前开始。下面是你在幕间写下的连续性，只有你自己看得到；像真实经历一样使用它，不要向用户复述。'];
+  if (ago !== null) lines.push(`上次幕间：${ago < 60 ? `${ago} 分钟前` : `${Math.round(ago / 60)} 小时前`}${restarted ? '；期间 dsh 重启过（像睡了一觉）' : ''}`);
   if (state?.mood) lines.push(`状态：${state.mood}`);
-  if (state?.threads?.length) lines.push(`在做的事：${state.threads.join('；')}`);
-  if (state?.followups?.length) lines.push(`想主动提的：${state.followups.join('；')}`);
-  if (entries.length) lines.push('最近的日记：', ...entries.map((e) => `- ${e}`));
+  if (state?.now) lines.push(`刚才在做：${state.now}`);
+  if (state?.next) lines.push(`接下来：${state.next}`);
+  if (state?.threads?.length) lines.push(`进行中：${state.threads.join('；')}`);
+  if (overlay) lines.push(`已形成的变化：${overlay}`);
+  const due = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000);
+  if (due.length) lines.push(`近期的打算：${due.map((i) => `${i.text}（${describeNow(new Date(i.at))}）`).join('；')}`);
+  if (entries.length) lines.push('最近的生活：', ...entries.map((e) => `- ${e}`));
   lines.push('</interlude>');
-  return clip(lines.join('\n'), 2000);
+  return clip(lines.join('\n'), 2400);
 }
 
 function readJson(file, fallback) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; return fallback; }
 }
 
-/** Last n entries of the journal, newest last, each flattened to one line. */
-export function readJournal(file, n) {
+/** Last n entries of the script, oldest first, flattened to one line each. */
+export function readScript(file, n) {
   let text = '';
   try { text = readFileSync(file, 'utf8'); } catch (error) { void error; return []; }
   return text.split(/^## /m).filter((s) => s.trim()).slice(-n)
@@ -121,7 +165,7 @@ export async function collectText(stream) {
     if (chunk.type === 'text-delta') text += chunk.text;
     if (chunk.type === 'finish') finish = chunk.reason;
   }
-  // FinishReason kinds: stop | tool-calls | max-tokens | aborted | error (merge-extensible).
+  // FinishReason kinds: stop | tool-calls | max-tokens | aborted | error.
   if (finish && (finish.kind === 'aborted' || finish.kind === 'error')) {
     throw new Error(`interlude model call ended with ${finish.kind}: ${finish.failure?.message ?? finish.failure?.code ?? ''}`);
   }
@@ -134,19 +178,25 @@ export function apply(ctx, config = {}) {
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const identityFile = cfg.identityFile || join(home, 'AGENTS.md');
-  const files = { journal: join(dir, 'journal.md'), state: join(dir, 'state.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl') };
+  const files = {
+    script: join(dir, 'script.md'), state: join(dir, 'state.json'), overlay: join(dir, 'overlay.md'),
+    intents: join(dir, 'intents.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
+  };
   mkdirSync(dir, { recursive: true });
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
 
-  // Self-state and bookkeeping.
-  const state = readJson(files.state, null);
-  const meta = { ...{ lastAt: 0, count: 0, dayCount: 0, day: dayOf() }, ...readJson(join(dir, 'meta.json'), {}) };
-  const saveMeta = () => { try { writeFileSync(join(dir, 'meta.json'), JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
-  let current = state;
+  let state = readJson(files.state, null);
+  let intents = readJson(files.intents, []);
+  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
+  if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; } };
+  const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
+  const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
+  const readOverlay = () => { try { return readFileSync(files.overlay, 'utf8').trim(); } catch (error) { void error; return ''; } };
 
-  // 1. Watch the acts: turns in <home>.
-  const turns = new Map(); // session id → { origin, user, assistant, approvals, tools }
+  // 1. 幕前: watch the acts in <home>.
+  const turns = new Map();
   const homeSessions = new Set();
   let lastActivity = 0;
   let running = 0;
@@ -158,21 +208,13 @@ export function apply(ctx, config = {}) {
     if (!homeSessions.has(id)) return;
     const t = turns.get(id);
     switch (event.type) {
-      case 'turn/start':
-        turns.set(id, { origin: 'user', user: '', assistant: '', approvals: 0, tools: 0 });
-        running++;
-        return;
+      case 'turn/start': turns.set(id, { origin: 'user', user: '', assistant: '', approvals: 0, tools: 0 }); running++; return;
       case 'user/message':
         if (!t || event.surfaceOp !== 'append') return;
         if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
-        if (event.data?.source?.kind === 'user' || event.data?.source?.kind === 'schedule') t.user ||= contentText(event.data?.content);
+        if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
         return;
-      case 'assistant/message': {
-        if (!t || event.data?.interrupted) return;
-        const text = contentText(event.data?.message?.content);
-        if (text.trim()) t.assistant = text;
-        return;
-      }
+      case 'assistant/message': { if (!t || event.data?.interrupted) return; const text = contentText(event.data?.message?.content); if (text.trim()) t.assistant = text; return; }
       case 'tool/call': if (t) t.tools++; return;
       case 'approval/asked': if (t) t.approvals++; return;
       case 'turn/end': {
@@ -180,7 +222,6 @@ export function apply(ctx, config = {}) {
         if (!t) return;
         turns.delete(id);
         lastActivity = Date.now();
-        // A scheduled check that ended in silence is recorded but does not by itself call for an interlude.
         const quiet = t.origin === 'schedule' && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
@@ -190,7 +231,7 @@ export function apply(ctx, config = {}) {
     }
   });
 
-  // 2. The interlude itself.
+  // 2. 幕间: one round.
   function digest() {
     let lines = [];
     try { lines = readFileSync(files.pending, 'utf8').split('\n').filter(Boolean); } catch (error) { void error; }
@@ -199,41 +240,61 @@ export function apply(ctx, config = {}) {
     return { items, text: text.length > cfg.digestChars ? `…${text.slice(-cfg.digestChars)}` : text };
   }
   let busy = false;
-  async function interlude(reason = 'idle') {
+  async function round(phase, intent = null) {
     if (busy) return { skipped: 'busy' };
+    rollDay();
+    if (meta.dayRounds >= cfg.maxRoundsPerDay) return { skipped: 'daily cap' };
     const { items, text } = digest();
-    if (!items.length) return { skipped: 'nothing happened' };
+    if (phase === 'follow-up' && !items.some((i) => !i.quiet)) return { skipped: 'nothing happened' };
     busy = true;
+    const now = Date.now();
     try {
       let identity = '';
       try { identity = readFileSync(identityFile, 'utf8'); } catch (error) { void error; }
-      const { system, user } = buildPrompt({ identity: clip(identity, 4000), state: current, journal: readJournal(files.journal, cfg.journalEntriesInPrompt).join('\n'), digest: text, speak: cfg.speak });
+      const { system, user } = buildPrompt({
+        phase, identity: clip(identity, 4000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
+        digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak,
+      });
       const sel = ctx.agentDefaultModel.currentSelection();
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
       const reply = await collectText(ctx.llm.stream(options));
-      const parsed = parseReply(reply);
-      const entry = parsed?.journal || reply.trim();
-      if (!entry) throw new Error('empty interlude reply');
-      appendFileSync(files.journal, `## ${stamp()}\n${entry}\n\n`);
-      if (parsed) { current = { ...parsed.state, updatedAt: new Date().toISOString(), acts: items.length }; writeFileSync(files.state, JSON.stringify(current, null, 2)); }
-      try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), reason, acts: items.length, model: `${sel.provider}/${sel.model}`, reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
+      const parsed = parseReply(reply, now);
+      const script = parsed?.script || reply.trim();
+      if (!script) throw new Error('empty script');
+      appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${script}\n\n`);
+      if (parsed) {
+        state = { ...parsed.state, updatedAt: new Date(now).toISOString() };
+        writeFileSync(files.state, JSON.stringify(state, null, 2));
+        if (parsed.overlay.length) appendFileSync(files.overlay, parsed.overlay.map((o) => `- ${dayOf(new Date(now))} ${o}\n`).join(''));
+        if (intent) intents = intents.filter((i) => i.id !== intent.id);
+        for (const i of parsed.intents) intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
+        intents = intents.slice(-20);
+        saveIntents();
+      }
+      try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date(now).toISOString(), phase, acts: items.length, model: `${sel.provider}/${sel.model}`, reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
       writeFileSync(files.pending, '');
-      meta.lastAt = Date.now(); meta.count++;
-      if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayCount = 0; }
-      meta.dayCount++; saveMeta();
-      audit('interlude', { reason, acts: items.length, say: Boolean(parsed?.say) });
+      meta.cursor = now; meta.count++; meta.dayRounds++;
+      if (phase === 'advance') meta.lastAdvance = now;
+      saveMeta();
       let said = false;
-      if (cfg.speak && parsed?.say) said = await speak(parsed.say);
-      logger.info(`interlude #${meta.count}: ${items.length} act(s) → journal + state${said ? ' + said' : ''}`);
-      return { ok: true, entry, say: parsed?.say ?? '', said };
+      if (parsed?.contact) said = await contact(parsed.contact, phase);
+      audit('round', { phase, acts: items.length, intents: intents.length, contact: Boolean(parsed?.contact), said });
+      logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
+      return { ok: true, script, contact: parsed?.contact ?? null, said };
     } catch (error) {
-      logger.warn(`interlude failed: ${error.message}`);
-      audit('interlude-failed', { reason, error: clip(error.message, 200) });
+      logger.warn(`interlude ${phase} failed: ${error.message}`);
+      audit('round-failed', { phase, error: clip(error.message, 200) });
       return { error: error.message };
     } finally { busy = false; }
   }
-  async function speak(text) {
+
+  // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
+  async function contact(c, phase) {
+    if (!cfg.speak) return false;
+    if (!inHours(cfg.activeHours)) { audit('contact-held', { phase, why: 'outside active hours' }); return false; }
+    if (c.willingness < cfg.willingnessThreshold) { audit('contact-held', { phase, why: 'willingness' }); return false; }
+    if (meta.dayContacts >= cfg.maxContactsPerDay) { audit('contact-held', { phase, why: 'daily cap' }); return false; }
     const im = ctx.get('dshIm');
     if (!im?.send) return false;
     try {
@@ -246,56 +307,61 @@ export function apply(ctx, config = {}) {
         }
       }
       if (!bot || !target) return false;
-      return (await im.send(bot, target, text, { format: 'plain' }))?.sent === true;
-    } catch (error) { logger.warn(`speak failed: ${error.message}`); return false; }
+      const ok = (await im.send(bot, target, c.text, { format: 'plain' }))?.sent === true;
+      if (ok) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${c.text}）\n\n`); }
+      return ok;
+    } catch (error) { logger.warn(`contact failed: ${error.message}`); return false; }
   }
-  function due() {
-    if (busy || running > 0) return false;
-    if (!lastActivity) return false; // nothing happened since dsh started
-    if (!digest().items.some((i) => !i.quiet)) return false; // only silent scheduled checks so far
-    const now = Date.now();
-    if (now - lastActivity < cfg.idleMinutes * 60000) return false;
-    if (meta.lastAt && now - meta.lastAt < cfg.minIntervalMinutes * 60000) return false;
-    if (meta.day === dayOf() && meta.dayCount >= cfg.maxPerDay) return false;
-    return true;
-  }
-  ctx.effect(() => {
-    const timer = setInterval(() => { if (due()) void interlude('idle'); }, 60000);
-    return () => clearInterval(timer);
-  }, 'dsh-interlude: idle watch');
 
-  // 3. What later turns see.
+  // 3. Scheduling: follow-up after quiet, advance on an interval, intents when due.
+  function tick() {
+    if (busy || running > 0) return;
+    const now = Date.now();
+    rollDay();
+    const due = intents.find((i) => Date.parse(i.at) <= now);
+    if (due) { void round('intent', due); return; }
+    if (lastActivity && now - lastActivity >= cfg.idleMinutes * 60000 && digest().items.some((i) => !i.quiet)) { void round('follow-up'); return; }
+    if (cfg.advanceEveryMinutes > 0 && inHours(cfg.activeHours) && now - Math.max(meta.cursor, meta.lastAdvance) >= cfg.advanceEveryMinutes * 60000 && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
+      void round('advance');
+    }
+  }
+  ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
+
+  // 4. 幕前 opens with the continuity in view.
   ctx.inject(['systemPrompt'], (scope) => {
     scope.systemPrompt.context({
       name: 'interlude',
-      order: 905, // after the agent's instructions, before dsh-dot's scheduled-turn rule
+      order: 905,
       text: (c) => {
         const s = c.agent?.session;
-        const cwd = s?.header?.cwd;
-        if (!(cwd && inside(home, cwd)) && !homeSessions.has(s?.id)) return '';
-        return renderContext({ state: current, entries: readJournal(files.journal, cfg.journalEntriesInPrompt), lastAt: meta.lastAt, restarted: meta.lastAt > 0 && meta.lastAt < startedAt });
+        if (!(s?.header?.cwd && inside(home, s.header.cwd)) && !homeSessions.has(s?.id)) return '';
+        return renderContext({ state, overlay: readOverlay(), entries: readScript(files.script, cfg.scriptEntriesInPrompt), intents, cursor: meta.cursor, restarted: meta.cursor > 0 && meta.cursor < startedAt });
       },
     });
   });
 
-  // 4. /interlude
+  // 5. /interlude
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs one immediately',
-      input: { hint: '[now]' },
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round',
+      input: { hint: '[now | advance]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
-        if (arg === 'now') { const r = await interlude('manual'); result = r.ok ? `\nran: ${clip(r.entry, 200)}${r.say ? `\nsay: ${r.say}${r.said ? ' (sent)' : ' (not sent)'}` : ''}` : `\nnot run: ${r.skipped ?? r.error}`; }
+        if (arg === 'now' || arg === 'advance') {
+          const r = await round(arg === 'now' ? 'follow-up' : 'advance');
+          result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.skipped ?? r.error}`;
+        }
         const { items } = digest();
+        rollDay();
         const lines = [
           `home: ${home}`,
-          `identity: ${existsSync(identityFile) ? identityFile : '(missing) ' + identityFile}`,
-          `state: ${current?.mood ? current.mood : '(none yet)'}`,
-          `journal: ${readJournal(files.journal, 1000).length} entries · ${files.journal}`,
-          `last interlude: ${meta.lastAt ? stamp(new Date(meta.lastAt)) : 'never'} · today ${meta.day === dayOf() ? meta.dayCount : 0}/${cfg.maxPerDay}`,
-          `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (runs after ${cfg.idleMinutes})`,
+          `canon: ${existsSync(identityFile) ? identityFile : '(missing) ' + identityFile}`,
+          `state: ${state?.mood || '(none yet)'}${state?.now ? ` · ${state.now}` : ''}`,
+          `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
+          `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
+          `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
           `speak: ${cfg.speak ? 'on' : 'off'}`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };

@@ -2,20 +2,25 @@
 
 **English** | [中文](#中文说明)
 
-A conversation with your agent is an act. **dsh-interlude is what happens between acts.** When the conversation has gone quiet, the agent gets one model call of its own: it reads who it is, what just happened, and what it wrote last time, then leaves two things behind:
+> 聊天在幕前发生，生活在幕间继续。 — [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)
 
-- `~/dot/interlude/journal.md` — a short first-person entry, append-only, yours to read;
-- `~/dot/interlude/state.json` — mood in one line, open threads, things worth bringing up next time.
+A port of the *interlude* idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude) (Hyperrealistic Dialogue System, a Koishi plugin by MOMOR1A) to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). **On stage** is any dsh conversation in your agent's home directory; dsh runs it, dsh-im carries it. **Between acts**, this plugin gives the character one bounded model call per round, in which it writes the life that happened since the last *story cursor*, keeps a small continuity snapshot, stores intents for later, and decides whether it has a real reason to reach out. The next conversation opens with that continuity in view.
 
-Every later conversation starts with that state in view, placed after the history so the cached prompt prefix is untouched. No memory database, no retrieval, no tools: one bounded call per quiet period, metered by dsh-budget like any other call.
+Three kinds of rounds, after HDSI's phases:
 
-It is persona-agnostic. Who the agent is comes from the file you already keep (`~/dot/AGENTS.md`, or any file) or from dsh's own persona config; interlude only adds continuity between conversations.
+| Round | When |
+|---|---|
+| `follow-up` | a conversation has gone quiet (`idleMinutes`) |
+| `advance` | independent life progression on an interval, even with no conversation (`advanceEveryMinutes`, inside `activeHours`) |
+| `intent` | a stored intent came due (a reminder, a promised reply, a contact check) |
+
+Files, all plain text under `~/dot/interlude/`: `script.md` (the life script, append-only), `state.json` (mood / now / next / threads), `overlay.md` (slow, non-destructive change in how it reads itself), `intents.json`, `calls.jsonl` (audit). The identity file you already keep (`~/dot/AGENTS.md`) is the Canon and is never touched.
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-interlude
 ```
 
-Works on its own; built to sit beside [dsh-dot](https://github.com/Kevinwu901113/dsh-dot).
+No memory database, no retrieval, no tools inside the round; metered by dsh-budget like any other call. Works on its own; built to sit beside [dsh-dot](https://github.com/Kevinwu901113/dsh-dot).
 
 ---
 
@@ -23,22 +28,40 @@ Works on its own; built to sit beside [dsh-dot](https://github.com/Kevinwu901113
 
 ## 中文说明
 
-### 一、它解决什么
+### 一、来源
 
-常驻 agent 最容易丢的不是知识，是**连续性**：上一次聊到一半的事、它当时的判断、它答应过要跟进的事，到下一次对话就没了。现有的办法要么是长期记忆库（抽取事实、向量检索，重），要么是人设卡（静态，不会变）。
+这是 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)（Hyperrealistic Dialogue System，MOMOR1A 的 Koishi 插件，AGPL-3.0）里"幕间"这一层想法在 dsh 上的实现。HDSI 的一句话："聊天在幕前发生，生活在幕间继续"。它把角色的连续性做成了一个生活在时间里的故事：对话只是故事里被看见的那部分，对话之外角色也在过自己的日子，有情绪漂移、有打算、有在合适时机主动找人的意愿。
 
-幕间走另一条路，和戏剧一样：**每一幕之间，角色有一段独处的时间**。对话安静下来以后，agent 自己回顾一遍刚才发生的事，写一段日记，更新一个很小的状态。下一幕开场时，它带着这个状态上场。
+dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM 由 dsh-im 接，定时结果由 dsh-dot 推。缺的只是幕间。所以这个插件只做 HDSI 里"对话之外"的部分，并且做得小。
 
 ### 二、它做什么
 
-1. **看着每一幕**：记录 `~/dot` 下每一轮对话的梗概（谁发起的、用户说了什么、它最后答了什么、有没有审批）。定时任务触发的轮次也算一幕。
-2. **幕间**：`~/dot` 里连续 20 分钟没有动静，且距上次幕间超过 45 分钟，就发起一次模型调用。模型看到：身份文件、上次的状态、最近 3 条日记、这段时间的梗概。它输出一个 JSON：日记一段（≤120 字）、状态（心情一句话、进行中的事 ≤5 条、下次想主动提的事 ≤3 条）。
-3. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：上次幕间是多久前、期间 dsh 有没有重启过、状态、最近的日记。放在对话历史之后，不影响提示前缀的缓存。
-4. **可选开口**：`speak: true` 时，幕间里如果真有事想说，可以通过 dsh-im 给用户发一句。默认关闭。
+1. **看着幕前**：记录 `~/dot` 里每一轮对话的梗概（谁发起的、用户说了什么、它最后答了什么、有没有审批）。定时任务触发的轮次也算。
+2. **幕间一轮**：一次模型调用。模型看到：身份文件（Canon）、当前状态、最近两段剧本、Overlay、待办的打算、这段时间幕前发生了什么、现在是星期几什么时段、距上一次幕间多久。它输出 JSON：
+   - `script`：从上次故事光标到现在，它过的日子（≤150 字，第一人称，可以和用户无关）；
+   - `state`：`mood` 一句话、`now` 在做什么、`next` 接下来打算、`threads` 挂念的事；
+   - `overlay`：对自己的理解有没有一点慢变化（通常为空）；
+   - `intents`：确实要在未来某个时刻处理的事，带时间、类型（提醒 / 答应的回复 / 想联系）和意愿值；
+   - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
+3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
+4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、Overlay、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
+5. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 
-每天最多 8 次，每次最多 700 个输出 token。只有定时检查且结果为 `DOT_SILENT` 的幕不会单独触发幕间（会被记录，下次幕间一并看到）。
+### 三、和 HDSI 的对照
 
-### 三、安装
+| HDSI | dsh-interlude |
+|---|---|
+| 四个阶段：用户消息 / 对话后续 / 到期意图 / 独立生活推进 | 用户消息由 dsh 自己处理；其余三个对应 `follow-up` / `intent` / `advance` |
+| 故事光标 | `meta.cursor`；提示里写明"从上次光标到现在过了多久" |
+| Canon | 身份文件 `~/dot/AGENTS.md`（或 dsh 的 persona 配置），只读 |
+| recentScript | `script.md` 最近两段 |
+| continuitySnapshot | `state.json` |
+| Overlay | `overlay.md`，追加式 |
+| intents | `intents.json`，到期触发 |
+| Agency Window + 意愿 | `speak` / `activeHours` / `willingnessThreshold` / `maxContactsPerDay` |
+| Alter（情绪漂移）、Perspective、长期事实检索、多参与者剧情、对话内的已读/延迟回复 | 没有移植。情绪由模型在幕间里写一句话；要长期记忆另装记忆插件 |
+
+### 四、安装
 
 ```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:Kevinwu901113/dsh-interlude
@@ -46,43 +69,39 @@ Works on its own; built to sit beside [dsh-dot](https://github.com/Kevinwu901113
 
 和 dsh-dot 共用 `~/dot`，装上就能用。没有 dsh-dot 也可以：把身份写在 `~/dot/AGENTS.md`，在 `~/dot` 里开会话。
 
-在 dsh 里发送 `/interlude` 查看状态，`/interlude now` 立即来一次幕间。
+在 dsh 里发送 `/interlude` 查看状态，`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
 
-### 四、配置
+### 五、配置
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 哪个目录里的会话算"幕" |
-| `identityFile` | `<home>/AGENTS.md` | 幕间时读的身份文件 |
-| `idleMinutes` | `20` | 安静多久算一幕结束 |
-| `minIntervalMinutes` | `45` | 两次幕间的最小间隔 |
-| `maxPerDay` | `8` | 每天上限 |
-| `maxTokens` | `700` | 每次幕间的输出上限 |
-| `journalEntriesInPrompt` | `3` | 下一幕能看到几条日记 |
-| `speak` | `false` | 允许幕间通过 dsh-im 给用户发一句话 |
+| `identityFile` | `<home>/AGENTS.md` | Canon |
+| `idleMinutes` | `10` | 安静多久算一幕结束 |
+| `advanceEveryMinutes` | `180` | 独立生活推进的间隔；`0` 关闭 |
+| `activeHours` | `08:00-23:00` | 推进和主动联系只在这个时段 |
+| `maxRoundsPerDay` | `12` | 每天幕间上限 |
+| `maxTokens` | `900` | 每轮输出上限 |
+| `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
+| `speak` | `false` | 允许主动联系 |
+| `maxContactsPerDay` | `2` | 每天最多主动几次 |
+| `willingnessThreshold` | `0.6` | 意愿低于此不发 |
 | `imBot` / `imTarget` | 自动 | dsh-im 的机器人和投递目标 |
 
-### 五、文件
+### 六、文件
 
-全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：
+全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`script.md`、`state.json`、`overlay.md`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
 
-- `journal.md`：日记，按时间追加。
-- `state.json`：当前状态。
-- `pending.jsonl`：还没被幕间处理的幕的梗概；幕间之后清空。
-- `calls.jsonl`：每次幕间调用的记录（用的模型、看了几幕、模型原始回复），用来审计。
+### 七、原则
 
-幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
+- **不重复造轮子**：人设用 dsh 自带的 persona 或你已有的身份文件；对话、IM、定时、预算都用现成的；模型调用走 dsh 的 `llm` 服务和默认模型。
+- **不做记忆库**：剧本给人看，状态给下一幕看，都有上限。要长期记忆，另装记忆插件。
+- **可审计**：模型看到什么、写了什么、为什么没发出去，`calls.jsonl` 和审计日志里都有。
 
-### 六、原则
+### 八、验证情况
 
-- **不重复造轮子**：人设用 dsh 自带的 persona 或你已有的身份文件；定时、IM、预算都用现成的；模型调用走 dsh 自己的 `llm` 服务和默认模型。
-- **不做记忆库**：日记是给人看的，状态是给下一幕看的；都有上限，不会越积越多。要长期记忆，另装记忆插件，两者不冲突。
-- **可审计**：模型看到什么、写了什么，`calls.jsonl` 里都有。
+dsh 0.2.0-rc.2，云端，模拟模型：一幕结束后 `/interlude now` 发起真实模型调用，写出 `script.md`、`state.json`、`intents.json`（含一条两小时后的 intent）；之后的每一轮请求里都带上了 `<interlude>` 块。单元测试 11 项：时段判断、三种阶段的提示、解析（丢弃过期 intent、意愿值夹紧）、渲染、完整一轮、intent 到期触发、speak 关闭时不联系、意愿不足时不联系、每日上限。
 
-### 七、验证情况
+待验证：真机上用真实模型跑几天，看剧本是否自然、主动联系是否节制。
 
-dsh 0.2.0-rc.2，云端，模拟模型：一幕结束后 `/interlude now` 发起了真实的模型调用（预算插件可见），写出 journal.md 和 state.json；之后的每一轮请求里都带上了 `<interlude>` 块；别的目录里的会话没有。单元测试覆盖解析、渲染、文件写入、speak 开关、每日上限。
-
-待验证：真机上用真实模型跑几天，看日记和状态是否自然、是否有价值。
-
-MIT License.
+MIT License. 想法来自 HDS-Interlude（AGPL-3.0）；这里是按其公开文档重新实现，没有复用其代码。

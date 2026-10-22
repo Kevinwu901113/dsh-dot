@@ -1,5 +1,21 @@
 # dsh-interlude 设计记录
 
+## v0.2（2026-10-22）：按 HDS-Interlude 重做
+
+Kevin 指明"幕间系统"指的是 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)（HDSI）。v0.1 是在他不在时按字面理解写的"日记 + 状态"，v0.2 按 HDSI 的框架重做，机制的对照见 README「和 HDSI 的对照」一节。决定：
+
+- **只做对话之外的部分**。HDSI 是完整的对话系统（含幕前的已读、延迟、分段回复）；dsh 已有对话、IM、定时、预算，所以只移植幕间：三种轮次、故事光标、Canon / 剧本 / 快照 / Overlay / intents 五层、简化的 Agency。
+- **不移植 Alter（情绪漂移）**：HDSI 用数值模型让情绪在幕间漂移。这里情绪是模型在幕间写的一句话，和 v0.1 一样。原因是不想维护一套调参，而且 dsh 的 agent 不是陪聊角色，情绪只需要"有连续性"，不需要"有动力学"。
+- **不移植长期事实和检索**：生态里记忆插件很多，可并存。
+- **主动联系默认关**，四道闸（时段、意愿阈值、每日上限、有投递目标），都写审计日志。这是 HDSI 的 Agency Window + 意愿的最小版本。
+- **重新实现，不复用代码**：HDSI 是 AGPL-3.0 的 Koishi 插件，这里是 MIT 的 dsh 插件，按公开文档重写，README 里注明来源。
+
+验证：单元测试 11 项；云端 dsh 0.2.0-rc.2 上 `/interlude now` 写出剧本、状态、intents，后续请求带 `<interlude>`。排错时遇到一个和插件无关的现象：dsh-computer 因为 Docker 没起来处于 error 状态时，`~/dot` 里的轮次在 `step/end` 之后不再发 `turn/end`，幕间因此收不到幕；Docker 起来后恢复正常。
+
+以下为 v0.1 的记录。
+
+---
+
 ## 来源
 
 Kevin 的要求：人格部分做一个插件，用之前讨论过的"幕间系统"。这份记录是在他不在时写的，"幕间"按字面和 Lykoi 项目里的几条既定原则来理解：
