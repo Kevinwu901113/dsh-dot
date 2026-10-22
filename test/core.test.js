@@ -23,8 +23,10 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
     effect(fn) { effects.push(fn()); },
+    prompts: [],
+    systemPrompt: { context(c) { ctx.prompts.push(c); } },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
-    get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm }[name]),
+    get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm, systemPrompt: ctx.systemPrompt }[name]),
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
   };
   const emit = (cwd, type, data) => listeners.forEach((fn) => fn({ id: 's1', header: { cwd } }, { type, data }));
@@ -110,5 +112,22 @@ test('no saved target: nothing sent, /dot explains', async () => {
   apply(h.ctx, h.config);
   const out = await cmd.handler({ rawInput: '' });
   assert.match(out.text, /IM: not ready \(no saved delivery target/);
+  stop(h);
+});
+
+test('scheduled turns get the silence rule in the prompt; others do not', () => {
+  const h = harness();
+  apply(h.ctx, h.config);
+  const rule = h.ctx.prompts.find((c) => c.name === 'dot:scheduled-turn');
+  const at = (sid) => rule.text({ agent: { session: { id: sid } } });
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  assert.equal(at('s1'), '', 'a user turn gets no rule');
+  h.emit(h.home, 'turn/end', { turn: 1 });
+  // dsh order: the reminder is spliced into the inbox, then the turn starts and the prompt is assembled.
+  h.emit(h.home, 'agent/inbox/spliced', { target: 'next-turn', inserted: [{ source: { kind: 'schedule' } }] });
+  h.emit(h.home, 'turn/start', { turn: 2 });
+  assert.match(at('s1'), /DOT_SILENT/);
+  assert.equal(at('other'), '');
+  assert.equal(rule.text({}), '');
   stop(h);
 });

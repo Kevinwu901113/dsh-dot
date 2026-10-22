@@ -23,6 +23,10 @@ export const inject = ['dshComputer'];
 
 export const SILENT = 'DOT_SILENT';
 
+/** Model-facing rule for a turn started by a scheduled task. */
+export const SCHEDULED_RULE = '这一轮由定时任务触发，用户不在对话里。做完检查后：如果和上次相比没有值得告诉用户的新内容，'
+  + `最终回复只写 ${SILENT}（这条不会发给用户）；有新内容才简要汇报并附链接。`;
+
 export const defaults = {
   home: '',             // default ~/dot
   imBot: '',            // dsh-im Bot ID; default: the first bot that has a saved delivery target
@@ -111,12 +115,22 @@ export function apply(ctx, config = {}) {
   }
 
   // 1 + 2. Scheduled turns in <home>: silence or deliver; announce approvals.
-  const turns = new Map(); // session id → { scheduled, text }
+  const turns = new Map(); // session id → { turn, scheduled, text }
+  const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
     if (!id || !cwd || !inside(home, cwd) || !event) return;
-    if (event.type === 'turn/start') { turns.set(id, { turn: event.data?.turn, scheduled: false, text: '' }); return; }
+    // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
+    // start, before the user/message event: note it here so the turn knows from its first step.
+    if (event.type === 'agent/inbox/spliced') {
+      if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule')) incoming.add(id);
+      return;
+    }
+    if (event.type === 'turn/start') {
+      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '' });
+      return;
+    }
     const t = turns.get(id);
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
@@ -139,6 +153,16 @@ export function apply(ctx, config = {}) {
       if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
     }
+  });
+
+  // The silence rule must be in front of the model on the turn a schedule wakes, not only in
+  // AGENTS.md, which the model reads as background. Only those turns get it.
+  ctx.inject(['systemPrompt'], (scope) => {
+    scope.systemPrompt.context({
+      name: 'dot:scheduled-turn',
+      order: 900,
+      text: (c) => (turns.get(c.agent?.session?.id)?.scheduled ? SCHEDULED_RULE : ''),
+    });
   });
 
   // 3. Budget.
