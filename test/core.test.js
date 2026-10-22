@@ -292,3 +292,11 @@ test('/interlude seed opens an empty script with dated entries and refuses once 
   assert.match(h.ctxText(), /奶茶店/);
   h.stop();
 });
+
+test('parseReply recovers the script from a reply cut off mid-JSON', () => {
+  const cut = '```json\n{\n  "script": "她把碗推到床尾，试了最后一次。",\n  "state": {\n    "mood": "困"';
+  const r = parseReply(cut);
+  assert.equal(r.script, '她把碗推到床尾，试了最后一次。');
+  assert.equal(r.state, null);
+  assert.equal(r.truncated, true);
+});

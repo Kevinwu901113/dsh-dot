@@ -38,7 +38,7 @@ export const defaults = {
   advanceEveryMinutes: 180,   // independent life progression; 0 disables
   activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
   maxRoundsPerDay: 12,
-  maxTokens: 900,
+  maxTokens: 1400,
   digestChars: 6000,
   scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
   speak: false,               // allow proactive contact over dsh-im
@@ -135,6 +135,11 @@ export function parseReply(text, now = Date.now()) {
         intents, contact,
       };
     } catch (error) { void error; }
+  }
+  // A reply cut off by the token limit is not JSON any more; keep at least the script.
+  const m = /"script"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
+  if (m) {
+    try { return { script: JSON.parse(`"${m[1]}"`), state: null, overlay: [], intents: [], contact: null, truncated: true }; } catch (error) { void error; }
   }
   return null;
 }
@@ -330,7 +335,8 @@ export function apply(ctx, config = {}) {
       } else {
         appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${script}\n\n`);
       }
-      if (parsed) {
+      if (parsed?.truncated) logger.warn('interlude reply was cut off; kept the script only (raise maxTokens?)');
+      if (parsed && parsed.state) {
         state = { ...parsed.state, updatedAt: new Date(now).toISOString() };
         writeFileSync(files.state, JSON.stringify(state, null, 2));
         if (parsed.overlay.length) appendFileSync(files.overlay, parsed.overlay.map((o) => `- ${dayOf(new Date(now))} ${o}\n`).join(''));
