@@ -89,6 +89,10 @@ export function createMicrosandboxBackend(config, logger) {
     if (await waitHealthy(3_000)) return;
     const running = await msb(['exec', '-u', 'root', '--no-tty', '--no-stdin', name, '--', 'sh', '-c', 'pgrep -x supervisord >/dev/null && echo yes || echo no']).catch(() => 'no');
     if (running !== 'yes') {
+      // /tmp survives a VM restart; an X lock left by the previous boot makes Xvfb refuse to
+      // start, which takes VNC and the browser down with it. Nothing runs yet, so they are stale.
+      await msb(['exec', '-u', 'root', '--no-tty', '--no-stdin', name, '--', 'sh', '-c',
+        'rm -f /tmp/.X*-lock /tmp/.X11-unix/X* 2>/dev/null; true']).catch((err) => logger.warn(`clearing stale X locks failed: ${err.message}`));
       logger.info('starting VM services (/opt/gem/run.sh)');
       await msb(['exec', '-d', '-u', 'root', ...envFlags(serviceEnv), name, '--', '/opt/gem/run.sh']);
     }
