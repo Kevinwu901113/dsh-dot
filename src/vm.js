@@ -141,11 +141,17 @@ export async function ensureServices(config, computer, logger) {
     await computer.backend.rootShell('for f in $(grep -rln "listen \\[::\\]" /opt/gem /etc/nginx 2>/dev/null); do sed -i "/listen \\[::\\]/d" $f; done; supervisorctl -c /opt/gem/supervisord.conf restart nginx').catch(() => {});
     if (!(await waitHealthy(60_000))) throw new Error(`dsh-computer: VM services did not become healthy on ${base}`);
   }
-  // A profile persisted from an earlier machine keeps a SingletonLock naming the old host;
-  // Chrome then refuses to start. Clear stale locks and restart the browser once.
+  // Two stale locks keep the browser down after a restart, because /tmp and the profile persist:
+  // an X lock left by the previous boot stops the X server (tigervnc) and with it the desktop, and a
+  // profile SingletonLock naming an earlier host stops Chrome. Clear both and start them once.
   if (!(await waitFor(`${base}/cdp/json/version`, 20_000))) {
-    logger.info('browser not up; clearing stale profile lock and restarting it');
-    await computer.backend.rootShell(`rm -f ${PROFILE_DIR}/Singleton*; supervisorctl -c /opt/gem/supervisord.conf restart agent-browser || supervisorctl -c /opt/gem/supervisord.conf start agent-browser`).catch(() => {});
+    logger.info('browser not up; clearing stale X and profile locks and restarting the desktop');
+    const sv = 'supervisorctl -c /opt/gem/supervisord.conf';
+    await computer.backend.rootShell([
+      `if ! pgrep -x Xvnc >/dev/null && ! pgrep -x Xtigervnc >/dev/null; then rm -f /tmp/.X*-lock /tmp/.X11-unix/X*; ${sv} start tigervnc openbox autocutsel-clipboard autocutsel-primary; fi`,
+      `rm -f ${PROFILE_DIR}/Singleton*`,
+      `${sv} restart agent-browser || ${sv} start agent-browser`,
+    ].join('; ')).catch(() => {});
     if (!(await waitFor(`${base}/cdp/json/version`, 30_000))) logger.warn('browser still not reachable; shell tools work, browser tools may fail');
   }
 }
