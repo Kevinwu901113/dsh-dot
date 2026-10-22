@@ -1,0 +1,10 @@
+# dsh-interlude: 幕间. One reflective model call when a conversation has gone quiet; the result
+# (a journal entry and a small self-state) is carried into the next conversation's prompt.
+
+- insert:
+    - id: dsh-interlude
+      name: 'dsh-interlude/core'
+      config:
+        # Sessions started in this directory are the agent's "acts"; the interlude files live in
+        # <home>/interlude/. Shares dsh-dot's home by default so dot and interlude describe one agent.
+        home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"

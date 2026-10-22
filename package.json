@@ -1,0 +1,18 @@
+{
+  "name": "dsh-interlude",
+  "version": "0.1.0",
+  "description": "幕间 for DeepSeek Harness: between conversations, the agent reflects once, keeps a short journal and a small self-state, and carries them into the next conversation. Persona continuity without a memory database.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": ["dsh", "dsh-plugin", "deepseek-harness", "persona", "interlude", "journal", "continuity"],
+  "repository": { "type": "git", "url": "git+https://github.com/Kevinwu901113/dsh-interlude.git" },
+  "homepage": "https://github.com/Kevinwu901113/dsh-interlude#readme",
+  "exports": {
+    "./core": "./src/core.js",
+    "./package.json": "./package.json"
+  },
+  "files": ["src", "templates", "cordis.patch.yml", "README.md", "LICENSE", "docs"],
+  "dsh": { "bundle": { "patch": "./cordis.patch.yml" } },
+  "scripts": { "test": "node --test test/*.test.js" },
+  "engines": { "node": ">=22" }
+}
