@@ -143,3 +143,14 @@ test('buildPrompt without identity still frames the interlude', () => {
   assert.ok(!system.includes('# 你是谁'));
   assert.match(user, /还没有/);
 });
+
+test('silent scheduled checks alone do not make an interlude due (but are still recorded)', async () => {
+  const h = harness({ reply: GOOD });
+  apply(h.ctx, { ...h.config, idleMinutes: 0 });
+  h.act('s1', '[SCHEDULE REMINDER] check', 'DOT_SILENT', 'schedule');
+  // The idle watch would not fire; a manual run still works and sees the quiet act.
+  const r = await h.cmd().handler({ rawInput: 'now' });
+  assert.match(r.text, /ran:/);
+  assert.match(h.calls[0].messages[0].content[0].text, /DOT_SILENT/);
+  h.stop();
+});

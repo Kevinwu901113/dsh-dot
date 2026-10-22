@@ -180,7 +180,9 @@ export function apply(ctx, config = {}) {
         if (!t) return;
         turns.delete(id);
         lastActivity = Date.now();
-        const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals });
+        // A scheduled check that ended in silence is recorded but does not by itself call for an interlude.
+        const quiet = t.origin === 'schedule' && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
+        const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
         return;
       }
@@ -250,6 +252,7 @@ export function apply(ctx, config = {}) {
   function due() {
     if (busy || running > 0) return false;
     if (!lastActivity) return false; // nothing happened since dsh started
+    if (!digest().items.some((i) => !i.quiet)) return false; // only silent scheduled checks so far
     const now = Date.now();
     if (now - lastActivity < cfg.idleMinutes * 60000) return false;
     if (meta.lastAt && now - meta.lastAt < cfg.minIntervalMinutes * 60000) return false;
