@@ -68,7 +68,9 @@ export function createNotifier(getIm, cfg, logger) {
     if (!im?.send) return { error: 'dsh-im is not installed' };
     if (cfg.imBot && cfg.imTarget) return { im, bot: cfg.imBot, target: cfg.imTarget };
     try {
-      for (const bot of cfg.imBot ? [cfg.imBot] : await im.listBots()) {
+      // listBots() returns [{ botId, channel }].
+      const bots = cfg.imBot ? [cfg.imBot] : (await im.listBots()).map((b) => (typeof b === 'string' ? b : b?.botId)).filter(Boolean);
+      for (const bot of bots) {
         const targets = await im.listTargets(bot);
         const t = cfg.imTarget ? targets.find((x) => x.targetId === cfg.imTarget) : targets[0];
         if (t) return { im, bot, target: t.targetId, name: t.name };

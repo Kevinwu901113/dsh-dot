@@ -15,7 +15,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   const effects = [], audit = [], sent = [], listeners = [];
   const budgetSvc = { blockedScopes: [...blocked], status() { return { blockedScopes: this.blockedScopes }; }, unblock(s) { this.blockedScopes = this.blockedScopes.filter((x) => x !== s); } };
   const dshIm = {
-    listBots: async () => ['bot_1'],
+    listBots: async () => [{ botId: 'bot_1', channel: 'qq' }],
     listTargets: async () => targets,
     send: async (bot, target, text) => { sent.push({ bot, target, text }); return { sent: true }; },
   };
