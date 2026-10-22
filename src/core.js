@@ -88,8 +88,11 @@ export function createNotifier(getIm, cfg, logger) {
     const t = await target();
     if (t.error) { logger.warn(`not delivered (${t.error}): ${text.slice(0, 80)}`); return false; }
     try {
-      const res = await t.im.send(t.bot, t.target, text, { format });
-      return res?.sent === true;
+      // "<sep/>" (HDSI's convention for several sends in one moment) becomes separate messages.
+      const parts = text.split(/<sep\s*\/>/i).map((p) => p.trim()).filter(Boolean);
+      let ok = false;
+      for (const part of parts.length ? parts : [text]) ok = (await t.im.send(t.bot, t.target, part, { format }))?.sent === true || ok;
+      return ok;
     } catch (err) {
       logger.warn(`dsh-im send failed: ${err.message}`);
       return false;

@@ -66,8 +66,9 @@ test('scheduled turn in home: result goes to IM; DOT_SILENT stays silent; other 
   run(h.home, 'schedule', 'DOT_SILENT');
   run(h.home, 'user', '普通对话回复');
   run('/elsewhere', 'schedule', '别的目录');
+  run(h.home, 'schedule', 'X 有新提交<sep/>看了一眼 是修锁的那个');
   await wait(20);
-  assert.deepEqual(h.sent.map((s) => s.text), ['X 更新了 v2.0：https://x.example']);
+  assert.deepEqual(h.sent.map((s) => s.text), ['X 更新了 v2.0：https://x.example', 'X 有新提交', '看了一眼 是修锁的那个'], '<sep/> splits into separate messages');
   assert.deepEqual(h.sent[0], { bot: 'bot_1', target: 'me', text: 'X 更新了 v2.0：https://x.example' });
   assert.ok(h.audit.some((e) => e.event === 'silent'));
   stop(h);
