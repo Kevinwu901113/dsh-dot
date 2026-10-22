@@ -1,16 +1,20 @@
 {
   "name": "dsh-dot",
-  "version": "0.2.0",
-  "description": "A Dots-style always-on agent for DeepSeek Harness, assembled from existing plugins: its own computer (dsh-computer), IM (dsh-im), official schedules, hard budget (dsh-budget), plus the glue none of them has.",
+  "version": "0.3.0",
+  "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates) and the always-on glue (schedules → IM, silence protocol, approval cards). Works with dsh-im and the official schedule bundle; dsh-interlude adds a life between conversations.",
   "type": "module",
   "license": "MIT",
   "keywords": [
+    "agent",
+    "always-on",
+    "computer-use",
+    "deepseek-harness",
+    "dots",
     "dsh",
     "dsh-plugin",
-    "deepseek-harness",
-    "always-on",
-    "agent",
-    "dots"
+    "microsandbox",
+    "microvm",
+    "sandbox"
   ],
   "repository": {
     "type": "git",
@@ -18,11 +22,20 @@
   },
   "homepage": "https://github.com/Kevinwu901113/dsh-dot#readme",
   "exports": {
-    "./core": "./src/core.js",
+    ".": "./src/computer/ui-host.js",
+    "./client": "./lib/client.js",
+    "./computer": "./src/computer/vm.js",
+    "./vm": "./src/computer/vm.js",
+    "./subprocess": "./src/computer/subprocess.js",
+    "./gate": "./src/computer/gate.js",
+    "./core": "./src/dot/core.js",
+    "./dot": "./src/dot/core.js",
     "./package.json": "./package.json"
   },
   "files": [
     "src",
+    "lib",
+    "scripts",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -31,6 +44,13 @@
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
+    },
+    "client": {
+      "platform": "web",
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-sidebar-right",
+        "@deepseek-ai/dsh-client-ui-conversation"
+      ]
     }
   },
   "engines": {
@@ -38,5 +58,12 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js"
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-subprocess-local": ">=0.2.0-rc.2"
+  },
+  "dependencies": {
+    "microsandbox": "0.7.8"
   }
 }

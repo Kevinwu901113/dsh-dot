@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, isSilent, stripSilent, contentText } from '../src/core.js';
+import { apply, isSilent, stripSilent, contentText } from '../src/dot/core.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 

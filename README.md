@@ -4,21 +4,23 @@
 
 Turn [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) into a **Dots / Grok-Bot-style always-on agent**: it has its own computer, you talk to it over Feishu / WeChat / DingTalk / QQ / Telegram…, it works on a schedule, tells you only when there is something worth telling, and stops itself when the day's budget is spent.
 
-dsh-dot is assembled from existing plugins. It adds only the glue none of them has:
+One plugin, two components, plus existing plugins for the rest:
 
 | Need | Provided by |
 |---|---|
-| Its own computer, approval gates, live view, audit log | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
+| Its own computer: a bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates, audit log | **`dsh-dot/computer`** (+ `subprocess`, `gate`, the `vm` MCP client and the Computer tab) — [details](docs/computer.md) |
 | Reachable over IM (9 platforms), approvals by reply | [dsh-im](https://github.com/xmanrui/dsh-im), the most-starred dsh IM plugin |
 | Scheduled work (daily / weekly / cron, survives restarts) | built into dsh ≥ 0.2.1 (the official schedule service) |
 | Hard spending cap (optional) | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block`; without it dot runs the same, just uncapped |
 | Identity | [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude)'s Canon (HDSI presets by share code), or dsh's persona config; dot only adds its working rules as a prompt section |
-| **Glue (this repo, ~200 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
+| **`dsh-dot/dot`** (the glue, ~200 lines) | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
 
 ```bash
-dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer @xmanrui/dsh-im
+dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot @xmanrui/dsh-im
 # optional spending cap: append dsh-budget to the same command
 ```
+
+Until v0.2 the computer was a separate plugin, `dsh-computer`; since v0.3 it lives here as a component. Nothing else changed: the same `mcp__vm__*` tools, the same `dshComputer` service, the same files under `~/.dsh/dsh-computer*`, the same `DSH_COMPUTER_*` environment variables.
 
 ---
 
@@ -30,16 +32,18 @@ dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得�
 
 北极星场景：在飞书或微信里说"每天早上看看 X 有没有更新，有就告诉我"。第二天到点，它在自己的电脑里检查；有更新推到 IM，没更新不出声；遇到需要审批的操作，IM 里收到提醒和实时画面链接；当天花费超限就自动暂停并通知。
 
-### 一、组成：能用现成的就不自己写
+### 一、组成：一个插件、两个组件，其余用现成的
 
 | 需要 | 用谁 |
 |---|---|
-| 自己的电脑、审批、实时画面、审计日志 | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
+| 自己的电脑：自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志 | **`dsh-dot/computer`** 组件（连同 `subprocess`、`gate`、`vm` MCP 客户端和「电脑」标签页）——详见 [docs/computer.md](docs/computer.md) |
 | IM（飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp），回复文字审批 | [dsh-im](https://github.com/xmanrui/dsh-im)，dsh 社区星数最多的 IM 插件 |
 | 定时任务（每天 / 每周 / cron，重启后补发） | dsh 0.2.1 起内置的官方定时服务（「自动化任务」） |
 | 预算硬上限（可选） | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block`。不装也能用，只是没人拦花费 |
 | 身份 | [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude) 的 Canon（HDSI 分享码导入）或 dsh 的 persona 配置；dot 只把自己的工作规则作为系统提示的一段注入 |
-| **dsh-dot 本身（约 200 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
+| **`dsh-dot/dot`** 组件（约 200 行） | 上面这些插件都没有的部分，见下文「工作原理」 |
+
+v0.2 之前"电脑"是独立插件 dsh-computer；v0.3 起并进来做一个组件。对外没变：还是 `mcp__vm__*` 工具、`dshComputer` 服务、`~/.dsh/dsh-computer*` 这些文件、`DSH_COMPUTER_*` 环境变量。已经装了 dsh-computer 的，先 `dsh plugin --profile desktop remove dsh-computer` 再装新版 dsh-dot。
 
 ### 二、安装
 
@@ -49,7 +53,7 @@ dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得�
 
 ```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
-  github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer @xmanrui/dsh-im
+  github:Kevinwu901113/dsh-dot @xmanrui/dsh-im
 open -a "DeepSeek Harness"
 ```
 
@@ -70,7 +74,7 @@ open -a "DeepSeek Harness"
 3. **工作区**：不用改。IM 机器人开的会话无论工作区在哪都归 dot（`scope: home+im`），工作规则由 dot 注入，人设由 dsh-interlude 注入，不需要 `AGENTS.md`。
 4. **投递目标**：在机器人设置里点「新建目标」，选你和机器人的私聊，保存。dot 用 dsh-im 的公开接口往这个目标发消息。保持「会话双向同步」**关闭**，由 dot 决定发不发。
 5. 在 dsh 里发送 `/dot test`，IM 里收到测试消息就说明通了。
-6. **公网实时画面（可选）**：按 dsh-computer README 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
+6. **公网实时画面（可选）**：按 [docs/computer.md](docs/computer.md) 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
 
 ### 四、工作原理
 
@@ -81,7 +85,7 @@ dsh-dot 只做现成插件都不做的四件事：
 3. **预算**（装了 dsh-budget 时）：拦截后在 IM 通知你；日预算的拦截在本地零点自动解除，第二天的定时任务照常运行。
 4. **虚拟机出错**时在 IM 通知你。
 
-`/dot` 查看状态，`/dot test` 发测试消息。dot 的事件写进 dsh-computer 的审计日志 `~/.dsh/dsh-computer-audit.jsonl`（`kind: "dot"`）。
+`/dot` 查看状态，`/dot test` 发测试消息。dot 的事件写进电脑组件的审计日志 `~/.dsh/dsh-computer-audit.jsonl`（`kind: "dot"`）。
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
@@ -92,7 +96,7 @@ dsh-dot 只做现成插件都不做的四件事：
 
 ### 五、限制
 
-- 必须有 dsh-computer，缺了 dot 不启动：没有虚拟机隔离，"放心不管"就不成立。
+- dot 组件依赖电脑组件（`dshComputer` 服务），缺了不启动：没有虚拟机隔离，"放心不管"就不成立。
 - 审批要回到 DeepSeek Harness 里点；IM 里只是提醒。IM 里自己发起的对话，审批按 dsh-im 的方式回复文字。
 - 电脑休眠或退出 App 后不运行；24 小时在线需要部署到服务器。
 - 不做：长期记忆、多个 dot、自我进化、自己的 IM 或定时框架。
