@@ -8,3 +8,8 @@
         # Sessions started in this directory are the agent's "acts"; the interlude files live in
         # <home>/interlude/. Shares dsh-dot's home by default so dot and interlude describe one agent.
         home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
+        # Browsing (HDSI browserIntent): auto = web first; the sites below are always observed in
+        # her own VM browser (dsh-computer), read-only, no approvals. Add the sites she is logged into.
+        # browser: auto
+        # vmSites: [weibo.com, bilibili.com, xiaohongshu.com, x.com]
+        # vmDailyCap: 2
