@@ -10,14 +10,14 @@ dsh-dot is assembled from existing plugins. It adds only the glue none of them h
 |---|---|
 | Its own computer, approval gates, live view, audit log | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
 | Reachable over IM (9 platforms), approvals by reply | [dsh-im](https://github.com/xmanrui/dsh-im), the most-starred dsh IM plugin |
-| Scheduled work (daily / weekly / cron, survives restarts) | official `@deepseek-ai/dsh-experimental-schedule-bundle` |
+| Scheduled work (daily / weekly / cron, survives restarts) | built into dsh ≥ 0.2.1 (the official schedule service) |
 | Hard spending cap | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block` |
 | Identity and duties | dsh's own `AGENTS.md` loading |
 | **Glue (this repo, ~200 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer \
-  @xmanrui/dsh-im dsh-budget @deepseek-ai/dsh-experimental-schedule-bundle
+  @xmanrui/dsh-im dsh-budget
 ```
 
 ---
@@ -36,19 +36,21 @@ dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得�
 |---|---|
 | 自己的电脑、审批、实时画面、审计日志 | [dsh-computer](https://github.com/Kevinwu901113/dsh-computer) |
 | IM（飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp），回复文字审批 | [dsh-im](https://github.com/xmanrui/dsh-im)，dsh 社区星数最多的 IM 插件 |
-| 定时任务（每天 / 每周 / cron，重启后补发） | 官方「自动化任务」`@deepseek-ai/dsh-experimental-schedule-bundle` |
+| 定时任务（每天 / 每周 / cron，重启后补发） | dsh 0.2.1 起内置的官方定时服务（「自动化任务」） |
 | 预算硬上限 | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block` |
 | 身份和职责 | dsh 自带的 `AGENTS.md` 加载 |
 | **dsh-dot 本身（约 200 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
 
 ### 二、安装
 
-先退出 dsh 桌面版，再用**一条命令**装齐（dsh 只把 profile 的直接依赖加进层栈）：
+需要 dsh ≥ 0.2.1（定时任务已内置）。先退出 dsh 桌面版，再用**一条命令**装齐（dsh 只把 profile 的直接依赖加进层栈）：
+
+> 从 dsh 0.2.0 升级上来、装过 `@deepseek-ai/dsh-experimental-schedule-bundle` 的，请先卸掉它：它带的旧版 `dsh-schedule` 会挡住内置的新版。
 
 ```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
   github:Kevinwu901113/dsh-dot github:Kevinwu901113/dsh-computer \
-  @xmanrui/dsh-im dsh-budget @deepseek-ai/dsh-experimental-schedule-bundle
+  @xmanrui/dsh-im dsh-budget
 open -a "DeepSeek Harness"
 ```
 
@@ -96,7 +98,7 @@ dsh-dot 只做现成插件都不做的四件事：
 ### 六、验证情况
 
 dsh 0.2.0-rc.2，云端 Docker 后端，脚本化模拟模型：
-- dsh-computer、dsh-im、dsh-budget、官方 schedule、dsh-dot 同装无冲突。
+- dsh-computer、dsh-im、dsh-budget、官方 schedule、dsh-dot 同装无冲突（云端为 dsh 0.2.0-rc.2 + 实验定时插件；真机为 dsh 0.2.1-rc.2 内置定时服务）。
 - 真实的 `schedule_create` 任务到点后：回复有内容，dot 走投递；回复是 `DOT_SILENT`，dot 记为静默、不发。
 - 单元测试覆盖投递目标选择、审批提醒、预算拦截和解除通知、零点自动解除、重启不重复通知。
 

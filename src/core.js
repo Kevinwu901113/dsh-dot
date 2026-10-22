@@ -2,7 +2,7 @@
 //
 // Everything with an existing plugin is left to that plugin:
 //   identity     → dsh loads <home>/AGENTS.md for sessions in <home>
-//   schedules    → official schedule bundle (schedule_create, cron, restores cold sessions)
+//   schedules    → official schedule service, built into dsh >= 0.2.1 (schedule_create, cron, restores cold sessions)
 //   IM           → dsh-im (chats, approvals by reply, proactive delivery service `dshIm`)
 //   spending cap → dsh-budget (`overLimit: block`)
 //   computer     → dsh-computer (VM, approval gates, live view, audit log)
@@ -106,7 +106,7 @@ export function apply(ctx, config = {}) {
   // Identity file, editable, never overwritten.
   mkdirSync(home, { recursive: true });
   if (!existsSync(join(home, 'AGENTS.md'))) { try { copyFileSync(join(TEMPLATES, 'AGENTS.md'), join(home, 'AGENTS.md')); } catch (error) { void error; } }
-  for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['budget', 'dsh-budget'], ['schedule', '@deepseek-ai/dsh-experimental-schedule-bundle']]) {
+  for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['budget', 'dsh-budget'], ['schedule', 'the schedule service (built into dsh >= 0.2.1)']]) {
     if (ctx.get(svc) === undefined) logger.warn(`${pkg} is not installed (see the dsh-dot README install command)`);
   }
 
