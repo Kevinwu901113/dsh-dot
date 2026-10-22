@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow } from '../src/core.js';
+import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE } from '../src/core.js';
 
 function fakeStream(text) {
   return (async function* () {
@@ -15,14 +15,14 @@ function fakeStream(text) {
 
 const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手，话少，不打句号。' };
 
-function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null } = {}) {
+function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
-  const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [];
+  const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [];
   let cmd;
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
-    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemblers.push(fn); return () => {}; },
+    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemblers.push(fn); if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },
     effect(fn) { effects.push(fn()); },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
     get: (n) => ({
@@ -31,6 +31,8 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
       web,
+      sessionController: vm ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => { followups.push({ id, m }); vm.onFollowup?.(id, m); } } }) } : undefined,
+      sessions: vm ? { flush: async () => {} } : undefined,
     }[n]),
     llm: { stream: (o) => { calls.push(o); return fakeStream(typeof reply === 'function' ? reply(o) : reply); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
@@ -50,7 +52,8 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const ctxText = (sid = 's1', cwd = home) => prompts.find((p) => p.name === 'interlude').text({ agent: { session: { id: sid, header: { cwd } } } });
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
-  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
+  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -350,4 +353,72 @@ test('browsing: a browserIntent runs through the web service after the round; th
   assert.match(off.calls[0].system, /New browsing is unavailable/);
   assert.ok(!existsSync(join(off.home, 'interlude', 'web-context.jsonl')));
   off.stop();
+});
+
+test('onVmSite / thinWhy / observationPrompt', () => {
+  assert.ok(onVmSite('https://www.bilibili.com/video/1', ['bilibili.com']));
+  assert.ok(onVmSite('https://x.com/home', ['*.x.com']));
+  assert.ok(!onVmSite('https://notx.com/', ['x.com']));
+  assert.ok(!onVmSite('nonsense', ['x.com']));
+  assert.equal(thinWhy('short'), 'too short');
+  assert.equal(thinWhy(`${'正文 '.repeat(80)} 请先登录`), 'blocked or login wall');
+  assert.equal(thinWhy('正文 '.repeat(80)), '');
+  assert.match(observationPrompt({ mode: 'visit', url: 'https://x.com/a', purpose: '看看她发了没' }), /幕间观察[\s\S]*https:\/\/x.com\/a[\s\S]*只看不动[\s\S]*没有审批/);
+});
+
+test('vm observation: her sites go to the VM, a thin web result upgrades to it; the turn is read-only, approval-free and not an act', async () => {
+  const web = { fetch: async () => ({ content: 'please enable javascript' }), search: async () => ({ content: '', sources: [] }) };
+  const visit = GOOD.replace('"contact":null', '"contact":null,"browserIntents":[{"mode":"visit","url":"https://www.bilibili.com/u/1","purpose":"看看她更新没","timing":"deferred"}]');
+  const h = harness({ reply: visit, web, vm: {}, config: { vmSites: ['bilibili.com'], vmDailyCap: 1 } });
+  h.act('s1', 'hi', 'hello');
+  // the observation turn, answered as soon as the followup lands
+  let seen;
+  const pending = h.cmd().handler({ rawInput: 'now' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(h.followups.length, 1, 'one followup into the last act session');
+  assert.equal(h.followups[0].id, 's1');
+  assert.deepEqual(h.followups[0].m.source, OBSERVATION_SOURCE);
+  assert.match(h.followups[0].m.content[0].text, /bilibili\.com\/u\/1/);
+  // while it runs: read-only vm tools pass without reaching the next gate, anything else is denied, other sessions untouched
+  assert.deepEqual(await h.gate('s1', 'mcp__vm__browser_get_markdown'), { kind: 'allow' });
+  assert.equal((await h.gate('s1', 'mcp__vm__browser_click')).kind, 'deny');
+  assert.equal((await h.gate('s1', 'mcp__vm__sandbox_execute_bash')).kind, 'deny');
+  assert.equal((await h.gate('s2', 'mcp__vm__browser_click')).via, 'next');
+  h.emit('s1', 'turn/start', { turn: 2 });
+  h.emit('s1', 'user/message', { content: h.followups[0].m.content, source: OBSERVATION_SOURCE }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '她 10 月 20 日发了新视频，标题是《秋天》，播放 1.2 万。' }] } });
+  h.emit('s1', 'turn/end', { turn: 2 });
+  await pending;
+  seen = readFileSync(join(h.home, 'interlude', 'web-context.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(seen.length, 1);
+  assert.equal(seen[0].via, 'vm');
+  assert.match(seen[0].content, /秋天/);
+  assert.equal((await h.gate('s1', 'mcp__vm__browser_click')).via, 'next', 'gate released after the turn');
+  assert.equal(readFileSync(join(h.home, 'interlude', 'pending.jsonl'), 'utf8').trim(), '', 'the observation turn is not an act');
+  // vm cap reached: a second intent on her site is held, not read anonymously
+  h.act('s1', 'again', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.equal(h.followups.length, 1);
+  assert.equal(readFileSync(join(h.home, 'interlude', 'web-context.jsonl'), 'utf8').trim().split('\n').length, 1);
+  h.stop();
+  // auto: a blocked web page on any other host upgrades to the VM
+  const other = GOOD.replace('"contact":null', '"contact":null,"browserIntents":[{"mode":"visit","url":"https://example.org/x","purpose":"看看","timing":"deferred"}]');
+  const g = harness({ reply: other, web, vm: {} });
+  g.act('s1', 'hi', 'hello');
+  const p2 = g.cmd().handler({ rawInput: 'now' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(g.followups.length, 1, 'thin web result → vm');
+  g.emit('s1', 'turn/start', { turn: 2 });
+  g.emit('s1', 'user/message', { content: g.followups[0].m.content, source: OBSERVATION_SOURCE }, { surfaceOp: 'append' });
+  g.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '是个示例页。' }] } });
+  g.emit('s1', 'turn/end', { turn: 2 });
+  await p2;
+  g.stop();
+  // browser: 'web' never wakes the VM
+  const w = harness({ reply: other, web, vm: {}, config: { browser: 'web' } });
+  w.act('s1', 'hi', 'hello');
+  await w.cmd().handler({ rawInput: 'now' });
+  assert.equal(w.followups.length, 0);
+  assert.match(readFileSync(join(w.home, 'interlude', 'web-context.jsonl'), 'utf8'), /"thin":"too short"/);
+  w.stop();
 });

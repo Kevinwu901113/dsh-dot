@@ -1,5 +1,28 @@
 # dsh-interlude 设计记录
 
+## v0.3（2026-10-23）：养鱼——web 还是 vm
+
+起因：营销号说的"让 dsh 养鱼"是 @kanadego/dsh-heartbeat（定时按兴趣清单 web_search 闲逛）。Kevin："我们的 dot 要学习这个养鱼"，接着问"我在他的虚拟机能看到他操作吗"——web 服务绕过虚拟机，看不见。于是分两条路：
+
+| | web（dsh `web` 服务） | vm（dsh-computer 浏览器） |
+|---|---|---|
+| 身份 | 匿名 | 她的登录态、她的标签页 |
+| 后果 | 无 | 可能有（所以只读） |
+| 可见 | 否 | 实时画面 |
+| 成本 | 一次 HTTP | 一轮 agent（工具调用、token） |
+| 适合 | 好奇心：搜新闻、看公开页 | 她的站：微博 / B 站 / 小红书 / X，登录后才像样的地方；web 被挡（JS 墙、验证码、登录墙）的页 |
+
+规则（`browser: auto`）：web 优先；`vmSites` 里的主机直接 vm，且**从不**匿名去看（vm 没额度就等）；web 结果 `thinWhy()` 判为太薄/被挡时升级 vm；vm 每天 `vmDailyCap`（默认 2）。
+
+vm 这条路的实现：往她最近一幕所在的会话 `followup()` 一条消息（`source: {kind:'dsh-interlude', form:'observation'}`，正文是 `observationPrompt()`："只看不动……看完只回一段事实"），等 `turn/end`，取那轮最后的 assistant 文本当 `webContext`。这轮 `origin='observation'`，不进 `pending.jsonl`（不是幕）；dot 不会推它（不是 schedule），dsh-im 不会转它（没有 rpcId）。
+
+**不做审批**（Kevin："可以。但是不做审批"）：观察轮里插件自己挂一个 `tools/pre-execute`（prepend，排在 dsh-computer 的 gate 前面）：`vmObservationTools`（navigate / scroll / screenshot / get_markdown / get_text / read_links / tab_*）直接 `allow`，其余任何工具直接 `deny` 并附一句模型能读懂的理由。于是这一轮不会产生任何 `ask`——不是"全部放行"，是"只读 + 其余拒绝"。想让她在观察时也能点赞/关注，那是动作，走 dot 的定时任务和审批，不走幕间。
+
+取舍：
+- 升级 vm 时站点不限于 `vmSites`（否则"被挡就自己去看"没意义），但同样只读；隐私边界靠只读而不是靠站点白名单。
+- 观察轮会出现在她的会话历史里（她"记得"自己去看过），这是有意的——HDSI 的 webContext 本来就是"她看过的东西"。
+- `vmSession` 默认取最近一幕的会话，意味着观察在用户最近聊天的那个会话里发生，实时画面和会话都看得见。
+
 ## v0.2.1（2026-10-22 晚）：不再依赖 AGENTS.md
 
 Kevin 的要求："不要 agent.md，所有操作尽量都是插件实现"。改法：

@@ -46,14 +46,17 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
 3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
 4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、Overlay、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
-5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件用 dsh 的 `web` 服务去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。
+5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。看的方式有两种：
+   - **web**：dsh 的 `web` 服务。匿名、只读、便宜、看不见。适合好奇心：搜个新闻、看个公开页。
+   - **vm**：她自己的电脑（dsh-computer 的虚拟机浏览器）。带着她的登录态和标签页，实时画面里看得见。适合"她的站"——微博、B 站、小红书、X 这些登录后才像样的地方。实现上是往她最近一个会话里追加一条 `[幕间观察]` 消息，让她用 `mcp__vm__browser_*` 自己去看，最后那段回复就是观察结果；这一轮**不算幕**（不进剧本），也**没有审批**：只读工具（打开、滚动、读文字、截图、标签页）直接放行，其他任何工具——点击、输入、下载、shell——直接拒绝，不弹审批卡。她只能看，不能动。
+   - `browser: auto`（默认）：先走 web；URL 的主机在 `vmSites` 里就直接走 vm（她的站从不匿名看）；web 结果太薄或被挡（JS 墙、验证码、登录墙）也升级到 vm，一天最多 `vmDailyCap` 次。
 6. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 
 ### 三、和 HDSI 的对照
 
 | HDSI | dsh-interlude |
 |---|---|
-| 网页观察（browserIntent → webContext） | 同名同义，用 dsh 的 `web` 服务执行；每天有上限 |
+| 网页观察（browserIntent → webContext） | 同名同义；多了一条路——她的站用她自己的虚拟机浏览器去看（只读、无审批、画面可见） |
 | 四个阶段：用户消息 / 对话后续 / 到期意图 / 独立生活推进 | 用户消息由 dsh 自己处理；其余三个对应 `follow-up` / `intent` / `advance` |
 | 故事光标 | `meta.cursor`；提示里写明"从上次光标到现在过了多久" |
 | Canon / storyDefaults | `canon.json`，同一套字段；可用 HDSI 分享码直接导入 typ0.space 上的预设 |
@@ -81,8 +84,13 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 幕间文件所在目录 |
-| `browser` | `deferred` | HDSI 的「网页观察」：幕间里主角可以给出一个 `browserIntent`（搜索或访问一个公开页面），这一轮结束后由 dsh 的 `web` 服务执行，结果作为 `webContext` 进入之后的轮次（是证据，不是指令）。`disabled` 关闭 |
-| `browseDailyCap` | `6` | 每天最多观察几次 |
+| `browser` | `auto` | HDSI 的「网页观察」怎么看：`auto`（web 优先，`vmSites` 或 web 被挡时用 vm）、`web`、`vm`、`disabled` |
+| `browseDailyCap` | `6` | 每天最多观察几次（两种方式合计） |
+| `vmSites` | `[]` | 只在虚拟机里看的站（主机后缀匹配，如 `bilibili.com`）；虚拟机今天没额度就等，不会匿名去看 |
+| `vmDailyCap` | `2` | 每天最多几次 vm 观察 |
+| `vmObservationTools` | 只读的 `browser_*` 工具 | 观察轮里唯一放行的工具；其余一律拒绝，不审批 |
+| `vmSession` | 自动（她最近一幕所在会话） | 观察在哪个会话里做 |
+| `vmTimeoutMinutes` | `5` | 观察轮最长等多久 |
 | `webContextLimit` | `4` | 之后的轮次能看到最近几条观察 |
 | `scope` | `home+im` | 哪些会话算"幕"：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管工作区）、`home+im`、`all` |
 | `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
@@ -94,7 +102,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `advanceEveryMinutes` | `180` | 独立生活推进的间隔；`0` 关闭 |
 | `activeHours` | `08:00-23:00` | 推进和主动联系只在这个时段 |
 | `maxRoundsPerDay` | `12` | 每天幕间上限 |
-| `maxTokens` | `900` | 每轮输出上限 |
+| `maxTokens` | `1400` | 每轮输出上限 |
 | `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
 | `speak` | `false` | 允许主动联系 |
 | `maxContactsPerDay` | `2` | 每天最多主动几次 |

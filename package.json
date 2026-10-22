@@ -1,6 +1,6 @@
 {
   "name": "dsh-interlude",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "幕间 for DeepSeek Harness, after HDS-Interlude: between conversations the character lives on — a life script, a continuity snapshot, intents and restrained proactive contact — and every later conversation opens with that continuity in view.",
   "type": "module",
   "license": "MIT",
