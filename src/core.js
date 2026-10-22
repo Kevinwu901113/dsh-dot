@@ -28,6 +28,11 @@ export const defaults = {
   scope: 'home+im',           // which sessions are acts: 'home' (cwd inside home), 'im' (opened from an IM bot), 'home+im', 'all'
   canon: null,                // HDSI storyDefaults used until a preset is imported ({ characterName, characterProfile, ... })
   presetHub: 'https://typ0.space', // HDSI preset hub; `/interlude preset <share code>` imports from here
+  // System-prompt sections dropped for the character's sessions so the Canon opens the prompt. dsh's
+  // "You are an AI agent powered by DeepSeek Harness" + the agent preset's "You are a coding agent"
+  // are what the community calls the root of the AI flavour. [] keeps everything.
+  trimSections: ['harness:identity', 'deployment:persona-prefix', 'context:file-reference'],
+  canonOnly: false,           // true: keep only the Canon, dot's rules and MCP (VM) sections
   identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // follow-up round this long after a conversation goes quiet
   advanceEveryMinutes: 180,   // independent life progression; 0 disables
@@ -84,9 +89,10 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     `时间：${gap}。写到现在为止，不写未来；未来的事只能放进 intents。`,
     phase === 'follow-up' ? '这一轮是「对话后续」：刚才的对话结束了，写它在主角生活里留下的余波，以及主角接着做了什么。' : '',
     phase === 'advance' ? '这一轮是「生活推进」：这段时间没有对话。写主角自己在做的事。没有用户消息，不要编造用户说了什么。' : '',
+    phase === 'seed' ? '这一轮是「开场」：剧本还没有开始，没有历史。写主角到现在为止的最近一天：3 到 5 段，每段以 [MM-DD HH:MM] 开头、按时间先后、最后一段写到现在。这是她自己的日子（配角、地点、习惯都从设定来），和用户没有对话，不要编造用户说了什么。state 写现在的状态，intents 放她接下来一两天确实打算做的事。' : '',
     phase === 'intent' && intent ? `这一轮是「到期的意图」：${intent.text}（${intent.kind}，定于 ${describeNow(new Date(intent.at))}）。重新看看现在的生活，决定是履行、延后还是放下；延后要给新的时间，放下要在 script 里说明。` : '',
     '只输出一个 JSON 对象（可放在 ```json 代码块里）：',
-    '- "script": 这段时间的剧本，第三人称当代生活剧，300 字以内。围绕主角的日常动作、不规律事件和人际交流展开，用具体动作和感官细节代替给心情命名；不复述幕前的对话原文；主角若真的发了消息，把原话写进剧本。',
+    `- "script": 这段时间的剧本，第三人称当代生活剧，${phase === 'seed' ? '600' : '300'} 字以内。围绕主角的日常动作、不规律事件和人际交流展开，用具体动作和感官细节代替给心情命名；不复述幕前的对话原文；主角若真的发了消息，把原话写进剧本。`,
     '- "state": { "mood": "此刻的状态一句话", "now": "正在做或刚做完的事", "next": "接下来打算", "threads": ["进行中、未完成的事，最多 5 条"] }',
     '- "overlay": ["这段时间形成的稳定变化：新的习惯、对某事的看法、关系上的变化。没有就空数组；一般为空。"]',
     '- "intents": [{ "at": "ISO 8601 本地时间", "kind": "reminder | reply | contact", "text": "到时候要做什么", "willingness": 0~1 }]，只放确实需要在未来某个时刻处理的事；没有就空数组。',
@@ -188,7 +194,9 @@ export function renderCanon(canon, { withStyle = false } = {}) {
     `# 你是 ${name || '主角'}`,
     part('角色设定', sd.characterProfile), part('视角', sd.perspective), part('和用户的关系', sd.relationship),
     part('用户', sd.userProfile), part('配角', sd.supportingCast), part('世界', sd.world), part('主要地点', sd.location),
-    part('回复规则', sd.replyRules ?? canon?.replyRules), part('对话范例（说话的样子）', canon?.examples),
+    part('回复规则', sd.replyRules ?? canon?.replyRules),
+    part('不要这样说（出现即失败）', Array.isArray(canon?.blacklist) ? canon.blacklist.map((b) => `- ${b}`).join('\n') : canon?.blacklist),
+    part('对话范例（说话的样子）', canon?.examples),
     withStyle ? part('叙事文风', sd.style) : '',
   ].filter(Boolean).join('\n\n');
 }
@@ -294,6 +302,7 @@ export function apply(ctx, config = {}) {
     if (meta.dayRounds >= cfg.maxRoundsPerDay) return { skipped: 'daily cap' };
     const { items, text } = digest();
     if (phase === 'follow-up' && !items.some((i) => !i.quiet)) return { skipped: 'nothing happened' };
+    if (phase === 'seed' && readScript(files.script, 1).length) return { skipped: 'script already has entries (seed only opens an empty script)' };
     busy = true;
     const now = Date.now();
     try {
@@ -309,7 +318,18 @@ export function apply(ctx, config = {}) {
       const parsed = parseReply(reply, now);
       const script = parsed?.script || reply.trim();
       if (!script) throw new Error('empty script');
-      appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${script}\n\n`);
+      if (phase === 'seed') {
+        // "[MM-DD HH:MM] ..." segments become dated entries; anything untagged keeps the current time.
+        const segs = script.split(/\n(?=\[\d{1,2}-\d{1,2} \d{1,2}:\d{2}\])/).map((t) => t.trim()).filter(Boolean);
+        const year = new Date(now).getFullYear();
+        for (const seg of segs) {
+          const m = /^\[(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})\]\s*/.exec(seg);
+          const at = m ? new Date(year, +m[1] - 1, +m[2], +m[3], +m[4]) : new Date(now);
+          appendFileSync(files.script, `## ${describeNow(at)} · seed\n${m ? seg.slice(m[0].length) : seg}\n\n`);
+        }
+      } else {
+        appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${script}\n\n`);
+      }
       if (parsed) {
         state = { ...parsed.state, updatedAt: new Date(now).toISOString() };
         writeFileSync(files.state, JSON.stringify(state, null, 2));
@@ -386,6 +406,15 @@ export function apply(ctx, config = {}) {
       order: scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1,
       text: (c) => (inHome(c) ? canonText() : ''),
     }), 'dsh-interlude: canon section');
+    // Drop dsh's own openers for the character's sessions so the Canon is the first thing the model
+    // reads; other sessions are untouched. (A `complete` section cannot do this per session.)
+    const keep = (name) => name === 'interlude:canon' || name === 'dot:rules' || name.startsWith('mcp:');
+    scope.effect(() => scope.on('system-prompt/assemble', async (_assembly, c, next) => {
+      const assembly = await next();
+      if (!inHome(c)) return assembly;
+      const sections = assembly.sections.filter((sec) => (cfg.canonOnly ? keep(sec.name) : !cfg.trimSections.includes(sec.name)));
+      return sections.length === assembly.sections.length ? assembly : { ...assembly, sections };
+    }), 'dsh-interlude: prompt trim');
     scope.systemPrompt.context({
       name: 'interlude',
       order: 905,
@@ -400,8 +429,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it',
-      input: { hint: '[now | advance | preset <code> | canon]' },
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it',
+      input: { hint: '[now | advance | seed | preset <code> | canon]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
@@ -414,8 +443,8 @@ export function apply(ctx, config = {}) {
           } catch (error) { result = `\nimport failed: ${error.message}`; }
         } else if (arg === 'canon') {
           result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
-        } else if (arg === 'now' || arg === 'advance') {
-          const r = await round(arg === 'now' ? 'follow-up' : 'advance');
+        } else if (arg === 'now' || arg === 'advance' || arg === 'seed') {
+          const r = await round(arg === 'now' ? 'follow-up' : arg);
           result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.skipped ?? r.error}`;
         }
         const { items } = digest();

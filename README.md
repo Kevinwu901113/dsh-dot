@@ -70,7 +70,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 和 dsh-dot 共用 `~/dot`。装好后在 dsh 里发 `/interlude preset 6QA0-1PD6`（示例：HDSI 作者的「水濑」），人设就有了；或者去 typ0.space 挑一个，复制分享码。
 
-`/interlude` 查看状态，`/interlude canon` 看当前人设，`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
+`/interlude` 查看状态，`/interlude canon` 看当前人设，`/interlude seed` 给空剧本写一个开场（最近一天的 3–5 段，HDSI 的「剧本起点」），`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
 
 `examples/canon.minase-style.json` 是一份按 Minase 风格拼出来的 Canon（角色设定来自 @MomoiCore 的预设，回复规则来自 @Tangink 的预设，均 CC-BY-NC；对话范例取自 HDSI 作者公开的聊天截图），放到 `~/dot/interlude/canon.json` 即可使用。
 
@@ -81,6 +81,8 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 幕间文件所在目录 |
 | `scope` | `home+im` | 哪些会话算"幕"：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管工作区）、`home+im`、`all` |
 | `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
+| `trimSections` | `harness:identity, deployment:persona-prefix, context:file-reference` | 主角的会话里从系统提示删掉的段（dsh 的「You are an AI agent / coding agent」开头，社区公认的 AI 味来源），让 Canon 成为第一段；`[]` 不删 |
+| `canonOnly` | `false` | `true` 时主角的会话只保留 Canon、dot 规则和 MCP（虚拟机）工具段 |
 | `presetHub` | `https://typ0.space` | HDSI 预设分享站 |
 | `identityFile` | 无 | 可选：额外追加到 Canon 后面的文本文件 |
 | `idleMinutes` | `10` | 安静多久算一幕结束 |

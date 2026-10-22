@@ -18,11 +18,11 @@ const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手�
 function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }] } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
-  const calls = [], sent = [], listeners = [], prompts = [], sections = [], effects = [];
+  const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [];
   let cmd;
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
-    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
+    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemblers.push(fn); return () => {}; },
     effect(fn) { effects.push(fn()); },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
     get: (n) => ({
@@ -48,7 +48,8 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   };
   const ctxText = (sid = 's1', cwd = home) => prompts.find((p) => p.name === 'interlude').text({ agent: { session: { id: sid, header: { cwd } } } });
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
-  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
+  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -262,5 +263,32 @@ test('scope: an IM-opened session outside home is an act too (canon + context); 
   h.emitAs('wx', im.header.cwd, 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'qq-1234abcd-0000' } }] });
   assert.match(h.canonText('wx', im.header.cwd), /^# 你是 dot/);
   assert.equal(h.canonText('ui', '/Users/x/code'), '');
+  h.stop();
+});
+
+test('prompt trim: dsh openers are dropped for the character\'s sessions only; canonOnly keeps canon, rules and MCP', async () => {
+  const all = ['harness:identity', 'deployment:persona-prefix', 'interlude:canon', 'dot:rules', 'context:file-reference', 'tool:bash', 'mcp:vm'];
+  const h = harness({ reply: GOOD });
+  assert.deepEqual(await h.assemble('s1', h.home, all), ['interlude:canon', 'dot:rules', 'tool:bash', 'mcp:vm']);
+  assert.deepEqual(await h.assemble('ui', '/Users/x/code', all), all, 'untouched elsewhere');
+  h.stop();
+  const only = harness({ reply: GOOD, config: { canonOnly: true } });
+  assert.deepEqual(await only.assemble('s1', only.home, all), ['interlude:canon', 'dot:rules', 'mcp:vm']);
+  only.stop();
+});
+
+test('/interlude seed opens an empty script with dated entries and refuses once entries exist', async () => {
+  const seed = JSON.stringify({ script: '[10-21 23:40] 她把练习册翻过去一页，台灯还亮着\n[10-22 07:50] 闹钟响了三遍才起来，早饭是楼下的包子\n[10-22 12:10] 希绘发来奶茶店的链接，她回了个问号', state: { mood: '困', now: '吃午饭', next: '下午去文具店', threads: ['奶茶店'] }, overlay: [], intents: [], contact: null });
+  const h = harness({ reply: seed });
+  const r = await h.cmd().handler({ rawInput: 'seed' });
+  assert.match(r.text, /ran:/);
+  assert.match(h.calls[0].system, /「开场」/);
+  const script = readFileSync(join(h.home, 'interlude', 'script.md'), 'utf8');
+  assert.equal((script.match(/^## /gm) || []).length, 3);
+  assert.match(script, /10-21 23:40 .* seed\n她把练习册翻过去一页/);
+  assert.match(script, /10-22 12:10 .* seed\n希绘发来奶茶店的链接/);
+  const r2 = await h.cmd().handler({ rawInput: 'seed' });
+  assert.match(r2.text, /already has entries/);
+  assert.match(h.ctxText(), /奶茶店/);
   h.stop();
 });
