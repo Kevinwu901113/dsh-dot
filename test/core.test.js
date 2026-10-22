@@ -309,3 +309,17 @@ test('parseReply recovers the script from a reply cut off mid-JSON', () => {
   assert.equal(r.state, null);
   assert.equal(r.truncated, true);
 });
+
+test('a prose-only reply gets a continuity refresh call; its JSON becomes the snapshot', async () => {
+  let n = 0;
+  const h = harness({ reply: () => (++n === 1 ? '她把碗推到床尾，试了最后一次。' : '{"continuity":{"current":"窝在被子里","recent":["明天再弄环境"],"salient":["apt-get 卡着"]},"intents":[],"overlay":[]}') });
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[1].system, /CONTINUITY REFRESH/);
+  assert.match(h.calls[1].messages[0].content[0].text, /她把碗推到床尾/);
+  const state = JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8'));
+  assert.equal(state.current, '窝在被子里');
+  assert.match(readFileSync(join(h.home, 'interlude', 'script.md'), 'utf8'), /她把碗推到床尾/);
+  h.stop();
+});

@@ -400,9 +400,22 @@ export function apply(ctx, config = {}) {
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
       const reply = await collectText(ctx.llm.stream(options));
-      const parsed = parseReply(reply, now);
+      let parsed = parseReply(reply, now);
       const script = parsed?.script || reply.trim();
       if (!script) throw new Error('empty script');
+      // Prose without the JSON object (or cut off before it): HDSI's post-commit continuity refresh
+      // as a second, short call over the script just written.
+      if (!parsed?.state) {
+        const refresh = await collectText(ctx.llm.stream({
+          ...options, maxTokens: 600,
+          system: [HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'the script is already written; return only'),
+            'Also include intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"...","willingness":0.0}] (concrete future possibilities only, else []) and overlay: [] unless a stable change formed. Return one JSON object, no Markdown fences.'].join('\n'),
+          messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
+        })).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return ''; });
+        const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
+        if (p2?.state) parsed = { ...(parsed ?? { overlay: [], intents: [], contact: null }), script, state: p2.state, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], overlay: p2.overlay?.length ? p2.overlay : parsed?.overlay ?? [] };
+        audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
+      }
       if (phase === 'seed') {
         // "[MM-DD HH:MM] ..." segments become dated entries; anything untagged keeps the current time.
         const segs = script.split(/\n(?=\[\d{1,2}-\d{1,2} \d{1,2}:\d{2}\])/).map((t) => t.trim()).filter(Boolean);
