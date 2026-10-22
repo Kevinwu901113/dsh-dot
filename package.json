@@ -23,7 +23,6 @@
   },
   "files": [
     "src",
-    "templates",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",

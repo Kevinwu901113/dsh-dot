@@ -1,7 +1,7 @@
 // dsh-dot/core: the glue that turns dsh into an always-on personal agent ("dot").
 //
 // Everything with an existing plugin is left to that plugin:
-//   identity     → dsh loads <home>/AGENTS.md for sessions in <home>
+//   identity     → dsh-interlude's Canon (or dsh's own persona config); dot adds only its working rules
 //   schedules    → official schedule service, built into dsh >= 0.2.1 (schedule_create, cron, restores cold sessions)
 //   IM           → dsh-im (chats, approvals by reply, proactive delivery service `dshIm`)
 //   spending cap (optional) → dsh-budget (`overLimit: block`)
@@ -12,10 +12,9 @@
 //   2. an approval asked during such a turn is announced on IM with the live-view link;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
-import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { dirname, join, relative, isAbsolute } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative, isAbsolute } from 'node:path';
 
 export const name = 'dsh-dot';
 // dshComputer is required on purpose: without the VM boundary "leave it running" is not safe.
@@ -27,6 +26,17 @@ export const SILENT = 'DOT_SILENT';
 export const SCHEDULED_RULE = '这一轮由定时任务触发，用户不在对话里。做完检查后：如果和上次相比没有值得告诉用户的新内容，'
   + `最终回复只写 ${SILENT}（这条不会发给用户）；有新内容才简要汇报并附链接。`;
 
+/** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
+export const WORKING_RULES = [
+  '# dot 的工作方式',
+  '你有一台自己的电脑（虚拟机）：命令和浏览器都在那台电脑里运行，用户可以随时看到实时画面。用户主要在 IM 里和你说话。',
+  '- 定时任务：用户的要求里只要带有未来的时间点或周期（"2 分钟后"、"明天早上"、"每天 8 点"、"每周一"），一律用 `schedule_create` 建任务（带时区），现在不要去做。建好后只回复任务内容和触发时间。到点你会收到提醒，那时再去做。',
+  `- 静默协议：被定时任务叫醒时，如果检查后没有值得告诉用户的内容，最终回复只写 ${SILENT}，这条不会发给用户。有内容就简要说，附链接。用户主动跟你说话时，正常回复。`,
+  '- 用你的电脑：网页在你电脑的浏览器里打开（`mcp__vm__browser_*` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。',
+  '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；不要试图绕过。',
+  '- 回复拆成多条发送时，用 <sep/> 分隔；每条可以很短。',
+].join('\n');
+
 export const defaults = {
   home: '',             // default ~/dot
   imBot: '',            // dsh-im Bot ID; default: the first bot that has a saved delivery target
@@ -35,7 +45,6 @@ export const defaults = {
   autoUnblockDaily: true,
 };
 
-const TEMPLATES = join(dirname(fileURLToPath(import.meta.url)), '..', 'templates');
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
@@ -110,9 +119,7 @@ export function apply(ctx, config = {}) {
   const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
   const im = createNotifier(() => ctx.get('dshIm'), cfg, logger);
 
-  // Identity file, editable, never overwritten.
   mkdirSync(home, { recursive: true });
-  if (!existsSync(join(home, 'AGENTS.md'))) { try { copyFileSync(join(TEMPLATES, 'AGENTS.md'), join(home, 'AGENTS.md')); } catch (error) { void error; } }
   for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['schedule', 'the schedule service (built into dsh >= 0.2.1)']]) {
     if (ctx.get(svc) === undefined) logger.warn(`${pkg} is not installed (see the dsh-dot README install command)`);
   }
@@ -163,9 +170,16 @@ export function apply(ctx, config = {}) {
     }
   });
 
-  // The silence rule must be in front of the model on the turn a schedule wakes, not only in
-  // AGENTS.md, which the model reads as background. Only those turns get it.
+  // Working rules are a system-prompt section for sessions in <home> (static per session, so the
+  // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
+  // schedule wakes, as a dynamic context; only those turns get it.
+  const inHome = (c) => { const s = c.agent?.session; return Boolean((s?.header?.cwd && inside(home, s.header.cwd)) || turns.has(s?.id)); };
   ctx.inject(['systemPrompt'], (scope) => {
+    scope.effect(() => scope.systemPrompt.section({
+      name: 'dot:rules',
+      order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
+      text: (c) => (inHome(c) ? WORKING_RULES : ''),
+    }), 'dsh-dot: working rules section');
     scope.systemPrompt.context({
       name: 'dot:scheduled-turn',
       order: 900,

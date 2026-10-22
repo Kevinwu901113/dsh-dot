@@ -23,8 +23,8 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
     effect(fn) { effects.push(fn()); },
-    prompts: [],
-    systemPrompt: { context(c) { ctx.prompts.push(c); } },
+    prompts: [], sections: [],
+    systemPrompt: { context(c) { ctx.prompts.push(c); }, section(c) { ctx.sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
     get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm, systemPrompt: ctx.systemPrompt }[name]),
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
@@ -42,13 +42,13 @@ test('silence marker detection', () => {
   assert.equal(contentText([{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }]), 'ab');
 });
 
-test('creates AGENTS.md once, never overwrites', () => {
+test('working rules are a prompt section for sessions in home; no AGENTS.md is written', () => {
   const h = harness();
   apply(h.ctx, h.config);
-  assert.ok(existsSync(join(h.home, 'AGENTS.md')));
-  writeFileSync(join(h.home, 'AGENTS.md'), 'mine');
-  apply(h.ctx, h.config);
-  assert.equal(readFileSync(join(h.home, 'AGENTS.md'), 'utf8'), 'mine');
+  assert.ok(!existsSync(join(h.home, 'AGENTS.md')));
+  const sec = h.ctx.sections.find((s) => s.name === 'dot:rules');
+  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*DOT_SILENT[\s\S]*<sep\/>/);
+  assert.equal(sec.text({ agent: { session: { id: 'b', header: { cwd: '/elsewhere' } } } }), '');
   stop(h);
 });
 

@@ -14,6 +14,10 @@
 
 结果：dsh-dot 从约 400 行降到约 200 行，依赖组合变为 dsh-computer、dsh-im、dsh-budget、官方 schedule。云端在真实 dsh 上验证了定时任务的投递和静默两条路径。
 
+## 2026-10-22 晚：去掉 AGENTS.md
+
+Kevin 要求所有操作都由插件实现。dot 不再复制模板到 `~/dot/AGENTS.md`；工作方式（定时任务、静默、用电脑、审批、`<sep/>` 分条）作为 `systemPrompt.section`（`dot:rules`）注入 `~/dot` 里的会话。人设交给 dsh-interlude 的 Canon。`<sep/>` 在投递时拆成多条 IM 消息。
+
 ## 2026-10-22 真机排错记录
 
 真机：Mac，App 自动升到 0.2.1-rc.2，IM 换成 dsh-im（QQ 官方机器人）。跑北极星缩短版时发现并修掉的问题：

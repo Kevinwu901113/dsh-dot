@@ -12,7 +12,7 @@ dsh-dot is assembled from existing plugins. It adds only the glue none of them h
 | Reachable over IM (9 platforms), approvals by reply | [dsh-im](https://github.com/xmanrui/dsh-im), the most-starred dsh IM plugin |
 | Scheduled work (daily / weekly / cron, survives restarts) | built into dsh ≥ 0.2.1 (the official schedule service) |
 | Hard spending cap (optional) | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block`; without it dot runs the same, just uncapped |
-| Identity and duties | dsh's own `AGENTS.md` loading |
+| Identity | [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude)'s Canon (HDSI presets by share code), or dsh's persona config; dot only adds its working rules as a prompt section |
 | **Glue (this repo, ~200 lines)** | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
 
 ```bash
@@ -38,7 +38,7 @@ dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得�
 | IM（飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp），回复文字审批 | [dsh-im](https://github.com/xmanrui/dsh-im)，dsh 社区星数最多的 IM 插件 |
 | 定时任务（每天 / 每周 / cron，重启后补发） | dsh 0.2.1 起内置的官方定时服务（「自动化任务」） |
 | 预算硬上限（可选） | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block`。不装也能用，只是没人拦花费 |
-| 身份和职责 | dsh 自带的 `AGENTS.md` 加载 |
+| 身份 | [dsh-interlude](https://github.com/Kevinwu901113/dsh-interlude) 的 Canon（HDSI 分享码导入）或 dsh 的 persona 配置；dot 只把自己的工作规则作为系统提示的一段注入 |
 | **dsh-dot 本身（约 200 行）** | 上面这些插件都没有的部分，见下文「工作原理」 |
 
 ### 二、安装
@@ -67,7 +67,7 @@ open -a "DeepSeek Harness"
    ```
    不设 `block` 的话，dsh-budget 只提醒、不拦截。
 2. **IM**：设置 → IM 机器人，接入一个机器人（飞书可扫码一键创建）。
-3. **dot 的工作目录**：把这个机器人的工作区设为 `~/dot`。这样 IM 里开的会话会读 `~/dot/AGENTS.md`，定时任务也会跑在这里。编辑 `AGENTS.md`，写它负责什么、你的偏好。
+3. **dot 的工作目录**：把这个机器人的工作区设为 `~/dot`。dot 只处理这个目录里的会话，定时任务也会跑在这里。不需要 `AGENTS.md`：工作规则由 dot 注入，人设由 dsh-interlude 注入。
 4. **投递目标**：在机器人设置里点「新建目标」，选你和机器人的私聊，保存。dot 用 dsh-im 的公开接口往这个目标发消息。保持「会话双向同步」**关闭**，由 dot 决定发不发。
 5. 在 dsh 里发送 `/dot test`，IM 里收到测试消息就说明通了。
 6. **公网实时画面（可选）**：按 dsh-computer README 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
@@ -85,7 +85,7 @@ dsh-dot 只做现成插件都不做的四件事：
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
-| `home` / `DSH_DOT_HOME` | `~/dot` | `AGENTS.md` 所在目录；只处理这个目录里的会话 |
+| `home` / `DSH_DOT_HOME` | `~/dot` | 只处理这个目录里的会话 |
 | `imBot` / `imTarget` | 自动 | dsh-im 的 Bot ID 和 Target ID；默认用第一个有已保存目标的机器人 |
 | `autoUnblockDaily` | `true` | 零点自动解除日预算拦截 |
 
@@ -99,7 +99,7 @@ dsh-dot 只做现成插件都不做的四件事：
 ### 六、验证情况
 
 **真机**（Mac，dsh 0.2.1-rc.2，QQ 官方机器人，真实模型）：
-- 在 QQ 里和 dot 对话，它以 `~/dot/AGENTS.md` 的身份回复。
+- 在 QQ 里和 dot 对话，它以注入的身份回复。
 - 说"2 分钟后看看 X 有没有新提交"，agent 建了定时任务（不再马上去做）；到点在虚拟机里查看，结果由 dot 推到 QQ。
 - 再建一个任务，到点没有新提交，agent 只回复 `DOT_SILENT`，QQ 没有收到消息。
 - `/dot test` 从 dsh 发测试消息到 QQ。
