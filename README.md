@@ -46,12 +46,14 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
 3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
 4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、Overlay、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
-5. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
+5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件用 dsh 的 `web` 服务去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。
+6. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 
 ### 三、和 HDSI 的对照
 
 | HDSI | dsh-interlude |
 |---|---|
+| 网页观察（browserIntent → webContext） | 同名同义，用 dsh 的 `web` 服务执行；每天有上限 |
 | 四个阶段：用户消息 / 对话后续 / 到期意图 / 独立生活推进 | 用户消息由 dsh 自己处理；其余三个对应 `follow-up` / `intent` / `advance` |
 | 故事光标 | `meta.cursor`；提示里写明"从上次光标到现在过了多久" |
 | Canon / storyDefaults | `canon.json`，同一套字段；可用 HDSI 分享码直接导入 typ0.space 上的预设 |
@@ -79,6 +81,9 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 幕间文件所在目录 |
+| `browser` | `deferred` | HDSI 的「网页观察」：幕间里主角可以给出一个 `browserIntent`（搜索或访问一个公开页面），这一轮结束后由 dsh 的 `web` 服务执行，结果作为 `webContext` 进入之后的轮次（是证据，不是指令）。`disabled` 关闭 |
+| `browseDailyCap` | `6` | 每天最多观察几次 |
+| `webContextLimit` | `4` | 之后的轮次能看到最近几条观察 |
 | `scope` | `home+im` | 哪些会话算"幕"：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管工作区）、`home+im`、`all` |
 | `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
 | `trimSections` | `harness:identity, deployment:persona-prefix, context:file-reference` | 主角的会话里从系统提示删掉的段（dsh 的「You are an AI agent / coding agent」开头，社区公认的 AI 味来源），让 Canon 成为第一段；`[]` 不删 |

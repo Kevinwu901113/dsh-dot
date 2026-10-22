@@ -15,7 +15,7 @@ function fakeStream(text) {
 
 const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手，话少，不打句号。' };
 
-function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }] } = {}) {
+function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
   const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [];
@@ -30,6 +30,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
       commands: { register: (c) => { cmd = c; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
+      web,
     }[n]),
     llm: { stream: (o) => { calls.push(o); return fakeStream(typeof reply === 'function' ? reply(o) : reply); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
@@ -322,4 +323,31 @@ test('a prose-only reply gets a continuity refresh call; its JSON becomes the sn
   assert.equal(state.current, '窝在被子里');
   assert.match(readFileSync(join(h.home, 'interlude', 'script.md'), 'utf8'), /她把碗推到床尾/);
   h.stop();
+});
+
+test('browsing: a browserIntent runs through the web service after the round; the observation is webContext next time, capped per day', async () => {
+  const searches = [];
+  const web = { search: async (r) => { searches.push(r.query); return { content: 'HDSI rc57 出了', sources: [{ title: 'rel', url: 'https://x/rel', snippet: '修了主动消息' }], truncated: false }; }, fetch: async () => ({ content: 'page' }) };
+  const withBrowse = GOOD.replace('"contact":null', '"contact":null,"browserIntents":[{"mode":"search","query":"HDS-Interlude 最新版本","purpose":"看看有没有更新","timing":"deferred"}]');
+  const h = harness({ reply: withBrowse, web, config: { browseDailyCap: 1 } });
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.match(h.calls[0].system, /Browsing uses deferred work in this turn/);
+  assert.deepEqual(searches, ['HDS-Interlude 最新版本']);
+  const ctxLines = readFileSync(join(h.home, 'interlude', 'web-context.jsonl'), 'utf8').trim().split('\n');
+  assert.equal(ctxLines.length, 1);
+  assert.match(ctxLines[0], /修了主动消息/);
+  // second round: webContext carries the observation; the cap closes browsing
+  h.act('s1', 'again', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.match(h.calls[1].messages[0].content[0].text, /"webContext"[\s\S]*HDSI rc57 出了/);
+  assert.match(h.calls[1].system, /New browsing is unavailable in this turn/);
+  assert.equal(searches.length, 1, 'daily cap holds');
+  h.stop();
+  const off = harness({ reply: withBrowse, web: null });
+  off.act('s1', 'hi', 'hello');
+  await off.cmd().handler({ rawInput: 'now' });
+  assert.match(off.calls[0].system, /New browsing is unavailable/);
+  assert.ok(!existsSync(join(off.home, 'interlude', 'web-context.jsonl')));
+  off.stop();
 });
