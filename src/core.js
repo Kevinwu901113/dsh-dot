@@ -181,7 +181,8 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     continuitySnapshot: state ?? null,
     settingOverlay: overlay || null,
     recentScript: [
-      ...(script ? String(script).split('\n').filter(Boolean).map((line) => ({ owner: 'narrator', content: line })) : []),
+      // readScript() lines are "<header>：<body>"; the header is a time stamp, not prose.
+      ...(script ? String(script).split('\n').filter(Boolean).map((line) => { const i = line.indexOf('：'); return i > 0 ? { owner: 'narrator', at: line.slice(0, i).replace(/ · \w[\w-]*$/, ''), content: line.slice(i + 1) } : { owner: 'narrator', content: line }; }) : []),
       ...entries,
     ],
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
