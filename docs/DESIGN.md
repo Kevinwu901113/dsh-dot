@@ -1,5 +1,15 @@
 # dsh-interlude 设计记录
 
+## v0.2.1（2026-10-22 晚）：不再依赖 AGENTS.md
+
+Kevin 的要求："不要 agent.md，所有操作尽量都是插件实现"。改法：
+
+- Canon 存 `~/dot/interlude/canon.json`，字段就是 HDSI 的 `storyDefaults`（外加 `replyRules`、`examples`）。来源三选一：`/interlude preset <分享码>` 从 typ0.space 导入（它的 `/api/presets` 不需要登录）、`cordis.patch.yml` 里的 `canon` 配置、可选的 `identityFile` 追加文本。
+- 注入方式从 `systemPrompt.context`（动态、排在历史之后）改为 `systemPrompt.section`（系统提示的一段，order = persona 前缀 + 1）。原因：人设是静态的，放前面遵从度更高，而且每个会话内不变，不影响前缀缓存；连续性 `<interlude>` 仍是 context。
+- 幕间轮次的 Canon 多带一段 `style`（叙事文风），幕前不带。
+- dsh-dot 同步去掉模板：工作方式（定时任务、静默、用电脑、审批、`<sep/>`）变成 `dot:rules` section（order = persona 前缀 + 2）。两个插件都不再读写 `AGENTS.md`。
+- 做不到的部分照旧：HDSI 的"先写剧本再从剧本里取台词"是对话层，dsh 的一轮是 agent 跑工具，插件只能改提示词，不能改回复的产生方式。
+
 ## v0.2（2026-10-22）：按 HDS-Interlude 重做
 
 Kevin 指明"幕间系统"指的是 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)（HDSI）。v0.1 是在他不在时按字面理解写的"日记 + 状态"，v0.2 按 HDSI 的框架重做，机制的对照见 README「和 HDSI 的对照」一节。决定：

@@ -14,7 +14,7 @@ Three kinds of rounds, after HDSI's phases:
 | `advance` | independent life progression on an interval, even with no conversation (`advanceEveryMinutes`, inside `activeHours`) |
 | `intent` | a stored intent came due (a reminder, a promised reply, a contact check) |
 
-Files, all plain text under `~/dot/interlude/`: `script.md` (the life script, append-only), `state.json` (mood / now / next / threads), `overlay.md` (slow, non-destructive change in how it reads itself), `intents.json`, `calls.jsonl` (audit). The identity file you already keep (`~/dot/AGENTS.md`) is the Canon and is never touched.
+Files, all plain text under `~/dot/interlude/`: `canon.json` (who the character is — HDSI `storyDefaults`, imported from the HDSI preset hub with `/interlude preset <share code>` or set in config; no `AGENTS.md` needed), `script.md` (the life script, append-only), `state.json` (mood / now / next / threads), `overlay.md` (slow, non-destructive change in how it reads itself), `intents.json`, `calls.jsonl` (audit). The Canon is injected as a system-prompt section for sessions in the home directory.
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-interlude
@@ -36,6 +36,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 ### 二、它做什么
 
+0. **Canon（人设）由插件管理，不用 AGENTS.md**：`/interlude preset <分享码>` 从 HDSI 官方预设站 [typ0.space](https://typ0.space) 拉一份 `storyDefaults`（角色设定、视角、关系、配角、世界、文风、回复规则）存到 `~/dot/interlude/canon.json`，立即作为系统提示的一段注入 `~/dot` 里的每个会话（紧跟 dsh 的 persona 之后，静态，不破坏提示前缀缓存）。也可以在 `cordis.patch.yml` 的 `canon` 配置里直接写。`/interlude canon` 查看当前人设。HDSI 社区分享的任何人设因此都能直接用在 dsh 上。
 1. **看着幕前**：记录 `~/dot` 里每一轮对话的梗概（谁发起的、用户说了什么、它最后答了什么、有没有审批）。定时任务触发的轮次也算。
 2. **幕间一轮**：一次模型调用。模型看到：身份文件（Canon）、当前状态、最近两段剧本、Overlay、待办的打算、这段时间幕前发生了什么、现在是星期几什么时段、距上一次幕间多久。它输出 JSON：
    - `script`：从上次故事光标到现在，它过的日子（≤150 字，第一人称，可以和用户无关）；
@@ -53,7 +54,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 |---|---|
 | 四个阶段：用户消息 / 对话后续 / 到期意图 / 独立生活推进 | 用户消息由 dsh 自己处理；其余三个对应 `follow-up` / `intent` / `advance` |
 | 故事光标 | `meta.cursor`；提示里写明"从上次光标到现在过了多久" |
-| Canon | 身份文件 `~/dot/AGENTS.md`（或 dsh 的 persona 配置），只读 |
+| Canon / storyDefaults | `canon.json`，同一套字段；可用 HDSI 分享码直接导入 typ0.space 上的预设 |
 | recentScript | `script.md` 最近两段 |
 | continuitySnapshot | `state.json` |
 | Overlay | `overlay.md`，追加式 |
@@ -67,16 +68,20 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add github:Kevinwu901113/dsh-interlude
 ```
 
-和 dsh-dot 共用 `~/dot`，装上就能用。没有 dsh-dot 也可以：把身份写在 `~/dot/AGENTS.md`，在 `~/dot` 里开会话。
+和 dsh-dot 共用 `~/dot`。装好后在 dsh 里发 `/interlude preset 6QA0-1PD6`（示例：HDSI 作者的「水濑」），人设就有了；或者去 typ0.space 挑一个，复制分享码。
 
-在 dsh 里发送 `/interlude` 查看状态，`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
+`/interlude` 查看状态，`/interlude canon` 看当前人设，`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
+
+`examples/canon.minase-style.json` 是一份按 Minase 风格拼出来的 Canon（角色设定来自 @MomoiCore 的预设，回复规则来自 @Tangink 的预设，均 CC-BY-NC；对话范例取自 HDSI 作者公开的聊天截图），放到 `~/dot/interlude/canon.json` 即可使用。
 
 ### 五、配置
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 哪个目录里的会话算"幕" |
-| `identityFile` | `<home>/AGENTS.md` | Canon |
+| `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
+| `presetHub` | `https://typ0.space` | HDSI 预设分享站 |
+| `identityFile` | 无 | 可选：额外追加到 Canon 后面的文本文件 |
 | `idleMinutes` | `10` | 安静多久算一幕结束 |
 | `advanceEveryMinutes` | `180` | 独立生活推进的间隔；`0` 关闭 |
 | `activeHours` | `08:00-23:00` | 推进和主动联系只在这个时段 |
@@ -90,11 +95,11 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 ### 六、文件
 
-全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`script.md`、`state.json`、`overlay.md`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
+全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`overlay.md`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
 
 ### 七、原则
 
-- **不重复造轮子**：人设用 dsh 自带的 persona 或你已有的身份文件；对话、IM、定时、预算都用现成的；模型调用走 dsh 的 `llm` 服务和默认模型。
+- **不重复造轮子**：人设直接用 HDSI 社区的预设（分享码导入），字段和 HDSI 一致；对话、IM、定时都用现成的；模型调用走 dsh 的 `llm` 服务和默认模型。
 - **不做记忆库**：剧本给人看，状态给下一幕看，都有上限。要长期记忆，另装记忆插件。
 - **可审计**：模型看到什么、写了什么、为什么没发出去，`calls.jsonl` 和审计日志里都有。
 

@@ -15,7 +15,7 @@
 // continuity snapshot (state.json), Overlay (overlay.md, slow non-destructive change), intents
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
-import { appendFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -25,7 +25,9 @@ export const inject = ['llm', 'agentDefaultModel'];
 
 export const defaults = {
   home: '',                   // default ~/dot; acts are sessions whose cwd is inside it
-  identityFile: '',           // default <home>/AGENTS.md — the Canon: who the character is
+  canon: null,                // HDSI storyDefaults used until a preset is imported ({ characterName, characterProfile, ... })
+  presetHub: 'https://typ0.space', // HDSI preset hub; `/interlude preset <share code>` imports from here
+  identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // follow-up round this long after a conversation goes quiet
   advanceEveryMinutes: 180,   // independent life progression; 0 disables
   activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
@@ -172,17 +174,55 @@ export async function collectText(stream) {
   return text;
 }
 
+/** HDSI storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
+export function renderCanon(canon, { withStyle = false } = {}) {
+  const sd = canon?.storyDefaults ?? canon ?? {};
+  const name = String(sd.characterName ?? '').trim();
+  if (!name && !sd.characterProfile) return '';
+  const part = (title, v) => (v && String(v).trim() ? `## ${title}\n${String(v).trim()}` : '');
+  return [
+    `# 你是 ${name || '主角'}`,
+    part('角色设定', sd.characterProfile), part('视角', sd.perspective), part('和用户的关系', sd.relationship),
+    part('用户', sd.userProfile), part('配角', sd.supportingCast), part('世界', sd.world), part('主要地点', sd.location),
+    part('回复规则', sd.replyRules ?? canon?.replyRules), part('对话范例（说话的样子）', canon?.examples),
+    withStyle ? part('叙事文风', sd.style) : '',
+  ].filter(Boolean).join('\n\n');
+}
+
+/** Import a preset from the HDSI hub by share code (public API; the page needs no login for this). */
+export async function fetchPreset(hub, code, fetchImpl = globalThis.fetch) {
+  const want = String(code).replace(/[^0-9a-z]/gi, '').toUpperCase();
+  if (want.length < 6) throw new Error('share code looks wrong');
+  const list = await (await fetchImpl(`${hub}/api/presets`)).json();
+  const row = (list.rows ?? []).find((r) => String(r.share_code ?? '').replace(/-/g, '').toUpperCase() === want);
+  if (!row) throw new Error(`no preset with share code ${code} on ${hub}`);
+  const { preset } = await (await fetchImpl(`${hub}/api/presets/${encodeURIComponent(row.slug)}`)).json();
+  const sd = preset?.payload?.storyDefaults;
+  if (!sd?.characterName) throw new Error('preset has no storyDefaults');
+  return {
+    storyDefaults: sd,
+    source: { hub, shareCode: row.share_code, slug: preset.slug, title: preset.title, author: preset.author, license: preset.license, revision: preset.revision, fetchedAt: new Date().toISOString() },
+  };
+}
+
 export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
   const logger = ctx.logger('dsh-interlude');
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
-  const identityFile = cfg.identityFile || join(home, 'AGENTS.md');
   const files = {
     script: join(dir, 'script.md'), state: join(dir, 'state.json'), overlay: join(dir, 'overlay.md'),
     intents: join(dir, 'intents.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
+    canon: join(dir, 'canon.json'),
   };
   mkdirSync(dir, { recursive: true });
+  // The Canon: an imported preset wins; otherwise the configured storyDefaults; AGENTS.md is not involved.
+  let canon = readJson(files.canon, null) ?? (cfg.canon ? { storyDefaults: cfg.canon, source: { kind: 'config' } } : null);
+  const canonText = (opts) => {
+    let extra = '';
+    if (cfg.identityFile) { try { extra = readFileSync(cfg.identityFile, 'utf8'); } catch (error) { void error; } }
+    return [renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
+  };
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
 
@@ -249,8 +289,7 @@ export function apply(ctx, config = {}) {
     busy = true;
     const now = Date.now();
     try {
-      let identity = '';
-      try { identity = readFileSync(identityFile, 'utf8'); } catch (error) { void error; }
+      const identity = canonText({ withStyle: true });
       const { system, user } = buildPrompt({
         phase, identity: clip(identity, 4000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak,
@@ -330,14 +369,20 @@ export function apply(ctx, config = {}) {
   }
   ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
 
-  // 4. 幕前 opens with the continuity in view.
+  // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
+  // session so the cached prefix holds); the continuity is a dynamic context after the history.
+  const inHome = (c) => { const s = c.agent?.session; return Boolean((s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
   ctx.inject(['systemPrompt'], (scope) => {
+    scope.effect(() => scope.systemPrompt.section({
+      name: 'interlude:canon',
+      order: scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1,
+      text: (c) => (inHome(c) ? canonText() : ''),
+    }), 'dsh-interlude: canon section');
     scope.systemPrompt.context({
       name: 'interlude',
       order: 905,
       text: (c) => {
-        const s = c.agent?.session;
-        if (!(s?.header?.cwd && inside(home, s.header.cwd)) && !homeSessions.has(s?.id)) return '';
+        if (!inHome(c)) return '';
         return renderContext({ state, overlay: readOverlay(), entries: readScript(files.script, cfg.scriptEntriesInPrompt), intents, cursor: meta.cursor, restarted: meta.cursor > 0 && meta.cursor < startedAt });
       },
     });
@@ -347,12 +392,21 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round',
-      input: { hint: '[now | advance]' },
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it',
+      input: { hint: '[now | advance | preset <code> | canon]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
-        if (arg === 'now' || arg === 'advance') {
+        if (/^preset\s+\S+/.test(arg)) {
+          try {
+            canon = await fetchPreset(cfg.presetHub, arg.split(/\s+/)[1]);
+            writeFileSync(files.canon, JSON.stringify(canon, null, 2));
+            audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
+            result = `\nimported: ${canon.source.title} by @${canon.source.author} (${canon.source.license}) → ${files.canon}`;
+          } catch (error) { result = `\nimport failed: ${error.message}`; }
+        } else if (arg === 'canon') {
+          result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
+        } else if (arg === 'now' || arg === 'advance') {
           const r = await round(arg === 'now' ? 'follow-up' : 'advance');
           result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.skipped ?? r.error}`;
         }
@@ -360,7 +414,7 @@ export function apply(ctx, config = {}) {
         rollDay();
         const lines = [
           `home: ${home}`,
-          `canon: ${existsSync(identityFile) ? identityFile : '(missing) ' + identityFile}`,
+          `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ' (config)'}` : '(none) — /interlude preset <share code>'}`,
           `state: ${state?.mood || '(none yet)'}${state?.now ? ` · ${state.now}` : ''}`,
           `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,

@@ -13,11 +13,12 @@ function fakeStream(text) {
   })();
 }
 
-function harness({ reply, identity = '我是 dot，用户的常驻助手。', config = {}, targets = [{ targetId: 'me' }] } = {}) {
+const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手，话少，不打句号。' };
+
+function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }] } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
-  writeFileSync(join(home, 'AGENTS.md'), identity);
-  const calls = [], sent = [], listeners = [], prompts = [], effects = [];
+  const calls = [], sent = [], listeners = [], prompts = [], sections = [], effects = [];
   let cmd;
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
@@ -25,7 +26,7 @@ function harness({ reply, identity = '我是 dot，用户的常驻助手。', co
     effect(fn) { effects.push(fn()); },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
     get: (n) => ({
-      systemPrompt: { context: (c) => prompts.push(c) },
+      systemPrompt: { context: (c) => prompts.push(c), section: (c) => { sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
       commands: { register: (c) => { cmd = c; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
@@ -36,7 +37,7 @@ function harness({ reply, identity = '我是 dot，用户的常驻助手。', co
   const ticks = [];
   const realSetInterval = globalThis.setInterval;
   globalThis.setInterval = (fn) => { ticks.push(fn); const h = realSetInterval(() => {}, 1e9); h.unref(); return h; };
-  try { apply(ctx, { home, idleMinutes: 0, activeHours: '00:00-24:00', ...config }); } finally { globalThis.setInterval = realSetInterval; }
+  try { apply(ctx, { home, canon, idleMinutes: 0, activeHours: '00:00-24:00', ...config }); } finally { globalThis.setInterval = realSetInterval; }
   const emit = (sid, type, data, extra = {}) => listeners.forEach((fn) => fn({ id: sid, header: { cwd: home } }, { type, data, ...extra }));
   const act = (sid, user, assistant, origin = 'user') => {
     emit(sid, 'turn/start', { turn: 1 });
@@ -45,7 +46,8 @@ function harness({ reply, identity = '我是 dot，用户的常驻助手。', co
     emit(sid, 'turn/end', { turn: 1 });
   };
   const ctxText = (sid = 's1', cwd = home) => prompts.find((p) => p.name === 'interlude').text({ agent: { session: { id: sid, header: { cwd } } } });
-  return { home, calls, sent, emit, act, ctxText, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
+  return { home, calls, sent, emit, act, ctxText, canonText, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -88,7 +90,9 @@ test('follow-up round: writes script, state, intents; later acts in home see the
   const r = await h.cmd().handler({ rawInput: 'now' });
   assert.match(r.text, /ran: 他让我看了两次提交/);
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /Canon[\s\S]*我是 dot/);
+  assert.match(h.calls[0].system, /Canon[\s\S]*# 你是 dot[\s\S]*不打句号/);
+  assert.match(h.canonText(), /^# 你是 dot/, 'the Canon is a prompt section for home sessions');
+  assert.equal(h.canonText('x', '/elsewhere'), '', 'and absent elsewhere');
   assert.match(h.calls[0].system, /对话后续/);
   assert.match(h.calls[0].system, /"contact": null/);
   const user = h.calls[0].messages[0].content[0].text;
@@ -215,4 +219,38 @@ test('buildPrompt phases', () => {
   const now = Date.now();
   assert.match(buildPrompt({ phase: 'intent', identity: '', state: null, overlay: '', script: '', digest: '', cursor: now - 3600000, now, intent: { text: '提醒他喝水', kind: 'reminder', at: new Date(now).toISOString() }, speak: true }).system, /到期的意图[\s\S]*提醒他喝水[\s\S]*"contact": \{/);
   assert.match(buildPrompt({ phase: 'advance', identity: '', state: null, overlay: '', script: '', digest: '', cursor: 0, now, speak: false }).system, /到 .* 为止的这段时间/);
+});
+
+test('renderCanon and fetchPreset: HDSI storyDefaults become the Canon; share codes resolve via the hub API', async () => {
+  const { renderCanon, fetchPreset } = await import('../src/core.js');
+  assert.equal(renderCanon(null), '');
+  const text = renderCanon({ storyDefaults: { characterName: '水濑', characterProfile: '话少', perspective: '清楚自己是被创造的', supportingCast: '希绘' }, examples: '在干嘛\n  › 吃烧烤' });
+  assert.match(text, /^# 你是 水濑\n\n## 角色设定\n话少\n\n## 视角/);
+  assert.match(text, /## 配角\n希绘/);
+  assert.match(text, /## 对话范例[\s\S]*吃烧烤/);
+  const fakeFetch = async (url) => ({ json: async () => (url.endsWith('/api/presets')
+    ? { rows: [{ slug: '水濑-82c7', share_code: '6QA01PD6', title: '水濑（Minase V0）' }] }
+    : { preset: { slug: '水濑-82c7', title: '水濑（Minase V0）', author: 'MomoiCore', license: 'CC-BY-NC', revision: 4, payload: { storyDefaults: { characterName: 'Minase V0', characterProfile: 'x' } } } }) });
+  const c = await fetchPreset('https://hub', '6qa0-1pd6', fakeFetch);
+  assert.equal(c.storyDefaults.characterName, 'Minase V0');
+  assert.equal(c.source.author, 'MomoiCore');
+  await assert.rejects(fetchPreset('https://hub', 'ZZZZ-ZZZZ', fakeFetch), /no preset/);
+});
+
+test('/interlude preset <code> imports the Canon into <home>/interlude/canon.json and the prompt section follows', async () => {
+  const h = harness({ reply: GOOD, canon: null });
+  assert.equal(h.canonText(), '', 'no canon yet');
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (url) => ({ json: async () => (url.endsWith('/api/presets')
+    ? { rows: [{ slug: 's', share_code: 'ABCD-1234', title: 'T' }] }
+    : { preset: { slug: 's', title: 'T', author: 'a', license: 'CC-BY-NC', payload: { storyDefaults: { characterName: '肥皂', characterProfile: '贪吃' } } } }) });
+  try {
+    const r = await h.cmd().handler({ rawInput: 'preset abcd1234' });
+    assert.match(r.text, /imported: T by @a/);
+  } finally { globalThis.fetch = realFetch; }
+  assert.match(h.canonText(), /^# 你是 肥皂/);
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'interlude', 'canon.json'), 'utf8')).source.shareCode, 'ABCD-1234');
+  const r2 = await h.cmd().handler({ rawInput: 'canon' });
+  assert.match(r2.text, /贪吃/);
+  h.stop();
 });
