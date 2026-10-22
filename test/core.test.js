@@ -38,7 +38,8 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const realSetInterval = globalThis.setInterval;
   globalThis.setInterval = (fn) => { ticks.push(fn); const h = realSetInterval(() => {}, 1e9); h.unref(); return h; };
   try { apply(ctx, { home, canon, idleMinutes: 0, activeHours: '00:00-24:00', ...config }); } finally { globalThis.setInterval = realSetInterval; }
-  const emit = (sid, type, data, extra = {}) => listeners.forEach((fn) => fn({ id: sid, header: { cwd: home } }, { type, data, ...extra }));
+  const emitAs = (sid, cwd, type, data, extra = {}) => listeners.forEach((fn) => fn({ id: sid, header: { cwd } }, { type, data, ...extra }));
+  const emit = (sid, type, data, extra = {}) => emitAs(sid, home, type, data, extra);
   const act = (sid, user, assistant, origin = 'user') => {
     emit(sid, 'turn/start', { turn: 1 });
     emit(sid, 'user/message', { content: [{ type: 'text', text: user }], source: { kind: origin } }, { surfaceOp: 'append' });
@@ -47,7 +48,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   };
   const ctxText = (sid = 's1', cwd = home) => prompts.find((p) => p.name === 'interlude').text({ agent: { session: { id: sid, header: { cwd } } } });
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
-  return { home, calls, sent, emit, act, ctxText, canonText, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -252,5 +253,14 @@ test('/interlude preset <code> imports the Canon into <home>/interlude/canon.jso
   assert.equal(JSON.parse(readFileSync(join(h.home, 'interlude', 'canon.json'), 'utf8')).source.shareCode, 'ABCD-1234');
   const r2 = await h.cmd().handler({ rawInput: 'canon' });
   assert.match(r2.text, /贪吃/);
+  h.stop();
+});
+
+test('scope: an IM-opened session outside home is an act too (canon + context); other sessions are not', async () => {
+  const h = harness({ reply: GOOD });
+  const im = { id: 'wx', header: { cwd: '/Users/x/.dsh/im' } };
+  h.emitAs('wx', im.header.cwd, 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'qq-1234abcd-0000' } }] });
+  assert.match(h.canonText('wx', im.header.cwd), /^# 你是 dot/);
+  assert.equal(h.canonText('ui', '/Users/x/code'), '');
   h.stop();
 });

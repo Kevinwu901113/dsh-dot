@@ -78,7 +78,8 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
-| `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 哪个目录里的会话算"幕" |
+| `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 幕间文件所在目录 |
+| `scope` | `home+im` | 哪些会话算"幕"：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管工作区）、`home+im`、`all` |
 | `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
 | `presetHub` | `https://typ0.space` | HDSI 预设分享站 |
 | `identityFile` | 无 | 可选：额外追加到 Canon 后面的文本文件 |

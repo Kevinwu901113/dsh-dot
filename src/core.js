@@ -24,7 +24,8 @@ export const name = 'dsh-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
 
 export const defaults = {
-  home: '',                   // default ~/dot; acts are sessions whose cwd is inside it
+  home: '',                   // default ~/dot; the interlude files live in <home>/interlude
+  scope: 'home+im',           // which sessions are acts: 'home' (cwd inside home), 'im' (opened from an IM bot), 'home+im', 'all'
   canon: null,                // HDSI storyDefaults used until a preset is imported ({ characterName, characterProfile, ... })
   presetHub: 'https://typ0.space', // HDSI preset hub; `/interlude preset <share code>` imports from here
   identityFile: '',           // optional extra Canon text file; not read unless set
@@ -43,6 +44,9 @@ export const defaults = {
 };
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
+/** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
+export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
+export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const dayOf = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
@@ -237,14 +241,18 @@ export function apply(ctx, config = {}) {
 
   // 1. 幕前: watch the acts in <home>.
   const turns = new Map();
-  const homeSessions = new Set();
+  const homeSessions = new Set(); // sessions that are acts: cwd inside home, or opened from an IM bot
+  const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
+  const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   let lastActivity = 0;
   let running = 0;
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
     if (!id || !event) return;
-    if (cwd && inside(home, cwd)) homeSessions.add(id);
+    if (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd))) homeSessions.add(id);
+    if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) homeSessions.add(id);
+    if (wantIm && event.type === 'user/message' && isImMessage(event.data)) homeSessions.add(id);
     if (!homeSessions.has(id)) return;
     const t = turns.get(id);
     switch (event.type) {
@@ -371,7 +379,7 @@ export function apply(ctx, config = {}) {
 
   // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
   // session so the cached prefix holds); the continuity is a dynamic context after the history.
-  const inHome = (c) => { const s = c.agent?.session; return Boolean((s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
+  const inHome = (c) => { const s = c.agent?.session; return cfg.scope === 'all' || Boolean((wantHome && s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({
       name: 'interlude:canon',
@@ -413,7 +421,7 @@ export function apply(ctx, config = {}) {
         const { items } = digest();
         rollDay();
         const lines = [
-          `home: ${home}`,
+          `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
           `state: ${state?.mood || '(none yet)'}${state?.now ? ` · ${state.now}` : ''}`,
           `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
