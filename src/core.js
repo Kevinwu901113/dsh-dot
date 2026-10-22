@@ -414,7 +414,7 @@ export function apply(ctx, config = {}) {
         rollDay();
         const lines = [
           `home: ${home}`,
-          `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ' (config)'}` : '(none) — /interlude preset <share code>'}`,
+          `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
           `state: ${state?.mood || '(none yet)'}${state?.now ? ` · ${state.now}` : ''}`,
           `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
