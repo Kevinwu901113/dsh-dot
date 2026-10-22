@@ -29,8 +29,9 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
     get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm, systemPrompt: ctx.systemPrompt }[name]),
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
   };
-  const emit = (cwd, type, data) => listeners.forEach((fn) => fn({ id: 's1', header: { cwd } }, { type, data }));
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, config: { home, budgetPollSeconds: 0.05 } };
+  const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
+  const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05 } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -134,5 +135,26 @@ test('scheduled turns get the silence rule in the prompt; others do not', () => 
   assert.match(at('s1'), /DOT_SILENT/);
   assert.equal(at('other'), '');
   assert.equal(rule.text({}), '');
+  stop(h);
+});
+
+test('scope: a session an IM bot opened elsewhere is dot\'s too; the desktop UI elsewhere is not', async () => {
+  const h = harness();
+  apply(h.ctx, h.config);
+  const rules = h.ctx.sections.find((s) => s.name === 'dot:rules');
+  const at = (id, cwd) => rules.text({ agent: { session: { id, header: { cwd } } } });
+  // dsh-im relays the first message with rpcId "<channel>-<uuid>" into the inbox before the turn starts.
+  h.emitAs('wx', '/Users/x/.dsh/im', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'weixin-c6d37277-7e04-421c-b080-dbc1c5f57eb6' } }] });
+  assert.match(at('wx', '/Users/x/.dsh/im'), /dot 的工作方式/);
+  h.emitAs('ui', '/Users/x/code', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'rpc-1234' } }] });
+  assert.equal(at('ui', '/Users/x/code'), '');
+  // a scheduled turn in that IM session is delivered like one in home
+  h.emitAs('wx', '/Users/x/.dsh/im', 'agent/inbox/spliced', { inserted: [{ source: { kind: 'schedule' } }] });
+  h.emitAs('wx', '/Users/x/.dsh/im', 'turn/start', { turn: 2 });
+  h.emitAs('wx', '/Users/x/.dsh/im', 'user/message', { source: { kind: 'schedule' } });
+  h.emitAs('wx', '/Users/x/.dsh/im', 'assistant/message', msg('X 更新了'));
+  h.emitAs('wx', '/Users/x/.dsh/im', 'turn/end', { turn: 2, reason: 'completed' });
+  await wait(20);
+  assert.deepEqual(h.sent.map((s) => s.text), ['X 更新了']);
   stop(h);
 });

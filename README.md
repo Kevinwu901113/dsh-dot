@@ -67,7 +67,7 @@ open -a "DeepSeek Harness"
    ```
    不设 `block` 的话，dsh-budget 只提醒、不拦截。
 2. **IM**：设置 → IM 机器人，接入一个机器人（飞书可扫码一键创建）。
-3. **dot 的工作目录**：把这个机器人的工作区设为 `~/dot`。dot 只处理这个目录里的会话，定时任务也会跑在这里。不需要 `AGENTS.md`：工作规则由 dot 注入，人设由 dsh-interlude 注入。
+3. **工作区**：不用改。IM 机器人开的会话无论工作区在哪都归 dot（`scope: home+im`），工作规则由 dot 注入，人设由 dsh-interlude 注入，不需要 `AGENTS.md`。
 4. **投递目标**：在机器人设置里点「新建目标」，选你和机器人的私聊，保存。dot 用 dsh-im 的公开接口往这个目标发消息。保持「会话双向同步」**关闭**，由 dot 决定发不发。
 5. 在 dsh 里发送 `/dot test`，IM 里收到测试消息就说明通了。
 6. **公网实时画面（可选）**：按 dsh-computer README 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
@@ -85,7 +85,8 @@ dsh-dot 只做现成插件都不做的四件事：
 
 | 配置项 | 默认值 | 作用 |
 |---|---|---|
-| `home` / `DSH_DOT_HOME` | `~/dot` | 只处理这个目录里的会话 |
+| `home` / `DSH_DOT_HOME` | `~/dot` | dot 的目录 |
+| `scope` | `home+im` | 哪些会话归 dot：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管它的工作区设在哪）、`home+im`、`all` |
 | `imBot` / `imTarget` | 自动 | dsh-im 的 Bot ID 和 Target ID；默认用第一个有已保存目标的机器人 |
 | `autoUnblockDaily` | `true` | 零点自动解除日预算拦截 |
 

@@ -39,6 +39,7 @@ export const WORKING_RULES = [
 
 export const defaults = {
   home: '',             // default ~/dot
+  scope: 'home+im',     // which sessions are dot's: 'home' (cwd inside home), 'im' (opened from an IM bot), 'home+im', 'all'
   imBot: '',            // dsh-im Bot ID; default: the first bot that has a saved delivery target
   imTarget: '',         // dsh-im Target ID; default: that bot's first saved target
   budgetPollSeconds: 15,
@@ -46,6 +47,9 @@ export const defaults = {
 };
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
+/** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
+export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
+export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
@@ -125,13 +129,24 @@ export function apply(ctx, config = {}) {
   }
   if (ctx.get('budget') === undefined) logger.info('dsh-budget not installed: no spending cap, budget notices disabled (optional)');
 
-  // 1 + 2. Scheduled turns in <home>: silence or deliver; announce approvals.
+  // Which sessions are dot's. 'home': cwd inside <home>. 'im': any session a dsh-im bot opened,
+  // whatever its workspace (the bot's first message carries an IM rpcId, which arrives in the inbox
+  // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
+  const imSessions = new Set();
+  const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
+  const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
+  const isDotSession = (id, cwd) => cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id));
+
+  // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text }
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
-    if (!id || !cwd || !inside(home, cwd) || !event) return;
+    if (!id || !event) return;
+    if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) imSessions.add(id);
+    if (wantIm && event.type === 'user/message' && isImMessage(event.data)) imSessions.add(id);
+    if (!isDotSession(id, cwd)) return;
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -173,7 +188,7 @@ export function apply(ctx, config = {}) {
   // Working rules are a system-prompt section for sessions in <home> (static per session, so the
   // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
   // schedule wakes, as a dynamic context; only those turns get it.
-  const inHome = (c) => { const s = c.agent?.session; return Boolean((s?.header?.cwd && inside(home, s.header.cwd)) || turns.has(s?.id)); };
+  const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
@@ -233,9 +248,9 @@ export function apply(ctx, config = {}) {
         if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
         const vm = computer.status?.() ?? {};
         const lines = [
-          `home: ${home}`,
           `computer: ${vm.state ?? '?'}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}`,
           `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
+          `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];
