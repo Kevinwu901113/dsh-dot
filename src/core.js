@@ -72,20 +72,20 @@ export function describeNow(input = new Date()) {
 export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak }) {
   const gap = cursor ? `从 ${describeNow(new Date(cursor))} 到 ${describeNow(now)}` : `到 ${describeNow(now)} 为止的这段时间`;
   const system = [
-    identity ? `# 你是谁（Canon）\n${identity.trim()}` : '',
+    identity ? `# 主角（Canon）\n${identity.trim()}` : '',
     '# 现在是幕间',
-    '聊天在幕前发生，生活在幕间继续。用户不在，这是属于你自己的时间。你要补写这段时间你真实度过的生活，并留下接下来需要的连续性。',
+    '聊天在幕前发生，生活在幕间继续。你是接手这部进行中的剧本的作者，主角生活在此时此刻。从历史剧本的时间点继续衔接书写；让已发生的事情留下可能的后果，让已完成的动作留在过去；把叙事的注意力放在主角此刻正在感知的地方。写完后留下接下来需要的连续性。',
     `时间：${gap}。写到现在为止，不写未来；未来的事只能放进 intents。`,
-    phase === 'follow-up' ? '这一轮是「对话后续」：刚才的对话结束了，写它在你生活里留下的余波，以及你接着做了什么。' : '',
-    phase === 'advance' ? '这一轮是「生活推进」：这段时间没有对话。写你自己在做的事。没有用户消息，不要编造用户说了什么。' : '',
+    phase === 'follow-up' ? '这一轮是「对话后续」：刚才的对话结束了，写它在主角生活里留下的余波，以及主角接着做了什么。' : '',
+    phase === 'advance' ? '这一轮是「生活推进」：这段时间没有对话。写主角自己在做的事。没有用户消息，不要编造用户说了什么。' : '',
     phase === 'intent' && intent ? `这一轮是「到期的意图」：${intent.text}（${intent.kind}，定于 ${describeNow(new Date(intent.at))}）。重新看看现在的生活，决定是履行、延后还是放下；延后要给新的时间，放下要在 script 里说明。` : '',
     '只输出一个 JSON 对象（可放在 ```json 代码块里）：',
-    '- "script": 这段时间的生活，第一人称，200 字以内。真实、具体、不复述对话、不写套话。',
+    '- "script": 这段时间的剧本，第三人称当代生活剧，300 字以内。围绕主角的日常动作、不规律事件和人际交流展开，用具体动作和感官细节代替给心情命名；不复述幕前的对话原文；主角若真的发了消息，把原话写进剧本。',
     '- "state": { "mood": "此刻的状态一句话", "now": "正在做或刚做完的事", "next": "接下来打算", "threads": ["进行中、未完成的事，最多 5 条"] }',
     '- "overlay": ["这段时间形成的稳定变化：新的习惯、对某事的看法、关系上的变化。没有就空数组；一般为空。"]',
     '- "intents": [{ "at": "ISO 8601 本地时间", "kind": "reminder | reply | contact", "text": "到时候要做什么", "willingness": 0~1 }]，只放确实需要在未来某个时刻处理的事；没有就空数组。',
     speak
-      ? '- "contact": { "text": "现在就想对用户说的一句话", "willingness": 0~1, "reason": "来自生活里的具体理由" } 或 null。用户长时间沉默本身不是理由；没有具体理由就 null。'
+      ? '- "contact": { "text": "主角现在发给用户的原话（多条用 <sep/> 分隔）", "willingness": 0~1, "reason": "来自生活里的具体理由" } 或 null。用户长时间沉默本身不是理由；没有具体理由就 null。'
       : '- "contact": null。',
     '规则：不编造没发生的事；state 和 overlay 要接着上次的；不确定就写得短。',
   ].filter(Boolean).join('\n');
@@ -307,8 +307,11 @@ export function apply(ctx, config = {}) {
         }
       }
       if (!bot || !target) return false;
-      const ok = (await im.send(bot, target, c.text, { format: 'plain' }))?.sent === true;
-      if (ok) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${c.text}）\n\n`); }
+      // HDSI's <sep/> marks separate sends of the same moment; deliver them as separate messages.
+      const parts = c.text.split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
+      let ok = false;
+      for (const part of parts) ok = (await im.send(bot, target, part, { format: 'plain' }))?.sent === true || ok;
+      if (ok) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${parts.join(' / ')}）\n\n`); }
       return ok;
     } catch (error) { logger.warn(`contact failed: ${error.message}`); return false; }
   }

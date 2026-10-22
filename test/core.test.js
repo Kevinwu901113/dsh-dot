@@ -160,7 +160,7 @@ test('scheduler: follow-up after quiet acts, advance on interval, nothing while 
 });
 
 test('contact: off by default; on, gated by willingness, hours and daily cap', async () => {
-  const withContact = GOOD.replace('"contact":null', '"contact":{"text":"那个锁的问题我记下了，回头跟你说。","willingness":0.9,"reason":"刚整理完便签"}');
+  const withContact = GOOD.replace('"contact":null', '"contact":{"text":"那个锁的问题我记下了<sep/>回头跟你说","willingness":0.9,"reason":"刚整理完便签"}');
   const quiet = harness({ reply: withContact });
   quiet.act('s1', 'hi', 'hello');
   await quiet.cmd().handler({ rawInput: 'now' });
@@ -170,12 +170,12 @@ test('contact: off by default; on, gated by willingness, hours and daily cap', a
   const loud = harness({ reply: withContact, config: { speak: true, maxContactsPerDay: 1 } });
   loud.act('s1', 'hi', 'hello');
   const r = await loud.cmd().handler({ rawInput: 'now' });
-  assert.deepEqual(loud.sent.map((s) => s.text), ['那个锁的问题我记下了，回头跟你说。']);
+  assert.deepEqual(loud.sent.map((s) => s.text), ['那个锁的问题我记下了', '回头跟你说'], '<sep/> becomes separate messages');
   assert.match(r.text, /\(sent\)/);
   loud.act('s1', 'again', 'ok');
   const r2 = await loud.cmd().handler({ rawInput: 'now' });
   assert.match(r2.text, /\(held\)/, 'daily cap');
-  assert.equal(loud.sent.length, 1);
+  assert.equal(loud.sent.length, 2, 'no further sends after the cap');
   loud.stop();
 
   const timid = harness({ reply: withContact.replace('"willingness":0.9', '"willingness":0.3'), config: { speak: true } });
