@@ -172,9 +172,9 @@ export function apply(ctx, config = {}) {
   }) ?? (() => {}), 'dsh-dot: computer status');
 
   // /dot
-  const commands = ctx.get('commands');
-  if (commands?.register) {
-    ctx.effect(() => commands.register({
+  // The command registry can come up after dot, so register through a child that waits for it.
+  ctx.inject(['commands'], (commandCtx) => {
+    commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
       description: 'dot status; "test" sends a test message to your IM',
       input: { hint: '[test]' },
@@ -194,7 +194,7 @@ export function apply(ctx, config = {}) {
         return { kind: 'success', text: lines.join('\n') + test };
       },
     }), 'dsh-dot: /dot command');
-  }
+  });
 
   logger.info(`dot ready — home ${home}`);
 }

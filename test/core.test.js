@@ -23,6 +23,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
     effect(fn) { effects.push(fn()); },
+    inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
     get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm }[name]),
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
   };
