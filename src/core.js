@@ -141,10 +141,14 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (event.type === 'approval/asked') {
+      // Payload: { id, toolName, reason? }. dsh-computer's gate puts the live-view link in reason.
       const vm = computer.status?.() ?? {};
       const link = vm.publicLiveViewUrl || vm.liveViewUrl;
-      void im.send(`🔐 **dot 需要你审批**\n${event.data?.title ?? event.data?.message ?? event.data?.tool ?? ''}\n在 DeepSeek Harness 里批准或拒绝。${link ? `\n实时画面：${link}` : ''}`);
-      audit('approval-notified', { session: id });
+      const reason = String(event.data?.reason ?? '').trim();
+      const lines = [`🔐 dot 需要你审批：${event.data?.toolName ?? '工具调用'}`, reason, '在 DeepSeek Harness 里批准或拒绝。'];
+      if (link && !reason.includes(link)) lines.push(`实时画面：${link}`);
+      void im.send(lines.filter(Boolean).join('\n'), 'plain');
+      audit('approval-notified', { session: id, tool: event.data?.toolName });
       return;
     }
     if (event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn)) {
