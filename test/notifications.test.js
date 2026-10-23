@@ -10,6 +10,7 @@ test('parseShade: records with title/text in the API 35 layout; bigText fallback
     ['0|com.tencent.mobileqq|1|null|10171', 'com.tencent.mobileqq', '宽', 'hi'],
     ['0|com.tencent.mobileqq|3|null|10171', 'com.tencent.mobileqq', '群聊', '有人@你'],
   ]);
+  assert.equal(n[1].postedAt, 1792738727601);
   assert.deepEqual(parseShade(''), []);
   assert.ok(SYSTEM_PKG.test('com.google.android.apps.wellbeing') && !SYSTEM_PKG.test('com.tencent.mobileqq'));
 });
@@ -38,8 +39,14 @@ test('shade watch: the first snapshot is not news; an event triggers a read; pos
   dumps.current = shade([SYSTEM, QQ_KUAN('在吗[2条]嘿嘿')]);
   fire(); await tick();
   assert.deepEqual(changes, [['updated', 'com.tencent.mobileqq', '在吗[2条]嘿嘿']]);
+  // the same text re-posted later (a second identical message) is an update too
+  const KUAN2 = record({ pkg: 'com.tencent.mobileqq', id: 1, title: '宽', text: '在吗[2条]嘿嘿', updatedMs: 1792738799999 });
+  dumps.current = shade([SYSTEM, KUAN2]);
+  fire(); await tick();
+  assert.equal(changes.length, 2);
+  changes.length = 1;
   // a new conversation and a system notification post together; only the app one counts
-  dumps.current = shade([SYSTEM, QQ_KUAN('在吗[2条]嘿嘿'), QQ_GROUP, record({ pkg: 'android', id: 55, uid: 1000, title: 'Serial console enabled', text: 'Performance is impacted.' })]);
+  dumps.current = shade([SYSTEM, KUAN2, QQ_GROUP, record({ pkg: 'android', id: 55, uid: 1000, title: 'Serial console enabled', text: 'Performance is impacted.' })]);
   fire(); fire(); fire(); await tick();
   assert.deepEqual(changes.slice(1), [['posted', 'com.tencent.mobileqq', '有人@你']], 'a burst of events collapses into one read');
   // she read the chat: QQ cancels it

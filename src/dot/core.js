@@ -278,7 +278,7 @@ export function apply(ctx, config = {}) {
       const found = await controller.resolveAgent(id);
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items) }], source: PHONE_NOTIFICATION_SOURCE }));
-      audit('notification-woke', { session: id, count: items.length, pkgs });
+      audit('notification-woke', { session: id, count: items.length, pkgs, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
   const wake = (n) => {

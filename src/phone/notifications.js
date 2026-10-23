@@ -39,7 +39,9 @@ export function parseShade(dump) {
     if (!text) { const m = /android\.messages=[^\n]*?text=([^,\]]+)/.exec(block); if (m) text = m[1].trim(); }
     if (!text) { const m = /android\.textLines=[^\n]*?\(([^)]*)\)/.exec(block); if (m) text = m[1].trim(); }
     if (!title && !text) continue;
-    out.push({ key, pkg, title, text });
+    // mUpdateTimeMs: when the app last posted or rewrote it — against our clock this is the detection lag.
+    const postedAt = Number(/\bmUpdateTimeMs=(\d+)/.exec(block)?.[1] ?? /\bmCreationTimeMs=(\d+)/.exec(block)?.[1] ?? 0) || undefined;
+    out.push({ key, pkg, title, text, postedAt });
   }
   return out;
 }
@@ -73,14 +75,14 @@ export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChan
         known.set(key, n);
         if (!primed) continue;
         if (!before) { if (wanted(n)) emit('posted', n); continue; }
-        if (before.title !== n.title || before.text !== n.text) { if (wanted(n)) emit('updated', n); }
+        if (before.title !== n.title || before.text !== n.text || (n.postedAt && before.postedAt && n.postedAt !== before.postedAt)) { if (wanted(n)) emit('updated', n); }
       }
       for (const [key, n] of known) if (!now.has(key)) { known.delete(key); if (primed && wanted(n)) emit('removed', n); }
       primed = true;
     })().finally(() => { inFlight = null; });
     return inFlight;
   }
-  const emit = (kind, n) => { try { onChange(kind, { ...n, at: new Date().toISOString() }); } catch (err) { logger.warn?.(`notification listener: ${err.message}`); } };
+  const emit = (kind, n) => { const now = Date.now(); try { onChange(kind, { ...n, at: new Date(now).toISOString(), lagMs: n.postedAt ? Math.max(0, now - n.postedAt) : undefined }); } catch (err) { logger.warn?.(`notification listener: ${err.message}`); } };
   const onEvent = () => { if (soon || !running) return; soon = setTimeout(() => { soon = null; void snapshot(); }, settleMs); };
 
   return {

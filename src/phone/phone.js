@@ -278,7 +278,7 @@ export function apply(ctx, config = {}, deps = {}) {
     onChange: (kind, n) => {
       if (kind === 'removed') return;
       recent.push(n); if (recent.length > 20) recent.shift();
-      audit({ kind: 'notification', change: kind, pkg: n.pkg, title: n.title, text: n.text.slice(0, 200) });
+      audit({ kind: 'notification', change: kind, pkg: n.pkg, title: n.title, text: n.text.slice(0, 200), postedAt: n.postedAt ? new Date(n.postedAt).toISOString() : undefined, lagMs: n.lagMs });
       for (const fn of notifyListeners) { try { fn(n); } catch (err) { logger.warn(`notification listener: ${err.message}`); } }
     },
     logger,
@@ -444,7 +444,7 @@ export function apply(ctx, config = {}, deps = {}) {
         else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
-        if (arg === 'notifications') extra = `\n${recent.length ? recent.map((n) => `${n.at.slice(11, 16)} ${n.pkg}: ${n.title} — ${n.text}`).join('\n') : '(none since start)'}`;
+        if (arg === 'notifications') extra = `\n${recent.length ? recent.map((n) => `${n.at.slice(11, 19)} ${n.pkg}: ${n.title} — ${n.text}${n.lagMs !== undefined ? ` (seen ${(n.lagMs / 1000).toFixed(1)}s after the app posted it)` : ''}`).join('\n') : '(none since start)'}`;
         else if (/^notify\b/.test(arg)) {
           const [, verb, pkg] = arg.split(/\s+/);
           if ((verb === 'mute' || verb === 'wake') && pkg) { phone.setNotifyPolicy(pkg, verb); extra = `\n${pkg}: ${verb}`; }
