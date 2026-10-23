@@ -86,6 +86,10 @@ dot 的通知相关：`notifyBatchMs`（几秒内的通知合成一次叫醒）�
 - **可审计**：她看到什么、为什么没出声、哪次工具被拒了，`calls.jsonl` 和两份审计日志里都有。
 - **用小号**。
 
-### 七、许可证
+### 七、路线
+
+现状、分期和待定的决定见 [docs/ROADMAP.md](docs/ROADMAP.md)。
+
+### 八、许可证
 
 AGPL-3.0-only。幕间组件按原文使用 HDS-Interlude（AGPL-3.0）的提示词，所以整个包按 AGPL 发布；v0.3 之前以 MIT 发布的 computer / dot 代码，那些版本仍按 MIT 可用。
