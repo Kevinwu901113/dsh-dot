@@ -4,7 +4,7 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -18,6 +18,14 @@ test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(parseTarget('owner', ''), null);
   assert.deepEqual(parseTarget('123456', ''), { user_id: 123456 });
   assert.equal(parseTarget('nonsense', ''), null);
+  assert.equal(segmentsToText([{ type: 'image', data: { url: 'https://img/x.jpg' } }]), '[图片 https://img/x.jpg]');
+  assert.deepEqual(imageSource('https://a/b.png'), { kind: 'url', ref: 'https://a/b.png' });
+  assert.deepEqual(imageSource('phone:screen'), { kind: 'phone-screen', ref: 'phone:screen' });
+  assert.deepEqual(imageSource('phone:latest'), { kind: 'phone-latest', ref: 'phone:latest' });
+  assert.deepEqual(imageSource('/sdcard/DCIM/a.jpg'), { kind: 'phone', ref: '/sdcard/DCIM/a.jpg' });
+  assert.deepEqual(imageSource('phone:/storage/emulated/0/x.png'), { kind: 'phone', ref: '/storage/emulated/0/x.png' });
+  assert.deepEqual(imageSource('/root/pic.png'), { kind: 'computer', ref: '/root/pic.png' });
+  assert.equal(imageSource('cat.png'), null);
   const c = onebotConfig({ port: 3001, token: 't' });
   assert.equal(c.network.websocketServers[0].host, '127.0.0.1');
   assert.equal(c.network.websocketServers[0].token, 't');
@@ -83,6 +91,18 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.equal(sock.sent.length, 2);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 2 }, echo: sock.sent[1].echo }));
   assert.deepEqual(await p, { sent: 2 });
+  // images: a URL goes as-is, a phone screenshot as base64, each its own message
+  h.ctx.dshPhone = { isReady: true, screenshot: async () => Buffer.from('PNGDATA'), shell: async () => '', adbExec: async () => ({ stdout: Buffer.from('JPG') }) };
+  const get0 = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : get0(n));
+  const pi = tool.execute({ to: 'owner', images: ['https://example.com/cat.jpg', 'phone:screen'] });
+  await tick(5);
+  assert.deepEqual(sock.sent[2].params.message, [{ type: 'image', data: { file: 'https://example.com/cat.jpg' } }]);
+  sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 3 }, echo: sock.sent[2].echo }));
+  await tick(5);
+  assert.deepEqual(sock.sent[3].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('PNGDATA').toString('base64')}` } }]);
+  sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 4 }, echo: sock.sent[3].echo }));
+  assert.deepEqual(await pi, { sent: 2 });
+  h.ctx.get = get0; delete h.ctx.dshPhone;
   // /qq qr pushes the QR to the phone album when the phone is up
   const pushed = [];
   h.ctx.dshPhone = { isReady: true, adbExec: async (a) => { pushed.push(a); return { stdout: '' }; }, shell: async (c) => { pushed.push(c); return ''; } };

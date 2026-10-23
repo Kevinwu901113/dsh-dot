@@ -30,10 +30,12 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | | |
 |---|---|
 | 有人私聊她 / 群里 @ 她 | `[QQ] 宽（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音） |
-| 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text)`，`<sep/>` 分几条发 |
+| 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，`<sep/>` 分几条发 |
+| 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB |
+| 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
 | dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
 | 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
-| 她能做什么 | 只有发文字。加好友、进群、撤回、发文件都没有工具 |
+| 她能做什么 | 发文字和图片。加好友、进群、撤回、发文件都没有工具 |
 
 ## 配置
 
@@ -55,6 +57,6 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 
 ## 已知限制
 
-- 只做了文字收发。图片、语音进来显示为 `[图片]` `[语音]`。
+- 收发文字和图片；语音、视频进来显示为 `[语音]` `[视频]`。
 - 第一次安装要 VM 能访问 GitHub 和腾讯的下载地址；GitHub 不通时配 `githubProxy`。
 - VM 重建（换镜像）会丢 NapCat 和登录态，`/qq install` 重来。

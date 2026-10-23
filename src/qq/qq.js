@@ -50,7 +50,7 @@ export function segmentsToText(message, selfId = '') {
     switch (seg?.type) {
       case 'text': return String(d.text ?? '');
       case 'at': return String(d.qq) === String(selfId) ? '@我' : `@${d.name ?? d.qq ?? ''}`;
-      case 'image': return d.summary ? `[图片:${d.summary}]` : '[图片]';
+      case 'image': return `[图片${d.summary ? `:${d.summary}` : ''}${d.url ? ` ${d.url}` : ''}]`;
       case 'face': return '[表情]';
       case 'record': return '[语音]';
       case 'video': return '[视频]';
@@ -61,6 +61,26 @@ export function segmentsToText(message, selfId = '') {
       default: return seg?.type ? `[${seg.type}]` : '';
     }
   }).join('').trim();
+}
+
+/**
+ * Where an image she wants to send lives, as a OneBot image segment `file`:
+ *   http(s)://…            → the URL (NapCat downloads it)
+ *   phone:screen           → a screenshot of her phone right now
+ *   phone:latest           → the newest photo/screenshot/download on her phone
+ *   /sdcard/… or phone:/…  → that file on her phone
+ *   any other absolute path → that file on her computer (NapCat runs there)
+ * @returns {{kind: 'url'|'phone-screen'|'phone-latest'|'phone'|'computer', ref: string}|null}
+ */
+export function imageSource(ref) {
+  const s = String(ref ?? '').trim();
+  if (/^https?:\/\//i.test(s)) return { kind: 'url', ref: s };
+  if (/^phone:screen(shot)?$/i.test(s)) return { kind: 'phone-screen', ref: s };
+  if (/^phone:latest$/i.test(s)) return { kind: 'phone-latest', ref: s };
+  const phonePath = /^phone:(\/.+)$/i.exec(s)?.[1] ?? (/^\/(sdcard|storage)\//.test(s) ? s : '');
+  if (phonePath) return { kind: 'phone', ref: phonePath };
+  if (s.startsWith('/')) return { kind: 'computer', ref: s };
+  return null;
 }
 
 /** Does a group message count, under the policy? */
@@ -275,17 +295,42 @@ export function apply(ctx, config = {}, deps = {}) {
     });
   }
   /** Send text to "user:123" | "group:456" | "owner" | a number. Several bubbles: split on <sep/>. */
-  qq.send = async (to, text) => {
+  const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  /** One OneBot image segment for an image she refers to (see imageSource). */
+  async function imageSegment(ref) {
+    const src = imageSource(ref);
+    if (!src) throw new Error(`can't find image "${ref}" (http(s) URL | phone:screen | phone:latest | /sdcard/… | a path on your computer)`);
+    if (src.kind === 'url') return { type: 'image', data: { file: src.ref } };
+    if (src.kind === 'computer') return { type: 'image', data: { file: `file://${src.ref}` } };
+    const phone = ctx.get('dshPhone');
+    if (!phone?.isReady) throw new Error('her phone is not ready');
+    let buf;
+    if (src.kind === 'phone-screen') buf = await phone.screenshot();
+    else {
+      let path = src.ref;
+      if (src.kind === 'phone-latest') {
+        path = (await phone.shell('ls -t /sdcard/DCIM/Camera/* /sdcard/Pictures/Screenshots/* /sdcard/DCIM/Screenshots/* /sdcard/Pictures/* /sdcard/Download/* 2>/dev/null | grep -iE "\\.(jpe?g|png|webp|gif|heic)$" | head -1')).trim();
+        if (!path) throw new Error('no photos on her phone yet');
+      }
+      buf = Buffer.from((await phone.adbExec(['exec-out', 'cat', path], { encoding: 'buffer', maxBuffer: MAX_IMAGE_BYTES * 2 })).stdout);
+      if (!buf.length) throw new Error(`empty or missing on the phone: ${path}`);
+    }
+    if (buf.length > MAX_IMAGE_BYTES) throw new Error(`image too large (${Math.round(buf.length / 1048576)} MB > 10 MB)`);
+    return { type: 'image', data: { file: `base64://${buf.toString('base64')}` } };
+  }
+  /** Send to "user:123" | "group:456" | "owner" | a number: text (bubbles split on <sep/>) and/or images, in that order. */
+  qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
     if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
-    const parts = String(text).split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
+    const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
+    const parts = String(text ?? '').split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
     const ids = [];
-    for (const part of parts) {
-      const data = await call(target.group_id ? 'send_group_msg' : 'send_private_msg', { ...target, message: [{ type: 'text', data: { text: part } }] });
-      ids.push(data?.message_id);
-    }
-    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200) });
-    return { sent: parts.length, messageIds: ids };
+    for (const part of parts) ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
+    for (const ref of [].concat(images ?? []).filter(Boolean)) ids.push((await call(action, { ...target, message: [await imageSegment(ref)] }))?.message_id);
+    const n = ids.length;
+    if (!n) throw new Error('nothing to send (text and images both empty)');
+    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: [].concat(images ?? []).map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))) });
+    return { sent: n, messageIds: ids };
   };
   qq.setAccount = (n) => { cfg.qq = String(n).trim(); qq.qq = cfg.qq; writeSettings({ qq: cfg.qq }); };
   qq.setOwner = (n) => { qq.owner = String(n).trim(); writeSettings({ owner: qq.owner }); };
@@ -303,11 +348,11 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'qq_send',
-      description: '用你的 QQ（电脑端在线）发一条文字消息。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。几句话用 <sep/> 分开会作为几条发出。只在你确实想回或想说时用。',
-      parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false },
+      description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。几句话用 <sep/> 分开会作为几条发出。images 是要发的图片，每张直接作为图片发出去（不是链接）：图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
+      parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sent ${v?.sent ?? 0} message(s)` }] },
       async execute(args) {
-        const r = await qq.send(args.to, args.text);
+        const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
         return { sent: r.sent };
       },
     }), 'dsh-dot/qq: qq_send tool');
@@ -318,7 +363,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq:channel',
       order: 61,
       text: () => (qq.connected
-        ? `你的 QQ（${qq.qq}）在你电脑上也登着：有人给你发消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。手机上的 QQ 照常可以用来看空间、看群、发图。`
+        ? `你的 QQ（${qq.qq}）在你电脑上也登着：有人给你发消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
         : ''),
     }), 'dsh-dot/qq: channel section');
   });
