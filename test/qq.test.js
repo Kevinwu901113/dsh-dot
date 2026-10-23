@@ -34,7 +34,7 @@ function harness({ installed = true, running = false } = {}) {
   const shells = [], effects = [], tools = [], sections = [];
   let cmd, onReady;
   const computer = { port: 18080, backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
-  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'UE5H\n'; return ''; };
+  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     effect(fn) { effects.push(fn()); },
@@ -88,9 +88,9 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   h.ctx.dshPhone = { isReady: true, adbExec: async (a) => { pushed.push(a); return { stdout: '' }; }, shell: async (c) => { pushed.push(c); return ''; } };
   const orig = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : orig(n));
   const out = await h.cmd().handler({ rawInput: 'qr' });
-  assert.match(out.text, /QR saved/);
+  assert.match(out.text, /QR saved: .*qq-login-\d{6}\.png \(drawn 3s ago/);
   assert.match(out.text, /扫一扫 → 相册/);
-  assert.ok(pushed.some((a) => Array.isArray(a) && a[0] === 'push'));
+  assert.ok(pushed.some((a) => Array.isArray(a) && a[0] === 'push' && /qq-login-\d{6}\.png$/.test(a[2])));
   // reconnect after close
   sock.close();
   await tick(10);

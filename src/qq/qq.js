@@ -186,8 +186,29 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   qq.stop = async () => { closeWs(); try { await vmShell('pkill -f "[o]pt/QQ/qq" || true'); } catch {} setState('stopped'); audit({ kind: 'napcat-stopped' }); };
   /** The login QR NapCat wrote (PNG), or null while there is none (already logged in, or not yet started). */
-  qq.qr = async () => {
-    try { const b64 = await vmShell(`test -f ${QR_FILE} && base64 -w0 ${QR_FILE} || true`); return b64.trim() ? Buffer.from(b64.trim(), 'base64') : null; } catch { return null; }
+  /**
+   * A fresh login QR. QQ's codes live about a minute, and after a failed or expired attempt NapCat
+   * does not always draw another, so: if the file is older than `maxAgeS` or the log shows a login
+   * error after it was written, restart NapCat and wait for the new code. Returns { png, ageS } or null.
+   */
+  qq.qr = async ({ maxAgeS = 45 } = {}) => {
+    const probe = async () => {
+      const out = await vmShell(`if [ -f ${QR_FILE} ]; then age=$(( $(date +%s) - $(stat -c %Y ${QR_FILE}) )); err=$(awk -v t="$(date -r ${QR_FILE} '+%H:%M:%S')" '/Login Error|登录失败|二维码已过期/ && $2 > t' ${LOG_FILE} 2>/dev/null | tail -1); echo "age=$age"; echo "err=$err"; base64 -w0 ${QR_FILE}; else echo "age=-1"; fi`);
+      const age = Number(/age=(-?\d+)/.exec(out)?.[1] ?? -1);
+      const err = /err=(.*)/.exec(out)?.[1]?.trim() ?? '';
+      const b64 = out.trim().split('\n').pop().trim();
+      return { age, err, png: age >= 0 && b64 && !b64.startsWith('age=') && !b64.startsWith('err=') ? Buffer.from(b64, 'base64') : null };
+    };
+    try {
+      let r = await probe();
+      if (r.png && r.age <= maxAgeS && !r.err) return { png: r.png, ageS: r.age };
+      // Stale, failed, or absent: start over so the code she scans is one QQ still accepts.
+      audit({ kind: 'qr-refresh', age: r.age, err: r.err.slice(0, 120) });
+      await vmShell(`pkill -f "[o]pt/QQ/qq" || true; sleep 1; rm -f ${QR_FILE}`);
+      await vmShell(`cd ${VM_HOME}; export HOME=${VM_HOME}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; echo restarted`);
+      for (let i = 0; i < 20; i++) { await new Promise((t) => setTimeout(t, 2000)); r = await probe(); if (r.png && r.age <= maxAgeS) return { png: r.png, ageS: r.age }; }
+      return null;
+    } catch (err) { logger.warn(`qr: ${err.message}`); return null; }
   };
   qq.log = async (lines = 40) => {
     try {
@@ -318,19 +339,23 @@ export function apply(ctx, config = {}, deps = {}) {
           else if (verb === 'stop') { await qq.stop(); extra = '\nstopped'; }
           else if (verb === 'log') { extra = `\n${await qq.log(30)}`; }
           else if (verb === 'qr') {
-            const png = await qq.qr();
-            if (!png) extra = '\nno login QR right now (already logged in, or NapCat not started — /qq log)';
+            const got = await qq.qr();
+            if (!got) extra = '\nno login QR (already logged in, or NapCat could not draw one — /qq log)';
             else {
-              const file = join(dshHome(), 'phone', 'qq-login.png');
+              // A new file name every time: the phone's gallery caches thumbnails by path, and a stale
+              // thumbnail of an expired code is exactly what "一直过期" looks like.
+              const stamp = new Date().toISOString().slice(11, 19).replace(/:/g, '');
+              const file = join(dshHome(), 'phone', `qq-login-${stamp}.png`);
               mkdirSync(dirname(file), { recursive: true });
-              writeFileSync(file, png);
-              extra = `\nQR saved: ${file}`;
+              writeFileSync(file, got.png);
+              extra = `\nQR saved: ${file} (drawn ${got.ageS}s ago; valid about a minute)`;
               const phone = ctx.get('dshPhone');
               if (phone?.isReady) {
                 try {
-                  await phone.adbExec(['push', file, '/sdcard/Pictures/qq-login.png']);
-                  await phone.shell('am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/qq-login.png');
-                  extra += '\nalso in her phone\'s album: open QQ → 扫一扫 → 相册 → qq-login.png → confirm the computer login on the phone';
+                  await phone.shell('rm -f /sdcard/Pictures/qq-login*.png; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures');
+                  await phone.adbExec(['push', file, `/sdcard/Pictures/qq-login-${stamp}.png`]);
+                  await phone.shell(`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/qq-login-${stamp}.png`);
+                  extra += `\nin her phone's album as qq-login-${stamp}.png — QQ → 扫一扫 → 相册 → that one → confirm on the phone. Be quick (≈1 min); /qq qr again for a fresh one.`;
                 } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
               }
             }
