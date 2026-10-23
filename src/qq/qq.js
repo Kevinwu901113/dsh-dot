@@ -122,18 +122,44 @@ export function apply(ctx, config = {}, deps = {}) {
     return deps.rootShell ? deps.rootShell(script, timeoutMs) : c.backend.rootShell(script);
   };
   qq.installed = async () => { try { return (await vmShell(`test -x ${QQ_BIN} && echo yes || echo no`)).trim() === 'yes'; } catch { return false; } };
-  qq.install = async () => {
+  const INSTALL_LOG = `${VM_HOME}/napcat-install.log`;
+  const INSTALL_DONE = `${VM_HOME}/napcat-install.done`;
+  const MIRRORS = ['', 'https://ghfast.top/', 'https://gh-proxy.com/', 'https://mirror.ghproxy.com/'];
+  let installing = null;
+  /**
+   * Install NapCat in the computer. The work runs detached inside the VM (a host-side `msb exec`
+   * is cut off after a couple of minutes; apt + linuxqq take longer) and is polled to completion.
+   * GitHub is tried direct first, then through public mirrors; QQ itself comes from Tencent.
+   */
+  qq.install = () => (installing ??= (async () => {
     setState('installing');
-    logger.info('installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes');
-    const proxyFlag = cfg.githubProxy ? `--github-proxy ${JSON.stringify(cfg.githubProxy)}` : '--github-proxy 0';
+    logger.info('installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes; /qq log follows it');
     try {
-      await vmShell(`set -e; cd ${VM_HOME}; export HOME=${VM_HOME}; curl -fL --connect-timeout 20 --max-time 600 -o napcat-install.sh ${JSON.stringify(cfg.installer)}; bash napcat-install.sh --docker n --cli n ${proxyFlag} --confirm y > ${VM_HOME}/napcat-install.log 2>&1 || { tail -40 ${VM_HOME}/napcat-install.log; exit 1; }; test -x ${QQ_BIN}`, 40 * 60_000);
-      audit({ kind: 'installed' });
-      logger.info('NapCat installed');
-      setState('installed');
-      return true;
-    } catch (err) { setState('error', `install failed: ${String(err.message).slice(0, 400)}`); logger.error(`install failed: ${err.message}`); return false; }
-  };
+      const prefixes = cfg.githubProxy ? [cfg.githubProxy] : MIRRORS;
+      const attempts = prefixes.map((pre) => `(curl -fsSL --connect-timeout 15 --max-time 120 -o napcat-install.sh ${JSON.stringify(pre + cfg.installer)} && echo ${JSON.stringify(pre || 'direct')} > github.prefix)`).join(' || ');
+      const script = [
+        `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${INSTALL_DONE} github.prefix`,
+        `{ ${attempts}; } || { echo "cannot download the installer from GitHub (direct or mirrors)"; echo 2 > ${INSTALL_DONE}; exit 2; }`,
+        'pre=$(cat github.prefix); [ "$pre" = direct ] && flag="--github-proxy 0" || flag="--github-proxy $pre"',
+        'echo "installer fetched via $pre"; bash napcat-install.sh --docker n --cli n $flag --confirm y; rc=$?',
+        `test -x ${QQ_BIN} && rc=0; echo $rc > ${INSTALL_DONE}`,
+      ].join('\n');
+      await vmShell(`cat > ${VM_HOME}/napcat-install-run.sh <<'EOF'\n${script}\nEOF\nnohup bash ${VM_HOME}/napcat-install-run.sh > ${INSTALL_LOG} 2>&1 < /dev/null & disown; echo started`);
+      const deadline = Date.now() + 40 * 60_000;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 10_000));
+        const rc = (await vmShell(`cat ${INSTALL_DONE} 2>/dev/null || true`)).trim();
+        if (rc === '') continue;
+        if (rc !== '0') { const tail = await vmShell(`tail -n 25 ${INSTALL_LOG} 2>/dev/null || true`); throw new Error(`installer exited ${rc}:\n${tail.trim().slice(-1200)}`); }
+        audit({ kind: 'installed' });
+        logger.info('NapCat installed');
+        setState('installed');
+        return true;
+      }
+      throw new Error('installer still running after 40 minutes — /qq log');
+    } catch (err) { setState('error', `install failed: ${String(err.message).slice(0, 1500)}`); logger.error(`install failed: ${err.message}`); return false; }
+    finally { installing = null; }
+  })());
   qq.configure = async () => {
     if (!cfg.qq) throw new Error('set the QQ number first: /qq account <number>');
     const ob = JSON.stringify(onebotConfig({ port: cfg.wsPort, token: cfg.token }));
@@ -160,7 +186,7 @@ export function apply(ctx, config = {}, deps = {}) {
   qq.qr = async () => {
     try { const b64 = await vmShell(`test -f ${QR_FILE} && base64 -w0 ${QR_FILE} || true`); return b64.trim() ? Buffer.from(b64.trim(), 'base64') : null; } catch { return null; }
   };
-  qq.log = async (lines = 40) => { try { return await vmShell(`tail -n ${lines} ${LOG_FILE} 2>/dev/null || true`); } catch { return ''; } };
+  qq.log = async (lines = 40) => { try { return await vmShell(`if [ -f ${INSTALL_DONE} ] || [ ! -f ${INSTALL_LOG} ]; then tail -n ${lines} ${LOG_FILE} 2>/dev/null || true; else echo "== installing (${INSTALL_LOG}) =="; tail -n ${lines} ${INSTALL_LOG}; fi`); } catch { return ''; } };
 
   // ---- the OneBot side: one WebSocket through the computer's gateway ----
   let ws = null, closed = false, reconnectTimer = null, echo = 0;
@@ -272,7 +298,7 @@ export function apply(ctx, config = {}, deps = {}) {
         const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
         let extra = '';
         try {
-          if (verb === 'install') { extra = (await qq.install()) ? '\ninstalled' : `\ninstall failed: ${qq.error}`; }
+          if (verb === 'install') { void qq.install(); extra = '\ninstalling in the background (several minutes) — /qq log to follow, /qq for the state'; }
           else if (verb === 'account' && arg) { qq.setAccount(arg); extra = `\naccount set: ${arg}; /qq start`; }
           else if (verb === 'owner' && arg) { qq.setOwner(arg); extra = `\nowner set: ${arg}`; }
           else if (verb === 'start') { extra = (await qq.start()) ? '\nstarting; if this account is new here, /qq qr to log in' : `\n${qq.error}`; }
