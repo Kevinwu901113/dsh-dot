@@ -160,7 +160,7 @@ export function apply(ctx, config = {}) {
   // whatever its workspace (the bot's first message carries an IM rpcId, which arrives in the inbox
   // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
   const imSessions = new Set();
-  let lastSession = ''; // her most recent session: where phone notifications wake her
+  let lastSession = store.get('lastSession') || ''; // her most recent session: where phone notifications wake her (remembered across restarts)
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   const isDotSession = (id, cwd) => cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id));
@@ -175,7 +175,7 @@ export function apply(ctx, config = {}) {
     if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) imSessions.add(id);
     if (wantIm && event.type === 'user/message' && isImMessage(event.data)) imSessions.add(id);
     if (!isDotSession(id, cwd)) return;
-    if (event.type === 'turn/end') lastSession = id;
+    if (event.type === 'turn/end' && lastSession !== id) { lastSession = id; store.set('lastSession', id); }
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {

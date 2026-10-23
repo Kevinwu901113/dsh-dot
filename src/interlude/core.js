@@ -409,7 +409,7 @@ export function apply(ctx, config = {}) {
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   let lastActivity = 0;
   let running = 0;
-  let lastActSession = ''; // the character's most recent act: where VM observations happen
+  let lastActSession = meta.lastSession || ''; // the character's most recent act: where observations happen (remembered across restarts)
   const observing = new Map(); // session id → resolve(assistant text) while an observation turn runs
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
@@ -439,7 +439,7 @@ export function apply(ctx, config = {}) {
         // An observation turn is the character looking, not an act: hand the text back, keep it out of the script.
         if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
         lastActivity = Date.now();
-        lastActSession = id;
+        if (lastActSession !== id) { lastActSession = id; meta.lastSession = id; saveMeta(); }
         const quiet = t.origin === 'schedule' && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
