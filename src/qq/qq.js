@@ -1,0 +1,305 @@
+// dsh-dot/qq: her QQ on her computer. NapCat (a headless QQNT client speaking OneBot 11) runs inside
+// the computer VM, logged into the same account as the QQ app on her phone — QQ allows a phone and a
+// computer at once, so this is her "电脑端 QQ": messages arrive as events the moment they are sent
+// (no notification shade, no background freezing), and she can answer in a second with `qq_send`.
+// The phone app stays for everything else. dsh reaches NapCat's WebSocket through the computer's
+// gateway (the AIO sandbox proxies `Host: <port>-x` to the VM's loopback port, WebSocket included),
+// so nothing is exposed outside 127.0.0.1 and no extra port is opened on the VM.
+import { randomBytes } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join, dirname } from 'node:path';
+import { createAudit } from '../computer/audit.js';
+
+export const name = 'dot-qq';
+export const inject = [];
+
+export const defaults = {
+  qq: '',                   // the account (QQ number) NapCat logs into — her small account, the same one as on the phone
+  owner: '',                // your QQ number: where dot's own notices and her proactive messages go (learned from the first private message if empty)
+  wsPort: 3001,             // OneBot 11 WebSocket server port inside the VM (loopback only)
+  token: '',                // OneBot access token; generated once and kept in $DSH_HOME/dsh-qq.json
+  installer: 'https://raw.githubusercontent.com/NapNeko/NapCat-Installer/main/script/install.sh',
+  githubProxy: '',          // mirror prefix for the installer's GitHub downloads, e.g. https://ghfast.top/ ; '' = direct
+  autoStart: true,          // start NapCat when the computer is ready and the account is set
+  groupPolicy: 'mention',   // group messages that wake her: 'mention' (@her), 'all', 'none'
+  reconnectMs: 5000,
+  requestTimeoutMs: 15000,
+};
+
+const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
+export const settingsFile = () => join(dshHome(), 'dsh-qq.json');
+export const auditFile = () => join(dshHome(), 'dsh-qq-audit.jsonl');
+export function readSettingsFile() { try { return existsSync(settingsFile()) ? JSON.parse(readFileSync(settingsFile(), 'utf8')) : {}; } catch { return {}; } }
+function writeSettings(patch) { const next = { ...readSettingsFile(), ...patch }; mkdirSync(dirname(settingsFile()), { recursive: true }); writeFileSync(settingsFile(), JSON.stringify(next, null, 2)); return next; }
+
+// Paths inside the VM (NapCat's rootless install under $HOME of the user it runs as; we run it as root).
+const VM_HOME = '/root';
+const NAPCAT = `${VM_HOME}/Napcat`;
+const QQ_BIN = `${NAPCAT}/opt/QQ/qq`;
+const NAPCAT_DIR = `${NAPCAT}/opt/QQ/resources/app/app_launcher/napcat`;
+const CONFIG_DIR = `${NAPCAT_DIR}/config`;
+const QR_FILE = `${NAPCAT_DIR}/cache/qrcode.png`;
+const LOG_FILE = `${VM_HOME}/napcat.log`;
+
+/** OneBot 11 message segments → plain text the way a person would read them. */
+export function segmentsToText(message, selfId = '') {
+  if (typeof message === 'string') return message;
+  return (Array.isArray(message) ? message : []).map((seg) => {
+    const d = seg?.data ?? {};
+    switch (seg?.type) {
+      case 'text': return String(d.text ?? '');
+      case 'at': return String(d.qq) === String(selfId) ? '@我' : `@${d.name ?? d.qq ?? ''}`;
+      case 'image': return d.summary ? `[图片:${d.summary}]` : '[图片]';
+      case 'face': return '[表情]';
+      case 'record': return '[语音]';
+      case 'video': return '[视频]';
+      case 'file': return `[文件:${d.name ?? ''}]`;
+      case 'reply': return '[回复]';
+      case 'forward': return '[合并转发]';
+      case 'json': case 'xml': return '[卡片]';
+      default: return seg?.type ? `[${seg.type}]` : '';
+    }
+  }).join('').trim();
+}
+
+/** Does a group message count, under the policy? */
+export function groupWanted(ev, policy, selfId) {
+  if (policy === 'all') return true;
+  if (policy === 'none') return false;
+  return (Array.isArray(ev.message) ? ev.message : []).some((s) => s?.type === 'at' && String(s.data?.qq) === String(selfId));
+}
+
+/** NapCat's OneBot 11 config for this account: one WebSocket server on loopback, token required. */
+export function onebotConfig({ port, token }) {
+  return {
+    network: {
+      httpServers: [], httpSseServers: [], httpClients: [],
+      websocketServers: [{ name: 'dot', enable: true, host: '127.0.0.1', port, messagePostFormat: 'array', reportSelfMessage: false, token, enableForcePushEvent: true, debug: false, heartInterval: 30000 }],
+      websocketClients: [], plugins: [],
+    },
+    musicSignUrl: '', enableLocalFile2Url: false, parseMultMsg: false,
+  };
+}
+
+/** Parse a `to` the model or dot gives: "user:123", "group:456", "owner", or a bare number (user). */
+export function parseTarget(to, owner) {
+  const s = String(to ?? '').trim();
+  if (!s || s === 'owner') return owner ? { user_id: Number(owner) } : null;
+  const m = /^(user|private|group|群|好友)?[:：]?\s*(\d{5,})$/i.exec(s);
+  if (!m) return null;
+  return /group|群/i.test(m[1] ?? '') ? { group_id: Number(m[2]) } : { user_id: Number(m[2]) };
+}
+
+function withFileLog(logger) {
+  const file = join(dshHome(), 'dsh-qq.log');
+  try { if (statSync(file).size > 1_000_000) rmSync(file, { force: true }); } catch {}
+  const write = (level, args) => { try { appendFileSync(file, `${new Date().toISOString()} ${level} ${args.map((a) => (a instanceof Error ? a.message : String(a))).join(' ')}\n`); } catch {} };
+  const wrapped = Object.create(logger);
+  for (const level of ['debug', 'info', 'warn', 'error']) wrapped[level] = (...args) => { write(level, args); return logger[level]?.(...args); };
+  return wrapped;
+}
+
+export function apply(ctx, config = {}, deps = {}) {
+  const settings = readSettingsFile();
+  const cfg = { ...defaults, ...settings, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
+  if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
+  const logger = withFileLog(ctx.logger('dsh-dot/qq'));
+  const audit = createAudit(auditFile());
+  const computer = () => ctx.get('dshComputer');
+  let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
+
+  const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit };
+  const listeners = new Set();
+  qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  qq.status = () => ({ state: qq.state, connected: qq.connected, qq: qq.qq, owner: qq.owner, selfId: qq.selfId, error: qq.error, wsPort: cfg.wsPort });
+  const setState = (state, error) => { if (qq.state !== state || qq.error !== error) { qq.state = state; qq.error = error; audit({ kind: 'status', state, error }); } };
+
+  // ---- the VM side: install, configure, start, stop, QR ----
+  const vmShell = async (script, timeoutMs = 120_000) => {
+    const c = computer();
+    if (!c?.backend?.rootShell) throw new Error('the computer is not available (dsh-dot/computer)');
+    return deps.rootShell ? deps.rootShell(script, timeoutMs) : c.backend.rootShell(script);
+  };
+  qq.installed = async () => { try { return (await vmShell(`test -x ${QQ_BIN} && echo yes || echo no`)).trim() === 'yes'; } catch { return false; } };
+  qq.install = async () => {
+    setState('installing');
+    logger.info('installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes');
+    const proxyFlag = cfg.githubProxy ? `--github-proxy ${JSON.stringify(cfg.githubProxy)}` : '--github-proxy 0';
+    try {
+      await vmShell(`set -e; cd ${VM_HOME}; export HOME=${VM_HOME}; curl -fL --connect-timeout 20 --max-time 600 -o napcat-install.sh ${JSON.stringify(cfg.installer)}; bash napcat-install.sh --docker n --cli n ${proxyFlag} --confirm y > ${VM_HOME}/napcat-install.log 2>&1 || { tail -40 ${VM_HOME}/napcat-install.log; exit 1; }; test -x ${QQ_BIN}`, 40 * 60_000);
+      audit({ kind: 'installed' });
+      logger.info('NapCat installed');
+      setState('installed');
+      return true;
+    } catch (err) { setState('error', `install failed: ${String(err.message).slice(0, 400)}`); logger.error(`install failed: ${err.message}`); return false; }
+  };
+  qq.configure = async () => {
+    if (!cfg.qq) throw new Error('set the QQ number first: /qq account <number>');
+    const ob = JSON.stringify(onebotConfig({ port: cfg.wsPort, token: cfg.token }));
+    await vmShell(`mkdir -p ${CONFIG_DIR}; cat > ${CONFIG_DIR}/onebot11_${cfg.qq}.json <<'EOF'\n${ob}\nEOF\n` +
+      // WebUI stays on loopback inside the VM with its own token; not reachable from outside anyway.
+      `test -f ${CONFIG_DIR}/webui.json || cat > ${CONFIG_DIR}/webui.json <<'EOF'\n${JSON.stringify({ host: '127.0.0.1', port: 6099, token: cfg.token.slice(0, 16), loginRate: 10 })}\nEOF\n`);
+  };
+  qq.running = async () => { try { return (await vmShell('pgrep -f "opt/QQ/qq" >/dev/null && echo yes || echo no')).trim() === 'yes'; } catch { return false; } };
+  qq.start = async () => {
+    if (!(await qq.installed())) { setState('not-installed', 'NapCat is not installed in the computer — /qq install'); return false; }
+    if (!cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
+    await qq.configure();
+    if (!(await qq.running())) {
+      await vmShell(`cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
+      audit({ kind: 'napcat-started', qq: cfg.qq });
+      logger.info(`NapCat started for ${cfg.qq}`);
+    }
+    setState('starting');
+    connect();
+    return true;
+  };
+  qq.stop = async () => { closeWs(); try { await vmShell('pkill -f "opt/QQ/qq" || true'); } catch {} setState('stopped'); audit({ kind: 'napcat-stopped' }); };
+  /** The login QR NapCat wrote (PNG), or null while there is none (already logged in, or not yet started). */
+  qq.qr = async () => {
+    try { const b64 = await vmShell(`test -f ${QR_FILE} && base64 -w0 ${QR_FILE} || true`); return b64.trim() ? Buffer.from(b64.trim(), 'base64') : null; } catch { return null; }
+  };
+  qq.log = async (lines = 40) => { try { return await vmShell(`tail -n ${lines} ${LOG_FILE} 2>/dev/null || true`); } catch { return ''; } };
+
+  // ---- the OneBot side: one WebSocket through the computer's gateway ----
+  let ws = null, closed = false, reconnectTimer = null, echo = 0;
+  const pending = new Map(); // echo → { resolve, reject, timer }
+  function closeWs() { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; try { ws?.close(); } catch {} ws = null; qq.connected = false; }
+  function connect() { void connectAsync(); }
+  async function connectAsync() {
+    const c = computer();
+    if (!c?.port) return;
+    if (!WebSocketImpl) { try { WebSocketImpl = (await import('ws')).default; } catch (err) { setState('error', `the ws package is missing: ${err.message}`); return; } }
+    closed = false;
+    if (ws) return;
+    const url = `ws://127.0.0.1:${c.port}/`;
+    const socket = new WebSocketImpl(url, { headers: { Host: `${cfg.wsPort}-napcat`, Authorization: `Bearer ${cfg.token}` } });
+    ws = socket;
+    socket.on('open', () => { logger.info('OneBot connected (NapCat in the computer)'); });
+    socket.on('message', (data) => { try { onEvent(JSON.parse(String(data))); } catch (err) { logger.debug(`bad event: ${err.message}`); } });
+    socket.on('close', () => { if (ws !== socket) return; ws = null; qq.connected = false; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
+    socket.on('error', (err) => { logger.debug(`OneBot socket: ${err.message}`); });
+  }
+  function onEvent(ev) {
+    if (ev.echo !== undefined && pending.has(ev.echo)) {
+      const p = pending.get(ev.echo); pending.delete(ev.echo); clearTimeout(p.timer);
+      if (ev.status === 'ok' || ev.retcode === 0) p.resolve(ev.data); else p.reject(new Error(ev.message || ev.wording || `retcode ${ev.retcode}`));
+      return;
+    }
+    if (ev.post_type === 'meta_event') {
+      if (ev.meta_event_type === 'lifecycle' && ev.sub_type === 'connect') { qq.connected = true; qq.selfId = String(ev.self_id ?? ''); setState('connected'); audit({ kind: 'connected', selfId: qq.selfId }); }
+      if (ev.meta_event_type === 'heartbeat') { qq.connected = true; qq.selfId ||= String(ev.self_id ?? ''); if (qq.state !== 'connected') setState('connected'); }
+      return;
+    }
+    if (ev.post_type !== 'message') return;
+    const selfId = String(ev.self_id ?? qq.selfId);
+    if (String(ev.user_id) === selfId) return;
+    const text = segmentsToText(ev.message, selfId);
+    if (!text) return;
+    const isGroup = ev.message_type === 'group';
+    if (isGroup && !groupWanted(ev, cfg.groupPolicy, selfId)) return;
+    const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
+    if (!isGroup && !qq.owner) { qq.owner = String(ev.user_id); writeSettings({ owner: qq.owner }); audit({ kind: 'owner-learned', owner: qq.owner }); }
+    const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, at: new Date().toISOString(), messageId: ev.message_id };
+    audit({ kind: 'message', ...msg, text: text.slice(0, 200) });
+    for (const fn of listeners) { try { fn(msg); } catch (err) { logger.warn(`qq listener: ${err.message}`); } }
+  }
+  function call(action, params) {
+    return new Promise((resolve, reject) => {
+      if (!ws || ws.readyState !== 1) return reject(new Error('QQ is not connected'));
+      const id = `dot-${++echo}`;
+      const timer = setTimeout(() => { pending.delete(id); reject(new Error(`${action}: no reply in ${cfg.requestTimeoutMs} ms`)); }, cfg.requestTimeoutMs);
+      pending.set(id, { resolve, reject, timer });
+      ws.send(JSON.stringify({ action, params, echo: id }));
+    });
+  }
+  /** Send text to "user:123" | "group:456" | "owner" | a number. Several bubbles: split on <sep/>. */
+  qq.send = async (to, text) => {
+    const target = parseTarget(to, qq.owner);
+    if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
+    const parts = String(text).split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
+    const ids = [];
+    for (const part of parts) {
+      const data = await call(target.group_id ? 'send_group_msg' : 'send_private_msg', { ...target, message: [{ type: 'text', data: { text: part } }] });
+      ids.push(data?.message_id);
+    }
+    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200) });
+    return { sent: parts.length, messageIds: ids };
+  };
+  qq.setAccount = (n) => { cfg.qq = String(n).trim(); qq.qq = cfg.qq; writeSettings({ qq: cfg.qq }); };
+  qq.setOwner = (n) => { qq.owner = String(n).trim(); writeSettings({ owner: qq.owner }); };
+
+  ctx.provide('dshQq', qq);
+
+  // The computer may come up after us; start when it is ready.
+  ctx.inject(['dshComputer'], (c) => {
+    const boot = async () => { if (!cfg.autoStart || !cfg.qq) { setState(cfg.qq ? 'idle' : 'needs-account', cfg.qq ? undefined : 'set the QQ number: /qq account <number>'); return; } try { await qq.start(); } catch (err) { setState('error', err.message); logger.warn(`qq start failed: ${err.message}`); } };
+    c.effect(() => { let gone = false; c.dshComputer.ready?.then(() => { if (!gone) void boot(); }); return () => { gone = true; closeWs(); }; }, 'dsh-dot/qq: boot with the computer');
+  });
+
+  // The tool she answers with. Only text, only to a user or a group; nothing that manages friends,
+  // groups or files — those are not hers to do from here.
+  ctx.inject(['tools'], (scope) => {
+    scope.effect(() => scope.tools.register({
+      name: 'qq_send',
+      description: '用你的 QQ（电脑端在线）发一条文字消息。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。几句话用 <sep/> 分开会作为几条发出。只在你确实想回或想说时用。',
+      parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' } }, required: ['to', 'text'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sent ${v?.sent ?? 0} message(s)` }] },
+      async execute(args) {
+        const r = await qq.send(args.to, args.text);
+        return { sent: r.sent };
+      },
+    }), 'dsh-dot/qq: qq_send tool');
+  });
+
+  ctx.inject(['systemPrompt'], (scope) => {
+    scope.effect(() => scope.systemPrompt.section({
+      name: 'qq:channel',
+      order: 61,
+      text: () => (qq.connected
+        ? `你的 QQ（${qq.qq}）在你电脑上也登着：有人给你发消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。手机上的 QQ 照常可以用来看空间、看群、发图。`
+        : ''),
+    }), 'dsh-dot/qq: channel section');
+  });
+
+  ctx.inject(['commands'], (scope) => {
+    scope.effect(() => scope.commands.register({
+      name: 'qq',
+      description: 'her QQ on the computer (NapCat): status; "install", "account <number>", "start", "stop", "qr" (login QR → the phone album), "log", "owner <number>"',
+      input: { hint: '[install | account <n> | start | stop | qr | log | owner <n>]' },
+      handler: async ({ rawInput }) => {
+        const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
+        let extra = '';
+        try {
+          if (verb === 'install') { extra = (await qq.install()) ? '\ninstalled' : `\ninstall failed: ${qq.error}`; }
+          else if (verb === 'account' && arg) { qq.setAccount(arg); extra = `\naccount set: ${arg}; /qq start`; }
+          else if (verb === 'owner' && arg) { qq.setOwner(arg); extra = `\nowner set: ${arg}`; }
+          else if (verb === 'start') { extra = (await qq.start()) ? '\nstarting; if this account is new here, /qq qr to log in' : `\n${qq.error}`; }
+          else if (verb === 'stop') { await qq.stop(); extra = '\nstopped'; }
+          else if (verb === 'log') { extra = `\n${await qq.log(30)}`; }
+          else if (verb === 'qr') {
+            const png = await qq.qr();
+            if (!png) extra = '\nno login QR right now (already logged in, or NapCat not started — /qq log)';
+            else {
+              const file = join(dshHome(), 'phone', 'qq-login.png');
+              mkdirSync(dirname(file), { recursive: true });
+              writeFileSync(file, png);
+              extra = `\nQR saved: ${file}`;
+              const phone = ctx.get('dshPhone');
+              if (phone?.isReady) {
+                try {
+                  await phone.adbExec(['push', file, '/sdcard/Pictures/qq-login.png']);
+                  await phone.shell('am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/qq-login.png');
+                  extra += '\nalso in her phone\'s album: open QQ → 扫一扫 → 相册 → qq-login.png → confirm the computer login on the phone';
+                } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
+              }
+            }
+          }
+        } catch (err) { extra = `\nerror: ${err.message}`; }
+        const s = qq.status();
+        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not learned yet)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
+      },
+    }), 'dsh-dot/qq: /qq command');
+  });
+}

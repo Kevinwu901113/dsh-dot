@@ -1,0 +1,60 @@
+# dsh-dot/qq · 她电脑上的 QQ
+
+Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a headless QQNT client speaking OneBot 11 — runs inside the computer VM, logged into **the same account as the QQ app on her phone** (QQ allows a phone and a computer at once). Messages arrive as events the moment they are sent, and she answers in a second with `qq_send`. The phone app stays for everything else.
+
+## 为什么
+
+手机 App 收消息靠通知栏：要 App 活着、要系统不冻结、要通知没被 App 自己撤回。我们把这些都修到了 2–4 秒，但它仍是"观察手机"，不是"收到消息"。协议端是"收到消息"：每条都有事件，群消息完整，发送即达。
+
+## 怎么接
+
+- NapCat 装在**她的电脑**（dsh-dot/computer 的 VM）里，以 root 身份 rootless 安装到 `/root/Napcat`，`xvfb-run -a qq --no-sandbox -q <账号>` 后台运行。
+- dsh 连它的 OneBot WebSocket **不开新端口**：VM 的网关（AIO sandbox 的 nginx）把 `Host: 3001-xxx` 的请求转到 VM 内 `127.0.0.1:3001`，WebSocket 也行。所以 dsh 连的是 `ws://127.0.0.1:18080/` + `Host: 3001-napcat` + `Authorization: Bearer <token>`，外面什么都看不到。
+- token 第一次生成后存在 `~/.dsh/dsh-qq.json`。
+
+## 第一次
+
+```
+/qq install            # 在她的电脑里装 NapCat（apt 依赖 + linuxqq + NapCat.Shell，几分钟；日志在 VM 的 /root/napcat-install.log）
+/qq account 123456789  # 她的小号
+/qq start              # 写 OneBot 配置、启动 NapCat、开始连
+/qq qr                 # 把登录二维码存到 ~/.dsh/phone/qq-login.png，并推进她手机的相册
+```
+
+然后在「手机」标签页里：打开 QQ → 右上角 + → 扫一扫 → 相册 → `qq-login.png` → 在手机上确认"电脑登录"。这就是真实的 QQ 多端登录流程——她的手机授权她的电脑。登录态保存在 VM 里，以后 `/qq start` 用账号快速登录，不用再扫。
+
+`/qq` 看状态，`/qq log` 看 NapCat 日志，`/qq stop` 停，`/qq owner <号>` 指定"你"（默认从第一条私聊学到）。
+
+## 之后发生什么
+
+| | |
+|---|---|
+| 有人私聊她 / 群里 @ 她 | `[QQ] 宽（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音） |
+| 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text)`，`<sep/>` 分几条发 |
+| dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
+| 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
+| 她能做什么 | 只有发文字。加好友、进群、撤回、发文件都没有工具 |
+
+## 配置
+
+| 配置项 | 默认 | 作用 |
+|---|---|---|
+| `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
+| `owner` | 自动学 | 你的 QQ 号 |
+| `wsPort` | `3001` | VM 内的 OneBot WS 端口 |
+| `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` |
+| `githubProxy` / `DSH_DOT_GITHUB_PROXY` | 无 | 安装脚本下载 GitHub 资源的镜像前缀 |
+| `autoStart` | `true` | 电脑就绪后自动启动 |
+| `DSH_DOT_QQ=off` | | 不加载；电脑关了它也不加载 |
+
+## 风险
+
+- 协议端个人号有被腾讯风控的可能（随机验证、封号）。**用小号**，低频。
+- NapCat 2025-09 那次事故是公网弱口令被扫。这里 WebUI 和 OneBot 都只在 VM 的 loopback，token 随机，外面没有端口。
+- 这是她的"电脑端 QQ"，和手机同号同时在线；手机那边不要退出登录。
+
+## 已知限制
+
+- 只做了文字收发。图片、语音进来显示为 `[图片]` `[语音]`。
+- 第一次安装要 VM 能访问 GitHub 和腾讯的下载地址；GitHub 不通时配 `githubProxy`。
+- VM 重建（换镜像）会丢 NapCat 和登录态，`/qq install` 重来。

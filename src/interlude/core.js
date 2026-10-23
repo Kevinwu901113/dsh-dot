@@ -734,6 +734,14 @@ export function apply(ctx, config = {}) {
     if (!inHours(cfg.activeHours)) { audit('contact-held', { phase, why: 'outside active hours' }); return false; }
     if (c.willingness < cfg.willingnessThreshold) { audit('contact-held', { phase, why: 'willingness' }); return false; }
     if (meta.dayContacts >= cfg.maxContactsPerDay) { audit('contact-held', { phase, why: 'daily cap' }); return false; }
+    const q = ctx.get('dshQq');
+    if (q?.connected && q.owner) {
+      try {
+        const r = await q.send('owner', c.text);
+        if (r.sent) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${c.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n`); }
+        return r.sent > 0;
+      } catch (error) { logger.warn(`contact via qq failed: ${error.message}`); return false; }
+    }
     const im = ctx.get('dshIm');
     if (!im?.send) return false;
     try {

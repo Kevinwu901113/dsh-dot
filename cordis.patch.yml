@@ -1,10 +1,13 @@
-# dsh-dot: one plugin, four components. The character lives on her own devices.
+# dsh-dot: one plugin, five components. The character lives on her own devices.
 #   phone     — her phone: an Android emulator this plugin installs, boots and keeps alive;
 #               tools mcp__phone__* (mobile-mcp over adb). The emulator window is the live view.
 #               DSH_DOT_PHONE=off turns it off.
 #   computer  — optional: a microVM (microsandbox, bundled; Docker as fallback) with shell, browser,
 #               desktop, live view, approval gates, audit log. The VM is the isolation boundary.
 #               DSH_DOT_COMPUTER=off turns it off (the host subprocess/sandbox settings stay stock).
+#   qq        — her QQ on her computer: NapCat (OneBot 11) inside the VM, same account as the phone
+#               app. Messages wake her instantly; she answers with qq_send. Needs the computer.
+#               DSH_DOT_QQ=off turns it off.
 #   dot       — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
 #               live view, working rules as a prompt section. Needs dsh-im and the official
 #               schedule bundle (see README).
@@ -92,3 +95,10 @@
         # phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili, weibo.com: com.sina.weibo }
         # vmSites: [x.com]
         # vmDailyCap: 2
+    # 8. Her QQ on the computer (NapCat in the VM). /qq install once, /qq account <number>, /qq qr to log in.
+    - id: dot-qq
+      name: 'dsh-dot/qq'
+      disabled: !!js "process.env.DSH_DOT_QQ === 'off' || process.env.DSH_DOT_COMPUTER === 'off'"
+      config:
+        qq: !!js "process.env.DSH_DOT_QQ_ACCOUNT ?? ''"
+        githubProxy: !!js "process.env.DSH_DOT_GITHUB_PROXY ?? ''"

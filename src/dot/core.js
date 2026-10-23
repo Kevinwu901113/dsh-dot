@@ -31,7 +31,7 @@ export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-
 /** The periodic turn: she picks up her phone the way people do between things. */
 export const PHONE_CHECK_TEXT = `[拿起手机] 看一眼手机：有没有没回的消息，你装的 App 里有没有新动态。有事就处理，和平时一样；没事就只回 ${SILENT}，把手机放回桌面（HOME）。`;
 
-const APP_NAMES = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
+const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
 /** Conversation title without the counters chat apps append ("宽(2条新消息)" → "宽"). */
 export const conversationTitle = (title) => String(title ?? '').replace(/\s*[（(]\d+\s*条?(新消息|新)?[)）]\s*$/, '').trim();
@@ -65,8 +65,12 @@ export function notificationText(list, { whileBusy = false } = {}) {
     return `${who}：\n${g.texts.map((t) => `- ${t}`).join('\n')}`;
   };
   const head = groups.length === 1 ? `[手机通知] ${render(groups[0])}` : `[手机通知] ${groups.length} 个对话\n${groups.map((g) => `· ${render(g)}`).join('\n')}`;
-  const when = whileBusy ? '你上一轮期间来的。' : '你手机上弹出来的。';
-  return `${head}\n（${when}要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
+  const when = whileBusy ? '你上一轮期间来的。' : '';
+  const viaQq = groups.some((g) => g.pkg === 'qq');
+  const how = viaQq
+    ? (groups.every((g) => g.pkg === 'qq') ? 'QQ 的消息用 qq_send 回（to 用 user:<QQ号>，是和你说话的人就 owner）' : 'QQ 的用 qq_send 回，别的去 App 里回')
+    : '要回就自己去 App 里回，和平时一样';
+  return `${head}\n（${when}${how}；不想理就只回 ${SILENT}。）`;
 }
 
 /** Model-facing rule for a turn started by a scheduled task. */
@@ -138,10 +142,12 @@ function createStore(file) {
  * Reach the user through dsh-im's public delivery service.
  * @param {() => object | undefined} getIm - returns the `dshIm` service when installed.
  */
-export function createNotifier(getIm, cfg, logger) {
+export function createNotifier(getIm, cfg, logger, getQq = () => undefined) {
   async function target() {
+    const q = getQq();
+    if (q?.connected && q.owner) return { qq: q, name: `QQ ${q.owner}`, target: q.owner, bot: 'napcat' };
     const im = getIm();
-    if (!im?.send) return { error: 'dsh-im is not installed' };
+    if (!im?.send) return { error: 'dsh-im is not installed (and her QQ is not connected)' };
     if (cfg.imBot && cfg.imTarget) return { im, bot: cfg.imBot, target: cfg.imTarget };
     try {
       // listBots() returns [{ botId, channel }].
@@ -159,6 +165,7 @@ export function createNotifier(getIm, cfg, logger) {
   async function send(text, format = 'markdown') {
     const t = await target();
     if (t.error) { logger.warn(`not delivered (${t.error}): ${text.slice(0, 80)}`); return false; }
+    if (t.qq) { try { return (await t.qq.send('owner', text)).sent > 0; } catch (err) { logger.warn(`qq send failed: ${err.message}`); return false; } }
     try {
       // "<sep/>" (HDSI's convention for several sends in one moment) becomes separate messages.
       const parts = text.split(/<sep\s*\/>/i).map((p) => p.trim()).filter(Boolean);
@@ -181,7 +188,7 @@ export function apply(ctx, config = {}) {
   const audit = (event, data = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data });
   const home = cfg.home || join(homedir(), 'dot');
   const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
-  const im = createNotifier(() => ctx.get('dshIm'), cfg, logger);
+  const im = createNotifier(() => ctx.get('dshIm'), cfg, logger, () => ctx.get('dshQq'));
 
   mkdirSync(home, { recursive: true });
   for (const [svc, pkg] of [['dshIm', '@xmanrui/dsh-im'], ['schedule', 'the schedule service (built into dsh >= 0.2.1)']]) {
@@ -327,11 +334,17 @@ export function apply(ctx, config = {}) {
   };
   const releaseHeld = () => { if (!held.length) return; const items = held; held = []; deliverTracked(items, true); };
   const wake = (n) => {
+    // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
+    if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
     if (!batchTimer) batchTimer = setTimeout(flush, cfg.notifyBatchMs);
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
+  // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
+    key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at),
+  })) ?? (() => {}), 'dsh-dot: qq messages'));
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
   let lastWakeAt = 0;

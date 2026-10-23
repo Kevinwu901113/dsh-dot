@@ -169,3 +169,12 @@ Kevin："0123 全做。"
 - **P1 拿起手机**：`phoneCheckEveryMinutes`（30）在 `notifyHours` 内、她不忙、最近没被叫醒时，来一轮 `[拿起手机]`——正常轮次，能回能点。`/dot check` 立刻来一次。幕间的 intent 轮只结算不新建（以前每天 7 轮 intent 自己滚自己）。
 - **P2 玩**：提示词来源定为 **Moltbook 的 heartbeat.md / rules.md**——那是一份给"住在社交网络上的 agent"写的行为守则（优先级：回回复 > 点赞 > 评论 > 关注 > 发帖；不为凑数发；参与 > 创造；真诚；做客心态），和我们要的"玩"完全同构，节译进 `PLAY_RULES`，去掉了它的 API 细节。机制：幕间 JSON 多一个 `playIntents`（≤1，大多为空），`playOut()` 过门控（开关、动作白名单、App 白名单、活跃时段、意愿、每日上限、手机就绪）后以 `PLAY_SOURCE` followup 一条 `[想玩会儿手机]` 进她的会话，正常轮次执行，手机闸门照常。`post` / `dm` 不在 `playActions` 里，提示词里也写不进去。
 - 真机：P0/P1 代码已装，等重启；P2 默认关，`play: true` + `playApps` 由 Kevin 打开。
+
+## v0.6（续）：P3 `dsh-dot/qq`
+
+- **部署在她的电脑里，不开新端口**：AIO sandbox 的 nginx 有一条按 `Host: <port>-x` 转发到 VM loopback 端口的规则（`nginx-server-port-proxy.conf.template`），支持 WebSocket upgrade。在云端容器里验证过：`curl -H "Host: 3001-dot" http://127.0.0.1:18080/` 打到 VM 内 3001。所以 OneBot WS 走已有的 18080，外面没有新面。
+- **登录流程**：NapCat 的二维码存成 PNG → `adb push` 进她手机相册 → 她手机上的 QQ 扫一扫选相册 → 手机确认电脑登录。这就是 QQ 自己的多端登录，她的手机给她的电脑授权。
+- **一条路**：QQ 消息和手机通知走同一条 wake 管道（合并、忙时攒、分组、静音），只是 `pkg: 'qq'`、提示换成"用 qq_send 回"。连上后手机的 QQ 通知自动忽略，避免双叫。
+- **能力边界**：只有 `qq_send` 发文字。加好友、进群、撤回、发文件、改资料没有工具。
+- dsh-im 官方机器人降为后备：dot 的通知器和幕间的主动联系先看 `dshQq.connected && owner`。
+- 安装是显式动作（`/qq install`）：它往她的电脑里装一个 QQ 客户端和一堆 apt 包，几分钟，不该在启动时偷偷做。

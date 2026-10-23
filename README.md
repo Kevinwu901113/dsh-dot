@@ -10,6 +10,7 @@ One plugin, four components:
 |---|---|---|
 | **`dsh-dot/phone`** | Her phone: an Android emulator the plugin downloads (emulator + platform-tools + one system image, ~2 GB, after you accept the SDK license), boots, keeps alive and exposes as `mcp__phone__*` ([mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb). The emulator window is the live view; her apps and logins live in the AVD and survive restarts. [Details](docs/phone.md) | hardware virtualization (Apple silicon or Intel Mac, Linux with KVM, Windows with WHPX) |
 | **`dsh-dot/interlude`** | 幕间, after [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): the Canon (persona; HDSI presets by share code) as a prompt section; a life between conversations — script, continuity, intents; going to look at things on her phone or in her browser (read-only, no approvals); optional proactive contact. [Details](docs/interlude.md) | — |
+| **`dsh-dot/qq`** | Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot 11) inside the computer VM, the same account as the QQ app on her phone; messages wake her the moment they arrive, she answers with `qq_send`. [Details](docs/qq.md) | the computer component |
 | **`dsh-dot/dot`** | The contact layer: scheduled results → IM unless the reply is `DOT_SILENT`, approval and device notices on IM, working rules as a prompt section | [dsh-im](https://github.com/xmanrui/dsh-im) for IM; dsh's built-in schedule service |
 | **`dsh-dot/computer`** (optional) | A bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates and an audit log — the isolation boundary for work. `DSH_DOT_COMPUTER=off` turns it off. [Details](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox) (bundled) or Docker |
 
@@ -29,12 +30,13 @@ History: `dsh-computer` (v0.1–0.5) and `dsh-interlude` were separate plugins; 
 
 dsh-dot 让 dsh 里住进一个**在自己手机上过日子的角色**。她有自己的安卓手机（插件自己装、自己开）、自己的账号、自己的作息：你们不聊天的时候她也在过日子——把发生的事写下来、拿起手机去看她好奇的东西、偶尔有个真实的理由找你说句话。你是她 QQ / 微信 / 飞书里的一个联系人（dsh-im 负责通道）。想让她也能干活——shell、脚本、桌面浏览器、定时任务——再给她那台可选的电脑。
 
-### 一、组成：一个插件、四个组件
+### 一、组成：一个插件、五个组件
 
 | 组件 | 是什么 | 依赖 |
 |---|---|---|
 | **`dsh-dot/phone`** 她的手机 | Android 模拟器。插件自己从 Google 仓库下载模拟器、platform-tools 和一个系统镜像（约 2 GB，先要你接受 SDK 许可），自己写 AVD（不需要 Java / Android Studio），开机、保活，以 `mcp__phone__*` 暴露给模型（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）。模拟器窗口就是实时画面；App 和登录态在 AVD 里，重启不丢。详见 [docs/phone.md](docs/phone.md) | 硬件虚拟化：Apple silicon / Intel Mac，Linux 要 KVM，Windows 要 WHPX |
 | **`dsh-dot/interlude`** 幕间 | 按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：Canon（人设，HDSI 分享码导入）作为系统提示的一段；两次对话之间的生活——剧本、连续性、打算；想看什么就拿手机（或电脑浏览器）去看，只读、无审批；可选的主动联系。详见 [docs/interlude.md](docs/interlude.md) | — |
+| **`dsh-dot/qq`** 她电脑上的 QQ | [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11）跑在她的电脑 VM 里，和手机上的 QQ 同一个账号；消息到的瞬间叫醒她，她用 `qq_send` 秒回；dot 的提醒和她的主动联系也走这里，官方机器人退为后备。详见 [docs/qq.md](docs/qq.md) | 电脑组件 |
 | **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
 | **`dsh-dot/computer`**（可选）她的电脑 | 自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志。干活时的隔离边界。`DSH_DOT_COMPUTER=off` 关掉。详见 [docs/computer.md](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker |
 
@@ -56,7 +58,7 @@ open -a "DeepSeek Harness"
 2. **装 App、登录**：在手机窗口里像用真手机一样操作：从官网下 APK 用 `adb install`（`~/.dsh/phone/platform-tools/adb`），或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸都由你在窗口里亲手过——她遇到会停下来叫你。**用小号。** 各平台的条款都不允许自动化，封了就封了。
 3. **人设**：`/interlude preset <分享码>` 从 [typ0.space](https://typ0.space) 导入一份 HDSI 预设，或者把 `examples/canon.minase-style.json` 放到 `~/dot/interlude/canon.json`。
 4. **她在手机上看什么**：profile 的 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }`——这些站她永远用手机上的 App 去看，只读、无审批、每天有上限。
-5. **IM**：按 dsh-im 的说明接一个机器人（QQ 官方机器人 / 微信 / 飞书…）。她主动说话（`speak: true`）和定时任务的结果都从这里投递。
+5. **她的 QQ**：`/qq install` → `/qq account <小号>` → `/qq start` → `/qq qr`，在「手机」标签页里用她手机上的 QQ 扫相册里的码确认电脑登录（详见 [docs/qq.md](docs/qq.md)）。之后你在 QQ 里给她发消息，1–2 秒叫醒她，她用 `qq_send` 回。不想用协议端的，按 dsh-im 的说明接一个官方机器人也行。
 6. **电脑（可选）**：默认装上并启动；不想要就在环境里设 `DSH_DOT_COMPUTER=off`。要公网实时画面按 [docs/computer.md](docs/computer.md) 用 `tailscale serve`。
 
 ### 四、她一天是怎么过的
