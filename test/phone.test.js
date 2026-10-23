@@ -161,3 +161,66 @@ test('live view server: page, status, one stream frame, input mapped to screen p
   assert.equal(shellQuote("a b'c"), "'a%sb'\\''c'");
   view.close();
 });
+
+const DUMP = `Notification Manager state:
+  Notification List:
+  NotificationRecord(0xabc: pkg=com.tencent.mobileqq user=UserHandle{0} id=1 tag=null key=0|com.tencent.mobileqq|1|null|10171: Notification(channel=msg pri=0))
+    uid=10171 opPkg=com.tencent.mobileqq
+    extras={
+      android.title=String (宽)
+      android.text=String (hi)
+      android.showWhen=Boolean (true)
+    }
+  NotificationRecord(0xdef: pkg=android user=UserHandle{0} id=17 tag=null key=0|android|17|null|1000: Notification(channel=FOREGROUND))
+    extras={
+      android.title=String (系统)
+      android.text=String (正在运行)
+    }
+  NotificationRecord(0x222: pkg=com.tencent.mobileqq user=UserHandle{0} id=3 tag=null key=0|com.tencent.mobileqq|3|null|10171: Notification())
+    extras={
+      android.title=String (群聊)
+      android.bigText=String (有人@你)
+    }
+  mArchive:
+  NotificationRecord(0x111: pkg=com.tencent.mobileqq user=UserHandle{0} id=2 tag=null key=0|com.tencent.mobileqq|2|null|10171: Notification())
+    extras={
+      android.title=String (old)
+      android.text=String (old)
+    }
+`;
+
+test('parseNotifications: active records with title/text, archive excluded', async () => {
+  const { parseNotifications } = await import('../src/phone/phone.js');
+  const n = parseNotifications(DUMP);
+  assert.deepEqual(n.map((x) => [x.pkg, x.title, x.text]), [['com.tencent.mobileqq', '宽', 'hi'], ['android', '系统', '正在运行'], ['com.tencent.mobileqq', '群聊', '有人@你']]);
+  assert.equal(n[0].key, '0|com.tencent.mobileqq|1|null|10171');
+});
+
+test('phone: new notifications reach listeners once; the shade at start is not news; system apps skipped', async () => {
+  let dump = DUMP;
+  const h = harness();
+  // intercept dumpsys through the run stub: the harness's run returns '' for unknown commands, so wrap
+  const got = [];
+  h.ctx.dshPhone.adbExec = async (args) => (args.includes('dumpsys') ? { stdout: dump } : { stdout: '' });
+  assert.ok(await until(() => h.ctx.dshPhone.isReady));
+  h.ctx.dshPhone.onNotification((n) => got.push(n));
+  // the watcher runs on an interval of notifyPollMs (4000 in defaults); trigger via a shorter harness? call poll by waiting
+  await new Promise((r) => setTimeout(r, 4300));
+  assert.equal(got.length, 0, 'what was already there is not announced');
+  dump = DUMP.replace('mArchive:', `  NotificationRecord(0x333: pkg=com.tencent.mobileqq user=UserHandle{0} id=9 tag=null key=0|com.tencent.mobileqq|9|null|10171: Notification())
+    extras={
+      android.title=String (宽)
+      android.text=String (你会主动给我发消息吗)
+    }
+  NotificationRecord(0x444: pkg=android user=UserHandle{0} id=18 tag=null key=0|android|18|null|1000: Notification())
+    extras={
+      android.title=String (系统)
+      android.text=String (更新)
+    }
+  mArchive:`);
+  await new Promise((r) => setTimeout(r, 4300));
+  await new Promise((r) => setTimeout(r, 4300));
+  assert.deepEqual(got.map((n) => n.text), ['你会主动给我发消息吗']);
+  assert.match((await h.cmd().handler({ rawInput: 'notifications' })).text, /com\.tencent\.mobileqq: 宽 — 你会主动给我发消息吗/);
+  h.stop();
+});

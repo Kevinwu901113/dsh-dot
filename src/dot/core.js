@@ -15,6 +15,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 
 export const name = 'dsh-dot';
 // Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
@@ -22,6 +23,15 @@ export const name = 'dsh-dot';
 export const inject = [];
 
 export const SILENT = 'DOT_SILENT';
+
+/** Source of the message that wakes her for a phone notification; such turns are not pushed to IM. */
+export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-notification' });
+
+/** The wake-up text for one notification: what the phone showed, and that she decides. */
+export function notificationText(n) {
+  const app = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书' }[n.pkg] ?? n.pkg;
+  return `[手机通知] ${app}${n.title ? ` · ${n.title}` : ''}：${n.text || '（无内容）'}\n（你手机上弹出来的。要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
+}
 
 /** Model-facing rule for a turn started by a scheduled task. */
 export const SCHEDULED_RULE = '这一轮由定时任务触发，用户不在对话里。做完检查后：如果和上次相比没有值得告诉用户的新内容，'
@@ -137,6 +147,7 @@ export function apply(ctx, config = {}) {
   // whatever its workspace (the bot's first message carries an IM rpcId, which arrives in the inbox
   // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
   const imSessions = new Set();
+  let lastSession = ''; // her most recent session: where phone notifications wake her
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   const isDotSession = (id, cwd) => cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id));
@@ -151,6 +162,7 @@ export function apply(ctx, config = {}) {
     if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) imSessions.add(id);
     if (wantIm && event.type === 'user/message' && isImMessage(event.data)) imSessions.add(id);
     if (!isDotSession(id, cwd)) return;
+    if (event.type === 'turn/end') lastSession = id;
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -238,6 +250,21 @@ export function apply(ctx, config = {}) {
   ctx.inject(['dshComputer'], (c) => c.effect(() => c.dshComputer.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 虚拟机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-computer.log`, 'plain');
   }) ?? (() => {}), 'dsh-dot: computer status'));
+  // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
+  // the app herself; the dsh reply is not relayed anywhere.
+  let waking = Promise.resolve();
+  const wake = (n) => {
+    const controller = ctx.get('sessionController');
+    const id = lastSession;
+    if (!controller || !id) { audit('notification-dropped', { pkg: n.pkg, why: id ? 'no sessionController' : 'no session yet' }); return; }
+    waking = waking.then(async () => {
+      const found = await controller.resolveAgent(id);
+      if (!found || 'error' in found) { audit('notification-dropped', { pkg: n.pkg, why: found?.error?.message ?? 'session not found' }); return; }
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(n) }], source: PHONE_NOTIFICATION_SOURCE }));
+      audit('notification-woke', { session: id, pkg: n.pkg, title: n.title });
+    }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkg: n.pkg, why: err.message }); });
+  };
+  ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
     if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept。', 'plain');

@@ -426,6 +426,7 @@ export function apply(ctx, config = {}) {
         if (!t || event.surfaceOp !== 'append') return;
         if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
         if (event.data?.source?.kind === OBSERVATION_SOURCE.kind) t.origin = 'observation';
+        if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
         return;
       case 'assistant/message': { if (!t || event.data?.interrupted) return; const text = contentText(event.data?.message?.content); if (text.trim()) t.assistant = text; return; }
@@ -580,7 +581,7 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', content: i.assistant } : null,
       ]).filter(Boolean);
       const { system, user } = buildPrompt({

@@ -41,6 +41,10 @@ export const defaults = {
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
   liveViewPort: 18090,      // the phone's live view page on 127.0.0.1 (screen + tap/swipe/type); 0 = off
   publicUrl: '',            // base URL reaching the live view from elsewhere (e.g. tailscale serve), used in notices
+  // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
+  // listeners (dot wakes her for them). notifyApps: packages that count; [] = every non-system app.
+  notifyPollMs: 4000,
+  notifyApps: [],
   mcp: true,                // mount mobile-mcp as mcp__phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
@@ -138,6 +142,29 @@ export function phoneGate(exec, cfg) {
 
 /** Phone tools an observation turn may use: look, scroll, open an app, go back; never type, install or open URLs. */
 export const OBSERVATION_TOOLS = ['mobile_list_available_devices', 'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_list_apps', 'mobile_launch_app', 'mobile_take_screenshot', 'mobile_list_elements_on_screen', 'mobile_click_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button'];
+
+/**
+ * Parse `dumpsys notification --noredact` into the active notifications (archive excluded).
+ * @returns {{key: string, pkg: string, title: string, text: string}[]}
+ */
+export function parseNotifications(dump) {
+  const active = String(dump).split(/\n\s*(?:mArchive|Notification Archive|Archive)\b/)[0];
+  const out = [];
+  for (const block of active.split(/(?=NotificationRecord\()/).slice(1)) {
+    const pkg = /\bpkg=(\S+)/.exec(block)?.[1];
+    const key = /\bkey=(\S+?):?(?=\s)/.exec(block)?.[1];
+    if (!pkg || !key) continue;
+    const field = (name) => { const m = new RegExp(`${name}=(?:String|CharSequence|SpannableString) \\(([^\\n]*)\\)`).exec(block); return m ? m[1].trim() : ''; };
+    const title = field('android.title') || field('android.conversationTitle');
+    let text = field('android.text') || field('android.bigText') || field('android.subText');
+    if (!text) { const m = /android\.messages=[^\n]*?text=([^,\]]+)/.exec(block); if (m) text = m[1].trim(); }
+    if (!title && !text) continue;
+    out.push({ key, pkg, title, text });
+  }
+  return out;
+}
+
+const SYSTEM_PKG = /^(android|com\.android\.|com\.google\.android\.)/;
 
 function withFileLog(logger) {
   const file = join(dshHome(), 'dsh-phone.log');
@@ -239,6 +266,30 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
+  // Notifications: what her phone shows her. Listeners get each new one once.
+  const notifyListeners = new Set();
+  const seen = new Set();
+  const recent = [];
+  phone.onNotification = (fn) => { notifyListeners.add(fn); return () => notifyListeners.delete(fn); };
+  phone.notifications = () => [...recent];
+  let primed = false;
+  async function pollNotifications() {
+    if (!phone.isReady || !notifyListeners.size) return;
+    let dump = '';
+    try { dump = (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout; } catch { return; }
+    const wanted = (n) => (cfg.notifyApps.length ? cfg.notifyApps.includes(n.pkg) : !SYSTEM_PKG.test(n.pkg));
+    for (const n of parseNotifications(dump)) {
+      if (seen.has(n.key)) continue;
+      seen.add(n.key);
+      if (seen.size > 2000) seen.delete(seen.values().next().value);
+      if (!primed || !wanted(n)) continue; // what was already on the shade when we started is not news
+      const item = { ...n, at: new Date().toISOString() };
+      recent.push(item); if (recent.length > 20) recent.shift();
+      audit({ kind: 'notification', pkg: n.pkg, title: n.title, text: n.text.slice(0, 200) });
+      for (const fn of notifyListeners) { try { fn(item); } catch (err) { logger.warn(`notification listener: ${err.message}`); } }
+    }
+    primed = true;
+  }
   phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license' || phone.state === 'error') void start(); };
 
   const installed = () => existsSync(paths.emulator) && existsSync(paths.adb) && existsSync(join(paths.sysdir, 'system.img'));
@@ -381,7 +432,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
+        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
         : ''),
     }), 'dsh-dot/phone: device section');
   });
@@ -390,7 +441,7 @@ export function apply(ctx, config = {}, deps = {}) {
     scope.effect(() => scope.commands.register({
       name: 'phone',
       description: 'the phone: status; "accept" accepts the Android SDK license and installs it; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept | retry | restart | screenshot]' },
+      input: { hint: '[accept | retry | restart | screenshot | notifications]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
@@ -398,12 +449,17 @@ export function apply(ctx, config = {}, deps = {}) {
         else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
+        if (arg === 'notifications') extra = `\n${recent.length ? recent.map((n) => `${n.at.slice(11, 16)} ${n.pkg}: ${n.title} — ${n.text}`).join('\n') : '(none since start)'}`;
         const s = phone.status();
         return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nlicense: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });
 
+  ctx.effect(() => {
+    const timer = cfg.notifyPollMs > 0 ? setInterval(() => { void pollNotifications(); }, cfg.notifyPollMs) : null;
+    return () => { if (timer) clearInterval(timer); };
+  }, 'dsh-dot/phone: notification watch');
   ctx.effect(() => {
     void start();
     return () => {

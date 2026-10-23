@@ -158,3 +158,32 @@ test('scope: a session an IM bot opened elsewhere is dot\'s too; the desktop UI 
   assert.deepEqual(h.sent.map((s) => s.text), ['X 更新了']);
   stop(h);
 });
+
+test('a phone notification wakes her latest session with the notification text; nothing is relayed', async () => {
+  const { notificationText, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
+  const h = harness();
+  const followups = [];
+  let onNotification;
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) } : orig(name))(h.ctx.get);
+  apply(h.ctx, h.config);
+  assert.ok(onNotification, 'subscribed');
+  // no session yet → dropped
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: 'hi' });
+  await wait(10);
+  assert.equal(followups.length, 0);
+  assert.ok(h.audit.some((e) => e.event === 'notification-dropped'));
+  // a turn in home → that session is hers
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'user/message', { source: { kind: 'user' } });
+  h.emit(h.home, 'assistant/message', msg('在'));
+  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
+  await wait(20);
+  assert.equal(followups.length, 1);
+  assert.equal(followups[0].id, 's1');
+  assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
+  assert.match(followups[0].m.content[0].text, /^\[手机通知\] QQ · 宽：你会主动给我发消息吗/);
+  assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
+  assert.equal(h.sent.length, 0);
+  stop(h);
+});
