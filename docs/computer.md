@@ -30,7 +30,7 @@ open -a "DeepSeek Harness"
 
 The first start pulls the VM image (a few GB); agent commands queue until it is ready. Choose the **Computer** permission preset under the input box.
 
-Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want a Dots-style always-on agent on top of this (IM, schedules, budget caps)? See **[dsh-dot](https://github.com/Kevinwu901113/dsh-dot)**. Design notes and roadmap: [docs/DESIGN.md](docs/DESIGN.md) (Chinese). MIT licensed.
+Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want a Dots-style always-on agent on top of this (IM, schedules, budget caps)? See **[dsh-dot](https://github.com/Kevinwu901113/dsh-dot)**. Design notes and roadmap: [COMPUTER-DESIGN.md](COMPUTER-DESIGN.md) (Chinese).
 
 ---
 

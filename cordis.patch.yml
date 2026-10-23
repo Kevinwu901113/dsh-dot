@@ -1,11 +1,14 @@
-# dsh-dot: one plugin, two components.
+# dsh-dot: one plugin, three components.
 #   computer — the agent's own persistent computer: a microVM (microsandbox, bundled) by default,
 #              Docker as fallback. Shell, files under the shared workspace, browser and desktop
 #              all live in the VM; the VM is the isolation boundary, and risky calls are routed
 #              to approval by the gate. Settings: env vars below or $DSH_HOME/dsh-computer.json.
 #   dot      — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
 #              live view, working rules as a prompt section. Needs dsh-im and the official schedule
-#              bundle (see README); dsh-interlude (separate, AGPL) adds a life between conversations.
+#              bundle (see README).
+#   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a prompt
+#              section, and a life between conversations — script, continuity, intents, browsing
+#              (web, or her own VM browser, read-only), optional proactive contact over dsh-im.
 
 # 1. Replace the host subprocess provider with the VM-backed one.
 - id: subprocess
@@ -61,3 +64,13 @@
       config:
         # dot's home: its working files live here and sessions started here are dot's.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
+    # 6. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
+    - id: dot-interlude
+      name: 'dsh-dot/interlude'
+      config:
+        home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
+        # Browsing (HDSI browserIntent): auto = web first; the sites below are always observed in
+        # her own VM browser, read-only, no approvals. Add the sites she is logged into.
+        # browser: auto
+        # vmSites: [weibo.com, bilibili.com, xiaohongshu.com, x.com]
+        # vmDailyCap: 2

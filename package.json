@@ -1,9 +1,9 @@
 {
   "name": "dsh-dot",
-  "version": "0.3.0",
-  "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates) and the always-on glue (schedules → IM, silence protocol, approval cards). Works with dsh-im and the official schedule bundle; dsh-interlude adds a life between conversations.",
+  "version": "0.4.0",
+  "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates), the always-on glue (schedules → IM, silence protocol, approval cards), and an interlude — a life between conversations after HDS-Interlude (Canon by share code, script, continuity, browsing in her own browser). Works with dsh-im and the official schedule bundle.",
   "type": "module",
-  "license": "MIT",
+  "license": "AGPL-3.0-only",
   "keywords": [
     "agent",
     "always-on",
@@ -12,8 +12,11 @@
     "dots",
     "dsh",
     "dsh-plugin",
+    "hds-interlude",
+    "interlude",
     "microsandbox",
     "microvm",
+    "persona",
     "sandbox"
   ],
   "repository": {
@@ -30,12 +33,14 @@
     "./gate": "./src/computer/gate.js",
     "./core": "./src/dot/core.js",
     "./dot": "./src/dot/core.js",
-    "./package.json": "./package.json"
+    "./package.json": "./package.json",
+    "./interlude": "./src/interlude/core.js"
   },
   "files": [
     "src",
     "lib",
     "scripts",
+    "examples",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
@@ -61,7 +66,8 @@
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2",
-    "@deepseek-ai/dsh-subprocess-local": ">=0.2.0-rc.2"
+    "@deepseek-ai/dsh-subprocess-local": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
   },
   "dependencies": {
     "microsandbox": "0.7.8"

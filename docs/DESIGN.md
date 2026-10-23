@@ -124,3 +124,11 @@ Kevin："把 computer 和 dot 合并为一个插件的不同组件"。做法：
 - **对外不变**：`mcp__vm__*` 工具、`dshComputer` 服务名、`~/.dsh/dsh-computer*` 文件、VM 名 `dsh-computer`、`DSH_COMPUTER_*` 环境变量都保留——已经跑着的虚拟机、快照、审计日志不用迁移。
 - dsh-interlude 不并：它是 AGPL-3.0（移植自 HDS-Interlude），并进 MIT 包会把整个包拖成 AGPL；而且它不依赖 dot，独立装卸更干净。
 - 原 dsh-computer 仓库保留作为历史，README 指向这里。
+
+## v0.4（2026-10-23）：幕间也并进来，只留一个仓库
+
+Kevin："interlude 也合并到 dot 里面。然后所有仓库清理掉不要了，仅保留一个 dot 仓库。"
+
+- dsh-interlude 的历史同样 merge 进来；代码在 `src/interlude/core.js`，组件 `dsh-dot/interlude`，测试 `test/interlude.test.js`，示例 Canon 在 `examples/`，文档 `docs/interlude.md` / `docs/INTERLUDE-DESIGN.md`。
+- **许可证变成 AGPL-3.0-only**：幕间按原文使用 HDS-Interlude 的提示词，HDSI 是 AGPL；并进同一个包，整个包就是 AGPL。v0.3 以前以 MIT 发布的 computer / dot 代码，那些版本仍是 MIT。
+- `dsh-computer`、`dsh-interlude` 两个仓库不再需要（历史都在这里）。
