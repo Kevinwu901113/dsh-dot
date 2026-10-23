@@ -409,6 +409,7 @@ export function apply(ctx, config = {}, deps = {}) {
       await settle();
       setState('ready');
       markReady();
+      void pollNotifications().then(() => { if (cfg.notifyPollMs > 0) tailNotifications(); });
       logger.info(`phone ready — ${serial}, Android API ${cfg.api} (${abi}), ${cfg.window ? 'window on the desktop' : 'headless'}`);
       await mountMcp();
     } catch (err) {
@@ -443,7 +444,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
+        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看——但 App 开在前台时不会有通知，所以每次用完 App 记得按 HOME 回到桌面。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
         : ''),
     }), 'dsh-dot/phone: device section');
   });
@@ -473,9 +474,23 @@ export function apply(ctx, config = {}, deps = {}) {
     }), 'dsh-dot/phone: /phone command');
   });
 
+  // Apps like QQ cancel their notification the moment the chat is read, sometimes within a second
+  // of posting it; a 4 s poll misses those. The system logs every enqueue to the events buffer, so a
+  // logcat tail triggers an immediate read of the shade, and the interval stays as the safety net.
+  let logcat = null, pollSoon = null;
+  const pollNow = () => { if (pollSoon) return; pollSoon = setTimeout(() => { pollSoon = null; void pollNotifications(); }, 150); };
+  function tailNotifications() {
+    if (logcat || stopping || !phone.isReady) return;
+    try {
+      logcat = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] });
+    } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
+    logcat.stdout?.on('data', (d) => { if (String(d).includes('[')) pollNow(); });
+    logcat.on('exit', () => { logcat = null; if (!stopping && phone.isReady) setTimeout(tailNotifications, 5000); });
+  }
+  phone.tailNotifications = tailNotifications;
   ctx.effect(() => {
     const timer = cfg.notifyPollMs > 0 ? setInterval(() => { void pollNotifications(); }, cfg.notifyPollMs) : null;
-    return () => { if (timer) clearInterval(timer); };
+    return () => { if (timer) clearInterval(timer); if (pollSoon) clearTimeout(pollSoon); logcat?.kill(); logcat = null; };
   }, 'dsh-dot/phone: notification watch');
   ctx.effect(() => {
     void start();

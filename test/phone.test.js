@@ -58,7 +58,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   if (installed) {
     for (const f of ['emulator/emulator', 'platform-tools/adb', 'system-images/android-35/google_apis/arm64-v8a/system.img']) { mkdirSync(join(home, f, '..'), { recursive: true }); writeFileSync(join(home, f), ''); }
   }
-  const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [];
+  const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [], logcats = [];
   let cmd, child;
   let polls = 0;
   const run = async (file, args) => {
@@ -67,7 +67,8 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     if (args.includes('sys.boot_completed')) return { stdout: ++polls >= bootAfter ? '1\n' : '\n' };
     return { stdout: '' };
   };
-  const spawn = (file, args) => { child = Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { this.emit('exit', 0); } }); spawned.push({ file, args }); return child; };
+  const fake = () => Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { this.emit('exit', 0); } });
+  const spawn = (file, args) => { const c = fake(); if (args.includes('logcat')) { logcats.push(c); return c; } child = c; spawned.push({ file, args }); return c; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },
@@ -79,7 +80,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   };
   apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true, liveViewPort: 18090 }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' }, startLiveView: () => ({ url: 'http://127.0.0.1:18090/', close() {} }) });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
-  return { ctx, home, spawned, execs, effects, gate, sections, plugins, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const until = async (pred, ms = 1500) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
 
@@ -218,9 +219,10 @@ test('phone: new notifications reach listeners once; the shade at start is not n
       android.text=String (更新)
     }
   mArchive:`);
-  await new Promise((r) => setTimeout(r, 4300));
-  await new Promise((r) => setTimeout(r, 4300));
-  assert.deepEqual(got.map((n) => n.text), ['你会主动给我发消息吗']);
+  assert.equal(h.logcats.length, 1, 'logcat tail started once ready');
+  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,9,NULL,0,Notification(...)]\n');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.deepEqual(got.map((n) => n.text), ['你会主动给我发消息吗'], 'an enqueue event reads the shade at once');
   assert.match((await h.cmd().handler({ rawInput: 'notifications' })).text, /com\.tencent\.mobileqq: 宽 — 你会主动给我发消息吗/);
   // mute QQ: the next one is seen but not announced; the policy is persisted
   assert.match((await h.cmd().handler({ rawInput: 'notify mute com.tencent.mobileqq' })).text, /except: com\.tencent\.mobileqq/);
@@ -230,7 +232,8 @@ test('phone: new notifications reach listeners once; the shade at start is not n
       android.text=String (在吗)
     }
   mArchive:`);
-  await new Promise((r) => setTimeout(r, 4300));
+  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,10,NULL,0,Notification(...)]\n');
+  await new Promise((r) => setTimeout(r, 400));
   assert.equal(got.length, 1, 'muted app does not wake her');
   assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).notifyMuted, ['com.tencent.mobileqq']);
   h.stop();

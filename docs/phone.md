@@ -10,7 +10,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
 6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
-7. **通知叫醒她**：插件每 `notifyPollMs` 轮询一次通知栏（`adb shell dumpsys notification`），新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[手机通知] QQ · 宽：……`，她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；dot 的 `notifyHours` 可以设"手机夜里静音"。`/phone notifications` 看最近 20 条。
+7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[手机通知] QQ · 宽：……`，她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；dot 的 `notifyHours` 可以设"手机夜里静音"。`/phone notifications` 看最近 20 条。
 8. **实时画面**：两种。一是模拟器窗口本身（`window: true`）；二是插件自己的网页 `http://127.0.0.1:18090/`（`liveViewPort`）——dsh 右侧栏多一个「手机」标签页就是它：屏幕每秒刷新几次（PNG 流），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。配 `publicUrl`（如 `tailscale serve`）后审批提醒里带这个链接，手机上也能看。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
 
 ## 配置
@@ -56,6 +56,8 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | 另一台 Linux 虚拟机里 | ❌ | 嵌套虚拟化。手机和电脑是两台设备，不是一台装另一台 |
 
 ## 已知限制
+
+- App 开在前台时不会发通知（QQ 的聊天窗口开着就收不到那个人的消息通知）。提示里让她用完 App 按 HOME 回桌面。
 
 - 第一次下载约 2 GB，取决于到 `dl.google.com` 的速度。
 - 没有 Play 商店和 Google 服务；需要 GMS 的 App 不能用。
