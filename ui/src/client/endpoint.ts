@@ -32,3 +32,30 @@ export async function probe(endpoint: ComputerEndpoint, signal: AbortSignal): Pr
     return false
   }
 }
+
+/**
+ * The phone's live view page served by dsh-dot/phone.
+ * @param endpoint - live view host and port.
+ * @returns the page URL.
+ */
+export function phoneLiveViewUrl(endpoint: ComputerEndpoint): string {
+  return `http://${endpoint.host}:${endpoint.port}/`
+}
+
+/**
+ * Whether the phone answers (its live view reports `ready`).
+ * @param endpoint - live view host and port.
+ * @param signal - aborts the probe.
+ * @returns `true` when the phone is booted.
+ */
+export async function probePhone(endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
+  const timeout = AbortSignal.timeout(3000)
+  try {
+    const res = await fetch(`http://${endpoint.host}:${endpoint.port}/status`, { cache: 'no-store', signal: AbortSignal.any([signal, timeout]) })
+    const body = await res.json() as { ready?: boolean }
+    return body.ready === true
+  } catch {
+    // Refused, timed out, aborted, or not JSON: the phone is not answering.
+    return false
+  }
+}

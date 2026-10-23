@@ -13,6 +13,10 @@ export interface ComputerViewProps {
   readonly useTabInfo: () => { tab: { visible?: boolean; actions: { openTab: (kind: string, options?: object) => void } } }
   readonly t: (key: string) => string
   readonly endpoint: ComputerEndpoint
+  /** Live view URL; default: the computer's noVNC page. */
+  readonly url?: string
+  /** Readiness probe; default: the computer's sandbox API. */
+  readonly probe?: (endpoint: ComputerEndpoint, signal: AbortSignal) => Promise<boolean>
 }
 
 /**
@@ -20,16 +24,17 @@ export interface ComputerViewProps {
  * @param props - tab info, copy, and the computer endpoint.
  * @returns the status bar and the embedded desktop, or a waiting panel.
  */
-export function ComputerView({ useTabInfo, t, endpoint }: ComputerViewProps): ReactNode {
+export function ComputerView({ useTabInfo, t, endpoint, url: urlProp, probe: probeProp }: ComputerViewProps): ReactNode {
   const { tab } = useTabInfo()
   const [status, setStatus] = useState<Status>('checking')
   const [revision, setRevision] = useState(0)
-  const url = liveViewUrl(endpoint)
+  const url = urlProp ?? liveViewUrl(endpoint)
+  const probeFn = probeProp ?? probe
 
   const check = useCallback(async (signal: AbortSignal): Promise<void> => {
-    const ok = await probe(endpoint, signal)
+    const ok = await probeFn(endpoint, signal)
     if (!signal.aborted) setStatus(ok ? 'ready' : 'offline')
-  }, [endpoint])
+  }, [endpoint, probeFn])
 
   useEffect(() => {
     const controller = new AbortController()

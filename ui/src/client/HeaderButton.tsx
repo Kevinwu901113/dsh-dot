@@ -1,5 +1,5 @@
 /** Session header control that shows or hides the computer tab. */
-import type { ReactNode } from 'react'
+import { createElement, type ReactNode } from 'react'
 import { Button, Tooltip } from '@deepseek-ai/dsh-client-ui-primitives'
 import { MonitorIcon } from './icons.tsx'
 
@@ -7,6 +7,8 @@ import { MonitorIcon } from './icons.tsx'
 export interface HeaderButtonProps {
   readonly t: (key: string) => string
   readonly toggle: () => void
+  /** Glyph; default: the monitor. */
+  readonly icon?: () => ReactNode
 }
 
 /**
@@ -14,11 +16,11 @@ export interface HeaderButtonProps {
  * @param props - copy and the toggle action.
  * @returns the button.
  */
-export function HeaderButton({ t, toggle }: HeaderButtonProps): ReactNode {
+export function HeaderButton({ t, toggle, icon = MonitorIcon }: HeaderButtonProps): ReactNode {
   return (
     <Tooltip label={t('toggle')} side="bottom" delayMs={500}>
       <Button size="sm" variant="ghost" aria-label={t('toggle')} data-dsh-computer-toggle onClick={toggle}>
-        <MonitorIcon />
+        {createElement(icon)}
       </Button>
     </Tooltip>
   )

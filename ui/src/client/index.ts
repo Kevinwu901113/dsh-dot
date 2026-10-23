@@ -7,7 +7,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { ComputerView, type ComputerViewProps } from './view.tsx'
 import { HeaderButton } from './HeaderButton.tsx'
 import { ComputerArtwork } from './icons.tsx'
-import type { ComputerEndpoint } from './endpoint.ts'
+import { phoneLiveViewUrl, probePhone, type ComputerEndpoint } from './endpoint.ts'
+import { PhoneArtwork, PhoneIcon } from './icons.tsx'
 import { en, NS, zh } from './locales.ts'
 
 /** Services the tab and the header button use. */
@@ -15,6 +16,8 @@ export const inject = ['slots', 'locale', 'sidebarRight', 'sidebarRightTabs']
 
 const ID = 'dsh-computer'
 const KIND = 'dsh-computer'
+const PHONE_ID = 'dsh-phone'
+const PHONE_KIND = 'dsh-phone'
 
 // The VM host plugin publishes on 127.0.0.1:18080 unless DSH_COMPUTER_PORT changes it;
 // client rows receive no Loader config, so the page may override the port by query (?dshComputerPort=).
@@ -27,6 +30,24 @@ function endpoint(): ComputerEndpoint {
     // No readable location (non-browser test runtime): keep the default port.
   }
   return { host: '127.0.0.1', port }
+}
+
+// dsh-dot/phone serves its live view on 127.0.0.1:18090 unless liveViewPort changes it (?dshPhonePort= overrides).
+function phoneEndpoint(): ComputerEndpoint {
+  let port = 18090
+  try {
+    const override = Number(new URLSearchParams(window.location.search).get('dshPhonePort'))
+    if (Number.isInteger(override) && override > 0 && override < 65536) port = override
+  } catch {
+    // No readable location (non-browser test runtime): keep the default port.
+  }
+  return { host: '127.0.0.1', port }
+}
+
+/** Copy accessor for the phone tab: phone-specific keys first, shared status keys as they are. */
+const phoneCopy = (t: (key: string) => string) => (key: string): string => {
+  const own: Record<string, string> = { title: 'phoneTitle', open: 'phoneOpen', description: 'phoneDescription', toggle: 'phoneToggle', checking: 'phoneChecking', offline: 'phoneOffline' }
+  return t(own[key] ?? key)
 }
 
 /**
@@ -62,4 +83,25 @@ export function apply(ctx: Context): void {
   ctx.effect(() => c.slots.inject('conversation.session.header.utilities', () => c.slots.register({
     name: 'conversation.session.header.utilities', id: ID, order: -20, locale: NS,
   }, Header)), 'dsh-computer.header')
+
+  // The phone: same tab body against dsh-dot/phone's live view page.
+  const tp = phoneCopy(t)
+  const phoneAt = phoneEndpoint()
+  ctx.effect(() => c.sidebarRightTabs.register({
+    id: PHONE_ID, kind: PHONE_KIND, priority: 'extension', keepMounted: true, title: () => tp('title'),
+    guide: [{ id: 'open', order: 41, title: () => tp('open'), description: () => tp('description'), icon: PhoneArtwork }],
+  }), 'dsh-phone.type')
+  const PhoneBody = (props: Omit<ComputerViewProps, 'endpoint'>): ReactNode => createElement(ComputerView, { ...props, t: tp, endpoint: phoneAt, url: phoneLiveViewUrl(phoneAt), probe: probePhone })
+  ctx.effect(() => c.slots.inject('sidebar.right.pane.tab', () => c.slots.register(
+    { name: 'sidebar.right.pane.tab', key: PHONE_ID, locale: NS }, PhoneBody,
+  )), 'dsh-phone.body')
+  const togglePhone = (): void => {
+    const sidebar = c.sidebarRight
+    if (sidebar.isExpanded() && sidebar.active()?.kind === PHONE_KIND) sidebar.toggleExpanded()
+    else sidebar.openTab(PHONE_KIND)
+  }
+  const PhoneHeader = (props: { t: (key: string) => string }): ReactNode => createElement(HeaderButton, { t: phoneCopy(props.t), toggle: togglePhone, icon: PhoneIcon })
+  ctx.effect(() => c.slots.inject('conversation.session.header.utilities', () => c.slots.register({
+    name: 'conversation.session.header.utilities', id: PHONE_ID, order: -19, locale: NS,
+  }, PhoneHeader)), 'dsh-phone.header')
 }

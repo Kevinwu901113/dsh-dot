@@ -14,6 +14,12 @@ export const zh = {
   builtin: '用内置浏览器打开',
   ready: '运行中',
   starting: '启动中',
+  phoneTitle: '手机',
+  phoneOpen: '手机',
+  phoneDescription: '查看并操作 agent 的手机',
+  phoneToggle: '手机画面',
+  phoneChecking: '正在连接手机…',
+  phoneOffline: '手机还没有就绪（第一次要先在对话里发 /phone accept，下载约 2 GB）。',
 } satisfies Record<string, string>
 
 export const en = {
@@ -29,4 +35,10 @@ export const en = {
   builtin: 'Open in built-in browser',
   ready: 'Running',
   starting: 'Starting',
+  phoneTitle: 'Phone',
+  phoneOpen: 'Phone',
+  phoneDescription: "View and control the agent's phone",
+  phoneToggle: 'Phone screen',
+  phoneChecking: 'Connecting to the phone…',
+  phoneOffline: 'The phone is not ready yet (first time: send /phone accept in a chat; it downloads about 2 GB).',
 } satisfies Record<keyof typeof zh, string>

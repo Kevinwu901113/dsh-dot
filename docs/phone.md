@@ -10,7 +10,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
 6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
-7. **实时画面**：模拟器窗口本身（`window: true`）。无头跑（服务器）时 `window: false`，用 `/phone screenshot` 或让她截图。
+7. **实时画面**：两种。一是模拟器窗口本身（`window: true`）；二是插件自己的网页 `http://127.0.0.1:18090/`（`liveViewPort`）——dsh 右侧栏多一个「手机」标签页就是它：屏幕每秒刷新几次（PNG 流），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。配 `publicUrl`（如 `tailscale serve`）后审批提醒里带这个链接，手机上也能看。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
 
 ## 配置
 
@@ -22,6 +22,8 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `ramMb` / `dataGb` | `3072` / `8` | 内存、数据分区 |
 | `port` | `5554` | 控制台端口；adb 序列号 `emulator-<port>` |
 | `window` / `DSH_DOT_PHONE_WINDOW=off` | `true` | 显示模拟器窗口 |
+| `liveViewPort` | `18090` | 实时画面网页端口；`0` 关闭 |
+| `publicUrl` | 无 | 从外面访问实时画面的地址，写进审批提醒 |
 | `gpu` | `auto` | 模拟器 `-gpu` |
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
 | `channel` | `stable` | 模拟器通道 |

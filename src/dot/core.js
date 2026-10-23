@@ -172,7 +172,8 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'approval/asked') {
       // Payload: { id, toolName, reason? }. dsh-computer's gate puts the live-view link in reason.
-      const vm = computer()?.status?.() ?? {};
+      const onPhone = String(event.data?.toolName ?? '').startsWith('mcp__phone__');
+      const vm = (onPhone ? phone()?.status?.() : computer()?.status?.()) ?? {};
       const link = vm.publicLiveViewUrl || vm.liveViewUrl;
       const reason = String(event.data?.reason ?? '').trim();
       const lines = [`🔐 dot 需要你审批：${event.data?.toolName ?? '工具调用'}`, reason, '在 DeepSeek Harness 里批准或拒绝。'];

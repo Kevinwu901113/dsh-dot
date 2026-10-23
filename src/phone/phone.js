@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { createAudit } from '../computer/audit.js';
+import { startLiveView } from './live-view.js';
 
 export const name = 'dot-phone';
 export const inject = [];
@@ -32,6 +33,8 @@ export const defaults = {
   channel: 'stable',        // emulator release channel
   bootTimeoutMs: 300_000,
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
+  liveViewPort: 18090,      // the phone's live view page on 127.0.0.1 (screen + tap/swipe/type); 0 = off
+  publicUrl: '',            // base URL reaching the live view from elsewhere (e.g. tailscale serve), used in notices
   mcp: true,                // mount mobile-mcp as mcp__phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
@@ -188,6 +191,8 @@ export function apply(ctx, config = {}, deps = {}) {
   const phone = {
     serial, home, abi, api: cfg.api, avd: cfg.avd, adb: paths.adb,
     state: 'starting', error: undefined, isReady: false, licenseUrl: LICENSE_URL,
+    liveViewUrl: cfg.liveViewPort ? `http://127.0.0.1:${cfg.liveViewPort}/` : undefined,
+    publicLiveViewUrl: cfg.liveViewPort && cfg.publicUrl ? `${String(cfg.publicUrl).replace(/\/+$/, '')}/` : undefined,
     audit,
   };
   const listeners = new Set();
@@ -199,7 +204,7 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'status', state, error });
     for (const fn of listeners) { try { fn(phone.status()); } catch {} }
   };
-  phone.status = () => ({ state: phone.state, serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home });
+  phone.status = () => ({ state: phone.state, serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
   phone.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   let markReady;
   phone.ready = new Promise((r) => (markReady = r));
@@ -324,6 +329,12 @@ export function apply(ctx, config = {}, deps = {}) {
   };
 
   ctx.provide('dshPhone', phone);
+  if (cfg.liveViewPort) {
+    ctx.effect(() => {
+      const view = (deps.startLiveView ?? startLiveView)({ port: cfg.liveViewPort, screenshot: phone.screenshot, shell: phone.shell, ready: () => phone.isReady, logger, name: cfg.avd });
+      return () => view.close();
+    }, 'dsh-dot/phone: live view');
+  }
 
   // Approval gate for phone tools: installs/uninstalls, and typing that looks like a secret or a payment.
   ctx.on('tools/pre-execute', async (exec_, next) => {
@@ -355,7 +366,7 @@ export function apply(ctx, config = {}, deps = {}) {
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlicense: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
+        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nlicense: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

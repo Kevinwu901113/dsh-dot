@@ -77,7 +77,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
     get: (n) => ({ systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
-  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
+  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true, liveViewPort: 18090 }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' }, startLiveView: () => ({ url: 'http://127.0.0.1:18090/', close() {} }) });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
   return { ctx, home, spawned, execs, effects, gate, sections, plugins, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
@@ -98,6 +98,7 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.match(h.sections[0].text(), /emulator-5554/);
   const out = await h.cmd().handler({ rawInput: '' });
   assert.match(out.text, /phone: ready/);
+  assert.match(out.text, /live view: http:\/\/127\.0\.0\.1:18090\//);
   // the emulator dies → error state, relaunch
   h.child().emit('exit', 1);
   assert.equal(h.ctx.dshPhone.state, 'error');
@@ -130,4 +131,33 @@ test('phone gate asks through tools/pre-execute', async () => {
   assert.equal((await h.gate('mcp__phone__mobile_install_app', {})).kind, 'ask');
   assert.equal((await h.gate('mcp__phone__mobile_swipe_on_screen', {})).via, 'next');
   h.stop();
+});
+
+test('live view server: page, status, one stream frame, input mapped to screen pixels, origin check', async () => {
+  const { startLiveView, shellQuote } = await import('../src/phone/live-view.js');
+  const shells = [];
+  const port = 18190 + Math.floor(Math.random() * 100);
+  const view = startLiveView({ port, screenshot: async () => Buffer.from('PNG!'), shell: async (c) => { shells.push(c); return c === 'wm size' ? 'Physical size: 1080x2400\n' : ''; }, ready: () => true, logger: {} });
+  await new Promise((r) => setTimeout(r, 100));
+  const base = `http://127.0.0.1:${port}`;
+  assert.match(await (await fetch(`${base}/`)).text(), /<img id="screen" src="stream/);
+  assert.deepEqual(await (await fetch(`${base}/status`)).json(), { ready: true, size: null });
+  const ac = new AbortController();
+  const res = await fetch(`${base}/stream?fps=5`, { signal: ac.signal });
+  const reader = res.body.getReader();
+  const { value } = await reader.read();
+  assert.match(Buffer.from(value).toString(), /--frame\r\ncontent-type: image\/png\r\ncontent-length: 4\r\n\r\nPNG!/);
+  ac.abort();
+  const post = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin: base, ...headers } });
+  assert.equal((await post('/tap', { x: 0.5, y: 0.25 })).status, 204);
+  assert.equal(shells.at(-1), 'input tap 540 600');
+  assert.equal((await post('/swipe', { from: { x: 0.5, y: 0.8 }, to: { x: 0.5, y: 0.2 }, ms: 300 })).status, 204);
+  assert.equal(shells.at(-1), 'input swipe 540 1920 540 480 300');
+  assert.equal((await post('/key', { key: 'KEYCODE_BACK' })).status, 204);
+  assert.equal((await post('/key', { key: 'rm -rf' })).status, 400);
+  assert.equal((await post('/text', { text: 'hi there' })).status, 204);
+  assert.equal(shells.at(-1), "input text 'hi%sthere'");
+  assert.equal((await post('/tap', { x: 0.5, y: 0.5 }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal(shellQuote("a b'c"), "'a%sb'\\''c'");
+  view.close();
 });
