@@ -53,7 +53,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -421,4 +421,48 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   assert.equal(w.followups.length, 0);
   assert.match(readFileSync(join(w.home, 'interlude', 'web-context.jsonl'), 'utf8'), /"thin":"too short"/);
   w.stop();
+});
+
+test('play: off by default; on, a playIntent becomes one normal turn on her phone, gated by actions, apps, willingness and daily cap', async () => {
+  const { PLAY_SOURCE, PLAY_RULES } = await import('../src/interlude/core.js');
+  const withPlay = GOOD.replace('"contact":null', '"contact":null,"playIntents":[{"app":"小黑盒","action":"like","target":"那篇讲黑猴更新的帖子","why":"写得认真","willingness":0.8}]');
+  // off: prompt says disabled, nothing executed
+  const off = harness({ reply: withPlay, vm: {} });
+  off.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(off.ctx.get);
+  off.act('s1', 'hi', 'hello');
+  await off.cmd().handler({ rawInput: 'now' });
+  assert.match(off.calls[0].system, /playIntents: \[\] \(playing on her apps is disabled/);
+  assert.equal(off.followups.length, 0);
+  off.stop();
+  // on
+  const h = harness({ reply: withPlay, vm: {}, config: { play: true, playApps: { 小黑盒: 'com.max.xiaoheihe' }, maxPlaysPerDay: 1 } });
+  h.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(h.ctx.get);
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.ok(h.calls[0].system.includes(PLAY_RULES), 'the rulebook is in the prompt');
+  assert.match(h.calls[0].system, /playIntents: \[\{"app":"one of 小黑盒","action":"like\|comment\|follow"/);
+  assert.equal(h.followups.length, 1);
+  assert.deepEqual(h.followups[0].m.source, PLAY_SOURCE);
+  assert.match(h.followups[0].m.content[0].text, /^\[想玩会儿手机\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）给「那篇讲黑猴更新的帖子」点个赞。因为写得认真。/);
+  assert.match(h.followups[0].m.content[0].text, /不发新帖、不私信陌生人、不花钱/);
+  // the play turn is her act, quiet when DOT_SILENT
+  h.emit('s1', 'turn/start', { turn: 2 });
+  h.emit('s1', 'user/message', { content: h.followups[0].m.content, source: PLAY_SOURCE }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: 'DOT_SILENT' }] } });
+  h.emit('s1', 'turn/end', { turn: 2 });
+  const pend = readFileSync(join(h.home, 'interlude', 'pending.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.equal(pend.at(-1).origin, 'play');
+  assert.equal(pend.at(-1).quiet, true);
+  // daily cap: a second one is held
+  h.act('s1', 'again', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.equal(h.followups.length, 1);
+  h.stop();
+  // a post is never carried out, nor an app she has no package for
+  const post = harness({ reply: withPlay.replace('"action":"like"', '"action":"post"'), vm: {}, config: { play: true, playApps: { 小黑盒: 'com.max.xiaoheihe' } } });
+  post.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(post.ctx.get);
+  post.act('s1', 'hi', 'hello');
+  await post.cmd().handler({ rawInput: 'now' });
+  assert.equal(post.followups.length, 0);
+  post.stop();
 });

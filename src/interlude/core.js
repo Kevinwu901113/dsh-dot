@@ -62,6 +62,14 @@ export const defaults = {
   maxTokens: 1400,
   digestChars: 6000,
   scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
+  // 玩: small social actions on her own accounts, on her phone — like, comment, follow (post/DM/pay
+  // never, by construction). Off by default. Executed as a normal turn (approvals apply), gated like
+  // contact: active hours, willingness, daily cap. The behaviour rules are Moltbook's agent-social
+  // rulebook (heartbeat.md / rules.md), translated — not written here.
+  play: false,
+  playActions: ['like', 'comment', 'follow'],
+  maxPlaysPerDay: 3,
+  playApps: {},               // app label → package she may act in ({ 小黑盒: 'com.max.xiaoheihe' }); {} = none
   speak: false,               // allow proactive contact over dsh-im
   maxContactsPerDay: 2,
   willingnessThreshold: 0.6,
@@ -77,8 +85,37 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
 const dayOf = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
+/**
+ * How she behaves on a social app — Moltbook's rulebook for agents living on a social network
+ * (https://www.moltbook.com/heartbeat.md and /rules.md), translated and stripped of its API; the
+ * priorities and the restraint are theirs. Used in the interlude prompt when `play` is on and in the
+ * turn that carries a play intent out.
+ */
+export const PLAY_RULES = [
+  '在社交 App 上怎么做（Moltbook 的 agent 社区守则，节译）：',
+  '- 优先级：先回别人在你内容下的回复（有人在跟你说话）；再给你真心喜欢的内容点赞（点赞不花钱、即时、让作者高兴）；再在有意思的讨论里留一条有想法的评论；再关注你连续喜欢了几篇的人；最后才是发新内容——而且只在你真有东西想说的时候。',
+  '- 不要为了"该发点什么了"而发。只在有一个真问题、一次真经历、一个真看法、一件没人说过的有用的事时才发。质量 > 数量：一条引起讨论的好帖 > 十条没人记得的。',
+  '- 参与已有内容几乎总比创造新内容更有价值。慷慨点赞，用心评论，关注你喜欢的人。',
+  '- 真诚：因为有话说而发，不是为了被看见。不为凑数发帖，不为刷存在感评论，不追逐数字。',
+  '- 尊重公共空间：像在邻居客厅做客——守各版规矩、不跑题、不刷屏、不过度自我推销。',
+  '- 你的人要为你的行为负责；你代表他。',
+].join('\n');
+
 /** Source of the message that opens an observation turn; such turns are never acts. */
 export const OBSERVATION_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'observation' });
+/** Source of the message that carries a play intent out: a normal turn (she acts; approvals apply). */
+export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' });
+
+/** The message that asks her to go and do the small thing she wanted to do on her phone. */
+export function playPrompt(p, pkg) {
+  const verb = { like: '点个赞', comment: '评论一句', follow: '关注' }[p.action] ?? p.action;
+  return [
+    `[想玩会儿手机] 你刚才想：在${p.app}${pkg ? `（${pkg}）` : ''}给「${p.target}」${verb}${p.text ? `，想说的是：「${p.text}」` : ''}。${p.why ? `因为${p.why}。` : ''}`,
+    '去做吧，用你的手机（mcp__phone__*）。只做这一件，顺手看看就行；不发新帖、不私信陌生人、不花钱、不改资料。做不成就算了，别硬来。',
+    PLAY_RULES,
+    '做完把手机放回桌面（HOME），只回一句你做了什么，或者 DOT_SILENT。',
+  ].join('\n');
+}
 
 /** Is `url` on one of the character's own sites (host suffix match: "x.com" covers "www.x.com")? */
 export function onVmSite(url, sites = []) {
@@ -200,7 +237,7 @@ export function lengthBlockFor(model = '') {
 }
 
 /** The round's prompt: HDSI's lite-tier assembly. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [] }) {
+export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [] }) {
   const isDeepseek = /deepseek/i.test(String(model));
   const isGlm = /glm/i.test(String(model));
   const phaseText = phase === 'follow-up' ? HDSI.PHASE_FOLLOW_UP : phase === 'intent' ? HDSI.PHASE_INTENT_DUE : HDSI.PHASE_ADVANCE;
@@ -217,6 +254,7 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     browser === 'disabled' ? HDSI.BROWSING_DISABLED : HDSI.BROWSING_DEFERRED,
     HDSI.WEB_CONTEXT,
     speak && phase !== 'follow-up' ? HDSI.AGENCY_SEPARATION : '',
+    play && playApps.length ? `${PLAY_RULES}\n她手机上有这些 App 可以玩：${playApps.join('、')}。一个 playIntent 是她此刻真想做的一件小事，不是任务；大多数轮次为空。` : '',
     isGlm ? HDSI.EXTRA_GLM : '',
     'MAIN NARRATIVE PROMPT (user-configurable):',
     HDSI.MAIN_PROMPT_DEFAULT,
@@ -225,12 +263,15 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     style?.trim() || 'No additional story-specific style instruction was provided.',
     'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
     // The field list is this plugin's; everything around it is HDSI's.
-    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents and contact. Do not wrap it in Markdown fences.',
+    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents, browserIntents, playIntents and contact. Do not wrap it in Markdown fences.',
     `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she actually sends a message, write its exact words at the sending action; several bubbles are separated by <sep/>.`,
     HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
     'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
     'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
     'browserIntents: [{"mode":"search|visit","query":"...","url":"...","purpose":"why she looks","timing":"deferred"}] or [].',
+    play && playApps.length
+      ? `playIntents: [{"app":"one of ${playApps.join('/')}","action":"${playActions.join('|')}","target":"the post/person, as she would name it","text":"the comment, if action is comment","why":"short reason","willingness":0.0}] — at most one, only when she genuinely wants to; otherwise [].`
+      : 'playIntents: [] (playing on her apps is disabled by the host).',
     speak
       ? `contact: null, or {"content":"exact message text, bubbles separated by <sep/>","willingness":0.0,"reason":"short reason"} for a message genuinely sent to the user now. ${HDSI.CONTACT_RULE.replace('return an empty array', 'return null')}`
       : 'contact: null (proactive contact is disabled by the host).',
@@ -248,7 +289,7 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
     webContext,
     currentEvent: { type: 'none' },
-    output: 'one JSON object: script, continuity, overlay, intents, browserIntents, contact',
+    output: 'one JSON object: script, continuity, overlay, intents, browserIntents, playIntents, contact',
   };
   void digest;
   return { system, user: JSON.stringify(payload, null, 1) };
@@ -286,6 +327,10 @@ export function parseReply(text, now = Date.now()) {
         browserIntents: [].concat(o.browserIntents ?? []).map((b) => ({
           mode: b?.mode === 'visit' ? 'visit' : 'search', query: str(b?.query), url: str(b?.url), purpose: str(b?.purpose),
         })).filter((b) => (b.mode === 'visit' ? /^https?:\/\//.test(b.url) : b.query)).slice(0, 1),
+        playIntents: [].concat(o.playIntents ?? []).map((p) => ({
+          app: str(p?.app), action: str(p?.action).toLowerCase(), target: str(p?.target), text: str(p?.text), why: str(p?.why),
+          willingness: Math.max(0, Math.min(1, Number(p?.willingness ?? 0) || 0)),
+        })).filter((p) => p.app && p.action && p.target).slice(0, 1),
       };
     } catch (error) { void error; }
   }
@@ -395,9 +440,9 @@ export function apply(ctx, config = {}) {
 
   let state = readJson(files.state, null);
   let intents = readJson(files.intents, []);
-  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
+  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
   if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
   const readOverlay = () => { try { return readFileSync(files.overlay, 'utf8').trim(); } catch (error) { void error; return ''; } };
@@ -425,7 +470,8 @@ export function apply(ctx, config = {}) {
       case 'user/message':
         if (!t || event.surfaceOp !== 'append') return;
         if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
-        if (event.data?.source?.kind === OBSERVATION_SOURCE.kind) t.origin = 'observation';
+        if (event.data?.source?.kind === OBSERVATION_SOURCE.kind && event.data?.source?.form === 'observation') t.origin = 'observation';
+        if (event.data?.source?.kind === PLAY_SOURCE.kind && event.data?.source?.form === 'play') { t.origin = 'play'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-check') { t.origin = 'phone-check'; t.user ||= '（拿起手机看了一眼）'; }
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
@@ -441,7 +487,7 @@ export function apply(ctx, config = {}) {
         if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
         lastActivity = Date.now();
         if (lastActSession !== id) { lastActSession = id; meta.lastSession = id; saveMeta(); }
-        const quiet = ['schedule', 'phone-check', 'notification'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
+        const quiet = ['schedule', 'phone-check', 'notification', 'play'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
         return;
@@ -582,13 +628,14 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : i.origin === 'phone-check' ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', content: i.assistant } : null,
       ]).filter(Boolean);
       const { system, user } = buildPrompt({
         phase, identity: clip(identity, 6000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
+        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps: Object.keys(cfg.playApps), playActions: cfg.playActions,
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
@@ -642,9 +689,10 @@ export function apply(ctx, config = {}) {
       // HDSI deferred browsing: the character's browserIntent runs now through dsh's web service;
       // the observation is evidence for later rounds (webContext), never for this script.
       for (const b of parsed?.browserIntents ?? []) await browse(b, phase);
+      for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
       let said = false;
       if (parsed?.contact) said = await contact(parsed.contact, phase);
-      audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, contact: Boolean(parsed?.contact), said });
+      audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, contact: Boolean(parsed?.contact), said });
       logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
       return { ok: true, script, contact: parsed?.contact ?? null, said };
     } catch (error) {
@@ -652,6 +700,32 @@ export function apply(ctx, config = {}) {
       audit('round-failed', { phase, error: clip(error.message, 200) });
       return { error: error.message };
     } finally { busy = false; }
+  }
+
+  // 玩: a play intent becomes one normal turn in her latest session (she acts on her phone; the
+  // phone gate's approvals apply). Gated like contact; actions outside playActions are dropped.
+  async function playOut(p, phase) {
+    const held = (why) => { audit('play-held', { phase, why, app: p.app, action: p.action, target: p.target }); return false; };
+    if (!cfg.play) return held('disabled');
+    if (!cfg.playActions.includes(p.action)) return held(`action ${p.action} not allowed`);
+    const pkg = cfg.playApps[p.app];
+    if (!pkg) return held(`app ${p.app} not in playApps`);
+    if (!inHours(cfg.activeHours)) return held('outside active hours');
+    if (p.willingness < cfg.willingnessThreshold) return held('willingness');
+    rollDay();
+    if (meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
+    if (!ctx.get('dshPhone')?.isReady) return held('phone not ready');
+    const sessionId = cfg.vmSession || lastActSession;
+    const controller = ctx.get('sessionController');
+    if (!sessionId || !controller) return held('no session');
+    try {
+      const found = await controller.resolveAgent(sessionId);
+      if (!found || 'error' in found) return held(found?.error?.message ?? 'session not found');
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: playPrompt(p, pkg) }], source: PLAY_SOURCE }));
+      meta.dayPlays++; saveMeta();
+      audit('play', { phase, app: p.app, action: p.action, target: p.target, why: p.why, session: sessionId });
+      return true;
+    } catch (error) { return held(error.message); }
   }
 
   // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
@@ -754,7 +828,7 @@ export function apply(ctx, config = {}) {
           `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
           `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
-          `speak: ${cfg.speak ? 'on' : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
+          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}/${cfg.maxPlaysPerDay})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },

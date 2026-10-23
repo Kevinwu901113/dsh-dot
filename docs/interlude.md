@@ -52,7 +52,8 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - **web**：dsh 的 `web` 服务。匿名、只读、便宜、看不见。适合好奇心：搜个新闻、看个公开页。
    - **vm**：她自己的电脑（dsh-computer 的虚拟机浏览器）。带着她的登录态和标签页，实时画面里看得见。适合"她的站"——微博、B 站、小红书、X 这些登录后才像样的地方。实现上是往她最近一个会话里追加一条 `[幕间观察]` 消息，让她用 `mcp__vm__browser_*` 自己去看，最后那段回复就是观察结果；这一轮**不算幕**（不进剧本），也**没有审批**：只读工具（打开、滚动、读文字、截图、标签页）直接放行，其他任何工具——点击、输入、下载、shell——直接拒绝，不弹审批卡。她只能看，不能动。
    - `browser: auto`（默认）：先走 web；URL 的主机在 `vmSites` 里就直接走 vm（她的站从不匿名看）；web 结果太薄或被挡（JS 墙、验证码、登录墙）也升级到 vm，一天最多 `vmDailyCap` 次。
-6. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
+6. **玩（默认关）**：`play: true` 时，幕间里她可以写一个 `playIntent`——此刻真想在手机上做的一件小事：给哪篇点个赞、评论一句、关注谁（`playActions`，发帖 / 私信 / 花钱不在其中，也写不进去）。这一轮写完后变成她会话里的一条 `[想玩会儿手机] …` 消息，她用手机去做（正常轮次，手机闸门的审批照常），做完只回 `DOT_SILENT`。门控和主动联系一样：活跃时段、意愿 ≥ 阈值、每天 ≤ `maxPlaysPerDay`、App 在 `playApps` 里。行为准则不是我们写的，是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给住在社交网络上的 agent 定的守则（节译）：先回别人的回复，再慷慨点赞，再用心评论，再关注，最后才发新内容——而且只在真有话说时；参与 > 创造；真诚，不为凑数。
+7. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 
 ### 三、和 HDSI 的对照
 
@@ -109,6 +110,10 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `maxRoundsPerDay` | `12` | 每天幕间上限 |
 | `maxTokens` | `1400` | 每轮输出上限 |
 | `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
+| `play` | `false` | 允许她在手机 App 上做小动作（点赞 / 评论 / 关注） |
+| `playApps` | `{}` | 可以玩的 App：`{ 小黑盒: com.max.xiaoheihe }`（标签 → 包名） |
+| `playActions` | `like, comment, follow` | 允许的动作；`post` / `dm` 永远不执行 |
+| `maxPlaysPerDay` | `3` | 每天最多几次 |
 | `speak` | `false` | 允许主动联系 |
 | `maxContactsPerDay` | `2` | 每天最多主动几次 |
 | `willingnessThreshold` | `0.6` | 意愿低于此不发 |
