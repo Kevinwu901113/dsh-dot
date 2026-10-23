@@ -146,3 +146,17 @@ Kevin："我打算让 dot 转移方向。养鱼是主基调。""那就真 App。
 - **电脑可选**：`DSH_DOT_COMPUTER=off` 时 computer 的五个条目 `disabled`，宿主 subprocess、沙箱策略、权限预设回到 dsh 默认值（patch 里用 `!!js` 条件）。
 - 审批策略不变：观察轮不审批（只读 + 其余拒绝）；装卸 App、输入像密码 / 支付的内容走审批。
 - 待做：QQ 用她手机上的真 App（Kevin 定的），还没接——dsh-im 的 QQ 是官方机器人通道，真 App 收发要靠无障碍树，是下一步；`serial` 配置项接真机；"玩"（点赞评论发帖）那层的提示词要从社区找，不自己写。
+
+## v0.5.1（2026-10-23）：通知这一层重写
+
+Kevin："你有点补丁式修复的味道了。整体看看。"确实：三次各修一个洞（重启后不知道会话、轮询漏掉一闪而过的通知、同一条通知原地更新被去重吞掉），根子是一开始把"盯通知栏"写成了"4 秒轮询 + 按 key 去重的 Set"。
+
+重写成 `src/phone/notifications.js`，一个状态模型：
+
+- Android 只把 NotificationListenerService 给 App，不给 adb。不往她手机里装我们自己的 App 的前提下，通知栏只有两种可观测方式：**事件**（系统把每次 post/update 记进 events 日志缓冲区 `notification_enqueue`，`logcat -b events` 能毫秒级知道"有事发生"，但不知道内容）和**状态**（`dumpsys notification --noredact` 是此刻通知栏的快照，有内容但是快照）。两者合用：事件触发立即快照，慢轮询兜底对账。
+- 一张表 key → 上次内容；每次快照 diff 出 `posted` / `updated` / `removed`。`updated` 是关键——聊天 App 每个会话只有一条通知，新消息来是原地改字。第一次快照只填表不发事件。一次只跑一个 dumpsys，事件风暴合并成下一次读。
+- 策略单独一个对象：所有非系统 App 默认算（以后装的也算），`muted` 静音，`only` 收窄；记每个 App 发过多少条。
+- 唤醒侧（dot）：她最近的会话持久化；几秒内的多条合成一次；`notifyHours` 夜里静音。
+- 测试用的 fixture 按真机 `dumpsys` 的版式手写（真实 dump 里有她的内容，不进仓库）；解析器在真实 dump 上跑过。
+
+如果这条路还漏（比如某 App 发了就撤、快照赶不上），下一步不是再补 dumpsys，而是**随插件带一个几十行的 NotificationListenerService APK** 当"出厂组件"，把通知作为事件流吐出来——那是唯一完整的接口，代价是要打包签名一个 APK。

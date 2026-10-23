@@ -31,7 +31,8 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
 | `channel` | `stable` | 模拟器通道 |
 | `bootTimeoutMs` / `restartDelayMs` | `300000` / `10000` | 开机等待、崩溃重开间隔 |
-| `notifyPollMs` / `notifyApps` / `notifyMuted` | `4000` / `[]` / `[]` | 通知轮询间隔（`0` 关闭）；只关心哪些包（空 = 所有非系统 App，含以后装的）；静音的包（`/phone notify mute` 也写这里） |
+| `notifications` | `true` | 盯不盯通知栏 |
+| `notifyPollMs` / `notifyApps` / `notifyMuted` | `4000` / `[]` / `[]` | 兜底快照间隔（事件到了会立刻读，`0` = 只靠事件）；只关心哪些包（空 = 所有非系统 App，含以后装的）；静音的包（`/phone notify mute` 也写这里） |
 | `mcp` / `toolCallTimeoutMs` | `true` / `60000` | 挂 mobile-mcp |
 | `askTools` / `sensitivePatterns` | 装卸 App / 密码支付验证码 | 审批规则 |
 | `DSH_DOT_PHONE=off` | | 整个组件不加载 |

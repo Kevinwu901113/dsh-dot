@@ -14,6 +14,10 @@ import { Readable, Transform } from 'node:stream';
 import { createAudit } from '../computer/audit.js';
 import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { startLiveView } from './live-view.js';
+import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
+
+/** @deprecated name kept for callers; see notifications.js */
+export const parseNotifications = parseShade;
 
 export const name = 'dot-phone';
 export const inject = [];
@@ -43,7 +47,8 @@ export const defaults = {
   publicUrl: '',            // base URL reaching the live view from elsewhere (e.g. tailscale serve), used in notices
   // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
   // listeners (dot wakes her for them). notifyApps: packages that count; [] = every non-system app.
-  notifyPollMs: 4000,
+  notifications: true,      // watch the shade at all
+  notifyPollMs: 4000,       // reconcile snapshot interval (events trigger immediate reads); 0 = events only
   notifyApps: [],           // [] = every app she installs, now or later, until muted
   notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
   mcp: true,                // mount mobile-mcp as mcp__phone__*
@@ -144,28 +149,6 @@ export function phoneGate(exec, cfg) {
 /** Phone tools an observation turn may use: look, scroll, open an app, go back; never type, install or open URLs. */
 export const OBSERVATION_TOOLS = ['mobile_list_available_devices', 'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_list_apps', 'mobile_launch_app', 'mobile_take_screenshot', 'mobile_list_elements_on_screen', 'mobile_click_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button'];
 
-/**
- * Parse `dumpsys notification --noredact` into the active notifications (archive excluded).
- * @returns {{key: string, pkg: string, title: string, text: string}[]}
- */
-export function parseNotifications(dump) {
-  const active = String(dump).split(/\n\s*(?:mArchive|Notification Archive|Archive)\b/)[0];
-  const out = [];
-  for (const block of active.split(/(?=NotificationRecord\()/).slice(1)) {
-    const pkg = /\bpkg=(\S+)/.exec(block)?.[1];
-    const key = /\bkey=(\S+?):?(?=\s)/.exec(block)?.[1];
-    if (!pkg || !key) continue;
-    const field = (name) => { const m = new RegExp(`${name}=(?:String|CharSequence|SpannableString) \\(([^\\n]*)\\)`).exec(block); return m ? m[1].trim() : ''; };
-    const title = field('android.title') || field('android.conversationTitle');
-    let text = field('android.text') || field('android.bigText') || field('android.subText');
-    if (!text) { const m = /android\.messages=[^\n]*?text=([^,\]]+)/.exec(block); if (m) text = m[1].trim(); }
-    if (!title && !text) continue;
-    out.push({ key, pkg, title, text });
-  }
-  return out;
-}
-
-const SYSTEM_PKG = /^(android|com\.android\.|com\.google\.android\.)/;
 
 function withFileLog(logger) {
   const file = join(dshHome(), 'dsh-phone.log');
@@ -267,43 +250,39 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
-  // Notifications: what her phone shows her. Listeners get each new one once.
+  // Notifications: what her phone shows her (see notifications.js). Listeners get posted and
+  // updated ones once each; the policy decides which apps count.
   const notifyListeners = new Set();
-  const seen = new Map(); // notification key → last title+text seen
   const recent = [];
-  const appsSeen = new Map(); // pkg → count of notifications since start
-  // Per-app policy, like the phone's own notification settings: new apps wake her unless muted.
-  const muted = new Set([...(cfg.notifyMuted ?? []), ...(settings.notifyMuted ?? [])]);
-  phone.notifyPolicy = () => ({ muted: [...muted], apps: [...appsSeen.entries()].map(([pkg, count]) => ({ pkg, count, policy: muted.has(pkg) ? 'mute' : 'wake' })) });
-  phone.setNotifyPolicy = (pkg, policy) => {
-    if (policy === 'mute') muted.add(pkg); else muted.delete(pkg);
-    writeSettings({ notifyMuted: [...muted] });
-    audit({ kind: 'notify-policy', pkg, policy });
-  };
+  const policy = createPolicy({ only: cfg.notifyApps, muted: [...(cfg.notifyMuted ?? []), ...(settings.notifyMuted ?? [])] });
+  phone.notifyPolicy = () => ({ muted: policy.muted(), apps: policy.apps() });
+  phone.setNotifyPolicy = (pkg, p) => { policy.set(pkg, p); writeSettings({ notifyMuted: policy.muted() }); audit({ kind: 'notify-policy', pkg, policy: p }); };
   phone.onNotification = (fn) => { notifyListeners.add(fn); return () => notifyListeners.delete(fn); };
   phone.notifications = () => [...recent];
-  let primed = false;
-  async function pollNotifications() {
-    if (!phone.isReady || !notifyListeners.size) return;
-    let dump = '';
-    try { dump = (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout; } catch { return; }
-    const wanted = (n) => (cfg.notifyApps.length ? cfg.notifyApps.includes(n.pkg) : !SYSTEM_PKG.test(n.pkg)) && !muted.has(n.pkg);
-    for (const n of parseNotifications(dump)) {
-      // A messaging app keeps one notification per conversation and updates it in place as more
-      // messages arrive, so the same key with new text is news too.
-      const body = `${n.title}\n${n.text}`;
-      if (seen.get(n.key) === body) continue;
-      seen.set(n.key, body);
-      if (seen.size > 2000) seen.delete(seen.keys().next().value);
-      if (!SYSTEM_PKG.test(n.pkg)) appsSeen.set(n.pkg, (appsSeen.get(n.pkg) ?? 0) + 1);
-      if (!primed || !wanted(n)) continue; // what was already on the shade when we started is not news
-      const item = { ...n, at: new Date().toISOString() };
-      recent.push(item); if (recent.length > 20) recent.shift();
-      audit({ kind: 'notification', pkg: n.pkg, title: n.title, text: n.text.slice(0, 200) });
-      for (const fn of notifyListeners) { try { fn(item); } catch (err) { logger.warn(`notification listener: ${err.message}`); } }
-    }
-    primed = true;
-  }
+  const shade = createShadeWatch({
+    readShade: async () => (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout,
+    tailEvents: (onEvent) => {
+      // `-T 1`: from now, not the buffer's history. Restarted if it dies while the phone is up.
+      let proc = null, stopped = false;
+      const open = () => {
+        if (stopped || !phone.isReady) return;
+        try { proc = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] }); } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
+        proc.stdout?.on('data', (d) => { if (String(d).includes('[')) onEvent(); });
+        proc.on('exit', () => { proc = null; if (!stopped) setTimeout(open, 5000); });
+      };
+      open();
+      return () => { stopped = true; proc?.kill(); proc = null; };
+    },
+    pollMs: cfg.notifyPollMs,
+    wanted: (n) => policy.wanted(n),
+    onChange: (kind, n) => {
+      if (kind === 'removed') return;
+      recent.push(n); if (recent.length > 20) recent.shift();
+      audit({ kind: 'notification', change: kind, pkg: n.pkg, title: n.title, text: n.text.slice(0, 200) });
+      for (const fn of notifyListeners) { try { fn(n); } catch (err) { logger.warn(`notification listener: ${err.message}`); } }
+    },
+    logger,
+  });
   phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license' || phone.state === 'error') void start(); };
 
   const installed = () => existsSync(paths.emulator) && existsSync(paths.adb) && existsSync(join(paths.sysdir, 'system.img'));
@@ -410,9 +389,10 @@ export function apply(ctx, config = {}, deps = {}) {
       }
       await waitBooted();
       await settle();
+      if (stopping) return; // disposed while booting: leave nothing running on our side
       setState('ready');
       markReady();
-      void pollNotifications().then(() => { if (cfg.notifyPollMs > 0) tailNotifications(); });
+      if (cfg.notifications) shade.start();
       logger.info(`phone ready — ${serial}, Android API ${cfg.api} (${abi}), ${cfg.window ? 'window on the desktop' : 'headless'}`);
       await mountMcp();
     } catch (err) {
@@ -477,24 +457,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }), 'dsh-dot/phone: /phone command');
   });
 
-  // Apps like QQ cancel their notification the moment the chat is read, sometimes within a second
-  // of posting it; a 4 s poll misses those. The system logs every enqueue to the events buffer, so a
-  // logcat tail triggers an immediate read of the shade, and the interval stays as the safety net.
-  let logcat = null, pollSoon = null;
-  const pollNow = () => { if (pollSoon) return; pollSoon = setTimeout(() => { pollSoon = null; void pollNotifications(); }, 150); };
-  function tailNotifications() {
-    if (logcat || stopping || !phone.isReady) return;
-    try {
-      logcat = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] });
-    } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
-    logcat.stdout?.on('data', (d) => { if (String(d).includes('[')) pollNow(); });
-    logcat.on('exit', () => { logcat = null; if (!stopping && phone.isReady) setTimeout(tailNotifications, 5000); });
-  }
-  phone.tailNotifications = tailNotifications;
-  ctx.effect(() => {
-    const timer = cfg.notifyPollMs > 0 ? setInterval(() => { void pollNotifications(); }, cfg.notifyPollMs) : null;
-    return () => { if (timer) clearInterval(timer); if (pollSoon) clearTimeout(pollSoon); logcat?.kill(); logcat = null; };
-  }, 'dsh-dot/phone: notification watch');
+  ctx.effect(() => () => shade.stop(), 'dsh-dot/phone: notification watch');
   ctx.effect(() => {
     void start();
     return () => {

@@ -163,84 +163,28 @@ test('live view server: page, status, one stream frame, input mapped to screen p
   view.close();
 });
 
-const DUMP = `Notification Manager state:
-  Notification List:
-  NotificationRecord(0xabc: pkg=com.tencent.mobileqq user=UserHandle{0} id=1 tag=null key=0|com.tencent.mobileqq|1|null|10171: Notification(channel=msg pri=0))
-    uid=10171 opPkg=com.tencent.mobileqq
-    extras={
-      android.title=String (宽)
-      android.text=String (hi)
-      android.showWhen=Boolean (true)
-    }
-  NotificationRecord(0xdef: pkg=android user=UserHandle{0} id=17 tag=null key=0|android|17|null|1000: Notification(channel=FOREGROUND))
-    extras={
-      android.title=String (系统)
-      android.text=String (正在运行)
-    }
-  NotificationRecord(0x222: pkg=com.tencent.mobileqq user=UserHandle{0} id=3 tag=null key=0|com.tencent.mobileqq|3|null|10171: Notification())
-    extras={
-      android.title=String (群聊)
-      android.bigText=String (有人@你)
-    }
-  mArchive:
-  NotificationRecord(0x111: pkg=com.tencent.mobileqq user=UserHandle{0} id=2 tag=null key=0|com.tencent.mobileqq|2|null|10171: Notification())
-    extras={
-      android.title=String (old)
-      android.text=String (old)
-    }
-`;
+import { shade, SYSTEM, QQ_KUAN } from './fixtures/shade.js';
 
-test('parseNotifications: active records with title/text, archive excluded', async () => {
-  const { parseNotifications } = await import('../src/phone/phone.js');
-  const n = parseNotifications(DUMP);
-  assert.deepEqual(n.map((x) => [x.pkg, x.title, x.text]), [['com.tencent.mobileqq', '宽', 'hi'], ['android', '系统', '正在运行'], ['com.tencent.mobileqq', '群聊', '有人@你']]);
-  assert.equal(n[0].key, '0|com.tencent.mobileqq|1|null|10171');
-});
-
-test('phone: new notifications reach listeners once; the shade at start is not news; system apps skipped', async () => {
-  let dump = DUMP;
+test('phone: notifications flow through the policy to listeners and /phone; mute persists', async () => {
+  let dump = shade([SYSTEM, QQ_KUAN('嘿嘿')]);
   const h = harness();
-  // intercept dumpsys through the run stub: the harness's run returns '' for unknown commands, so wrap
   const got = [];
   h.ctx.dshPhone.adbExec = async (args) => (args.includes('dumpsys') ? { stdout: dump } : { stdout: '' });
   assert.ok(await until(() => h.ctx.dshPhone.isReady));
   h.ctx.dshPhone.onNotification((n) => got.push(n));
-  // the watcher runs on an interval of notifyPollMs (4000 in defaults); trigger via a shorter harness? call poll by waiting
-  await new Promise((r) => setTimeout(r, 4300));
-  assert.equal(got.length, 0, 'what was already there is not announced');
-  dump = DUMP.replace('mArchive:', `  NotificationRecord(0x333: pkg=com.tencent.mobileqq user=UserHandle{0} id=9 tag=null key=0|com.tencent.mobileqq|9|null|10171: Notification())
-    extras={
-      android.title=String (宽)
-      android.text=String (你会主动给我发消息吗)
-    }
-  NotificationRecord(0x444: pkg=android user=UserHandle{0} id=18 tag=null key=0|android|18|null|1000: Notification())
-    extras={
-      android.title=String (系统)
-      android.text=String (更新)
-    }
-  mArchive:`);
-  assert.equal(h.logcats.length, 1, 'logcat tail started once ready');
-  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,9,NULL,0,Notification(...)]\n');
+  await new Promise((r) => setTimeout(r, 300));
+  assert.equal(h.logcats.length, 1, 'events tail started once ready');
+  assert.equal(got.length, 0);
+  dump = shade([SYSTEM, QQ_KUAN('在吗[2条]嘿嘿')]);
+  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,1,NULL,0,Notification(...)]\n');
   await new Promise((r) => setTimeout(r, 400));
-  assert.deepEqual(got.map((n) => n.text), ['你会主动给我发消息吗'], 'an enqueue event reads the shade at once');
-  assert.match((await h.cmd().handler({ rawInput: 'notifications' })).text, /com\.tencent\.mobileqq: 宽 — 你会主动给我发消息吗/);
-  // mute QQ: the next one is seen but not announced; the policy is persisted
+  assert.deepEqual(got.map((n) => n.text), ['在吗[2条]嘿嘿']);
+  assert.match((await h.cmd().handler({ rawInput: 'notifications' })).text, /com\.tencent\.mobileqq: 宽 — 在吗\[2条\]嘿嘿/);
   assert.match((await h.cmd().handler({ rawInput: 'notify mute com.tencent.mobileqq' })).text, /except: com\.tencent\.mobileqq/);
-  dump = dump.replace('mArchive:', `  NotificationRecord(0x555: pkg=com.tencent.mobileqq user=UserHandle{0} id=10 tag=null key=0|com.tencent.mobileqq|10|null|10171: Notification())
-    extras={
-      android.title=String (宽)
-      android.text=String (在吗)
-    }
-  mArchive:`);
-  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,10,NULL,0,Notification(...)]\n');
+  dump = shade([SYSTEM, QQ_KUAN('第三条')]);
+  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,1,NULL,0,Notification(...)]\n');
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(got.length, 1, 'muted app does not wake her');
   assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).notifyMuted, ['com.tencent.mobileqq']);
-  // unmute; the conversation notification updated in place (same key, new text) is news
-  await h.cmd().handler({ rawInput: 'notify wake com.tencent.mobileqq' });
-  dump = dump.replace('android.text=String (你会主动给我发消息吗)', 'android.text=String (在吗[2条]你会主动给我发消息吗)');
-  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,9,NULL,0,Notification(...)]\n');
-  await new Promise((r) => setTimeout(r, 400));
-  assert.equal(got.at(-1)?.text, '在吗[2条]你会主动给我发消息吗', 'an updated notification wakes her');
   h.stop();
 });
