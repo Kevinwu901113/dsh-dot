@@ -188,7 +188,17 @@ export function apply(ctx, config = {}, deps = {}) {
   qq.qr = async () => {
     try { const b64 = await vmShell(`test -f ${QR_FILE} && base64 -w0 ${QR_FILE} || true`); return b64.trim() ? Buffer.from(b64.trim(), 'base64') : null; } catch { return null; }
   };
-  qq.log = async (lines = 40) => { try { return await vmShell(`if [ -f ${INSTALL_DONE} ] || [ ! -f ${INSTALL_LOG} ]; then tail -n ${lines} ${LOG_FILE} 2>/dev/null || true; else echo "== installing (${INSTALL_LOG}) =="; tail -n ${lines} ${INSTALL_LOG}; fi`); } catch { return ''; } };
+  qq.log = async (lines = 40) => {
+    try {
+      return await vmShell([
+        `if [ -f ${INSTALL_LOG} ] && [ ! -f ${INSTALL_DONE} ]; then echo "== installing =="; tail -n ${lines} ${INSTALL_LOG}; exit 0; fi`,
+        `echo "== napcat.log (${LOG_FILE}) =="; tail -n ${lines} ${LOG_FILE} 2>/dev/null || echo "(no log file)"`,
+        'echo "== processes =="; pgrep -af "opt/QQ/qq|xvfb|Xvfb" || echo "(none)"',
+        'echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":3001|:6099" || echo "(nothing on 3001/6099)"',
+        `echo "== files =="; ls -la ${QQ_BIN} ${CONFIG_DIR} 2>&1 | head -12; which xvfb-run Xvfb || echo "(no xvfb-run)"`,
+      ].join('\n'));
+    } catch (err) { return `log unavailable: ${err.message}`; }
+  };
 
   // ---- the OneBot side: one WebSocket through the computer's gateway ----
   let ws = null, closed = false, reconnectTimer = null, echo = 0;
