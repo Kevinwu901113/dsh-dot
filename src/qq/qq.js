@@ -169,7 +169,8 @@ export function apply(ctx, config = {}, deps = {}) {
       // WebUI stays on loopback inside the VM with its own token; not reachable from outside anyway.
       `test -f ${CONFIG_DIR}/webui.json || cat > ${CONFIG_DIR}/webui.json <<'EOF'\n${JSON.stringify({ host: '127.0.0.1', port: 6099, token: cfg.token.slice(0, 16), loginRate: 10 })}\nEOF\n`);
   };
-  qq.running = async () => { try { return (await vmShell('pgrep -f "opt/QQ/qq" >/dev/null && echo yes || echo no')).trim() === 'yes'; } catch { return false; } };
+  // "[o]pt" keeps pgrep/pkill from matching the shell that runs them (which would say "running" forever, or kill itself).
+  qq.running = async () => { try { return (await vmShell('pgrep -f "[o]pt/QQ/qq" >/dev/null && echo yes || echo no')).trim() === 'yes'; } catch { return false; } };
   qq.start = async () => {
     if (!(await qq.installed())) { setState('not-installed', 'NapCat is not installed in the computer — /qq install'); return false; }
     if (!cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
@@ -183,7 +184,7 @@ export function apply(ctx, config = {}, deps = {}) {
     connect();
     return true;
   };
-  qq.stop = async () => { closeWs(); try { await vmShell('pkill -f "opt/QQ/qq" || true'); } catch {} setState('stopped'); audit({ kind: 'napcat-stopped' }); };
+  qq.stop = async () => { closeWs(); try { await vmShell('pkill -f "[o]pt/QQ/qq" || true'); } catch {} setState('stopped'); audit({ kind: 'napcat-stopped' }); };
   /** The login QR NapCat wrote (PNG), or null while there is none (already logged in, or not yet started). */
   qq.qr = async () => {
     try { const b64 = await vmShell(`test -f ${QR_FILE} && base64 -w0 ${QR_FILE} || true`); return b64.trim() ? Buffer.from(b64.trim(), 'base64') : null; } catch { return null; }
@@ -193,7 +194,7 @@ export function apply(ctx, config = {}, deps = {}) {
       return await vmShell([
         `if [ -f ${INSTALL_LOG} ] && [ ! -f ${INSTALL_DONE} ]; then echo "== installing =="; tail -n ${lines} ${INSTALL_LOG}; exit 0; fi`,
         `echo "== napcat.log (${LOG_FILE}) =="; tail -n ${lines} ${LOG_FILE} 2>/dev/null || echo "(no log file)"`,
-        'echo "== processes =="; pgrep -af "opt/QQ/qq|xvfb|Xvfb" || echo "(none)"',
+        'echo "== processes =="; pgrep -af "[o]pt/QQ/qq|[X]vfb" || echo "(none)"',
         'echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":3001|:6099" || echo "(nothing on 3001/6099)"',
         `echo "== files =="; ls -la ${QQ_BIN} ${CONFIG_DIR} 2>&1 | head -12; which xvfb-run Xvfb || echo "(no xvfb-run)"`,
       ].join('\n'));
