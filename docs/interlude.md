@@ -88,8 +88,11 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `home` / `DSH_INTERLUDE_HOME` | `~/dot`（跟随 `DSH_DOT_HOME`） | 幕间文件所在目录 |
 | `browser` | `auto` | HDSI 的「网页观察」怎么看：`auto`（web 优先，`vmSites` 或 web 被挡时用 vm）、`web`、`vm`、`disabled` |
 | `browseDailyCap` | `6` | 每天最多观察几次（两种方式合计） |
+| `phoneApps` | `{}` | 用她手机上的 App 看的站，`{ host: 包名 }`（如 `xiaoheihe.cn: com.max.xiaoheihe`）；需要 `dsh-dot/phone` 就绪。规则同 `vmSites`：从不匿名看、只读、无审批 |
+| `phonePreferred` | `true` | web 被挡要升级时，手机和电脑都在就先用手机 |
+| `phoneObservationTools` | 看、滑、点、开 App、返回 | 观察轮放行的手机工具；输入、装卸 App 一律拒绝 |
 | `vmSites` | `[]` | 只在虚拟机里看的站（主机后缀匹配，如 `bilibili.com`）；虚拟机今天没额度就等，不会匿名去看 |
-| `vmDailyCap` | `2` | 每天最多几次 vm 观察 |
+| `vmDailyCap` | `2` | 每天最多几次"自己去看"（手机 + 电脑合计） |
 | `vmObservationTools` | 只读的 `browser_*` 工具 | 观察轮里唯一放行的工具；其余一律拒绝，不审批 |
 | `vmSession` | 自动（她最近一幕所在会话） | 观察在哪个会话里做 |
 | `vmTimeoutMinutes` | `5` | 观察轮最长等多久 |

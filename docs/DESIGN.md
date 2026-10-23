@@ -132,3 +132,17 @@ Kevin："interlude 也合并到 dot 里面。然后所有仓库清理掉不要�
 - dsh-interlude 的历史同样 merge 进来；代码在 `src/interlude/core.js`，组件 `dsh-dot/interlude`，测试 `test/interlude.test.js`，示例 Canon 在 `examples/`，文档 `docs/interlude.md` / `docs/INTERLUDE-DESIGN.md`。
 - **许可证变成 AGPL-3.0-only**：幕间按原文使用 HDS-Interlude 的提示词，HDSI 是 AGPL；并进同一个包，整个包就是 AGPL。v0.3 以前以 MIT 发布的 computer / dot 代码，那些版本仍是 MIT。
 - `dsh-computer`、`dsh-interlude` 两个仓库不再需要（历史都在这里）。
+
+## v0.5（2026-10-23）：转向——养鱼是主基调，她有了一部手机
+
+Kevin："我打算让 dot 转移方向。养鱼是主基调。""那就真 App。手机这个东西，你要做成即使别人使用这个插件也可以直接可用可行。computer 作为可选组件。"
+
+定义改了：dot 不再是"干活的常驻 agent，顺便有点生活"，而是"在自己手机上过日子的角色，顺便能干活"。幕间从附属变成核心，电脑从主体变成可选。
+
+- **`dsh-dot/phone`**：Android 模拟器。做成开箱即用的关键是不依赖 Android Studio / Java：Google 仓库的 `repository2-3.xml` 和 `sys-img2-3.xml` 是公开索引，emulator、platform-tools、system image 都是 zip，解压就能用；AVD 的 `config.ini` 自己写（`avdmanager` 写的也就是这些行）。许可证必须用户自己接受（`/phone accept`），插件只在接受后下载。模型侧用 mobile-mcp（6.3k★，Apache-2.0，2026-10 还在更新）走 stdio，作为依赖随插件安装，`ctx.plugin(mcpClient, …)` 在手机就绪后挂，不用在 patch 里写路径。
+- 为什么不放进她的虚拟机：microVM 不支持嵌套虚拟化，Redroid/Waydroid 要 binder 内核模块。手机和电脑是两台设备。
+- **幕间的"去看"多了一台设备**：`phoneApps`（host → 包名）决定哪些站用手机上的 App 看；`vmSites` 用电脑浏览器；其余先 web，被挡了升级到手机（`phonePreferred`）或电脑。观察轮的只读白名单加了 `phoneObservationTools`（看、滑、点进去、开 App、返回；不输入、不装卸）。手机和电脑共用 `vmDailyCap`。
+- **dot 不再硬依赖 `dshComputer`**：`inject` 清空，设备用 `ctx.get()`，工作规则按在场的设备生成，`/dot` 分别显示两台设备的状态，手机出错 / 等许可也会推到 IM。
+- **电脑可选**：`DSH_DOT_COMPUTER=off` 时 computer 的五个条目 `disabled`，宿主 subprocess、沙箱策略、权限预设回到 dsh 默认值（patch 里用 `!!js` 条件）。
+- 审批策略不变：观察轮不审批（只读 + 其余拒绝）；装卸 App、输入像密码 / 支付的内容走审批。
+- 待做：QQ 用她手机上的真 App（Kevin 定的），还没接——dsh-im 的 QQ 是官方机器人通道，真 App 收发要靠无障碍树，是下一步；`serial` 配置项接真机；"玩"（点赞评论发帖）那层的提示词要从社区找，不自己写。

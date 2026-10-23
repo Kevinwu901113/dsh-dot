@@ -26,7 +26,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
     prompts: [], sections: [],
     systemPrompt: { context(c) { ctx.prompts.push(c); }, section(c) { ctx.sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
-    get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm, systemPrompt: ctx.systemPrompt }[name]),
+    get: (name) => ({ budget: budgetSvc, schedule: {}, dshIm, systemPrompt: ctx.systemPrompt, dshComputer: ctx.dshComputer }[name]),
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready', publicLiveViewUrl: 'https://mac.ts.net/vnc' }), onStatus: () => () => {} },
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));

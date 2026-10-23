@@ -1,6 +1,6 @@
 {
   "name": "dsh-dot",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates), the always-on glue (schedules → IM, silence protocol, approval cards), and an interlude — a life between conversations after HDS-Interlude (Canon by share code, script, continuity, browsing in her own browser). Works with dsh-im and the official schedule bundle.",
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -34,7 +34,8 @@
     "./core": "./src/dot/core.js",
     "./dot": "./src/dot/core.js",
     "./package.json": "./package.json",
-    "./interlude": "./src/interlude/core.js"
+    "./interlude": "./src/interlude/core.js",
+    "./phone": "./src/phone/phone.js"
   },
   "files": [
     "src",
@@ -67,9 +68,11 @@
   "peerDependencies": {
     "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2",
     "@deepseek-ai/dsh-subprocess-local": ">=0.2.0-rc.2",
-    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2"
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2",
+    "@deepseek-ai/dsh-mcp-client": ">=0.2.0-rc.2"
   },
   "dependencies": {
-    "microsandbox": "0.7.8"
+    "microsandbox": "0.7.8",
+    "@mobilenext/mobile-mcp": "1.0.12"
   }
 }

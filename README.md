@@ -2,25 +2,24 @@
 
 **English** | [中文](#中文说明)
 
-Turn [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) into a **Dots / Grok-Bot-style always-on agent**: it has its own computer, you talk to it over Feishu / WeChat / DingTalk / QQ / Telegram…, it works on a schedule, tells you only when there is something worth telling, and stops itself when the day's budget is spent.
+A character who lives on her own phone, for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). She has her own Android phone (this plugin installs and runs it), her own accounts, her own days: between your conversations she keeps living — writes what happened, goes to look at things she is curious about on her phone, and sometimes has a real reason to message you. You are one of her contacts on QQ / WeChat / Feishu…; dsh-im carries the chat. If you also want her to *work* — shell, scripts, a desktop browser, scheduled jobs — give her the optional computer.
 
-One plugin, three components, plus existing plugins for the rest:
+One plugin, four components:
 
-| Need | Provided by |
-|---|---|
-| Its own computer: a bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates, audit log | **`dsh-dot/computer`** (+ `subprocess`, `gate`, the `vm` MCP client and the Computer tab) — [details](docs/computer.md) |
-| Reachable over IM (9 platforms), approvals by reply | [dsh-im](https://github.com/xmanrui/dsh-im), the most-starred dsh IM plugin |
-| Scheduled work (daily / weekly / cron, survives restarts) | built into dsh ≥ 0.2.1 (the official schedule service) |
-| Hard spending cap (optional) | [dsh-budget](https://github.com/PerryLink/dsh-budget) with `overLimit: block`; without it dot runs the same, just uncapped |
-| Identity and a life between conversations: the Canon (HDSI presets by share code) as a prompt section, script / continuity / intents, browsing with her own browser, optional proactive contact | **`dsh-dot/interlude`** (幕间, after [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)) — [details](docs/interlude.md) |
-| **`dsh-dot/dot`** (the glue, ~200 lines) | scheduled results → IM, unless the reply is `DOT_SILENT`; approvals and budget blocks announced on IM; daily block lifted at midnight |
+| Component | What it is | Needs |
+|---|---|---|
+| **`dsh-dot/phone`** | Her phone: an Android emulator the plugin downloads (emulator + platform-tools + one system image, ~2 GB, after you accept the SDK license), boots, keeps alive and exposes as `mcp__phone__*` ([mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb). The emulator window is the live view; her apps and logins live in the AVD and survive restarts. [Details](docs/phone.md) | hardware virtualization (Apple silicon or Intel Mac, Linux with KVM, Windows with WHPX) |
+| **`dsh-dot/interlude`** | 幕间, after [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): the Canon (persona; HDSI presets by share code) as a prompt section; a life between conversations — script, continuity, intents; going to look at things on her phone or in her browser (read-only, no approvals); optional proactive contact. [Details](docs/interlude.md) | — |
+| **`dsh-dot/dot`** | The contact layer: scheduled results → IM unless the reply is `DOT_SILENT`, approval and device notices on IM, working rules as a prompt section | [dsh-im](https://github.com/xmanrui/dsh-im) for IM; dsh's built-in schedule service |
+| **`dsh-dot/computer`** (optional) | A bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates and an audit log — the isolation boundary for work. `DSH_DOT_COMPUTER=off` turns it off. [Details](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox) (bundled) or Docker |
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot @xmanrui/dsh-im
-# optional spending cap: append dsh-budget to the same command
+# then, in dsh:  /phone accept      (Android SDK license → the phone installs itself)
+#                /interlude preset 6QA0-1PD6   (a persona from the HDSI hub; pick your own on typ0.space)
 ```
 
-Until v0.2 the computer (`dsh-computer`) and the interlude (`dsh-interlude`) were separate plugins; since v0.3/v0.4 they live here as components. Nothing else changed: the same `mcp__vm__*` tools, the same `dshComputer` service, the same files under `~/.dsh/dsh-computer*`, the same `DSH_COMPUTER_*` environment variables.
+History: `dsh-computer` (v0.1–0.5) and `dsh-interlude` were separate plugins; since dsh-dot v0.3/v0.4 they are components here with their git history merged. Nothing user-facing changed for them.
 
 ---
 
@@ -28,28 +27,22 @@ Until v0.2 the computer (`dsh-computer`) and the interlude (`dsh-interlude`) wer
 
 ## 中文说明
 
-dsh-dot 让 dsh 变成一个常驻 agent：**有自己的电脑、IM 上找得到、会定时主动做事、没事不打扰、花钱和危险操作有硬约束**。
+dsh-dot 让 dsh 里住进一个**在自己手机上过日子的角色**。她有自己的安卓手机（插件自己装、自己开）、自己的账号、自己的作息：你们不聊天的时候她也在过日子——把发生的事写下来、拿起手机去看她好奇的东西、偶尔有个真实的理由找你说句话。你是她 QQ / 微信 / 飞书里的一个联系人（dsh-im 负责通道）。想让她也能干活——shell、脚本、桌面浏览器、定时任务——再给她那台可选的电脑。
 
-北极星场景：在飞书或微信里说"每天早上看看 X 有没有更新，有就告诉我"。第二天到点，它在自己的电脑里检查；有更新推到 IM，没更新不出声；遇到需要审批的操作，IM 里收到提醒和实时画面链接；当天花费超限就自动暂停并通知。
+### 一、组成：一个插件、四个组件
 
-### 一、组成：一个插件、三个组件，其余用现成的
+| 组件 | 是什么 | 依赖 |
+|---|---|---|
+| **`dsh-dot/phone`** 她的手机 | Android 模拟器。插件自己从 Google 仓库下载模拟器、platform-tools 和一个系统镜像（约 2 GB，先要你接受 SDK 许可），自己写 AVD（不需要 Java / Android Studio），开机、保活，以 `mcp__phone__*` 暴露给模型（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）。模拟器窗口就是实时画面；App 和登录态在 AVD 里，重启不丢。详见 [docs/phone.md](docs/phone.md) | 硬件虚拟化：Apple silicon / Intel Mac，Linux 要 KVM，Windows 要 WHPX |
+| **`dsh-dot/interlude`** 幕间 | 按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：Canon（人设，HDSI 分享码导入）作为系统提示的一段；两次对话之间的生活——剧本、连续性、打算；想看什么就拿手机（或电脑浏览器）去看，只读、无审批；可选的主动联系。详见 [docs/interlude.md](docs/interlude.md) | — |
+| **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
+| **`dsh-dot/computer`**（可选）她的电脑 | 自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志。干活时的隔离边界。`DSH_DOT_COMPUTER=off` 关掉。详见 [docs/computer.md](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker |
 
-| 需要 | 用谁 |
-|---|---|
-| 自己的电脑：自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志 | **`dsh-dot/computer`** 组件（连同 `subprocess`、`gate`、`vm` MCP 客户端和「电脑」标签页）——详见 [docs/computer.md](docs/computer.md) |
-| IM（飞书、微信、钉钉、企业微信、QQ、Slack、Telegram、Discord、WhatsApp），回复文字审批 | [dsh-im](https://github.com/xmanrui/dsh-im)，dsh 社区星数最多的 IM 插件 |
-| 定时任务（每天 / 每周 / cron，重启后补发） | dsh 0.2.1 起内置的官方定时服务（「自动化任务」） |
-| 预算硬上限（可选） | [dsh-budget](https://github.com/PerryLink/dsh-budget)，`overLimit: block`。不装也能用，只是没人拦花费 |
-| 身份和两次对话之间的生活：Canon（HDSI 分享码导入）作为系统提示的一段；生活剧本 / 连续性 / 打算；用她自己的浏览器去看东西；可选的主动联系 | **`dsh-dot/interlude`** 组件（幕间，按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)）——详见 [docs/interlude.md](docs/interlude.md) |
-| **`dsh-dot/dot`** 组件（约 200 行） | 上面这些插件都没有的部分，见下文「工作原理」 |
-
-v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件。对外没变：还是 `mcp__vm__*` 工具、`dshComputer` 服务、`~/.dsh/dsh-computer*` 这些文件、`DSH_COMPUTER_*` 环境变量。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。
+v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件，git 历史一起并了。对外没变：`mcp__vm__*`、`dshComputer`、`~/.dsh/dsh-computer*`、`~/dot/interlude/`、`/dot` `/interlude`。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。
 
 ### 二、安装
 
-需要 dsh ≥ 0.2.1（定时任务已内置）。先退出 dsh 桌面版，再用**一条命令**装齐（dsh 只把 profile 的直接依赖加进层栈）：
-
-> 从 dsh 0.2.0 升级上来、装过 `@deepseek-ai/dsh-experimental-schedule-bundle` 的，请先卸掉它：它带的旧版 `dsh-schedule` 会挡住内置的新版。
+需要 dsh ≥ 0.2.1。先退出 dsh 桌面版，再用一条命令装齐：
 
 ```bash
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
@@ -57,64 +50,41 @@ v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插�
 open -a "DeepSeek Harness"
 ```
 
-想要花费硬上限的，把 `dsh-budget` 加进同一条命令。
-
 ### 三、第一次设置
 
-1. **预算（只在装了 dsh-budget 时）**：在 profile 的 `cordis.patch.yml` 末尾加上（金额是美元）：
-   ```yaml
-   - id: budget
-     name: dsh-budget
-     config:
-       budgets: { session: 3, daily: 3, monthly: 90 }
-       overLimit: block
-   ```
-   不设 `block` 的话，dsh-budget 只提醒、不拦截。
-2. **IM**：设置 → IM 机器人，接入一个机器人（飞书可扫码一键创建）。
-3. **工作区**：不用改。IM 机器人开的会话无论工作区在哪都归 dot（`scope: home+im`），工作规则由 dot 注入，人设由幕间组件注入，不需要 `AGENTS.md`。
-4. **投递目标**：在机器人设置里点「新建目标」，选你和机器人的私聊，保存。dot 用 dsh-im 的公开接口往这个目标发消息。保持「会话双向同步」**关闭**，由 dot 决定发不发。
-5. 在 dsh 里发送 `/dot test`，IM 里收到测试消息就说明通了。
-6. **公网实时画面（可选）**：按 [docs/computer.md](docs/computer.md) 用 `tailscale serve` 暴露实时画面，审批提醒里的链接在手机上才能打开。
+1. **手机**：在 dsh 里发 `/phone accept`——接受 [Android SDK 许可](https://developer.android.com/studio/terms)后插件开始下载（约 2 GB，进度在 `~/.dsh/dsh-phone.log`），装完自动开机，桌面上出现一个手机窗口。`/phone` 看状态。
+2. **装 App、登录**：在手机窗口里像用真手机一样操作：从官网下 APK 用 `adb install`（`~/.dsh/phone/platform-tools/adb`），或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸都由你在窗口里亲手过——她遇到会停下来叫你。**用小号。** 各平台的条款都不允许自动化，封了就封了。
+3. **人设**：`/interlude preset <分享码>` 从 [typ0.space](https://typ0.space) 导入一份 HDSI 预设，或者把 `examples/canon.minase-style.json` 放到 `~/dot/interlude/canon.json`。
+4. **她在手机上看什么**：profile 的 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }`——这些站她永远用手机上的 App 去看，只读、无审批、每天有上限。
+5. **IM**：按 dsh-im 的说明接一个机器人（QQ 官方机器人 / 微信 / 飞书…）。她主动说话（`speak: true`）和定时任务的结果都从这里投递。
+6. **电脑（可选）**：默认装上并启动；不想要就在环境里设 `DSH_DOT_COMPUTER=off`。要公网实时画面按 [docs/computer.md](docs/computer.md) 用 `tailscale serve`。
 
-### 四、工作原理
+### 四、她一天是怎么过的
 
-dsh-dot 只做现成插件都不做的四件事：
+- 你们聊天：dsh 自己跑对话，dsh-im 接 IM；她的人设（Canon）和工作规则是系统提示里的两段，不需要 `AGENTS.md`。
+- 聊天安静下来 `idleMinutes` 后、或每 `advanceEveryMinutes` 一次（只在 `activeHours` 内）、或某个打算到了时间：**幕间一轮**——一次模型调用，她写下这段时间过的日子、更新连续性快照、记下打算，顺便说她想去看点什么（`browserIntents`）。
+- **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__phone__*` / `mcp__vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
+- **找你**：`speak: true` 时，幕间里 `contact` 过四道闸（活跃时段、意愿值、每日上限、有投递目标）才通过 dsh-im 发出去。
+- **干活**（装了电脑时）：你说"每天早上看看 X 有没有更新"，她建定时任务；到点在电脑里查，有新内容推到 IM，没有就 `DOT_SILENT`；危险操作弹审批卡，附实时画面链接。
 
-1. **定时结果推送和静默**：`~/dot` 里由定时任务触发的那一轮，dot 在系统提示里加一条静默规则（只加在这一轮）。这一轮结束后，dot 取最终回复。内容只是 `DOT_SILENT` 就不发；否则通过 dsh-im 的 `ctx.dshIm.send()` 发到你的 IM。用户主动发起的对话由 dsh-im 自己回复，dot 不管。
-2. **审批提醒**：定时任务那一轮里出现审批时，IM 里收到提醒和实时画面链接。
-3. **预算**（装了 dsh-budget 时）：拦截后在 IM 通知你；日预算的拦截在本地零点自动解除，第二天的定时任务照常运行。
-4. **虚拟机出错**时在 IM 通知你。
+### 五、文件和命令
 
-`/dot` 查看状态，`/dot test` 发测试消息。dot 的事件写进电脑组件的审计日志 `~/.dsh/dsh-computer-audit.jsonl`（`kind: "dot"`）。
+| | |
+|---|---|
+| `~/dot/interlude/` | 人设 `canon.json`、剧本 `script.md`、连续性 `state.json`、打算 `intents.json`、看到的东西 `web-context.jsonl`、每轮原始回复 `calls.jsonl` |
+| `~/.dsh/phone/` | 模拟器、platform-tools、系统镜像、AVD（`avd/dot.avd/`）；`~/.dsh/dsh-phone.log` 日志、`dsh-phone-audit.jsonl` 审计、`dsh-phone.json` 设置 |
+| `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
+| `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test]` | 三个组件的状态和操作 |
 
-| 配置项 | 默认值 | 作用 |
-|---|---|---|
-| `home` / `DSH_DOT_HOME` | `~/dot` | dot 的目录 |
-| `scope` | `home+im` | 哪些会话归 dot：`home`（cwd 在 home 里）、`im`（任何 IM 机器人开的会话，不管它的工作区设在哪）、`home+im`、`all` |
-| `imBot` / `imTarget` | 自动 | dsh-im 的 Bot ID 和 Target ID；默认用第一个有已保存目标的机器人 |
-| `autoUnblockDaily` | `true` | 零点自动解除日预算拦截 |
+每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 
-### 五、限制
+### 六、原则
 
-- dot 组件依赖电脑组件（`dshComputer` 服务），缺了不启动：没有虚拟机隔离，"放心不管"就不成立。
-- 审批要回到 DeepSeek Harness 里点；IM 里只是提醒。IM 里自己发起的对话，审批按 dsh-im 的方式回复文字。
-- 电脑休眠或退出 App 后不运行；24 小时在线需要部署到服务器。
-- 不做：长期记忆、多个 dot、自我进化、自己的 IM 或定时框架。
+- **不重复造轮子**：手机用 Google 官方模拟器和 mobile-mcp，电脑用 microsandbox，IM 用 dsh-im，定时用 dsh 内置的，人设用 HDSI 社区的预设，幕间的提示词按 HDSI 原文。
+- **她只能看，不能瞒着你动**：幕间的"去看"是只读的；有后果的动作（装 App、输密码、付款、发消息）走审批，或者根本不给。
+- **可审计**：她看到什么、为什么没出声、哪次工具被拒了，`calls.jsonl` 和两份审计日志里都有。
+- **用小号**。
 
-### 六、验证情况
+### 七、许可证
 
-**真机**（Mac，dsh 0.2.1-rc.2，QQ 官方机器人，真实模型）：
-- 在 QQ 里和 dot 对话，它以注入的身份回复。
-- 说"2 分钟后看看 X 有没有新提交"，agent 建了定时任务（不再马上去做）；到点在虚拟机里查看，结果由 dot 推到 QQ。
-- 再建一个任务，到点没有新提交，agent 只回复 `DOT_SILENT`，QQ 没有收到消息。
-- `/dot test` 从 dsh 发测试消息到 QQ。
-- 审批提醒（虚拟机里 `sudo`，gate 拦下 `sandbox_execute_bash`）推到 QQ；把日预算临时调到 $0.0005 触发拦截，⛔ 通知和恢复后的 ▶️ 通知都推到 QQ。
-
-**云端**（dsh 0.2.0-rc.2，Docker 后端，脚本化模拟模型）：
-- 五个包同装无冲突；定时触发那一轮的请求里有静默规则，用户自己发起的轮次没有。
-- 定时任务那一轮里出现审批（`sudo`）时，dot 发出审批提醒（含实时画面链接）。
-- 预算拦截 → 通知、不重复通知、零点自动解除：单元测试。
-
-幕间组件让它在两次对话之间也"活着"（生活剧本、状态、打算、她自己去看的东西），文件都在 `~/dot/interlude/`；用法见 [docs/interlude.md](docs/interlude.md)。
-
-AGPL-3.0-only. 幕间组件移植自 HDS-Interlude（AGPL-3.0，其提示词按原文使用），所以整个包按 AGPL 发布；电脑和 dot 两个组件在 v0.3 之前以 MIT 发布的版本仍按 MIT 可用。
+AGPL-3.0-only。幕间组件按原文使用 HDS-Interlude（AGPL-3.0）的提示词，所以整个包按 AGPL 发布；v0.3 之前以 MIT 发布的 computer / dot 代码，那些版本仍按 MIT 可用。

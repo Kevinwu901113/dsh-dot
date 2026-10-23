@@ -17,8 +17,9 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 
 export const name = 'dsh-dot';
-// dshComputer is required on purpose: without the VM boundary "leave it running" is not safe.
-export const inject = ['dshComputer'];
+// Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
+// with either; with neither it still relays, but says so in /dot.
+export const inject = [];
 
 export const SILENT = 'DOT_SILENT';
 
@@ -27,15 +28,17 @@ export const SCHEDULED_RULE = '这一轮由定时任务触发，用户不在对�
   + `最终回复只写 ${SILENT}（这条不会发给用户）；有新内容才简要汇报并附链接。`;
 
 /** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
-export const WORKING_RULES = [
+export const workingRules = ({ computer = true, phone = false } = {}) => [
   '# dot 的工作方式',
-  '你有一台自己的电脑（虚拟机）：命令和浏览器都在那台电脑里运行，用户可以随时看到实时画面。用户主要在 IM 里和你说话。',
+  [computer ? '你有一台自己的电脑（虚拟机）：命令和浏览器都在那台电脑里运行，用户可以随时看到实时画面。' : '', phone ? '你有一部自己的手机（Android）：App 都在手机上，用 mcp__phone__* 操作。' : '', '用户主要在 IM 里和你说话。'].filter(Boolean).join(''),
   '- 定时任务：用户的要求里只要带有未来的时间点或周期（"2 分钟后"、"明天早上"、"每天 8 点"、"每周一"），一律用 `schedule_create` 建任务（带时区），现在不要去做。建好后只回复任务内容和触发时间。到点你会收到提醒，那时再去做。',
   `- 静默协议：被定时任务叫醒时，如果检查后没有值得告诉用户的内容，最终回复只写 ${SILENT}，这条不会发给用户。有内容就简要说，附链接。用户主动跟你说话时，正常回复。`,
-  '- 用你的电脑：网页在你电脑的浏览器里打开（`mcp__vm__browser_*` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。',
+  computer ? '- 用你的电脑：网页在你电脑的浏览器里打开（`mcp__vm__browser_*` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。' : '',
+  phone ? '- 用你的手机：App 里的事在手机上做（`mcp__phone__*` 工具）；遇到验证码、人脸、短信验证就停下来告诉用户。' : '',
   '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；不要试图绕过。',
   '- 回复可以拆成几句很短的话，一句一行（IM 里直接投递，不要写 <sep/> 之类的分隔标记）。',
-].join('\n');
+].filter(Boolean).join('\n');
+export const WORKING_RULES = workingRules();
 
 export const defaults = {
   home: '',             // default ~/dot
@@ -117,8 +120,9 @@ export function createNotifier(getIm, cfg, logger) {
 export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
   const logger = ctx.logger('dsh-dot');
-  const computer = ctx.dshComputer;
-  const audit = (event, data = {}) => computer.audit?.({ kind: 'dot', event, ...data });
+  const computer = () => ctx.get('dshComputer');
+  const phone = () => ctx.get('dshPhone');
+  const audit = (event, data = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data });
   const home = cfg.home || join(homedir(), 'dot');
   const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
   const im = createNotifier(() => ctx.get('dshIm'), cfg, logger);
@@ -168,7 +172,7 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'approval/asked') {
       // Payload: { id, toolName, reason? }. dsh-computer's gate puts the live-view link in reason.
-      const vm = computer.status?.() ?? {};
+      const vm = computer()?.status?.() ?? {};
       const link = vm.publicLiveViewUrl || vm.liveViewUrl;
       const reason = String(event.data?.reason ?? '').trim();
       const lines = [`🔐 dot 需要你审批：${event.data?.toolName ?? '工具调用'}`, reason, '在 DeepSeek Harness 里批准或拒绝。'];
@@ -193,7 +197,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
-      text: (c) => (inHome(c) ? WORKING_RULES : ''),
+      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()) }) : ''),
     }), 'dsh-dot: working rules section');
     scope.systemPrompt.context({
       name: 'dot:scheduled-turn',
@@ -229,10 +233,14 @@ export function apply(ctx, config = {}) {
     return () => clearInterval(timer);
   }, 'dsh-dot: budget watch');
 
-  // 4. Computer health.
-  ctx.effect(() => computer.onStatus?.((s) => {
+  // 4. Device health (whichever devices are installed; they may come up after dot).
+  ctx.inject(['dshComputer'], (c) => c.effect(() => c.dshComputer.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 虚拟机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-computer.log`, 'plain');
-  }) ?? (() => {}), 'dsh-dot: computer status');
+  }) ?? (() => {}), 'dsh-dot: computer status'));
+  ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
+    if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
+    if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept。', 'plain');
+  }) ?? (() => {}), 'dsh-dot: phone status'));
 
   // /dot
   // The command registry can come up after dot, so register through a child that waits for it.
@@ -246,9 +254,10 @@ export function apply(ctx, config = {}) {
         const t = await im.target();
         let test = '';
         if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
-        const vm = computer.status?.() ?? {};
+        const vm = computer()?.status?.();
+        const ph = phone()?.status?.();
         const lines = [
-          `computer: ${vm.state ?? '?'}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}`,
+          `computer: ${vm ? `${vm.state}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}` : 'not installed (optional)'} · phone: ${ph ? `${ph.state}${ph.error ? ` (${ph.error})` : ''}` : 'not installed (optional)'}`,
           `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,

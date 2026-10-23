@@ -1,34 +1,38 @@
-# dsh-dot: one plugin, three components.
-#   computer — the agent's own persistent computer: a microVM (microsandbox, bundled) by default,
-#              Docker as fallback. Shell, files under the shared workspace, browser and desktop
-#              all live in the VM; the VM is the isolation boundary, and risky calls are routed
-#              to approval by the gate. Settings: env vars below or $DSH_HOME/dsh-computer.json.
-#   dot      — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
-#              live view, working rules as a prompt section. Needs dsh-im and the official schedule
-#              bundle (see README).
-#   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a prompt
-#              section, and a life between conversations — script, continuity, intents, browsing
-#              (web, or her own VM browser, read-only), optional proactive contact over dsh-im.
+# dsh-dot: one plugin, four components. The character lives on her own devices.
+#   phone     — her phone: an Android emulator this plugin installs, boots and keeps alive;
+#               tools mcp__phone__* (mobile-mcp over adb). The emulator window is the live view.
+#               DSH_DOT_PHONE=off turns it off.
+#   computer  — optional: a microVM (microsandbox, bundled; Docker as fallback) with shell, browser,
+#               desktop, live view, approval gates, audit log. The VM is the isolation boundary.
+#               DSH_DOT_COMPUTER=off turns it off (the host subprocess/sandbox settings stay stock).
+#   dot       — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
+#               live view, working rules as a prompt section. Needs dsh-im and the official
+#               schedule bundle (see README).
+#   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a
+#               prompt section, and a life between conversations — script, continuity, intents,
+#               going to look at things on her phone / in her browser (read-only), optional
+#               proactive contact over dsh-im.
 
 # 1. Replace the host subprocess provider with the VM-backed one.
 - id: subprocess
   name: '@deepseek-ai/dsh-subprocess-local'
-  disabled: true
+  disabled: !!js "process.env.DSH_DOT_COMPUTER !== 'off'"
 
 # 2. The VM is the boundary, so host landlock/bwrap wrapping is off; approvals stay on.
 - id: sandbox-policy
   name: '@deepseek-ai/dsh-sandbox-policy'
   config:
-    mode: danger-full-access
+    mode: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? (process.env.DSH_PERMISSION_MODE ?? 'workspace-write') : 'danger-full-access'"
     workspaceRoot: !!js process.cwd()
 - id: permission
   name: '@deepseek-ai/dsh-permission-presets'
   config:
-    presets: !!js "({ 'computer': { sandbox: 'danger-full-access', approval: 'ask' }, 'computer-auto': { sandbox: 'danger-full-access', approval: 'never' } })"
-    defaultPreset: !!js "process.env.DSH_COMPUTER_PRESET ?? 'computer'"
+    presets: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? { 'read-only': { sandbox: 'read-only', approval: 'ask' }, 'workspace-write': { sandbox: 'workspace-write', approval: 'ask' }, 'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' } } : { 'computer': { sandbox: 'danger-full-access', approval: 'ask' }, 'computer-auto': { sandbox: 'danger-full-access', approval: 'never' } }"
+    defaultPreset: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? 'workspace-write' : (process.env.DSH_COMPUTER_PRESET ?? 'computer')"
 
 - insert:
     - id: dot-computer
+      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: 'dsh-dot/computer'
       config:
         backend: !!js "process.env.DSH_COMPUTER_BACKEND ?? ''"
@@ -39,13 +43,16 @@
         # Folders shared with the VM at the same path (':' separated; ';' on Windows). Default: each session's workspace, shared on first use (see README).
         mounts: !!js "process.env.DSH_COMPUTER_MOUNTS ? process.env.DSH_COMPUTER_MOUNTS.split(process.platform === 'win32' ? ';' : ':').filter(Boolean) : []"
     - id: dot-subprocess
+      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: 'dsh-dot/subprocess'
     - id: dot-gate
+      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: 'dsh-dot/gate'
       config:
         mode: !!js "process.env.DSH_COMPUTER_GATE ?? 'risky'"
     # 3. Browser + desktop tools served from inside the VM (tool names: mcp__vm__*).
     - id: dot-mcp
+      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: '@deepseek-ai/dsh-mcp-client'
       config:
         serverName: vm
@@ -57,20 +64,31 @@
           maxAttempts: 1000
     # 4. Desktop/Web UI: right-Sidebar "Computer" tab (live view) and a header toggle.
     - id: dot-ui
+      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: 'dsh-dot'
-    # 5. The always-on glue (was the standalone dsh-dot plugin).
+    # 5. Her phone (see src/phone/phone.js). First start downloads ~2 GB from Google's repository once
+    #    the SDK license is accepted (`/phone accept`, or acceptLicense: true here).
+    - id: dot-phone
+      name: 'dsh-dot/phone'
+      disabled: !!js "process.env.DSH_DOT_PHONE === 'off'"
+      config:
+        window: !!js "process.env.DSH_DOT_PHONE_WINDOW !== 'off'"
+        acceptLicense: !!js "process.env.DSH_DOT_PHONE_ACCEPT_LICENSE === 'yes'"
+    # 6. The always-on glue (was the standalone dsh-dot plugin).
     - id: dot
       name: 'dsh-dot/dot'
       config:
         # dot's home: its working files live here and sessions started here are dot's.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
-    # 6. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
+    # 7. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
       name: 'dsh-dot/interlude'
       config:
         home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
-        # Browsing (HDSI browserIntent): auto = web first; the sites below are always observed in
-        # her own VM browser, read-only, no approvals. Add the sites she is logged into.
+        # Going to look (HDSI browserIntent): auto = web first; a host listed below is always
+        # looked at by her — in the app on her phone (phoneApps, host → package) or in her own VM
+        # browser (vmSites) — read-only, no approvals. Add the sites she is logged into.
         # browser: auto
-        # vmSites: [weibo.com, bilibili.com, xiaohongshu.com, x.com]
+        # phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili, weibo.com: com.sina.weibo }
+        # vmSites: [x.com]
         # vmDailyCap: 2
