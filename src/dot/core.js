@@ -27,10 +27,14 @@ export const SILENT = 'DOT_SILENT';
 /** Source of the message that wakes her for a phone notification; such turns are not pushed to IM. */
 export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-notification' });
 
-/** The wake-up text for one notification: what the phone showed, and that she decides. */
-export function notificationText(n) {
-  const app = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书' }[n.pkg] ?? n.pkg;
-  return `[手机通知] ${app}${n.title ? ` · ${n.title}` : ''}：${n.text || '（无内容）'}\n（你手机上弹出来的。要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
+const APP_NAMES = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
+
+/** The wake-up text for one or more notifications that arrived together: what the phone showed, and that she decides. */
+export function notificationText(list) {
+  const items = Array.isArray(list) ? list : [list];
+  const line = (n) => `${APP_NAMES[n.pkg] ?? n.pkg}${n.title ? ` · ${n.title}` : ''}：${n.text || '（无内容）'}`;
+  const head = items.length === 1 ? `[手机通知] ${line(items[0])}` : `[手机通知] ${items.length} 条\n${items.map((n) => `- ${line(n)}`).join('\n')}`;
+  return `${head}\n（你手机上弹出来的。要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
 }
 
 /** Model-facing rule for a turn started by a scheduled task. */
@@ -57,6 +61,8 @@ export const defaults = {
   imTarget: '',         // dsh-im Target ID; default: that bot's first saved target
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
+  notifyBatchMs: 3000,  // notifications arriving within this window wake her once, together
+  notifyHours: '',      // 'HH:MM-HH:MM': outside it the phone stays silent (she sleeps); '' = always
 };
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -64,6 +70,13 @@ const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
 export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
+/** 'HH:MM-HH:MM' (may wrap midnight) → is `date` inside it? Empty spec = always. */
+export function inHours(spec, date = new Date()) {
+  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
+  if (!m) return true;
+  const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], now = date.getHours() * 60 + date.getMinutes();
+  return start <= end ? now >= start && now < end : now >= start || now < end;
+}
 const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
 /** Text of a message content array (or string). */
@@ -253,16 +266,25 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
-  const wake = (n) => {
+  let batch = [], batchTimer = null;
+  const flush = () => {
+    const items = batch; batch = []; batchTimer = null;
+    if (!items.length) return;
     const controller = ctx.get('sessionController');
     const id = lastSession;
-    if (!controller || !id) { audit('notification-dropped', { pkg: n.pkg, why: id ? 'no sessionController' : 'no session yet' }); return; }
+    const pkgs = [...new Set(items.map((n) => n.pkg))];
+    if (!controller || !id) { audit('notification-dropped', { pkgs, why: id ? 'no sessionController' : 'no session yet' }); return; }
     waking = waking.then(async () => {
       const found = await controller.resolveAgent(id);
-      if (!found || 'error' in found) { audit('notification-dropped', { pkg: n.pkg, why: found?.error?.message ?? 'session not found' }); return; }
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(n) }], source: PHONE_NOTIFICATION_SOURCE }));
-      audit('notification-woke', { session: id, pkg: n.pkg, title: n.title });
-    }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkg: n.pkg, why: err.message }); });
+      if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items) }], source: PHONE_NOTIFICATION_SOURCE }));
+      audit('notification-woke', { session: id, count: items.length, pkgs });
+    }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
+  };
+  const wake = (n) => {
+    if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
+    batch.push(n);
+    if (!batchTimer) batchTimer = setTimeout(flush, cfg.notifyBatchMs);
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {

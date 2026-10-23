@@ -222,5 +222,16 @@ test('phone: new notifications reach listeners once; the shade at start is not n
   await new Promise((r) => setTimeout(r, 4300));
   assert.deepEqual(got.map((n) => n.text), ['你会主动给我发消息吗']);
   assert.match((await h.cmd().handler({ rawInput: 'notifications' })).text, /com\.tencent\.mobileqq: 宽 — 你会主动给我发消息吗/);
+  // mute QQ: the next one is seen but not announced; the policy is persisted
+  assert.match((await h.cmd().handler({ rawInput: 'notify mute com.tencent.mobileqq' })).text, /except: com\.tencent\.mobileqq/);
+  dump = dump.replace('mArchive:', `  NotificationRecord(0x555: pkg=com.tencent.mobileqq user=UserHandle{0} id=10 tag=null key=0|com.tencent.mobileqq|10|null|10171: Notification())
+    extras={
+      android.title=String (宽)
+      android.text=String (在吗)
+    }
+  mArchive:`);
+  await new Promise((r) => setTimeout(r, 4300));
+  assert.equal(got.length, 1, 'muted app does not wake her');
+  assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).notifyMuted, ['com.tencent.mobileqq']);
   h.stop();
 });

@@ -64,6 +64,7 @@ open -a "DeepSeek Harness"
 - 你们聊天：dsh 自己跑对话，dsh-im 接 IM；她的人设（Canon）和工作规则是系统提示里的两段，不需要 `AGENTS.md`。
 - 聊天安静下来 `idleMinutes` 后、或每 `advanceEveryMinutes` 一次（只在 `activeHours` 内）、或某个打算到了时间：**幕间一轮**——一次模型调用，她写下这段时间过的日子、更新连续性快照、记下打算，顺便说她想去看点什么（`browserIntents`）。
 - **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__phone__*` / `mcp__vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
+- **手机响了**：任何 App 的新通知（QQ 消息、小黑盒的更新、以后她自己装的任何 App）都会叫醒她：`[手机通知] QQ · 宽：在吗`，她自己去 App 里回，或者不理。按 App 静音：`/phone notify mute <包名>`。
 - **找你**：`speak: true` 时，幕间里 `contact` 过四道闸（活跃时段、意愿值、每日上限、有投递目标）才通过 dsh-im 发出去。
 - **干活**（装了电脑时）：你说"每天早上看看 X 有没有更新"，她建定时任务；到点在电脑里查，有新内容推到 IM，没有就 `DOT_SILENT`；危险操作弹审批卡，附实时画面链接。
 
@@ -76,7 +77,7 @@ open -a "DeepSeek Harness"
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
 | `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test]` | 三个组件的状态和操作 |
 
-每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
+dot 的通知相关：`notifyBatchMs`（几秒内的通知合成一次叫醒）、`notifyHours`（手机夜里静音）。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 
 ### 六、原则
 

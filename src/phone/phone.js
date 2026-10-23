@@ -44,7 +44,8 @@ export const defaults = {
   // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
   // listeners (dot wakes her for them). notifyApps: packages that count; [] = every non-system app.
   notifyPollMs: 4000,
-  notifyApps: [],
+  notifyApps: [],           // [] = every app she installs, now or later, until muted
+  notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
   mcp: true,                // mount mobile-mcp as mcp__phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
@@ -270,6 +271,15 @@ export function apply(ctx, config = {}, deps = {}) {
   const notifyListeners = new Set();
   const seen = new Set();
   const recent = [];
+  const appsSeen = new Map(); // pkg → count of notifications since start
+  // Per-app policy, like the phone's own notification settings: new apps wake her unless muted.
+  const muted = new Set([...(cfg.notifyMuted ?? []), ...(settings.notifyMuted ?? [])]);
+  phone.notifyPolicy = () => ({ muted: [...muted], apps: [...appsSeen.entries()].map(([pkg, count]) => ({ pkg, count, policy: muted.has(pkg) ? 'mute' : 'wake' })) });
+  phone.setNotifyPolicy = (pkg, policy) => {
+    if (policy === 'mute') muted.add(pkg); else muted.delete(pkg);
+    writeSettings({ notifyMuted: [...muted] });
+    audit({ kind: 'notify-policy', pkg, policy });
+  };
   phone.onNotification = (fn) => { notifyListeners.add(fn); return () => notifyListeners.delete(fn); };
   phone.notifications = () => [...recent];
   let primed = false;
@@ -277,11 +287,12 @@ export function apply(ctx, config = {}, deps = {}) {
     if (!phone.isReady || !notifyListeners.size) return;
     let dump = '';
     try { dump = (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout; } catch { return; }
-    const wanted = (n) => (cfg.notifyApps.length ? cfg.notifyApps.includes(n.pkg) : !SYSTEM_PKG.test(n.pkg));
+    const wanted = (n) => (cfg.notifyApps.length ? cfg.notifyApps.includes(n.pkg) : !SYSTEM_PKG.test(n.pkg)) && !muted.has(n.pkg);
     for (const n of parseNotifications(dump)) {
       if (seen.has(n.key)) continue;
       seen.add(n.key);
       if (seen.size > 2000) seen.delete(seen.values().next().value);
+      if (!SYSTEM_PKG.test(n.pkg)) appsSeen.set(n.pkg, (appsSeen.get(n.pkg) ?? 0) + 1);
       if (!primed || !wanted(n)) continue; // what was already on the shade when we started is not news
       const item = { ...n, at: new Date().toISOString() };
       recent.push(item); if (recent.length > 20) recent.shift();
@@ -441,7 +452,7 @@ export function apply(ctx, config = {}, deps = {}) {
     scope.effect(() => scope.commands.register({
       name: 'phone',
       description: 'the phone: status; "accept" accepts the Android SDK license and installs it; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept | retry | restart | screenshot | notifications]' },
+      input: { hint: '[accept | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
@@ -450,6 +461,12 @@ export function apply(ctx, config = {}, deps = {}) {
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
         if (arg === 'notifications') extra = `\n${recent.length ? recent.map((n) => `${n.at.slice(11, 16)} ${n.pkg}: ${n.title} — ${n.text}`).join('\n') : '(none since start)'}`;
+        else if (/^notify\b/.test(arg)) {
+          const [, verb, pkg] = arg.split(/\s+/);
+          if ((verb === 'mute' || verb === 'wake') && pkg) { phone.setNotifyPolicy(pkg, verb); extra = `\n${pkg}: ${verb}`; }
+          const pol = phone.notifyPolicy();
+          extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
+        }
         const s = phone.status();
         return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nlicense: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
       },

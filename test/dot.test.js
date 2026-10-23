@@ -31,7 +31,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05 } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5 } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -178,11 +178,16 @@ test('a phone notification wakes her latest session with the notification text; 
   h.emit(h.home, 'assistant/message', msg('在'));
   h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
-  await wait(20);
-  assert.equal(followups.length, 1);
+  onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '你关注的游戏更新了' });
+  await wait(40);
+  assert.equal(followups.length, 1, 'a burst wakes her once');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
-  assert.match(followups[0].m.content[0].text, /^\[手机通知\] QQ · 宽：你会主动给我发消息吗/);
+  assert.match(followups[0].m.content[0].text, /^\[手机通知\] 2 条\n- QQ · 宽：你会主动给我发消息吗\n- 小黑盒 · 小黑盒：你关注的游戏更新了/);
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
+  await wait(40);
+  assert.equal(followups.length, 2);
+  assert.match(followups[1].m.content[0].text, /^\[手机通知\] QQ · 宽：在吗/);
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);
