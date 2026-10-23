@@ -31,7 +31,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5 } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, notifyHours: '' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -183,12 +183,39 @@ test('a phone notification wakes her latest session with the notification text; 
   assert.equal(followups.length, 1, 'a burst wakes her once');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
-  assert.match(followups[0].m.content[0].text, /^\[手机通知\] 2 条\n- QQ · 宽：你会主动给我发消息吗\n- 小黑盒 · 小黑盒：你关注的游戏更新了/);
+  assert.match(followups[0].m.content[0].text, /^\[手机通知\] 2 个对话\n· QQ · 宽：你会主动给我发消息吗\n· 小黑盒 · 小黑盒：你关注的游戏更新了/);
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
   await wait(40);
   assert.equal(followups.length, 2);
   assert.match(followups[1].m.content[0].text, /^\[手机通知\] QQ · 宽：在吗/);
+  // she is busy: what arrives during her turn is held, then delivered once, grouped by conversation, in order
+  h.emit(h.home, 'turn/start', { turn: 2 });
+  h.emit(h.home, 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' } });
+  onNotification({ key: 'k1', pkg: 'com.tencent.mobileqq', title: '宽', text: '对' });
+  await wait(30);
+  onNotification({ key: 'k1', pkg: 'com.tencent.mobileqq', title: '宽(2条新消息)', text: '刚刚在帮你测试延迟' });
+  onNotification({ key: 'k2', pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '有人回复了你' });
+  await wait(30);
+  assert.equal(followups.length, 2, 'nothing while the turn runs');
+  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'turn running'));
+  h.emit(h.home, 'assistant/message', msg('DOT_SILENT'));
+  h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
+  await wait(120);
+  assert.equal(followups.length, 3);
+  assert.equal(followups[2].m.content[0].text, '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);
+});
+
+test('conversationTitle and groupNotifications', async () => {
+  const { conversationTitle, groupNotifications } = await import('../src/dot/core.js');
+  assert.equal(conversationTitle('宽(2条新消息)'), '宽');
+  assert.equal(conversationTitle('宽（3条）'), '宽');
+  assert.equal(conversationTitle('群聊'), '群聊');
+  const g = groupNotifications([
+    { key: 'a', pkg: 'p', title: '宽', text: '1' }, { key: 'a', pkg: 'p', title: '宽(2条新消息)', text: '2' }, { key: 'a', pkg: 'p', title: '宽(2条新消息)', text: '2' },
+    { pkg: 'q', title: 'x', text: 'y' },
+  ]);
+  assert.deepEqual(g, [{ pkg: 'p', title: '宽', texts: ['1', '2'] }, { pkg: 'q', title: 'x', texts: ['y'] }]);
 });

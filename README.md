@@ -77,7 +77,7 @@ open -a "DeepSeek Harness"
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
 | `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test]` | 三个组件的状态和操作 |
 
-dot 的通知相关：`notifyBatchMs`（几秒内的通知合成一次叫醒）、`notifyHours`（手机夜里静音）。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
+dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（默认 `08:00-23:00`，夜里手机不响）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 
 ### 六、原则
 

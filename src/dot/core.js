@@ -29,12 +29,40 @@ export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 
 
 const APP_NAMES = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
-/** The wake-up text for one or more notifications that arrived together: what the phone showed, and that she decides. */
-export function notificationText(list) {
+/** Conversation title without the counters chat apps append ("宽(2条新消息)" → "宽"). */
+export const conversationTitle = (title) => String(title ?? '').replace(/\s*[（(]\d+\s*条?(新消息|新)?[)）]\s*$/, '').trim();
+
+/**
+ * Group notifications by conversation (notification key, then app + title), keeping each
+ * conversation's distinct texts in arrival order — so three messages from one person read as a
+ * list, not as the last one with "(3条新消息)".
+ */
+export function groupNotifications(items) {
+  const groups = new Map();
+  for (const n of items) {
+    const title = conversationTitle(n.title);
+    const id = n.key || `${n.pkg}|${title}`;
+    const g = groups.get(id) ?? { pkg: n.pkg, title, texts: [] };
+    const text = String(n.text ?? '').trim();
+    if (text && g.texts.at(-1) !== text) g.texts.push(text);
+    groups.set(id, g);
+  }
+  return [...groups.values()];
+}
+
+/** The wake-up text for the notifications that arrived together (or while she was busy): what the phone showed, and that she decides. */
+export function notificationText(list, { whileBusy = false } = {}) {
   const items = Array.isArray(list) ? list : [list];
-  const line = (n) => `${APP_NAMES[n.pkg] ?? n.pkg}${n.title ? ` · ${n.title}` : ''}：${n.text || '（无内容）'}`;
-  const head = items.length === 1 ? `[手机通知] ${line(items[0])}` : `[手机通知] ${items.length} 条\n${items.map((n) => `- ${line(n)}`).join('\n')}`;
-  return `${head}\n（你手机上弹出来的。要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
+  const groups = groupNotifications(items);
+  const app = (pkg) => APP_NAMES[pkg] ?? pkg;
+  const render = (g) => {
+    const who = `${app(g.pkg)}${g.title ? ` · ${g.title}` : ''}`;
+    if (g.texts.length <= 1) return `${who}：${g.texts[0] || '（无内容）'}`;
+    return `${who}：\n${g.texts.map((t) => `- ${t}`).join('\n')}`;
+  };
+  const head = groups.length === 1 ? `[手机通知] ${render(groups[0])}` : `[手机通知] ${groups.length} 个对话\n${groups.map((g) => `· ${render(g)}`).join('\n')}`;
+  const when = whileBusy ? '你上一轮期间来的。' : '你手机上弹出来的。';
+  return `${head}\n（${when}要回就自己去 App 里回，和平时一样；不想理就只回 ${SILENT}。）`;
 }
 
 /** Model-facing rule for a turn started by a scheduled task. */
@@ -62,7 +90,7 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
-  notifyHours: '',      // 'HH:MM-HH:MM': outside it the phone stays silent (she sleeps); '' = always
+  notifyHours: '08:00-23:00', // outside it the phone stays silent (she sleeps); '' = always
 };
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -189,6 +217,11 @@ export function apply(ctx, config = {}) {
     const t = turns.get(id);
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
+    const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
+    if (ended) {
+      turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
+      if (id === lastSession) setTimeout(releaseHeld, 50); // after this event settles, so the followup starts a fresh turn
+    }
     if (!t.scheduled) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
       const text = contentText(event.data?.message?.content);
@@ -207,8 +240,7 @@ export function apply(ctx, config = {}) {
       audit('approval-notified', { session: id, tool: event.data?.toolName });
       return;
     }
-    if (event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn)) {
-      turns.delete(id);
+    if (ended) {
       const text = t.text.trim();
       if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
@@ -267,9 +299,8 @@ export function apply(ctx, config = {}) {
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
   let batch = [], batchTimer = null;
-  const flush = () => {
-    const items = batch; batch = []; batchTimer = null;
-    if (!items.length) return;
+  let held = []; // arrived while her session was running a turn; delivered as one message when it ends
+  const deliver = (items, whileBusy) => {
     const controller = ctx.get('sessionController');
     const id = lastSession;
     const pkgs = [...new Set(items.map((n) => n.pkg))];
@@ -277,10 +308,18 @@ export function apply(ctx, config = {}) {
     waking = waking.then(async () => {
       const found = await controller.resolveAgent(id);
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items) }], source: PHONE_NOTIFICATION_SOURCE }));
-      audit('notification-woke', { session: id, count: items.length, pkgs, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items, { whileBusy }) }], source: PHONE_NOTIFICATION_SOURCE }));
+      audit('notification-woke', { session: id, count: items.length, pkgs, whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
+  const flush = () => {
+    const items = batch; batch = []; batchTimer = null;
+    if (!items.length) return;
+    // She is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
+    if (lastSession && turns.has(lastSession)) { held.push(...items); audit('notification-held', { count: items.length, why: 'turn running' }); return; }
+    deliver(items, false);
+  };
+  const releaseHeld = () => { if (!held.length) return; const items = held; held = []; deliver(items, true); };
   const wake = (n) => {
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
