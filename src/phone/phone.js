@@ -187,7 +187,10 @@ async function unzip(zip, into) {
 }
 
 export function apply(ctx, config = {}, deps = {}) {
-  const cfg = { ...defaults, ...readSettingsFile(), ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
+  const settings = readSettingsFile();
+  const cfg = { ...defaults, ...settings, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
+  // The license, once accepted (settings file), stays accepted whatever the patch's default says.
+  cfg.acceptLicense = Boolean(cfg.acceptLicense || settings.acceptLicense);
   const logger = withFileLog(ctx.logger('dsh-dot/phone'));
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const spawnImpl = deps.spawn ?? spawn;

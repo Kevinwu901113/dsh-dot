@@ -73,7 +73,7 @@
       disabled: !!js "process.env.DSH_DOT_PHONE === 'off'"
       config:
         window: !!js "process.env.DSH_DOT_PHONE_WINDOW !== 'off'"
-        acceptLicense: !!js "process.env.DSH_DOT_PHONE_ACCEPT_LICENSE === 'yes'"
+        acceptLicense: !!js "process.env.DSH_DOT_PHONE_ACCEPT_LICENSE === 'yes' ? true : undefined"
     # 6. The always-on glue (was the standalone dsh-dot plugin).
     - id: dot
       name: 'dsh-dot/dot'
