@@ -39,6 +39,8 @@ export const defaults = {
   // Apps she installs herself, the way a person does: her browser may install downloaded APKs.
   // Packages granted "install unknown apps" at boot; [] = she must grant it in Settings first.
   installers: ['com.android.chrome', 'com.google.android.documentsui', 'com.android.documentsui'],
+  keepAppsAlive: true,      // no doze / standby / freezer for her apps, so chat apps keep receiving in the background
+  keepAliveEveryMinutes: 10, // re-apply for apps installed since boot
   acceptLicense: false,     // Android SDK license (https://developer.android.com/studio/terms); `/phone accept` also sets it
   channel: 'stable',        // emulator release channel
   bootTimeoutMs: 300_000,
@@ -340,13 +342,27 @@ export function apply(ctx, config = {}, deps = {}) {
     }
     throw new Error(`the phone did not finish booting in ${Math.round(cfg.bootTimeoutMs / 1000)}s`);
   }
+  const sh = async (cmd) => { try { return (await exec(paths.adb, ['-s', serial, 'shell', cmd], { env: env(), timeout: 10_000 })).stdout; } catch { return ''; } };
   async function settle() {
     // Keep the screen on and animations off: the model reads screenshots, not motion.
     for (const cmd of ['svc power stayon true', 'settings put system screen_off_timeout 2147483647', 'settings put global window_animation_scale 0', 'settings put global transition_animation_scale 0', 'settings put global animator_duration_scale 0', 'input keyevent KEYCODE_WAKEUP', 'wm dismiss-keyguard',
       // She gets her apps herself — download the APK in her browser, tap install — so the browser and the file manager may install.
-      ...cfg.installers.map((pkg) => `appops set ${pkg} REQUEST_INSTALL_PACKAGES allow`)]) {
-      try { await exec(paths.adb, ['-s', serial, 'shell', cmd], { env: env(), timeout: 10_000 }); } catch { /* best effort */ }
+      ...cfg.installers.map((pkg) => `appops set ${pkg} REQUEST_INSTALL_PACKAGES allow`),
+      // Her apps must stay connected in the background: no doze, no standby buckets, no adaptive battery.
+      // (The emulator has no battery to save; Android would still freeze QQ a few minutes after she
+      // leaves it, and a frozen chat app receives nothing until it is opened again.)
+      ...(cfg.keepAppsAlive ? ['dumpsys deviceidle disable', 'settings put global app_standby_enabled 0', 'settings put global adaptive_battery_management_enabled 0', 'settings put global cached_apps_freezer disabled'] : [])]) {
+      await sh(cmd);
     }
+    if (cfg.keepAppsAlive) await keepAppsAlive();
+  }
+  /** Per-app background allowances for every third-party app on the phone — the ones she installed included. */
+  async function keepAppsAlive() {
+    const pkgs = (await sh('pm list packages -3')).split('\n').map((l) => l.replace(/^package:/, '').trim()).filter(Boolean);
+    for (const pkg of pkgs) {
+      for (const cmd of [`dumpsys deviceidle whitelist +${pkg}`, `cmd appops set ${pkg} RUN_ANY_IN_BACKGROUND allow`, `cmd appops set ${pkg} RUN_IN_BACKGROUND allow`, `am set-standby-bucket ${pkg} active`]) await sh(cmd);
+    }
+    return pkgs;
   }
   async function mountMcp() {
     if (!cfg.mcp || mcpFork) return;
@@ -458,6 +474,10 @@ export function apply(ctx, config = {}, deps = {}) {
   });
 
   ctx.effect(() => () => shade.stop(), 'dsh-dot/phone: notification watch');
+  ctx.effect(() => {
+    const timer = cfg.keepAppsAlive && cfg.keepAliveEveryMinutes > 0 ? setInterval(() => { if (phone.isReady) void keepAppsAlive(); }, cfg.keepAliveEveryMinutes * 60000) : null;
+    return () => { if (timer) clearInterval(timer); };
+  }, 'dsh-dot/phone: keep apps alive');
   ctx.effect(() => {
     void start();
     return () => {

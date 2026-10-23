@@ -61,7 +61,7 @@ export const defaults = {
   imTarget: '',         // dsh-im Target ID; default: that bot's first saved target
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
-  notifyBatchMs: 3000,  // notifications arriving within this window wake her once, together
+  notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
   notifyHours: '',      // 'HH:MM-HH:MM': outside it the phone stays silent (she sleeps); '' = always
 };
 

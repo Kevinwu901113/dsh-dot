@@ -26,6 +26,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `liveViewPort` | `18090` | 实时画面网页端口；`0` 关闭 |
 | `publicUrl` | 无 | 从外面访问实时画面的地址，写进审批提醒 |
 | `gpu` | `auto` | 模拟器 `-gpu` |
+| `keepAppsAlive` / `keepAliveEveryMinutes` | `true` / `10` | 关掉 doze、standby、cached-apps freezer，给所有第三方 App（含她以后装的）后台运行许可，否则 QQ 退后台几分钟就被冻结、收不到消息（真机实测：发出到弹通知差 3.5 分钟） |
 | `locale` / `timezone` | `zh-CN` / `Asia/Shanghai` | 手机的语言和时区 |
 | `installers` | 浏览器、文件管理器 | 开机时被允许安装未知应用的包；`[]` 则她得自己去设置里开 |
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
