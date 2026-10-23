@@ -279,7 +279,8 @@ export function apply(ctx, config = {}, deps = {}) {
     } catch (err) { logger.error(`mcp__phone__* unavailable: ${err.message}`); return; }
     mcpFork = ctx.plugin(mcpClient, {
       transport: 'stdio', serverName: 'phone', command: process.execPath, args: [entry], cwd: home,
-      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial },
+      // ELECTRON_RUN_AS_NODE: inside the desktop app process.execPath is Electron; this makes it run as plain Node.
+      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ELECTRON_RUN_AS_NODE: '1' },
       toolCallTimeoutMs: cfg.toolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
     logger.info('mcp__phone__* mounted (mobile-mcp over adb)');
