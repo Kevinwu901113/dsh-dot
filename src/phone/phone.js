@@ -12,6 +12,7 @@ import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { createAudit } from '../computer/audit.js';
+import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { startLiveView } from './live-view.js';
 
 export const name = 'dot-phone';
@@ -147,7 +148,25 @@ const run = (file, args, opts = {}) => new Promise((resolve, reject) => {
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-/** Download `url` to `file` (streaming; a .part file until complete). */
+/**
+ * Google's repository is unreachable from some networks without a proxy. Node's fetch ignores the
+ * OS proxy (Clash, Surge…), curl honors HTTPS_PROXY; so the real downloads go through curl with
+ * the system proxy translated into env, resumable (-C -) because the system image is 1.7 GB.
+ */
+const curlEnv = () => ({ ...process.env, ...systemProxyEnv() });
+async function curlText(url) {
+  const { stdout } = await run('curl', ['-sSL', '--fail', '--retry', '3', '--max-time', '120', url], { env: curlEnv(), maxBuffer: 64 * 1024 * 1024 });
+  return stdout;
+}
+async function curlDownload(url, file, onProgress) {
+  mkdirSync(dirname(file), { recursive: true });
+  const part = `${file}.part`;
+  const tick = setInterval(() => { try { onProgress?.(statSync(part).size, 0); } catch { /* not started yet */ } }, 5000);
+  try { await run('curl', ['-sSL', '--fail', '--retry', '5', '--retry-all-errors', '-C', '-', '-o', part, url], { env: curlEnv(), timeout: 0 }); } finally { clearInterval(tick); }
+  renameSync(part, file);
+}
+
+/** Download `url` to `file` with Node's fetch (tests inject it; production uses curl above). */
 async function download(url, file, fetchImpl, onProgress) {
   mkdirSync(dirname(file), { recursive: true });
   const res = await fetchImpl(url);
@@ -212,7 +231,7 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
-  phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license') void start(); };
+  phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license' || phone.state === 'error') void start(); };
 
   const installed = () => existsSync(paths.emulator) && existsSync(paths.adb) && existsSync(join(paths.sysdir, 'system.img'));
 
@@ -223,14 +242,14 @@ export function apply(ctx, config = {}, deps = {}) {
       throw new Error('license not accepted');
     }
     setState('downloading');
-    const [repoXml, sysImgXml] = await Promise.all([
-      fetchImpl(`${REPO}/repository2-3.xml`).then((r) => r.text()),
-      fetchImpl(`${REPO}/sys-img/${cfg.tag}/sys-img2-3.xml`).then((r) => r.text()),
-    ]);
+    const text = (url) => (deps.fetch ? fetchImpl(url).then((r) => r.text()) : curlText(url));
+    const proxy = systemProxyEnv().HTTPS_PROXY;
+    if (proxy) logger.info(`downloading through the system proxy ${proxy}`);
+    const [repoXml, sysImgXml] = await Promise.all([text(`${REPO}/repository2-3.xml`), text(`${REPO}/sys-img/${cfg.tag}/sys-img2-3.xml`)]);
     const dl = resolveDownloads({ repoXml, sysImgXml, osTag, abi, api: cfg.api, tag: cfg.tag, channel: cfg.channel });
     logger.info(`installing: emulator ${dl.emulator.version}, platform-tools, ${dl.systemImage.path} (${dl.systemImage.sizeMb} MB) → ${home}`);
     const progress = (what) => (got, total) => logger.info(`${what}: ${Math.round(got / 1048576)}${total ? `/${Math.round(total / 1048576)}` : ''} MB`);
-    const fetchZip = async (what, url) => { const file = join(paths.downloads, url.split('/').pop()); if (!existsSync(file)) await download(url, file, fetchImpl, progress(what)); return file; };
+    const fetchZip = async (what, url) => { const file = join(paths.downloads, url.split('/').pop()); if (!existsSync(file)) await (deps.fetch ? download(url, file, fetchImpl, progress(what)) : curlDownload(url, file, progress(what))); return file; };
     if (!existsSync(paths.adb)) await unzip(await fetchZip('platform-tools', dl.platformTools.url), home);
     if (!existsSync(paths.emulator)) await unzip(await fetchZip('emulator', dl.emulator.url), home);
     if (!existsSync(join(paths.sysdir, 'system.img'))) {
@@ -321,7 +340,10 @@ export function apply(ctx, config = {}, deps = {}) {
       logger.info(`phone ready — ${serial}, Android API ${cfg.api} (${abi}), ${cfg.window ? 'window on the desktop' : 'headless'}`);
       await mountMcp();
     } catch (err) {
-      if (phone.state !== 'needs-license') { setState('error', err.message); logger.error(`phone failed: ${err.message}`); }
+      if (phone.state !== 'needs-license') {
+        const message = /fetch failed|curl|ENOTFOUND|ECONN|timed out/i.test(err.message) && phone.state === 'downloading' ? `download failed (${err.message}) — dl.google.com must be reachable; set HTTPS_PROXY or the system proxy and /phone retry` : err.message;
+        setState('error', message); logger.error(`phone failed: ${message}`);
+      }
     }
   }
   phone.restart = async () => {
@@ -358,11 +380,12 @@ export function apply(ctx, config = {}, deps = {}) {
     scope.effect(() => scope.commands.register({
       name: 'phone',
       description: 'the phone: status; "accept" accepts the Android SDK license and installs it; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept | restart | screenshot]' },
+      input: { hint: '[accept | retry | restart | screenshot]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
         if (arg === 'accept') { phone.accept(); extra = '\nlicense accepted; installing/booting now (watch ~/.dsh/dsh-phone.log)'; }
+        else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
         const s = phone.status();
