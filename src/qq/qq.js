@@ -139,6 +139,8 @@ export function apply(ctx, config = {}, deps = {}) {
       const attempts = prefixes.map((pre) => `(curl -fsSL --connect-timeout 15 --max-time 120 -o napcat-install.sh ${JSON.stringify(pre + cfg.installer)} && echo ${JSON.stringify(pre || 'direct')} > github.prefix)`).join(' || ');
       const script = [
         `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${INSTALL_DONE} github.prefix`,
+        // A half-finished earlier attempt leaves the folder behind and the installer refuses to touch it.
+        `test -x ${QQ_BIN} || rm -rf ${NAPCAT} ${VM_HOME}/NapCat`,
         `{ ${attempts}; } || { echo "cannot download the installer from GitHub (direct or mirrors)"; echo 2 > ${INSTALL_DONE}; exit 2; }`,
         'pre=$(cat github.prefix); [ "$pre" = direct ] && flag="--github-proxy 0" || flag="--github-proxy $pre"',
         'echo "installer fetched via $pre"; bash napcat-install.sh --docker n --cli n $flag --confirm y; rc=$?',
