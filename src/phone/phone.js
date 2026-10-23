@@ -269,7 +269,7 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
   // Notifications: what her phone shows her. Listeners get each new one once.
   const notifyListeners = new Set();
-  const seen = new Set();
+  const seen = new Map(); // notification key → last title+text seen
   const recent = [];
   const appsSeen = new Map(); // pkg → count of notifications since start
   // Per-app policy, like the phone's own notification settings: new apps wake her unless muted.
@@ -289,9 +289,12 @@ export function apply(ctx, config = {}, deps = {}) {
     try { dump = (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout; } catch { return; }
     const wanted = (n) => (cfg.notifyApps.length ? cfg.notifyApps.includes(n.pkg) : !SYSTEM_PKG.test(n.pkg)) && !muted.has(n.pkg);
     for (const n of parseNotifications(dump)) {
-      if (seen.has(n.key)) continue;
-      seen.add(n.key);
-      if (seen.size > 2000) seen.delete(seen.values().next().value);
+      // A messaging app keeps one notification per conversation and updates it in place as more
+      // messages arrive, so the same key with new text is news too.
+      const body = `${n.title}\n${n.text}`;
+      if (seen.get(n.key) === body) continue;
+      seen.set(n.key, body);
+      if (seen.size > 2000) seen.delete(seen.keys().next().value);
       if (!SYSTEM_PKG.test(n.pkg)) appsSeen.set(n.pkg, (appsSeen.get(n.pkg) ?? 0) + 1);
       if (!primed || !wanted(n)) continue; // what was already on the shade when we started is not news
       const item = { ...n, at: new Date().toISOString() };

@@ -236,5 +236,11 @@ test('phone: new notifications reach listeners once; the shade at start is not n
   await new Promise((r) => setTimeout(r, 400));
   assert.equal(got.length, 1, 'muted app does not wake her');
   assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).notifyMuted, ['com.tencent.mobileqq']);
+  // unmute; the conversation notification updated in place (same key, new text) is news
+  await h.cmd().handler({ rawInput: 'notify wake com.tencent.mobileqq' });
+  dump = dump.replace('android.text=String (你会主动给我发消息吗)', 'android.text=String (在吗[2条]你会主动给我发消息吗)');
+  h.logcats[0].stdout.emit('data', '[10171,1234,com.tencent.mobileqq,9,NULL,0,Notification(...)]\n');
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(got.at(-1)?.text, '在吗[2条]你会主动给我发消息吗', 'an updated notification wakes her');
   h.stop();
 });
