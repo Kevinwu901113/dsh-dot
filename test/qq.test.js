@@ -71,8 +71,12 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.match(h.sections[0].text(), /qq_send/);
   // a private message from the owner-to-be
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text: '在吗' } }], sender: { nickname: '宽' } }));
-  assert.deepEqual(got.map((m) => [m.kind, m.who, m.text]), [['private', '宽', '在吗']]);
-  assert.equal(h.ctx.dshQq.owner, '20002', 'owner learned from the first private message');
+  assert.deepEqual(got.map((m) => [m.kind, m.who, m.text, m.fromOwner]), [['private', '宽', '在吗', false]]);
+  assert.equal(h.ctx.dshQq.owner, '', 'the owner is never learned from whoever writes first');
+  await h.cmd().handler({ rawInput: 'owner 20002' });
+  sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text: '是我' } }], sender: { nickname: '宽' } }));
+  assert.equal(got.at(-1).fromOwner, true, 'the owner, once set, is marked');
+  got.splice(1);
   // own messages and un-mentioned group chatter are ignored; an @ wakes
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 10001, self_id: 10001, message: [{ type: 'text', data: { text: 'me' } }] }));
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'group', group_id: 777, user_id: 30003, self_id: 10001, message: [{ type: 'text', data: { text: 'noise' } }], sender: { card: '路人' } }));

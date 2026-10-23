@@ -245,3 +245,55 @@ test('phone check: /dot check asks her to pick up the phone when it is up and sh
   assert.ok(h.audit.some((e) => e.event === 'phone-check'));
   stop(h);
 });
+
+test('owner QQ messages enter as the owner\'s own words (human input); others stay notifications; no phone check during a goal', async () => {
+  const { ownerSource, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
+  assert.equal(ownerSource().kind, 'user');
+  assert.match(ownerSource().rpcId, /^qq-/);
+  const h = harness();
+  const followups = [];
+  let onMessage, goal = null;
+  let cmd;
+  h.ctx.get = ((orig) => (name) => name === 'dshQq' ? { connected: true, owner: '20002', onMessage: (fn) => { onMessage = fn; return () => {}; } }
+    : name === 'dshPhone' ? { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) }
+    : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push(m) } }) }
+    : name === 'goals' ? { get: () => goal }
+    : name === 'commands' ? { register: (c) => { cmd = c; return () => {}; } }
+    : orig(name))(h.ctx.get);
+  apply(h.ctx, { ...h.config, notifyHours: '00:00-00:01' }); // quiet hours: only the owner gets through
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
+  onMessage({ kind: 'private', userId: '20002', who: '宽', text: '做个长任务：刷 20 个帖子', fromOwner: true, at: new Date().toISOString() });
+  onMessage({ kind: 'private', userId: '20002', who: '宽', text: '每 5 个跟我说一声', fromOwner: true, at: new Date().toISOString() });
+  onMessage({ kind: 'private', userId: '30003', who: '路人', text: '在吗', fromOwner: false, at: new Date().toISOString() });
+  await wait(40);
+  assert.equal(followups.length, 1, 'quiet hours hold the stranger; the owner gets through');
+  assert.equal(followups[0].source.kind, 'user');
+  assert.equal(followups[0].content[0].text, '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');
+  // daytime: a stranger is a notification, not human input
+  const h2 = harness();
+  const f2 = [];
+  let on2;
+  h2.ctx.get = ((orig) => (name) => name === 'dshQq' ? { connected: true, owner: '20002', onMessage: (fn) => { on2 = fn; return () => {}; } }
+    : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => f2.push(m) } }) } : orig(name))(h2.ctx.get);
+  apply(h2.ctx, h2.config);
+  h2.emit(h2.home, 'turn/start', { turn: 1 }); h2.emit(h2.home, 'user/message', { source: { kind: 'user' } }); h2.emit(h2.home, 'turn/end', { turn: 1 });
+  on2({ kind: 'private', userId: '30003', who: '路人', text: '在吗', fromOwner: false, at: new Date().toISOString() });
+  await wait(40);
+  assert.deepEqual(f2[0].source, PHONE_NOTIFICATION_SOURCE);
+  assert.match(f2[0].content[0].text, /^\[手机通知\] QQ · 路人（30003）：在吗/);
+  stop(h2);
+  // a goal is active: /dot check does not cut in
+  goal = { phase: 'active' };
+  apply(h.ctx, { ...h.config, notifyHours: '' });
+  await cmd.handler({ rawInput: 'check' });
+  await wait(30);
+  assert.equal(followups.length, 1);
+  assert.ok(h.audit.some((e) => e.event === 'phone-check-skipped' && e.why === 'goal active'));
+  stop(h);
+});
+
+test('working rules tell her to use a goal for long tasks', async () => {
+  const { WORKING_RULES } = await import('../src/dot/core.js');
+  assert.match(WORKING_RULES, /create_goal/);
+  assert.match(WORKING_RULES, /一轮就能做完的事不用建目标/);
+});

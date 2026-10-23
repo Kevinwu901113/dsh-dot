@@ -23,13 +23,14 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 
 然后在「手机」标签页里：打开 QQ → 右上角 + → 扫一扫 → 相册 → `qq-login.png` → 在手机上确认"电脑登录"。这就是真实的 QQ 多端登录流程——她的手机授权她的电脑。登录态保存在 VM 里，以后 `/qq start` 用账号快速登录，不用再扫。
 
-`/qq` 看状态，`/qq log` 看 NapCat 日志，`/qq stop` 停，`/qq owner <号>` 指定"你"（默认从第一条私聊学到）。
+`/qq` 看状态，`/qq log` 看 NapCat 日志，`/qq stop` 停，`/qq owner <号>` 指定"你"——必须手动指定，不会从谁先私聊自动学。
 
 ## 之后发生什么
 
 | | |
 |---|---|
-| 有人私聊她 / 群里 @ 她 | `[QQ] 宽（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音） |
+| **你**（owner）私聊她 | 你打的字原样进她的会话，以"人说的话"的身份（和 dsh-im 转发 IM 一样，`kind: user`）——所以你能在 QQ 上给她派长任务，她可以建目标（`create_goal`）一轮轮做下去。夜间静音对你不生效 |
+| 别人私聊她 / 群里 @ 她 | `[手机通知] QQ · 路人（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音）；这些不算人的直接输入，建不了目标 |
 | 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，`<sep/>` 分几条发 |
 | 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB |
 | 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
@@ -42,7 +43,7 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | 配置项 | 默认 | 作用 |
 |---|---|---|
 | `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
-| `owner` | 自动学 | 你的 QQ 号 |
+| `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
 | `wsPort` | `3001` | VM 内的 OneBot WS 端口 |
 | `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` |
 | `githubProxy` / `DSH_DOT_GITHUB_PROXY` | 无 | 安装脚本下载 GitHub 资源的镜像前缀 |

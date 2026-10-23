@@ -178,3 +178,14 @@ Kevin："0123 全做。"
 - **能力边界**：只有 `qq_send` 发文字。加好友、进群、撤回、发文件、改资料没有工具。
 - dsh-im 官方机器人降为后备：dot 的通知器和幕间的主动联系先看 `dshQq.connected && owner`。
 - 安装是显式动作（`/qq install`）：它往她的电脑里装一个 QQ 客户端和一堆 apt 包，几分钟，不该在启动时偷偷做。
+
+## v0.6.1（2026-10-23）：长任务——QQ 上派的活她做不完
+
+Kevin："感觉现在很难给他长任务。他很容易直接结束然后就回我。"
+
+查她的会话日志：你在 QQ 上说"你可以做个长任务，多去刷刷"，她第一步就调了 `create_goal`（dsh 自带的长任务机制：目标存在会话里，每轮结束后 goal-round-driver 自动叫她继续，直到她标记完成或到轮数上限），被拒：`GOAL_TOOL_AUTHORITY_REQUIRED — this goal operation requires a direct human turn on a top-level agent`。dsh 只承认 `source.kind === 'user'` 的消息是人说的；我们把 QQ 消息当通知送进去（`kind: dsh-dot`），于是她只能写个 todo、搜一次就打勾、汇报、结束。单轮步数不是问题（她单轮跑过 45 步）；我们删掉的两段系统提示只是身份一句话，也不是原因。
+
+- **A**：owner 的 QQ 私聊以 `{kind: 'user', rpcId: 'qq-…'}` 送进去——和 dsh-im 转发 IM 用的同一种来源，正文就是你打的字，"用 qq_send 回"挪到 `qq:channel` 段里。陌生人和群消息照旧是通知，建不了目标（一个陌生人不该能让她在手机上连跑十几轮）。随之 owner 不再自动学（否则第一个私聊她的人就拿到这个权限），必须 `/qq owner` 指定；夜间静音对 owner 不生效。
+- **B**：dot 的工作规则加一条长任务规则，措辞照 dsh 的 `create_goal` 描述（"即使他没说'目标'"）：先回收到、分段汇报、确认做完才标记完成、一轮能做完的不建。
+- **C**：目标进行中，dot 的"拿起手机"、幕间的"去看""去玩"都不插进来（`goals.get(agent).phase === 'active'`）；你的新消息照常在两轮之间送到。
+- **D**（换 pro）不做：goal 每轮的提示要求"标记完成前收集证据确认整个目标达成"，先看 flash 在这个约束下的表现。

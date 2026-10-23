@@ -583,6 +583,7 @@ export function apply(ctx, config = {}) {
     const found = await controller.resolveAgent(sessionId);
     if (!found || 'error' in found) throw new Error(`session ${sessionId}: ${found?.error?.message ?? 'not found'}`);
     const { agent } = found;
+    try { if (ctx.get('goals')?.get(agent)?.phase === 'active') { audit('browse-held', { why: 'goal active', route: 'vm' }); return null; } } catch (error) { void error; }
     const text = await new Promise((resolve) => {
       const timer = setTimeout(() => { observing.delete(sessionId); resolve(null); }, cfg.vmTimeoutMinutes * 60000);
       observing.set(sessionId, (t) => { clearTimeout(timer); observing.delete(sessionId); resolve(t ?? ''); });
@@ -721,6 +722,7 @@ export function apply(ctx, config = {}) {
     try {
       const found = await controller.resolveAgent(sessionId);
       if (!found || 'error' in found) return held(found?.error?.message ?? 'session not found');
+      try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: playPrompt(p, pkg) }], source: PLAY_SOURCE }));
       meta.dayPlays++; saveMeta();
       audit('play', { phase, app: p.app, action: p.action, target: p.target, why: p.why, session: sessionId });

@@ -16,7 +16,7 @@ export const inject = [];
 
 export const defaults = {
   qq: '',                   // the account (QQ number) NapCat logs into — her small account, the same one as on the phone
-  owner: '',                // your QQ number: where dot's own notices and her proactive messages go (learned from the first private message if empty)
+  owner: '',                // your QQ number: set it with /qq owner <number>. Your private messages count as your own words (they can start long tasks); everyone else's do not. Never learned automatically.
   wsPort: 3001,             // OneBot 11 WebSocket server port inside the VM (loopback only)
   token: '',                // OneBot access token; generated once and kept in $DSH_HOME/dsh-qq.json
   installer: 'https://raw.githubusercontent.com/NapNeko/NapCat-Installer/main/script/install.sh',
@@ -280,8 +280,8 @@ export function apply(ctx, config = {}, deps = {}) {
     const isGroup = ev.message_type === 'group';
     if (isGroup && !groupWanted(ev, cfg.groupPolicy, selfId)) return;
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
-    if (!isGroup && !qq.owner) { qq.owner = String(ev.user_id); writeSettings({ owner: qq.owner }); audit({ kind: 'owner-learned', owner: qq.owner }); }
-    const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, at: new Date().toISOString(), messageId: ev.message_id };
+    const fromOwner = !isGroup && Boolean(qq.owner) && String(ev.user_id) === String(qq.owner);
+    const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
     audit({ kind: 'message', ...msg, text: text.slice(0, 200) });
     for (const fn of listeners) { try { fn(msg); } catch (err) { logger.warn(`qq listener: ${err.message}`); } }
   }
@@ -363,7 +363,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq:channel',
       order: 61,
       text: () => (qq.connected
-        ? `你的 QQ（${qq.qq}）在你电脑上也登着：有人给你发消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
+        ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
         : ''),
     }), 'dsh-dot/qq: channel section');
   });
@@ -407,7 +407,7 @@ export function apply(ctx, config = {}, deps = {}) {
           }
         } catch (err) { extra = `\nerror: ${err.message}`; }
         const s = qq.status();
-        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not learned yet)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
+        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not set — /qq owner <your QQ number>)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
       },
     }), 'dsh-dot/qq: /qq command');
   });

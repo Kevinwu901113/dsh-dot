@@ -26,6 +26,13 @@ export const SILENT = 'DOT_SILENT';
 
 /** Source of the message that wakes her for a phone notification; such turns are not pushed to IM. */
 export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-notification' });
+/**
+ * The owner's QQ private messages enter her session as what they are: the person typing to her.
+ * Same source shape dsh-im uses for relayed IM (`kind: 'user'` + a channel-prefixed rpcId), so dsh
+ * treats them as direct human input — which is what lets a QQ message start a long task (goal).
+ * Nobody else's messages get this.
+ */
+export const ownerSource = () => ({ kind: 'user', rpcId: `qq-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}` });
 /** Source of the periodic "pick up your phone" turn; not pushed to IM either. */
 export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-check' });
 /** The periodic turn: she picks up her phone the way people do between things. */
@@ -34,7 +41,7 @@ export const PHONE_CHECK_TEXT = `[拿起手机] 看一眼手机：有没有没�
 const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
 /** Conversation title without the counters chat apps append ("宽(2条新消息)" → "宽"). */
-export const conversationTitle = (title) => String(title ?? '').replace(/\s*[（(]\d+\s*条?(新消息|新)?[)）]\s*$/, '').trim();
+export const conversationTitle = (title) => String(title ?? '').replace(/\s*[（(]\d+\s*条(新消息)?[)）]\s*$/, '').trim();
 
 /**
  * Group notifications by conversation (notification key, then app + title), keeping each
@@ -68,7 +75,7 @@ export function notificationText(list, { whileBusy = false } = {}) {
   const when = whileBusy ? '你上一轮期间来的。' : '';
   const viaQq = groups.some((g) => g.pkg === 'qq');
   const how = viaQq
-    ? (groups.every((g) => g.pkg === 'qq') ? 'QQ 的消息用 qq_send 回（to 用 user:<QQ号>，是和你说话的人就 owner）' : 'QQ 的用 qq_send 回，别的去 App 里回')
+    ? (groups.every((g) => g.pkg === 'qq') ? 'QQ 的消息用 qq_send 回（私聊 to 用 user:<括号里的QQ号>，群里 to 用 group:<群号>）' : 'QQ 的用 qq_send 回，别的去 App 里回')
     : '要回就自己去 App 里回，和平时一样';
   return `${head}\n（${when}${how}；不想理就只回 ${SILENT}。）`;
 }
@@ -86,6 +93,7 @@ export const workingRules = ({ computer = true, phone = false } = {}) => [
   computer ? '- 用你的电脑：网页在你电脑的浏览器里打开（`mcp__vm__browser_*` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。' : '',
   phone ? '- 用你的手机：App 里的事在手机上做（`mcp__phone__*` 工具）；遇到验证码、人脸、短信验证就停下来告诉用户。' : '',
   '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；不要试图绕过。',
+  '- 长一点的事：别人当面交给你一件一轮做不完的事（"长任务""慢慢来""多逛逛""把能找到的都……""每 N 个跟我说一声"），即使他没说"目标"，也用 `create_goal` 建一个目标——它会让你在这个会话里一轮接一轮地自动继续，直到你把它标记完成。先回一句收到；每做完一段就汇报一次；标记完成前先确认整件事真的做完了，没做完就留着让下一轮继续。一轮就能做完的事不用建目标。',
   '- 回复可以拆成几句很短的话，一句一行（IM 里直接投递，不要写 <sep/> 之类的分隔标记）。',
 ].filter(Boolean).join('\n');
 export const WORKING_RULES = workingRules();
@@ -313,16 +321,24 @@ export function apply(ctx, config = {}) {
   let batch = [], batchTimer = null;
   let held = []; // arrived while her session was running a turn; delivered as one message when it ends
   let deliverTracked; let phoneCheckNow; // assigned below (phone check), used by flush/releaseHeld
-  const deliver = (items, whileBusy) => {
+  const deliver = (all, whileBusy) => {
     const controller = ctx.get('sessionController');
     const id = lastSession;
-    const pkgs = [...new Set(items.map((n) => n.pkg))];
+    const pkgs = [...new Set(all.map((n) => n.pkg))];
     if (!controller || !id) { audit('notification-dropped', { pkgs, why: id ? 'no sessionController' : 'no session yet' }); return; }
+    const fromOwner = all.filter((n) => n.fromOwner);
+    const items = all.filter((n) => !n.fromOwner);
     waking = waking.then(async () => {
       const found = await controller.resolveAgent(id);
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
+      // The owner's words, exactly as typed (several messages → several lines), as human input.
+      if (fromOwner.length) {
+        found.agent.followup(createUserMessage({ content: [{ type: 'text', text: fromOwner.map((n) => n.text).join('\n') }], source: ownerSource() }));
+        audit('owner-message', { session: id, count: fromOwner.length, whileBusy });
+      }
+      if (!items.length) return;
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items, { whileBusy }) }], source: PHONE_NOTIFICATION_SOURCE }));
-      audit('notification-woke', { session: id, count: items.length, pkgs, whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
+      audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
   const flush = () => {
@@ -336,18 +352,19 @@ export function apply(ctx, config = {}) {
   const wake = (n) => {
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
-    if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
+    if (!n.fromOwner && cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
     if (!batchTimer) batchTimer = setTimeout(flush, cfg.notifyBatchMs);
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
-    key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at),
+    key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
   })) ?? (() => {}), 'dsh-dot: qq messages'));
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
   let lastWakeAt = 0;
+  const goalActive = (agent) => { try { return ctx.get('goals')?.get(agent)?.phase === 'active'; } catch { return false; } };
   const wakeOriginal = deliver;
   deliverTracked = (items, whileBusy) => { lastWakeAt = Date.now(); wakeOriginal(items, whileBusy); };
   const phoneCheck = () => {
@@ -361,6 +378,8 @@ export function apply(ctx, config = {}) {
     waking = waking.then(async () => {
       const found = await controller.resolveAgent(lastSession);
       if (!found || 'error' in found) return;
+      // She is on a long task: the goal driver brings her back round after round; don't cut in.
+      if (goalActive(found.agent)) { audit('phone-check-skipped', { why: 'goal active' }); return; }
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: PHONE_CHECK_TEXT }], source: PHONE_CHECK_SOURCE }));
       audit('phone-check', { session: lastSession });
     }).catch((err) => logger.warn(`phone check failed: ${err.message}`));
