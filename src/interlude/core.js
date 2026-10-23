@@ -427,6 +427,7 @@ export function apply(ctx, config = {}) {
         if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
         if (event.data?.source?.kind === OBSERVATION_SOURCE.kind) t.origin = 'observation';
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
+        if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-check') { t.origin = 'phone-check'; t.user ||= '（拿起手机看了一眼）'; }
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
         return;
       case 'assistant/message': { if (!t || event.data?.interrupted) return; const text = contentText(event.data?.message?.content); if (text.trim()) t.assistant = text; return; }
@@ -440,7 +441,7 @@ export function apply(ctx, config = {}) {
         if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
         lastActivity = Date.now();
         if (lastActSession !== id) { lastActSession = id; meta.lastSession = id; saveMeta(); }
-        const quiet = t.origin === 'schedule' && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
+        const quiet = ['schedule', 'phone-check', 'notification'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
         return;
@@ -581,7 +582,7 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : i.origin === 'phone-check' ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', content: i.assistant } : null,
       ]).filter(Boolean);
       const { system, user } = buildPrompt({
@@ -627,7 +628,9 @@ export function apply(ctx, config = {}) {
         writeFileSync(files.state, JSON.stringify(state, null, 2));
         if (parsed.overlay.length) appendFileSync(files.overlay, parsed.overlay.map((o) => `- ${dayOf(new Date(now))} ${o}\n`).join(''));
         if (intent) intents = intents.filter((i) => i.id !== intent.id);
-        for (const i of parsed.intents) intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
+        // An intent round settles the intent that woke it; it does not plant the next one, or the
+        // character keeps waking herself all day. New intents come from follow-up and advance rounds.
+        if (phase !== 'intent') for (const i of parsed.intents) intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
         intents = intents.slice(-20);
         saveIntents();
       }

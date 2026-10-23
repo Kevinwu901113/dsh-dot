@@ -137,13 +137,13 @@ test('a due intent is resolved by an intent round and removed', async () => {
   const seeded = harness({ reply: GOOD });
   writeFileSync(join(seeded.home, 'interlude', 'intents.json'), JSON.stringify([{ id: 'i1', at: past, kind: 'reminder', text: '提醒他喝水', willingness: 0.8 }]));
   seeded.stop();
-  const h = harness({ reply: GOOD.replace(/"intents":\[[^\]]*\]/, '"intents":[]'), config: { home: seeded.home } });
+  const h = harness({ reply: GOOD, config: { home: seeded.home } }); // GOOD plants a new intent — an intent round must not keep it
   h.tick();
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(h.calls.length, 1);
   assert.match(h.calls[0].system, /CURRENT PHASE: DUE INTENT/);
   assert.match(h.calls[0].messages[0].content[0].text, /提醒他喝水/);
-  assert.deepEqual(JSON.parse(readFileSync(join(seeded.home, 'interlude', 'intents.json'), 'utf8')), []);
+  assert.deepEqual(JSON.parse(readFileSync(join(seeded.home, 'interlude', 'intents.json'), 'utf8')), [], 'settled, and no new intent planted by an intent round');
   assert.match(readFileSync(join(seeded.home, 'interlude', 'script.md'), 'utf8'), /· intent\n/);
   h.stop();
 });

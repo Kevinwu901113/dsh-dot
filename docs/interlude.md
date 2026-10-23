@@ -14,7 +14,7 @@ Three kinds of rounds, after HDSI's phases:
 |---|---|
 | `follow-up` | a conversation has gone quiet (`idleMinutes`) |
 | `advance` | independent life progression on an interval, even with no conversation (`advanceEveryMinutes`, inside `activeHours`) |
-| `intent` | a stored intent came due (a reminder, a promised reply, a contact check) |
+| `intent` | a stored intent came due (a reminder, a promised reply, a contact check); settles it, plants no new one |
 
 Files, all plain text under `~/dot/interlude/`: `canon.json` (who the character is — HDSI `storyDefaults`, imported from the HDSI preset hub with `/interlude preset <share code>` or set in config; no `AGENTS.md` needed), `script.md` (the life script, append-only), `state.json` (mood / now / next / threads), `overlay.md` (slow, non-destructive change in how it reads itself), `intents.json`, `calls.jsonl` (audit). The Canon is injected as a system-prompt section for sessions in the home directory.
 

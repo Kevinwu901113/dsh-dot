@@ -26,6 +26,10 @@ export const SILENT = 'DOT_SILENT';
 
 /** Source of the message that wakes her for a phone notification; such turns are not pushed to IM. */
 export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-notification' });
+/** Source of the periodic "pick up your phone" turn; not pushed to IM either. */
+export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-check' });
+/** The periodic turn: she picks up her phone the way people do between things. */
+export const PHONE_CHECK_TEXT = `[拿起手机] 看一眼手机：有没有没回的消息，你装的 App 里有没有新动态。有事就处理，和平时一样；没事就只回 ${SILENT}，把手机放回桌面（HOME）。`;
 
 const APP_NAMES = { 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
@@ -90,6 +94,7 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
+  phoneCheckEveryMinutes: 30, // inside notifyHours, if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
   notifyHours: '08:00-23:00', // outside it the phone stays silent (she sleeps); '' = always
 };
 
@@ -300,6 +305,7 @@ export function apply(ctx, config = {}) {
   let waking = Promise.resolve();
   let batch = [], batchTimer = null;
   let held = []; // arrived while her session was running a turn; delivered as one message when it ends
+  let deliverTracked; let phoneCheckNow; // assigned below (phone check), used by flush/releaseHeld
   const deliver = (items, whileBusy) => {
     const controller = ctx.get('sessionController');
     const id = lastSession;
@@ -317,15 +323,37 @@ export function apply(ctx, config = {}) {
     if (!items.length) return;
     // She is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
     if (lastSession && turns.has(lastSession)) { held.push(...items); audit('notification-held', { count: items.length, why: 'turn running' }); return; }
-    deliver(items, false);
+    deliverTracked(items, false);
   };
-  const releaseHeld = () => { if (!held.length) return; const items = held; held = []; deliver(items, true); };
+  const releaseHeld = () => { if (!held.length) return; const items = held; held = []; deliverTracked(items, true); };
   const wake = (n) => {
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
     if (!batchTimer) batchTimer = setTimeout(flush, cfg.notifyBatchMs);
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
+  // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
+  // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
+  let lastWakeAt = 0;
+  const wakeOriginal = deliver;
+  deliverTracked = (items, whileBusy) => { lastWakeAt = Date.now(); wakeOriginal(items, whileBusy); };
+  const phoneCheck = () => {
+    const every = cfg.phoneCheckEveryMinutes * 60000;
+    if (!every || !phone()?.isReady || !lastSession || turns.has(lastSession)) return;
+    if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
+    if (Date.now() - lastWakeAt < every) return;
+    const controller = ctx.get('sessionController');
+    if (!controller) return;
+    lastWakeAt = Date.now();
+    waking = waking.then(async () => {
+      const found = await controller.resolveAgent(lastSession);
+      if (!found || 'error' in found) return;
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: PHONE_CHECK_TEXT }], source: PHONE_CHECK_SOURCE }));
+      audit('phone-check', { session: lastSession });
+    }).catch((err) => logger.warn(`phone check failed: ${err.message}`));
+  };
+  ctx.effect(() => { const timer = setInterval(phoneCheck, 60000); return () => clearInterval(timer); }, 'dsh-dot: phone check');
+  phoneCheckNow = phoneCheck;
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
     if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept。', 'plain');
@@ -336,13 +364,14 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "test" sends a test message to your IM',
-      input: { hint: '[test]' },
+      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now',
+      input: { hint: '[test | check]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         const t = await im.target();
         let test = '';
         if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
+        if (arg === 'check') { lastWakeAt = 0; phoneCheckNow?.(); test = '\nphone check: asked her to pick up her phone (if the phone is up and she is not busy)'; }
         const vm = computer()?.status?.();
         const ph = phone()?.status?.();
         const lines = [

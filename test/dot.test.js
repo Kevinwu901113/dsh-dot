@@ -219,3 +219,29 @@ test('conversationTitle and groupNotifications', async () => {
   ]);
   assert.deepEqual(g, [{ pkg: 'p', title: '宽', texts: ['1', '2'] }, { pkg: 'q', title: 'x', texts: ['y'] }]);
 });
+
+test('phone check: /dot check asks her to pick up the phone when it is up and she is idle; not while busy', async () => {
+  const { PHONE_CHECK_SOURCE } = await import('../src/dot/core.js');
+  const h = harness();
+  const followups = [];
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) } : orig(name))(h.ctx.get);
+  let cmd;
+  h.ctx.get = ((orig) => (name) => name === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : orig(name))(h.ctx.get);
+  apply(h.ctx, h.config);
+  await cmd.handler({ rawInput: 'check' });
+  await wait(20);
+  assert.equal(followups.length, 0, 'no session yet');
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
+  h.emit(h.home, 'turn/start', { turn: 2 });
+  await cmd.handler({ rawInput: 'check' });
+  await wait(20);
+  assert.equal(followups.length, 0, 'busy: not now');
+  h.emit(h.home, 'turn/end', { turn: 2 });
+  await cmd.handler({ rawInput: 'check' });
+  await wait(20);
+  assert.equal(followups.length, 1);
+  assert.deepEqual(followups[0].m.source, PHONE_CHECK_SOURCE);
+  assert.match(followups[0].m.content[0].text, /^\[拿起手机\]/);
+  assert.ok(h.audit.some((e) => e.event === 'phone-check'));
+  stop(h);
+});
