@@ -25,6 +25,8 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `liveViewPort` | `18090` | 实时画面网页端口；`0` 关闭 |
 | `publicUrl` | 无 | 从外面访问实时画面的地址，写进审批提醒 |
 | `gpu` | `auto` | 模拟器 `-gpu` |
+| `locale` / `timezone` | `zh-CN` / `Asia/Shanghai` | 手机的语言和时区 |
+| `installers` | 浏览器、文件管理器 | 开机时被允许安装未知应用的包；`[]` 则她得自己去设置里开 |
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
 | `channel` | `stable` | 模拟器通道 |
 | `bootTimeoutMs` / `restartDelayMs` | `300000` / `10000` | 开机等待、崩溃重开间隔 |
@@ -36,7 +38,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 
 ## 装 App 和登录
 
-- 从各家官网下载 APK（QQ、微信、小黑盒、B 站都有 arm64 包），`~/.dsh/phone/platform-tools/adb install xxx.apk`；或者把 APK 放到她能看到的地方让她 `mobile_install_app`（会弹审批）。
+- **她自己装。** 手机没有应用商店，和一个人拿到新手机一样：她用手机上的浏览器打开官网，下载安装包，点开安装。插件开机时已允许浏览器和文件管理器安装未知应用（`installers`），所以不用进设置。这是故意的——养一个会自己折腾手机的角色，而不是替她把一切装好。`adb install` 当然也能用，但那是你的事，不是她的。
 - 在模拟器窗口里亲手登录。验证码、人脸、短信验证都由你过；她遇到会停下来告诉你。
 - **用小号**：各平台条款都不允许自动化，模拟器也可能被检测。登录态在 AVD 里，重启不丢；`~/.dsh/phone/avd/` 整个目录就是这部手机，可以备份。
 

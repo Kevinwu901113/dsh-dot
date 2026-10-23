@@ -30,6 +30,11 @@ export const defaults = {
   port: 5554,               // console port; the adb serial is emulator-<port>
   window: true,             // show the emulator window (the phone's live view); false = headless
   gpu: 'auto',
+  locale: 'zh-CN',          // the phone's language (emulator -change-locale)
+  timezone: 'Asia/Shanghai',
+  // Apps she installs herself, the way a person does: her browser may install downloaded APKs.
+  // Packages granted "install unknown apps" at boot; [] = she must grant it in Settings first.
+  installers: ['com.android.chrome', 'com.google.android.documentsui', 'com.android.documentsui'],
   acceptLicense: false,     // Android SDK license (https://developer.android.com/studio/terms); `/phone accept` also sets it
   channel: 'stable',        // emulator release channel
   bootTimeoutMs: 300_000,
@@ -293,7 +298,9 @@ export function apply(ctx, config = {}, deps = {}) {
   }
   async function settle() {
     // Keep the screen on and animations off: the model reads screenshots, not motion.
-    for (const cmd of ['svc power stayon true', 'settings put system screen_off_timeout 2147483647', 'settings put global window_animation_scale 0', 'settings put global transition_animation_scale 0', 'settings put global animator_duration_scale 0', 'input keyevent KEYCODE_WAKEUP', 'wm dismiss-keyguard']) {
+    for (const cmd of ['svc power stayon true', 'settings put system screen_off_timeout 2147483647', 'settings put global window_animation_scale 0', 'settings put global transition_animation_scale 0', 'settings put global animator_duration_scale 0', 'input keyevent KEYCODE_WAKEUP', 'wm dismiss-keyguard',
+      // She gets her apps herself — download the APK in her browser, tap install — so the browser and the file manager may install.
+      ...cfg.installers.map((pkg) => `appops set ${pkg} REQUEST_INSTALL_PACKAGES allow`)]) {
       try { await exec(paths.adb, ['-s', serial, 'shell', cmd], { env: env(), timeout: 10_000 }); } catch { /* best effort */ }
     }
   }
@@ -324,7 +331,7 @@ export function apply(ctx, config = {}, deps = {}) {
       if (await alreadyRunning()) {
         logger.info(`${serial} is already running; attaching`);
       } else {
-        const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.window ? [] : ['-no-window'])];
+        const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
         child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', 'pipe', 'pipe'], detached: false });
         child.stdout?.on('data', (d) => logger.debug(`emulator: ${String(d).trim()}`));
         child.stderr?.on('data', (d) => logger.debug(`emulator: ${String(d).trim()}`));
@@ -374,7 +381,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? `你有一部自己的手机：Android 模拟器，设备 ${serial}，工具 mcp__phone__*。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。遇到验证码、人脸、短信验证就停下来告诉用户，不要自己绕。`
+        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
         : ''),
     }), 'dsh-dot/phone: device section');
   });
