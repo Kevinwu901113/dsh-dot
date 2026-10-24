@@ -68,7 +68,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     return { stdout: '' };
   };
   const fake = () => Object.assign(new EventEmitter(), { stdout: new EventEmitter(), stderr: new EventEmitter(), kill() { this.emit('exit', 0); } });
-  const spawn = (file, args) => { const c = fake(); if (args.includes('logcat')) { logcats.push(c); return c; } child = c; spawned.push({ file, args }); return c; };
+  const spawn = (file, args, opts) => { const c = fake(); if (args.includes('logcat')) { logcats.push(c); return c; } child = c; spawned.push({ file, args, opts }); return c; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },

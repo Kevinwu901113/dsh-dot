@@ -5,7 +5,7 @@
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. The phone's window is its
 // live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { spawn, execFile } from 'node:child_process';
-import { createWriteStream, existsSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { closeSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
@@ -270,7 +270,7 @@ export function apply(ctx, config = {}, deps = {}) {
         if (stopped || !phone.isReady) return;
         try { proc = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] }); } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
         proc.stdout?.on('data', (d) => { if (String(d).includes('[')) onEvent(); });
-        proc.on('exit', () => { proc = null; if (!stopped) setTimeout(open, 5000); });
+        proc.on('exit', () => { proc = null; if (!stopped) setTimeout(open, 5000).unref?.(); });
       };
       open();
       return () => { stopped = true; proc?.kill(); proc = null; };
@@ -392,15 +392,20 @@ export function apply(ctx, config = {}, deps = {}) {
         logger.info(`${serial} is already running; attaching`);
       } else {
         const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
-        child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', 'pipe', 'pipe'], detached: false });
-        child.stdout?.on('data', (d) => logger.debug(`emulator: ${String(d).trim()}`));
-        child.stderr?.on('data', (d) => logger.debug(`emulator: ${String(d).trim()}`));
+        // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
+        // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
+        // A piped, referenced child kept the Host alive after shutdown until the desktop updater
+        // timed out ("Host did not complete graceful task teardown").
+        mkdirSync(home, { recursive: true });
+        const log = openSync(join(home, 'emulator.log'), 'a');
+        try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true }); } finally { closeSync(log); }
+        child.unref?.();
         child.on('exit', (code) => {
           child = null;
           if (stopping) return;
           setState('error', `the emulator exited (code ${code})`);
           logger.warn(`emulator exited with ${code}; relaunching in ${cfg.restartDelayMs / 1000}s`);
-          setTimeout(() => { if (!stopping) void start(); }, cfg.restartDelayMs);
+          setTimeout(() => { if (!stopping) void start(); }, cfg.restartDelayMs).unref?.();
         });
       }
       await waitBooted();

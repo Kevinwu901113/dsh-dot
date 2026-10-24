@@ -354,7 +354,7 @@ export function apply(ctx, config = {}) {
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
     if (!n.fromOwner && cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
-    if (!batchTimer) batchTimer = setTimeout(flush, cfg.notifyBatchMs);
+    if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.

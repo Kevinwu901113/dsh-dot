@@ -69,6 +69,7 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
   // Only the page itself may post input (same-origin fetch); nothing else on the machine should drive her phone.
   const sameOrigin = (req) => { const o = req.headers.origin ?? req.headers.referer ?? ''; return !o || o.startsWith(`http://127.0.0.1:${port}`) || o.startsWith(`http://localhost:${port}`) || Boolean(req.headers['x-forwarded-host']); };
 
+  const streams = new Set(); // stop functions of open /stream loops, ended on close()
   const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://127.0.0.1:${port}`);
     try {
@@ -80,6 +81,8 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
         res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=frame', 'cache-control': 'no-store', connection: 'keep-alive' });
         let open = true;
         req.on('close', () => { open = false; });
+        const stop = () => { open = false; };
+        streams.add(stop);
         while (open) {
           const started = Date.now();
           if (ready()) {
@@ -87,6 +90,7 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
           }
           await new Promise((r) => setTimeout(r, Math.max(50, 1000 / fps - (Date.now() - started))));
         }
+        streams.delete(stop);
         return res.end();
       }
       if (req.method === 'POST') {
@@ -105,7 +109,12 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
   });
   server.listen(port, '127.0.0.1');
   server.on('error', (err) => logger.warn?.(`live view port ${port}: ${err.message}`));
-  return { url: `http://127.0.0.1:${port}${LIVE_VIEW_PATH}`, close: () => server.close() };
+  return { url: `http://127.0.0.1:${port}${LIVE_VIEW_PATH}`, close: () => {
+    // server.close() alone waits for every open connection, and a /stream left open in the dsh
+    // window would keep the Host alive past shutdown. End the loops and drop the sockets.
+    for (const stop of streams) stop(); streams.clear();
+    server.close(); server.closeAllConnections?.();
+  } };
 }
 
 /** `adb shell input text` wants spaces as %s and shell metacharacters escaped. ASCII only reaches the device reliably; CJK goes through the clipboard route the model uses. */

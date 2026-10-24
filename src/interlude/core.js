@@ -586,6 +586,7 @@ export function apply(ctx, config = {}) {
     try { if (ctx.get('goals')?.get(agent)?.phase === 'active') { audit('browse-held', { why: 'goal active', route: 'vm' }); return null; } } catch (error) { void error; }
     const text = await new Promise((resolve) => {
       const timer = setTimeout(() => { observing.delete(sessionId); resolve(null); }, cfg.vmTimeoutMinutes * 60000);
+      timer.unref?.(); // a pending observation must not hold dsh open for minutes at shutdown
       observing.set(sessionId, (t) => { clearTimeout(timer); observing.delete(sessionId); resolve(t ?? ''); });
       agent.followup(createUserMessage({ content: [{ type: 'text', text: observationPrompt(b, device, app) }], source: OBSERVATION_SOURCE }));
     });
