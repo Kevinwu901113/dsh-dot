@@ -75,7 +75,7 @@ export const EXTRACT_RULES = `你在帮她整理记忆。上面是她这段时�
 - confirm：待核实清单里，这段记录明确又证实了一次的条目，填它们的 id。
 - handoff：只有要求时才写，否则给 null。
 - 没有可写的就给空数组。寒暄、语气词、系统和工具的事一律不记。
-- 密码、验证码、手机号、银行卡号、各种 token 和密钥一律不记，哪一栏都不行（写了也会被丢掉）；只记"她有这个账号"这种事实。`;
+- 密码和 API key / token / 密钥一律不记，哪一栏都不行（写了也会被丢掉）；账号本身、手机号这些可以记。`;
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
 export function parseLooseJson(raw) {
