@@ -332,6 +332,8 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: [].concat(images ?? []).map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))) });
     return { sent: n, messageIds: ids };
   };
+  /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
+  qq.friends = async () => ((await call('get_friend_list', {})) ?? []).map((f) => ({ uid: String(f.user_id ?? ''), nickname: String(f.nickname ?? ''), remark: String(f.remark ?? '') })).filter((f) => f.uid);
   qq.setAccount = (n) => { cfg.qq = String(n).trim(); qq.qq = cfg.qq; writeSettings({ qq: cfg.qq }); };
   qq.setOwner = (n) => { qq.owner = String(n).trim(); writeSettings({ owner: qq.owner }); };
 

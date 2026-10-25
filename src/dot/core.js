@@ -410,6 +410,8 @@ export function apply(ctx, config = {}) {
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
       // The owner's words, exactly as typed (several messages → several lines), as human input.
       if (fromOwner.length) {
+        // His words reached her on the phone while her computer QQ is not up: she answers in the phone app.
+        if (fromOwner.some((n) => n.via === 'phone') && !ctx.get('dshQq')?.connected) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: '（他下面这条是发到你手机上的；你电脑上的 QQ 现在没在线，回他就在手机 QQ 里回。）' }], source: PHONE_NOTIFICATION_SOURCE }));
         found.agent.followup(createUserMessage({ content: [{ type: 'text', text: fromOwner.map((n) => n.text).join('\n') }], source: ownerSource() }));
         audit('owner-message', { session: id, count: fromOwner.length, whileBusy });
       }
@@ -442,11 +444,19 @@ export function apply(ctx, config = {}) {
   const releaseHeld = (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
   const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat' };
   const wake = (n) => {
-    // Who this is, when it is a person in a chat app: their card gets the real event (dsh-dot/memory).
-    if (!n.from && conversationPlatform[n.pkg] && conversationTitle(n.title)) n = { ...n, from: `${conversationPlatform[n.pkg]}:name:${conversationTitle(n.title)}`, name: conversationTitle(n.title) };
-    if (n.from) ctx.get('dotMemory')?.touch?.({ id: n.from, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
+    // Who this is: one registry for every channel (dsh-dot/memory). A chat app's notification shows
+    // a name (the remark she gave them); her computer QQ gives the number. Whoever resolves to the
+    // owner is the owner, on any channel: his words enter as his own.
+    if (!n.handles && conversationPlatform[n.pkg] && conversationTitle(n.title)) {
+      const name = conversationTitle(n.title);
+      n = { ...n, platform: conversationPlatform[n.pkg], name, handles: [`${conversationPlatform[n.pkg]}:name:${name}`], via: 'phone' };
+    }
+    if (n.handles) {
+      const p = ctx.get('dotMemory')?.touch?.({ handles: n.handles, platform: n.platform, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
+      if (p?.tier === 'owner' && n.kind !== 'group' && !n.fromOwner) n = { ...n, fromOwner: true };
+    }
     if (!n.fromOwner && cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
@@ -455,7 +465,7 @@ export function apply(ctx, config = {}) {
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
-    from: `qq:${m.userId}`, name: m.who, kind: m.kind,
+    handles: [`qq:${m.userId}`], platform: 'qq', name: m.who, kind: m.kind,
   })) ?? (() => {}), 'dsh-dot: qq messages'));
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.

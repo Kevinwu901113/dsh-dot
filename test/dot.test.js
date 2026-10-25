@@ -361,7 +361,7 @@ test('with memory: the people in a QQ message are touched and their card rides a
   const followups = [], touched = [];
   let onMessage;
   const controller = { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) };
-  const dotMemory = { touch: (e) => touched.push(e), cardsFor: (items) => (items.some((n) => n.from === 'qq:42') ? '阿满（qq:42）：聊过' : '') };
+  const dotMemory = { touch: (e) => touched.push(e), cardsFor: (items) => (items.some((n) => n.handles?.includes('qq:42')) ? '阿满（qq:42）：聊过' : '') };
   const services = { sessionController: controller, dotMemory, dshQq: { connected: true, onMessage: (fn) => { onMessage = fn; return () => {}; } } };
   h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
   h.ctx.provide = (n, v) => { services[n] = v; };
@@ -370,7 +370,7 @@ test('with memory: the people in a QQ message are touched and their card rides a
   h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
   onMessage({ kind: 'group', userId: '42', groupId: '9', who: '阿满', text: '有人吗', at: new Date().toISOString() });
   await wait(40);
-  assert.deepEqual(touched[0], { id: 'qq:42', name: '阿满', tier: 'talked', kind: 'group' });
+  assert.deepEqual(touched[0], { handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked', kind: 'group' });
   assert.match(followups[0].m.content[0].text, /群 9 · 阿满：有人吗[\s\S]*你记得的人：\n阿满（qq:42）：聊过/);
   const release = services.dshDot.freeze();
   onMessage({ kind: 'group', userId: '42', groupId: '9', who: '阿满', text: '还在吗', at: new Date().toISOString() });
@@ -381,5 +381,26 @@ test('with memory: the people in a QQ message are touched and their card rides a
   await wait(40);
   assert.equal(followups.length, 2);
   assert.equal(followups[1].id, 's-new', 'released into the new session');
+  stop(h);
+});
+
+test('the owner on her phone: a notification from a name that resolves to the owner enters as his words', async () => {
+  const h = harness();
+  const followups = [], injected = [];
+  let onNotification;
+  const controller = { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push(m) } }) };
+  const dotMemory = { touch: (e) => ({ id: 'u1', tier: e.handles[0] === 'qq:name:宽' ? 'owner' : 'talked' }), cardsFor: () => '' };
+  const services = { sessionController: controller, dotMemory, dshPhone: { onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {} } };
+  h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
+  apply(h.ctx, h.config);
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '阿满', text: '有人吗' });
+  await wait(40);
+  const own = followups.find((f) => f.m.source?.kind === 'user');
+  assert.equal(own.m.content[0].text, '在吗', 'his words, as typed');
+  assert.match(injected[0].content[0].text, /手机 QQ 里回/);
+  assert.ok(followups.some((f) => /\[手机通知\] QQ · 阿满：有人吗/.test(f.m.content[0].text)));
   stop(h);
 });

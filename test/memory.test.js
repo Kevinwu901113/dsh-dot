@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
+  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine } from '../src/memory/memory.js';
 
@@ -25,26 +26,24 @@ test('banks: Hermes add / replace / remove under a character budget', () => {
 
 test('people: counts by code, facts about others wait until said again or approved; seen = impression only', () => {
   const m = emptyMemory();
-  touchPerson(m.people, { id: 'qq:42', name: '阿满', tier: 'talked', kind: 'dm' });
-  touchPerson(m.people, { id: 'qq:42', name: '满满', tier: 'talked', kind: 'dm' });
-  touchPerson(m.people, { id: 'xiaoheihe:name:暮看云', name: '暮看云', tier: 'seen', kind: 'like' });
-  assert.equal(m.people['qq:42'].counts.dm, 2);
-  assert.deepEqual(m.people['qq:42'].names, ['满满', '阿满']);
-  let r = updatePerson(m, { id: 'qq:42', impression: '话少，但回得很认真', facts: ['他养了一只叫团子的猫'] });
+  const a = touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked', kind: 'dm' });
+  touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '满满', tier: 'talked', kind: 'dm' });
+  const s = touchPerson(m, { handles: ['xiaoheihe:name:暮看云'], platform: 'xiaoheihe', name: '暮看云', tier: 'seen', kind: 'like' });
+  assert.equal(a.counts.dm, 2);
+  assert.deepEqual(a.names, ['满满', '阿满']);
+  let r = updatePerson(m, { id: a.id, impression: '话少，但回得很认真', facts: ['他养了一只叫团子的猫'] });
   assert.deepEqual(r, { applied: 1, pending: 1 });
-  assert.deepEqual(m.people['qq:42'].facts, []);
+  assert.deepEqual(a.facts, []);
   r = updatePerson(m, { name: '阿满', facts: ['他养了只猫，叫团子'] });
   assert.equal(r.applied, 1, 'said a second time: kept');
-  assert.equal(m.pending.length, 0);
-  updatePerson(m, { id: 'qq:42', facts: ['他下个月搬去杭州'] });
+  updatePerson(m, { id: a.id, facts: ['他下个月搬去杭州'] });
   assert.ok(approvePending(m, m.pending[0].id).ok);
-  assert.deepEqual(m.people['qq:42'].facts, ['他养了只猫，叫团子', '他下个月搬去杭州']);
-  updatePerson(m, { id: 'xiaoheihe:name:暮看云', impression: '写长帖分析 DSH 插件', facts: ['住在杭州'] });
-  assert.deepEqual(m.people['xiaoheihe:name:暮看云'].facts, [], 'seen: no facts');
-  assert.match(renderPerson(m.people['xiaoheihe:name:暮看云']), /只在帖子里打过交道；点赞 1 次/);
-  assert.match(renderPerson(m.people['qq:42']), /满满（qq:42，也叫 阿满）：聊过；私聊 2 次[\s\S]*印象：话少[\s\S]*- 他下个月搬去杭州/);
+  assert.deepEqual(a.facts, ['他养了只猫，叫团子', '他下个月搬去杭州']);
+  updatePerson(m, { id: s.id, impression: '写长帖分析 DSH 插件', facts: ['住在杭州'] });
+  assert.deepEqual(s.facts, [], 'seen: no facts');
+  assert.match(renderPerson(s), /只在帖子里打过交道；点赞 1 次/);
+  assert.match(renderPerson(a), /满满（qq:42，也叫 阿满）：聊过；私聊 2 次[\s\S]*印象：话少[\s\S]*- 他下个月搬去杭州/);
 });
-
 test('fragments: refs grow when said again; aging; standing render is byte-stable', () => {
   const m = emptyMemory();
   assert.equal(observeFragment(m, { text: '他说下周六要搬家，搬去光谷那边', tag: 2, kind: 'plan', gen: 1 }).action, 'new');
@@ -63,18 +62,18 @@ test('fragments: refs grow when said again; aging; standing render is byte-stabl
 
 test('extraction: banks, people (new seen ones from apps), fragments; loose JSON', () => {
   const m = emptyMemory();
-  touchPerson(m.people, { id: 'qq:42', name: '阿满', tier: 'talked' });
+  const a = touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked' });
   const out = parseLooseJson('好的：```json\n' + JSON.stringify({
     owner: [{ action: 'add', content: '他讨厌被叫全名' }],
     self: [{ action: 'add', content: '学会了在小黑盒里看攻略帖' }],
-    people: [{ id: 'qq:42', impression: '爱发猫图' }, { platform: 'xiaoheihe', name: '暮看云', tier: 'seen', impression: '写长帖的' }, { name: '不认识的人' }],
+    people: [{ id: 'u0001', impression: '爱发猫图' }, { platform: 'xiaoheihe', name: '暮看云', tier: 'seen', impression: '写长帖的' }, { name: '不认识的人' }],
     fragments: [{ text: '10-25 下午他说晚上要加班到十点', kind: 'event', tag: 1 }],
   }) + '\n```');
   const r = applyExtraction(m, out);
   assert.deepEqual([r.owner, r.self, r.fragments], [1, 1, 1]);
   assert.deepEqual(m.owner, ['他讨厌被叫全名']);
-  assert.equal(m.people['qq:42'].impression, '爱发猫图');
-  assert.equal(m.people['xiaoheihe:name:暮看云'].tier, 'seen');
+  assert.equal(a.impression, '爱发猫图');
+  assert.equal(findPerson(m.people, 'xiaoheihe:name:暮看云').tier, 'seen');
   assert.equal(Object.keys(m.people).length, 2, 'a name with no platform and no card is not invented');
   assert.match(renderHandoff({ now: '在回他消息', promises: ['晚上帮他查天气'] }, [{ at: 0, who: 'owner', text: '在吗' }, { at: 0, who: 'her', to: 'owner', text: '在' }], 2), /第 2 段[\s\S]*你此刻：在回他消息[\s\S]*晚上帮他查天气[\s\S]*他：在吗[\s\S]*我：在/);
   assert.match(transcriptLine({ at: 0, who: 'her', to: 'user:9', text: 'hi' }), /我（发给 user:9）：hi/);
@@ -160,12 +159,51 @@ test('people cards for the people who wake her; owner excluded', () => {
   const h = harness();
   apply(h.ctx, { home: h.home });
   const mem = h.services.dotMemory;
-  mem.touch({ id: 'qq:42', name: '阿满', tier: 'talked', kind: 'group' });
-  mem.touch({ id: 'qq:7', name: '宽', tier: 'owner', kind: 'dm' });
-  assert.match(mem.cardsFor([{ from: 'qq:42' }, { from: 'qq:42' }, { from: 'qq:7' }]), /^阿满（qq:42）：聊过；群里说话 1 次/);
-  assert.ok(!mem.cardsFor([{ from: 'qq:7' }]));
+  mem.touch({ handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked', kind: 'group' });
+  mem.setOwner('qq:7', '宽');
+  assert.match(mem.cardsFor([{ handles: ['qq:42'] }, { handles: ['qq:42'] }, { handles: ['qq:7'] }]), /^阿满（qq:42）：聊过；群里说话 1 次/);
+  assert.ok(!mem.cardsFor([{ handles: ['qq:7'] }]));
 });
 
+test('one registry across apps: a phone name and a QQ number become one person through the friend list; the owner is recognised on any channel', () => {
+  const m = emptyMemory();
+  setOwner(m, 'qq:919', '');
+  // her phone shows "宽" before anything ties it to the number: a second card
+  const phoneKuan = touchPerson(m, { handles: ['qq:name:宽'], platform: 'qq', name: '宽', kind: 'dm' });
+  assert.notEqual(phoneKuan.tier, 'owner');
+  const amanQq = touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '阿满', kind: 'group' });
+  touchPerson(m, { handles: ['xiaoheihe:name:阿满'], platform: 'xiaoheihe', name: '阿满', tier: 'seen', kind: 'like' });
+  // the friend list: remark 宽 is 919; two friends share the remark 小王 (no name handle for them)
+  const r = syncFriends(m, 'qq', [{ uid: '919', nickname: 'awwaw', remark: '宽' }, { uid: '42', nickname: '阿满', remark: '' }, { uid: '1', nickname: 'a', remark: '小王' }, { uid: '2', nickname: 'b', remark: '小王' }]);
+  assert.equal(r.merged, 1);
+  const owner = resolvePerson(m.people, { handles: ['qq:name:宽'] });
+  assert.equal(owner.tier, 'owner', 'the phone name now resolves to the owner');
+  assert.deepEqual(owner.handles.sort(), ['qq:919', 'qq:name:awwaw', 'qq:name:宽'].sort());
+  assert.equal(owner.counts.dm, 1, 'the phone card\'s counts moved over');
+  assert.equal(resolvePerson(m.people, { platform: 'qq', name: '小王' }), null, 'ambiguous name: nobody');
+  assert.equal(resolvePerson(m.people, { handles: ['qq:name:阿满'] }), amanQq);
+  // the same name on another app is a different card until something says otherwise
+  const hb = resolvePerson(m.people, { handles: ['xiaoheihe:name:阿满'] });
+  assert.notEqual(hb, amanQq);
+  // the model notices: not the owner → merged at once
+  assert.ok(proposeMerge(m, amanQq.id, hb.id, { why: '他在 QQ 里说小黑盒那个号是他' }).ok);
+  assert.deepEqual(resolvePerson(m.people, { handles: ['xiaoheihe:name:阿满'] }).id, amanQq.id);
+  // a merge into the owner waits for approval
+  const stranger = touchPerson(m, { handles: ['wechat:name:K'], platform: 'wechat', name: 'K' });
+  const pend = proposeMerge(m, owner.id, stranger.id, { why: '猜的' });
+  assert.match(pend.pending, /^m\d+$/);
+  assert.notEqual(resolvePerson(m.people, { handles: ['wechat:name:K'] }).tier, 'owner');
+  assert.ok(approveMerge(m, pend.pending).ok);
+  assert.equal(resolvePerson(m.people, { handles: ['wechat:name:K'] }).tier, 'owner');
+});
+
+test('old memory (people keyed by handle) migrates to the registry', () => {
+  const m = normalizeMemory({ people: { 'qq:name:宽': { id: 'qq:name:宽', names: ['宽'], tier: 'talked', counts: { dm: 1 }, facts: [], impression: '' } }, pending: [{ id: 'p1', person: 'qq:name:宽', text: 'x' }] });
+  const p = Object.values(m.people)[0];
+  assert.match(p.id, /^u\d{4}$/);
+  assert.deepEqual(p.handles, ['qq:name:宽']);
+  assert.equal(m.pending[0].person, p.id);
+});
 test('backfill: the conversation from before memory was installed is read once from the session log', async () => {
   const { transcriptFromEvents } = await import('../src/memory/memory.js');
   const events = [

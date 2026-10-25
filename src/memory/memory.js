@@ -19,7 +19,8 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
-  observeFragment, personId, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
+  observeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
+  resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 
 export const name = 'dot-memory';
@@ -61,7 +62,8 @@ export const EXTRACT_RULES = `你在帮她整理记忆。上面是她这段时�
 {
   "owner": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
   "self": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
-  "people": [{"id":"已知的 id，没有就留空","platform":"qq/wechat/xiaoheihe/bilibili/…","name":"名字","tier":"talked|seen","impression":"一句话印象，20 字以内","facts":["关于这个人的具体事"]}],
+  "people": [{"id":"已认识的人的 id（u0001 这种），新认识的留空","platform":"qq/wechat/xiaoheihe/bilibili/…","name":"名字","tier":"talked|seen","impression":"一句话印象，20 字以内","facts":["关于这个人的具体事"]}],
+  "same": [{"a":"u0003","b":"u0007","why":"为什么认定是同一个人（记录里的证据）"}],
   "fragments": [{"text":"...","kind":"event|plan|promise|preference|fact","tag":0,"mergeWith":null}],
   "confirm": ["这段记录又一次证实了的待核实条目 id"],
   "handoff": {"now":"她此刻在做什么、什么心情","inFlight":[],"promises":[],"openQuestions":[]}
@@ -70,7 +72,8 @@ export const EXTRACT_RULES = `你在帮她整理记忆。上面是她这段时�
 各栏怎么写：
 - owner：关于他、长期有效的事（他是谁、在做什么、喜好、雷点、称呼、长期计划）。一次性的事不进这里，进 fragments。已有的条目要改就 replace（oldText 写原条目里一小段），过时了就 remove。每条一句话。
 - self：她自己长期的东西：学会了什么（装了什么 App、学会怎么用）、形成的习惯、自己的看法。不写她的设定（设定在别处）。
-- people：除了他以外，这段记录里和她真正打过交道的人。互发过消息的 tier=talked；只是看/点赞/评论过对方帖子的 tier=seen（seen 只写 impression，不写 facts）。不确定是不是同一个人就别合并。
+- people：除了他以外，这段记录里和她真正打过交道的人，不管在哪个 App。已认识的写 id；新认识的留空 id、写 platform 和 name。互发过消息的 tier=talked；只是看/点赞/评论过对方帖子的 tier=seen（seen 只写 impression，不写 facts）。
+- same：已认识的人里，记录明确显示是同一个人的两张卡（比如同一个人在 QQ 和小黑盒都出现、自己说了另一个号是他）。要有证据才写，拿不准就不写。
 - fragments：这段时间发生的具体的事，每条 60 字以内，保留时间、人名、数字、地点。tag：0=知道就行；1=影响接下来怎么说话（他今天心情、正在做的事、刚纠正过的说法）；2=不记住就会出错（他的计划和截止、她答应过的事、他明确的要求）。和已有碎片说的是同一件事就给 mergeWith（填已有 id），拿不准就新增。
 - confirm：待核实清单里，这段记录明确又证实了一次的条目，填它们的 id。
 - handoff：只有要求时才写，否则给 null。
@@ -100,17 +103,21 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
   }
   for (const u of [].concat(out?.people ?? [])) {
     if (!u || typeof u !== 'object') continue;
-    let p = findPerson(memory.people, u.id) ?? findPerson(memory.people, u.name);
+    let p = findPerson(memory.people, u.id) ?? resolvePerson(memory.people, { platform: u.platform, name: u.name });
     if (!p && u.name && u.platform) {
       // Someone new she met in an app: a card, tier as the model saw it (never owner).
       const tier = u.tier === 'seen' ? 'seen' : 'talked';
-      p = touchPerson(memory.people, { id: personId(u.platform, `name:${String(u.name).trim()}`), name: u.name, platform: u.platform, tier, kind: tier === 'seen' ? 'comment' : 'mention', at: now });
+      p = touchPerson(memory, { handles: [handleOf(u.platform, { name: u.name })], platform: u.platform, name: u.name, tier, kind: tier === 'seen' ? 'comment' : 'mention', at: now });
     }
     if (!p) continue;
     const r = updatePerson(memory, { ...u, id: p.id }, { limits, now });
     report.people += r.applied; report.pending += r.pending;
   }
   for (const id of [].concat(out?.confirm ?? [])) { if (approvePending(memory, String(id), limits).ok) report.people++; }
+  for (const m of [].concat(out?.same ?? [])) {
+    const r = proposeMerge(memory, m?.a, m?.b, { why: m?.why, limits });
+    if (r.ok && !r.noop) report.merges = (report.merges ?? 0) + 1;
+  }
   for (const f of [].concat(out?.fragments ?? [])) {
     const r = observeFragment(memory, { ...f, gen: memory.gen, now });
     if (r.action === 'new' || r.action === 'dup') report.fragments++;
@@ -186,6 +193,7 @@ export function apply(ctx, config = {}) {
       `## 关于你（${bankUsage(memory.owner, cfg.limits.owner)}）`, ...memory.owner.map((e) => `- ${e}`), '',
       `## 她自己记下的（${bankUsage(memory.self, cfg.limits.self)}）`, ...memory.self.map((e) => `- ${e}`), '',
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
+      `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
       `## 待核实（${memory.pending.length}）`, ...memory.pending.map((x) => `- ${x.id} · ${x.person}：${x.text}`), '',
       `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}] ${f.text}`), '',
     ].join('\n');
@@ -264,7 +272,8 @@ export function apply(ctx, config = {}) {
         t.sentViaQq = true; turns.set(id, t);
         const m = /^user:(\d+)$/.exec(String(args.to ?? ''));
         const owner = ctx.get('dshQq')?.owner;
-        if (m || (args.to === 'owner' && owner)) { touchPerson(memory.people, { id: m ? `qq:${m[1]}` : `qq:${owner}`, tier: (!m || m[1] === String(owner)) ? 'owner' : 'talked', kind: 'sent' }); save(); }
+        const target = m ? `qq:${m[1]}` : args.to === 'owner' ? (owner ? `qq:${owner}` : ownerOf(memory.people)?.handles[0]) : '';
+        if (target) { touchPerson(memory, { handles: [target], platform: 'qq', tier: 'talked', kind: 'sent' }); save(); }
         return;
       }
       case 'assistant/message': if (!event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) { t.last = text; turns.set(id, t); } } return;
@@ -295,7 +304,7 @@ export function apply(ctx, config = {}) {
       if (text.length > cfg.inputChars) text = `…${text.slice(-cfg.inputChars)}`;
       // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
-      const known = Object.values(memory.people).map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.tier}`).join('\n');
+      const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
       const frags = [...memory.fragments].sort(compareFragments).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
       const prompt = [
         ...(recent ? ['=== 更早一点的对话（已经整理过，只用来写 handoff，别重复记）===', clip(recent, 12000), ''] : []),
@@ -454,12 +463,18 @@ export function apply(ctx, config = {}) {
 
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
-    touch(e) { const p = touchPerson(memory.people, e); if (p) save(); return p; },
+    /** A real event with someone, from any channel: { handles, platform, name, tier, kind }. Returns the person. */
+    touch(e) { const p = touchPerson(memory, e); if (p) save(); return p; },
+    /** Who is this ({ handles, platform, name }), without recording anything. */
+    resolve(e) { return resolvePerson(memory.people, e); },
     card(ref) { return renderPerson(findPerson(memory.people, ref)); },
-    /** Cards for the people in a batch of wake items (those with `from`), deduplicated. */
+    setOwner(handle, name) { const p = setOwner(memory, handle, name); save(); return p; },
+    syncFriends(platform, friends) { const r = syncFriends(memory, platform, friends, { limits: cfg.limits }); save(); audit('friends-synced', { platform, friends: friends?.length ?? 0, ...r }); return r; },
+    /** Cards for the people in a batch of wake items (their `handles`), deduplicated; the owner is left out. */
     cardsFor(items) {
-      const ids = [...new Set([].concat(items ?? []).map((n) => n?.from).filter(Boolean))];
-      return ids.map((id) => findPerson(memory.people, id)).filter((p) => p && p.tier !== 'owner').map((p) => renderPerson(p)).join('\n');
+      const seen = new Set();
+      return [].concat(items ?? []).map((n) => resolvePerson(memory.people, { handles: n?.handles ?? (n?.from ? [n.from] : []), platform: n?.platform, name: n?.name }))
+        .filter((p) => p && p.tier !== 'owner' && !seen.has(p.id) && seen.add(p.id)).map((p) => renderPerson(p)).join('\n');
     },
     /** For the interlude: what she knows to be true (memories, in HDSI's payload terms). */
     forInterlude() { return [...memory.owner.map((e) => `关于他：${e}`), ...memory.self.map((e) => `她自己：${e}`), ...[...memory.fragments].sort(compareFragments).slice(0, 12).map((f) => f.text)]; },
@@ -468,11 +483,13 @@ export function apply(ctx, config = {}) {
     async command(arg) {
       const [verb, sub, ...rest] = String(arg ?? '').trim().split(/\s+/);
       if (verb === 'people') {
-        if (sub === 'approve' && rest[0]) { const r = approvePending(memory, rest[0], cfg.limits); if (r.ok) save(); return r.ok ? `approved → ${r.person}` : r.error; }
+        if (sub === 'approve' && rest[0]) { const r = /^m\d+$/.test(rest[0]) ? approveMerge(memory, rest[0], cfg.limits) : approvePending(memory, rest[0], cfg.limits); if (r.ok) save(); return r.ok ? `approved → ${r.person ?? r.id}` : r.error; }
+        if (sub === 'merge' && rest[1]) { const r = mergePeople(memory, rest[0], rest[1], { why: 'manual', limits: cfg.limits }); if (r.ok) save(); return r.ok ? `merged → ${r.id}` : r.error; }
         if (sub === 'drop' && rest[0]) { const n = memory.pending.length; memory.pending = memory.pending.filter((x) => x.id !== rest[0]); save(); return n !== memory.pending.length ? `dropped ${rest[0]}` : `no pending ${rest[0]}`; }
         if (sub === 'forget' && rest[0]) { const p = findPerson(memory.people, [rest[0], ...rest.slice(1)].join(' ')); if (!p || p.tier === 'owner') return 'no such person (or it is you)'; delete memory.people[p.id]; memory.pending = memory.pending.filter((x) => x.person !== p.id); save(); return `forgot ${p.id}`; }
-        const people = Object.values(memory.people).sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
-        return [`people: ${people.length} · pending: ${memory.pending.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.pending.length ? ['pending (/dot people approve <id> | drop <id>):', ...memory.pending.slice(-20).map((x) => `  ${x.id} · ${x.person}：${x.text}`)] : [])].join('\n');
+        const all = Object.values(memory.people);
+        const people = all.filter((p) => p.tier !== 'contact').sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+        return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · pending: ${memory.pending.length} · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : []), ...(memory.pending.length ? ['pending (/dot people approve <id> | drop <id>):', ...memory.pending.slice(-20).map((x) => `  ${x.id} · ${x.person}：${x.text}`)] : [])].join('\n');
       }
       if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
@@ -481,9 +498,23 @@ export function apply(ctx, config = {}) {
       const tokens = id ? await measure(id) : 0;
       return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · people ${s.people} (+${s.pending} pending) · fragments ${s.fragments}`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines}, or ${cfg.consolidateIdleMinutes} min quiet)`,
-        `files: ${files.md}`, '/dot memory now | handoff · /dot people [approve <id> | drop <id> | forget <name>]'].join('\n');
+        `files: ${files.md}`, '/dot memory now | handoff · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
     },
   };
+  // Her QQ (dsh-dot/qq): the owner's number makes his card the owner's, and the friend list — the
+  // remarks she gave people are what her phone shows — ties phone names to numbers. Re-synced
+  // every few hours while QQ is connected.
+  let lastFriendSync = 0;
+  async function syncQq() {
+    const q = ctx.get('dshQq');
+    if (!q) return;
+    if (q.owner) { const o = ownerOf(memory.people); if (!o || !o.handles.includes(`qq:${q.owner}`)) api.setOwner(`qq:${q.owner}`); }
+    if (!q.connected || typeof q.friends !== 'function' || Date.now() - lastFriendSync < 6 * 3600000) return;
+    lastFriendSync = Date.now();
+    try { api.syncFriends('qq', await q.friends()); } catch (err) { lastFriendSync = 0; logger.warn(`friend list sync failed: ${err.message}`); }
+  }
+  ctx.effect(() => { const first = setTimeout(() => { void syncQq(); }, 20000); const t = setInterval(() => { void syncQq(); }, 5 * 60000); first.unref?.(); t.unref?.(); return () => { clearTimeout(first); clearInterval(t); }; }, 'dsh-dot/memory: qq identities');
+
   ctx.provide?.('dotMemory', api);
   logger.info(`memory ready — ${dir}`);
 }
