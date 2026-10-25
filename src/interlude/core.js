@@ -59,7 +59,8 @@ export const defaults = {
   advanceEveryMinutes: 180,   // independent life progression; 0 disables
   activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
   maxRoundsPerDay: 12,
-  maxTokens: 1400,
+  // DeepSeek's reasoning shares this budget with the reply; 1400 cut half the rounds off before the JSON closed.
+  maxTokens: 4000,
   digestChars: 6000,
   scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
   // 玩: small social actions on her own accounts, on her phone — like, comment, follow (post/DM/pay
@@ -226,6 +227,25 @@ export const HDSI = {
   ].join('\n'),
 };
 
+/**
+ * dsh-dot's own contract lines (not HDSI's). Real events are the spine of the story; messages to
+ * the user exist only when the host actually delivered them.
+ */
+export const DOT = {
+  REAL_LEDGER: 'OBSERVED LEDGER: recentScript items owned by "user", "phone" or "character" with a time are real events — they happened on her real phone, her real computer and in her real chats (the phone and the computer in the story are these devices). Weave every one of them into the script at its time, as something she did, saw or was told in her life; a quiet one (she looked and found nothing) can be one clause. The invented life around them may be anything the Canon allows, but it must not contradict them, and it must not invent further phone or computer activity of hers beyond them.',
+  CONTACT_MARK: 'MESSAGES TO THE USER: the user is reached only through the contact field. In script, never write a message to the user as already sent: at the moment she sends him something, write the marker <contact/> and nothing else — the host replaces it with what actually went out, or with her deleting it. Messages to the supporting cast are part of the story and may be written out. In continuity, never claim the user ignored, missed or did not answer something unless the observed ledger shows a real message from her that he left unanswered.',
+  CONTACT_OFF: 'MESSAGES TO THE USER: proactive contact is off in this interval — she does not message the user at all. She may think of him or start to type and stop, but the script must not show any message to him as sent, and continuity must never claim he ignored or failed to answer her.',
+};
+
+/** What the <contact/> marker becomes once the host knows whether her message went out. */
+export function fillContact(script, contact, said) {
+  const text = String(contact?.text ?? '').replace(/<sep\s*\/>/gi, ' / ').trim();
+  const sent = said && text ? `「${text}」` : '';
+  const kept = text ? '（打了几个字，最后没发出去）' : '（想了想，没发）';
+  const filled = String(script ?? '').replace(/<contact\s*\/>/gi, () => (sent || kept));
+  return { script: filled, marked: filled !== String(script ?? '') };
+}
+
 /** HDSI's model-family detection (specialization.ts): the length block differs per family. */
 export function lengthBlockFor(model = '') {
   const m = String(model).toLowerCase();
@@ -249,6 +269,8 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     HDSI.LITE_INTERVAL,
     phaseText,
     HDSI.LITE_NEVER_INVENT,
+    DOT.REAL_LEDGER,
+    speak ? DOT.CONTACT_MARK : DOT.CONTACT_OFF,
     HDSI.LITE_OWNERSHIP,
     HDSI.LITE_EVENT_SOURCES,
     browser === 'disabled' ? HDSI.BROWSING_DISABLED : HDSI.BROWSING_DEFERRED,
@@ -264,7 +286,7 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
     // The field list is this plugin's; everything around it is HDSI's.
     'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents, browserIntents, playIntents and contact. Do not wrap it in Markdown fences.',
-    `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she actually sends a message, write its exact words at the sending action; several bubbles are separated by <sep/>.`,
+    `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she sends a message to someone in the story, write its exact words at the sending action (several bubbles separated by <sep/>); a message to the user is the <contact/> marker only.`,
     HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
     'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
     'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
@@ -456,6 +478,7 @@ export function apply(ctx, config = {}) {
   let running = 0;
   let lastActSession = meta.lastSession || ''; // the character's most recent act: where observations happen (remembered across restarts)
   const observing = new Map(); // session id → resolve(assistant text) while an observation turn runs
+  const errandSession = async () => { try { return (await ctx.get('dshDot')?.errand?.()) || ''; } catch (error) { void error; return ''; } };
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
@@ -486,7 +509,8 @@ export function apply(ctx, config = {}) {
         // An observation turn is the character looking, not an act: hand the text back, keep it out of the script.
         if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
         lastActivity = Date.now();
-        if (lastActSession !== id) { lastActSession = id; meta.lastSession = id; saveMeta(); }
+        // Her errand session (dsh-dot) is not where she lives: it never becomes the act session.
+        if (lastActSession !== id && !ctx.get('dshDot')?.isErrand?.(id)) { lastActSession = id; meta.lastSession = id; saveMeta(); }
         const quiet = ['schedule', 'phone-check', 'notification', 'play'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
@@ -576,7 +600,8 @@ export function apply(ctx, config = {}) {
    * The turn's final reply is the observation; the turn is not an act and leaves no script entry.
    */
   async function observeInVm(b, { device = 'vm', app = '' } = {}) {
-    const sessionId = cfg.vmSession || lastActSession;
+    // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
+    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
     if (!sessionId) { audit('browse-held', { why: 'no session to observe in yet', route: 'vm' }); return null; }
     if (observing.has(sessionId)) { audit('browse-held', { why: 'observation already running', route: 'vm' }); return null; }
     const controller = ctx.get('sessionController');
@@ -668,8 +693,15 @@ export function apply(ctx, config = {}) {
           const at = m ? new Date(year, +m[1] - 1, +m[2], +m[3], +m[4]) : new Date(now);
           appendFileSync(files.script, `## ${describeNow(at)} · seed\n${m ? seg.slice(m[0].length) : seg}\n\n`);
         }
-      } else {
-        appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${script}\n\n`);
+      }
+      // Her message to the user goes out (or not) before the passage is written down, so the
+      // <contact/> marker becomes what really happened.
+      let said = false;
+      if (parsed?.contact) said = await contact(parsed.contact, phase);
+      if (phase !== 'seed') {
+        const filled = fillContact(script, parsed?.contact, said);
+        const sentLine = said && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
+        appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${filled.script}\n\n${sentLine}`);
       }
       if (parsed?.truncated) logger.warn('interlude reply was cut off; kept the script only (raise maxTokens?)');
       if (parsed && parsed.state) {
@@ -692,8 +724,6 @@ export function apply(ctx, config = {}) {
       // the observation is evidence for later rounds (webContext), never for this script.
       for (const b of parsed?.browserIntents ?? []) await browse(b, phase);
       for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
-      let said = false;
-      if (parsed?.contact) said = await contact(parsed.contact, phase);
       audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, contact: Boolean(parsed?.contact), said });
       logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
       return { ok: true, script, contact: parsed?.contact ?? null, said };
@@ -717,7 +747,8 @@ export function apply(ctx, config = {}) {
     rollDay();
     if (meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
     if (!ctx.get('dshPhone')?.isReady) return held('phone not ready');
-    const sessionId = cfg.vmSession || lastActSession;
+    // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
+    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
     const controller = ctx.get('sessionController');
     if (!sessionId || !controller) return held('no session');
     try {
@@ -741,7 +772,7 @@ export function apply(ctx, config = {}) {
     if (q?.connected && q.owner) {
       try {
         const r = await q.send('owner', c.text);
-        if (r.sent) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${c.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n`); }
+        if (r.sent) { meta.dayContacts++; saveMeta(); }
         return r.sent > 0;
       } catch (error) { logger.warn(`contact via qq failed: ${error.message}`); return false; }
     }
@@ -761,7 +792,7 @@ export function apply(ctx, config = {}) {
       const parts = c.text.split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
       let ok = false;
       for (const part of parts) ok = (await im.send(bot, target, part, { format: 'plain' }))?.sent === true || ok;
-      if (ok) { meta.dayContacts++; saveMeta(); appendFileSync(files.script, `（主动联系：${parts.join(' / ')}）\n\n`); }
+      if (ok) { meta.dayContacts++; saveMeta(); }
       return ok;
     } catch (error) { logger.warn(`contact failed: ${error.message}`); return false; }
   }

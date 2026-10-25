@@ -466,3 +466,17 @@ test('play: off by default; on, a playIntent becomes one normal turn on her phon
   assert.equal(post.followups.length, 0);
   post.stop();
 });
+
+test('contact marker: what really went out, or her deleting it; the prompt forbids claiming sends', async () => {
+  const { fillContact, buildPrompt, DOT } = await import('../src/interlude/core.js');
+  const s = '她点开 QQ。<contact/>\n发完把手机扣在桌上。';
+  assert.equal(fillContact(s, { text: '睡了没<sep/>就问问' }, true).script, '她点开 QQ。「睡了没 / 就问问」\n发完把手机扣在桌上。');
+  assert.equal(fillContact(s, { text: '睡了没' }, false).script, '她点开 QQ。（打了几个字，最后没发出去）\n发完把手机扣在桌上。');
+  assert.equal(fillContact(s, null, false).script, '她点开 QQ。（想了想，没发）\n发完把手机扣在桌上。');
+  assert.equal(fillContact('没有标记', { text: 'x' }, true).marked, false);
+  const off = buildPrompt({ phase: 'advance', speak: false, now: Date.now() }).system;
+  assert.ok(off.includes(DOT.CONTACT_OFF) && !off.includes(DOT.CONTACT_MARK));
+  assert.ok(off.includes(DOT.REAL_LEDGER));
+  const on = buildPrompt({ phase: 'advance', speak: true, now: Date.now() }).system;
+  assert.ok(on.includes(DOT.CONTACT_MARK) && /a message to the user is the <contact\/> marker only/.test(on));
+});

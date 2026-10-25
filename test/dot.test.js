@@ -297,3 +297,61 @@ test('working rules tell her to use a goal for long tasks', async () => {
   assert.match(WORKING_RULES, /create_goal/);
   assert.match(WORKING_RULES, /一轮就能做完的事不用建目标/);
 });
+
+test('errands: app notifications and phone checks run in her errand session; only the conclusion reaches her conversation', async () => {
+  const { ERRAND_NOTE_SOURCE, PHONE_CHECK_SOURCE, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
+  const h = harness();
+  const followups = [], injected = [], created = [];
+  let onNotification;
+  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }) });
+  const controller = {
+    create: async (req) => { created.push(req); return { sessionId: 'errand-1' }; },
+    rename: async () => ({}),
+    resolveAgent: async (id) => ({ agent: agentFor(id) }),
+  };
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : orig(name))(h.ctx.get);
+  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 30 });
+  // her conversation is s1
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'user/message', { source: { kind: 'user' } });
+  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
+  onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'steam 史低' });
+  await wait(40);
+  assert.deepEqual(created, [{ cwd: h.home }], 'the errand session is created in her home');
+  assert.deepEqual(followups.map((f) => [f.id, f.m.content[0].text.split('\n')[0]]), [['s1', '[手机通知] QQ · 宽：在吗'], ['errand-1', '[手机通知] 小黑盒 · 小黑盒：steam 史低']]);
+  // the errand turn ends with a finding: it is injected (not followed up) into her conversation
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  h.emitAs('errand-1', h.home, 'user/message', { source: PHONE_NOTIFICATION_SOURCE });
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('小黑盒在推 steam 史低，看了一眼没想买的'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  await wait(20);
+  assert.equal(injected.length, 1);
+  assert.equal(injected[0].id, 's1', 'the errand never becomes her conversation');
+  assert.deepEqual(injected[0].m.source, ERRAND_NOTE_SOURCE);
+  assert.match(injected[0].m.content[0].text, /^\[刚才手机响了，你去看了\] 小黑盒在推 steam 史低/);
+  // a silent errand leaves nothing
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 2 });
+  h.emitAs('errand-1', h.home, 'user/message', { source: PHONE_CHECK_SOURCE });
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('DOT_SILENT'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 2, reason: 'completed' });
+  await wait(20);
+  assert.equal(injected.length, 1);
+  stop(h);
+});
+
+test('phone check goes to the errand session', async () => {
+  const h = harness();
+  const followups = [];
+  const controller = { create: async () => ({ sessionId: 'errand-9' }), resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) };
+  let handler;
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : name === 'commands' ? { register: (c) => { handler = c.handler; return () => {}; } } : orig(name))(h.ctx.get);
+  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 30 });
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  await handler({ rawInput: 'check' });
+  await wait(30);
+  assert.deepEqual(followups.map((f) => f.id), ['errand-9']);
+  assert.match(followups[0].m.content[0].text, /^\[拿起手机\]/);
+  stop(h);
+});
