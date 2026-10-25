@@ -60,7 +60,7 @@ export const defaults = {
   activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
   maxRoundsPerDay: 12,
   // DeepSeek's reasoning shares this budget with the reply; 1400 cut half the rounds off before the JSON closed.
-  maxTokens: 4000,
+  maxTokens: 16384,
   digestChars: 6000,
   scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
   // 玩: small social actions on her own accounts, on her phone — like, comment, follow (post/DM/pay

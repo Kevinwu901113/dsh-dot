@@ -36,7 +36,7 @@ export const defaults = {
   maxFragments: 300,
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters a consolidation reads (newest kept)
-  maxTokens: 4000,
+  maxTokens: 16384,
   limits: DEFAULT_LIMITS,
 };
 

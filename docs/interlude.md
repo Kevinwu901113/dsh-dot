@@ -108,7 +108,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `advanceEveryMinutes` | `180` | 独立生活推进的间隔；`0` 关闭 |
 | `activeHours` | `08:00-23:00` | 推进和主动联系只在这个时段 |
 | `maxRoundsPerDay` | `12` | 每天幕间上限 |
-| `maxTokens` | `1400` | 每轮输出上限 |
+| `maxTokens` | `16384` | 每轮输出上限 |
 | `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
 | `play` | `false` | 允许她在手机 App 上做小动作（点赞 / 评论 / 关注） |
 | `playApps` | `{}` | 可以玩的 App：`{ 小黑盒: com.max.xiaoheihe }`（标签 → 包名） |
