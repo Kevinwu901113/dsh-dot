@@ -35,6 +35,7 @@
     "./dot": "./src/dot/core.js",
     "./package.json": "./package.json",
     "./interlude": "./src/interlude/core.js",
+    "./memory": "./src/memory/memory.js",
     "./phone": "./src/phone/phone.js",
     "./qq": "./src/qq/qq.js"
   },

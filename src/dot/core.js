@@ -414,12 +414,17 @@ export function apply(ctx, config = {}) {
         audit('owner-message', { session: id, count: fromOwner.length, whileBusy });
       }
       if (!items.length) return;
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: notificationText(items, { whileBusy }) }], source: PHONE_NOTIFICATION_SOURCE }));
+      // The people in these messages, as she remembers them (dsh-dot/memory).
+      const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
+      const text = `${notificationText(items, { whileBusy })}${cards ? `\n（你记得的人：\n${cards}）` : ''}`;
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: PHONE_NOTIFICATION_SOURCE }));
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
+  let frozen = 0; let frozenQueue = []; // while her conversation is being handed over (dsh-dot/memory)
   const send = (id, items) => {
     if (!items.length) return;
+    if (frozen && id === lastSession) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
     // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
     if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items]); audit('notification-held', { count: items.length, why: 'turn running', errand: isErrand(id) }); return; }
     deliverTracked(items, false, id);
@@ -435,7 +440,11 @@ export function apply(ctx, config = {}) {
     send(e, errands);
   };
   const releaseHeld = (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
+  const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat' };
   const wake = (n) => {
+    // Who this is, when it is a person in a chat app: their card gets the real event (dsh-dot/memory).
+    if (!n.from && conversationPlatform[n.pkg] && conversationTitle(n.title)) n = { ...n, from: `${conversationPlatform[n.pkg]}:name:${conversationTitle(n.title)}`, name: conversationTitle(n.title) };
+    if (n.from) ctx.get('dotMemory')?.touch?.({ id: n.from, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
     if (!n.fromOwner && cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
@@ -446,6 +455,7 @@ export function apply(ctx, config = {}) {
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
+    from: `qq:${m.userId}`, name: m.who, kind: m.kind,
   })) ?? (() => {}), 'dsh-dot: qq messages'));
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
@@ -458,6 +468,7 @@ export function apply(ctx, config = {}) {
     // The phone is one device: not while her conversation is running a turn (she may be using it).
     if (!every || !phone()?.isReady || !lastSession || turns.has(lastSession)) return;
     if (errandId && turns.has(errandId)) return;
+    if (frozen) return;
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
     if (Date.now() - lastWakeAt < every) return;
     const controller = ctx.get('sessionController');
@@ -486,10 +497,15 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now',
-      input: { hint: '[test | check]' },
+      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers',
+      input: { hint: '[test | check | memory [now|handoff] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
+        // /dot memory … and /dot people … belong to dsh-dot/memory.
+        if (/^(memory|people)\b/.test(arg)) {
+          const mem = ctx.get('dotMemory');
+          return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
+        }
         const t = await im.target();
         let test = '';
         if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
@@ -516,6 +532,19 @@ export function apply(ctx, config = {}) {
     errand: ensureErrand,
     isErrand,
     busy: (id) => turns.has(id),
+    isIm: (id) => imSessions.has(id),
+    /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */
+    freeze() {
+      frozen++;
+      let done = false;
+      return () => {
+        if (done) return; done = true;
+        frozen = Math.max(0, frozen - 1);
+        if (frozen || !frozenQueue.length) return;
+        const items = frozenQueue; frozenQueue = [];
+        deliverTracked(items, true, lastSession);
+      };
+    },
   });
 
   logger.info(`dot ready — home ${home}`);

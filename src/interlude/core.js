@@ -257,7 +257,7 @@ export function lengthBlockFor(model = '') {
 }
 
 /** The round's prompt: HDSI's lite-tier assembly. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [] }) {
+export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], memories = [] }) {
   const isDeepseek = /deepseek/i.test(String(model));
   const isGlm = /glm/i.test(String(model));
   const phaseText = phase === 'follow-up' ? HDSI.PHASE_FOLLOW_UP : phase === 'intent' ? HDSI.PHASE_INTENT_DUE : HDSI.PHASE_ADVANCE;
@@ -310,6 +310,8 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     ],
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
     webContext,
+    // What she knows to be true (dsh-dot/memory): established past, like recentScript.
+    memories,
     currentEvent: { type: 'none' },
     output: 'one JSON object: script, continuity, overlay, intents, browserIntents, playIntents, contact',
   };
@@ -663,6 +665,7 @@ export function apply(ctx, config = {}) {
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
         play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps: Object.keys(cfg.playApps), playActions: cfg.playActions,
+        memories: ctx.get('dotMemory')?.forInterlude?.() ?? [],
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };

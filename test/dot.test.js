@@ -355,3 +355,31 @@ test('phone check goes to the errand session', async () => {
   assert.match(followups[0].m.content[0].text, /^\[拿起手机\]/);
   stop(h);
 });
+
+test('with memory: the people in a QQ message are touched and their card rides along; deliveries wait during a handoff', async () => {
+  const h = harness();
+  const followups = [], touched = [];
+  let onMessage;
+  const controller = { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) };
+  const dotMemory = { touch: (e) => touched.push(e), cardsFor: (items) => (items.some((n) => n.from === 'qq:42') ? '阿满（qq:42）：聊过' : '') };
+  const services = { sessionController: controller, dotMemory, dshQq: { connected: true, onMessage: (fn) => { onMessage = fn; return () => {}; } } };
+  h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
+  h.ctx.provide = (n, v) => { services[n] = v; };
+  apply(h.ctx, h.config);
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  onMessage({ kind: 'group', userId: '42', groupId: '9', who: '阿满', text: '有人吗', at: new Date().toISOString() });
+  await wait(40);
+  assert.deepEqual(touched[0], { id: 'qq:42', name: '阿满', tier: 'talked', kind: 'group' });
+  assert.match(followups[0].m.content[0].text, /群 9 · 阿满：有人吗[\s\S]*你记得的人：\n阿满（qq:42）：聊过/);
+  const release = services.dshDot.freeze();
+  onMessage({ kind: 'group', userId: '42', groupId: '9', who: '阿满', text: '还在吗', at: new Date().toISOString() });
+  await wait(40);
+  assert.equal(followups.length, 1, 'held while frozen');
+  services.dshDot.setSession('s-new');
+  release();
+  await wait(40);
+  assert.equal(followups.length, 2);
+  assert.equal(followups[1].id, 's-new', 'released into the new session');
+  stop(h);
+});

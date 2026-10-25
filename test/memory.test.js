@@ -1,0 +1,167 @@
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import {
+  bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
+} from '../src/memory/store.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine } from '../src/memory/memory.js';
+
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+
+test('banks: Hermes add / replace / remove under a character budget', () => {
+  let r = bankOp([], { action: 'add', content: '他在广州上班，做后端' }, 40);
+  assert.ok(r.ok); let bank = r.entries;
+  assert.equal(bankOp(bank, { action: 'add', content: '他在广州上班，做后端' }, 40).note, 'already there');
+  assert.match(bankOp(bank, { action: 'add', content: '一'.repeat(40) }, 40).error, /over the limit/);
+  r = bankOp(bank, { action: 'replace', oldText: '广州', content: '他在深圳上班，做后端' }, 40); assert.ok(r.ok); bank = r.entries;
+  assert.deepEqual(bank, ['他在深圳上班，做后端']);
+  assert.match(bankOp(bank, { action: 'remove', oldText: '北京' }, 40).error, /no entry/);
+  assert.deepEqual(bankOp(bank, { action: 'remove', oldText: '深圳' }, 40).entries, []);
+  assert.match(bankOp([], { action: 'add', content: '我会记住这个' }, 40).error, /meta/);
+  assert.equal(rejectReason('嗯'), 'too-short');
+});
+
+test('people: counts by code, facts about others wait until said again or approved; seen = impression only', () => {
+  const m = emptyMemory();
+  touchPerson(m.people, { id: 'qq:42', name: '阿满', tier: 'talked', kind: 'dm' });
+  touchPerson(m.people, { id: 'qq:42', name: '满满', tier: 'talked', kind: 'dm' });
+  touchPerson(m.people, { id: 'xiaoheihe:name:暮看云', name: '暮看云', tier: 'seen', kind: 'like' });
+  assert.equal(m.people['qq:42'].counts.dm, 2);
+  assert.deepEqual(m.people['qq:42'].names, ['满满', '阿满']);
+  let r = updatePerson(m, { id: 'qq:42', impression: '话少，但回得很认真', facts: ['他养了一只叫团子的猫'] });
+  assert.deepEqual(r, { applied: 1, pending: 1 });
+  assert.deepEqual(m.people['qq:42'].facts, []);
+  r = updatePerson(m, { name: '阿满', facts: ['他养了只猫，叫团子'] });
+  assert.equal(r.applied, 1, 'said a second time: kept');
+  assert.equal(m.pending.length, 0);
+  updatePerson(m, { id: 'qq:42', facts: ['他下个月搬去杭州'] });
+  assert.ok(approvePending(m, m.pending[0].id).ok);
+  assert.deepEqual(m.people['qq:42'].facts, ['他养了只猫，叫团子', '他下个月搬去杭州']);
+  updatePerson(m, { id: 'xiaoheihe:name:暮看云', impression: '写长帖分析 DSH 插件', facts: ['住在杭州'] });
+  assert.deepEqual(m.people['xiaoheihe:name:暮看云'].facts, [], 'seen: no facts');
+  assert.match(renderPerson(m.people['xiaoheihe:name:暮看云']), /只在帖子里打过交道；点赞 1 次/);
+  assert.match(renderPerson(m.people['qq:42']), /满满（qq:42，也叫 阿满）：聊过；私聊 2 次[\s\S]*印象：话少[\s\S]*- 他下个月搬去杭州/);
+});
+
+test('fragments: refs grow when said again; aging; standing render is byte-stable', () => {
+  const m = emptyMemory();
+  assert.equal(observeFragment(m, { text: '他说下周六要搬家，搬去光谷那边', tag: 2, kind: 'plan', gen: 1 }).action, 'new');
+  assert.equal(observeFragment(m, { text: '他说下周六要搬家，搬去光谷那边', tag: 1, gen: 1 }).action, 'dup');
+  assert.equal(m.fragments[0].refs, 2); assert.equal(m.fragments[0].importance, 3);
+  observeFragment(m, { text: '今天聊了天气，很一般没什么', tag: 0, gen: 1 });
+  assert.equal(observeFragment(m, { text: '坏 tag', tag: 7, gen: 1 }).action, 'dropped');
+  const a = renderStanding(m), b = renderStanding(m);
+  assert.equal(a, b);
+  assert.match(a, /最近的事[\s\S]*下周六要搬家[\s\S]*聊了天气/);
+  ageFragments(m, 15, 5);
+  assert.equal(m.fragments.length, 1, 'the unimportant one-off is gone after enough generations');
+  assert.ok(jaccard('参考文献还没弄', '还差参考文献') > 0);
+  assert.equal(search([{ text: '他下周六搬家' }, { text: '猫叫团子' }], '搬家')[0].text, '他下周六搬家');
+});
+
+test('extraction: banks, people (new seen ones from apps), fragments; loose JSON', () => {
+  const m = emptyMemory();
+  touchPerson(m.people, { id: 'qq:42', name: '阿满', tier: 'talked' });
+  const out = parseLooseJson('好的：```json\n' + JSON.stringify({
+    owner: [{ action: 'add', content: '他讨厌被叫全名' }],
+    self: [{ action: 'add', content: '学会了在小黑盒里看攻略帖' }],
+    people: [{ id: 'qq:42', impression: '爱发猫图' }, { platform: 'xiaoheihe', name: '暮看云', tier: 'seen', impression: '写长帖的' }, { name: '不认识的人' }],
+    fragments: [{ text: '10-25 下午他说晚上要加班到十点', kind: 'event', tag: 1 }],
+  }) + '\n```');
+  const r = applyExtraction(m, out);
+  assert.deepEqual([r.owner, r.self, r.fragments], [1, 1, 1]);
+  assert.deepEqual(m.owner, ['他讨厌被叫全名']);
+  assert.equal(m.people['qq:42'].impression, '爱发猫图');
+  assert.equal(m.people['xiaoheihe:name:暮看云'].tier, 'seen');
+  assert.equal(Object.keys(m.people).length, 2, 'a name with no platform and no card is not invented');
+  assert.match(renderHandoff({ now: '在回他消息', promises: ['晚上帮他查天气'] }, [{ at: 0, who: 'owner', text: '在吗' }, { at: 0, who: 'her', to: 'owner', text: '在' }], 2), /第 2 段[\s\S]*你此刻：在回他消息[\s\S]*晚上帮他查天气[\s\S]*他：在吗[\s\S]*我：在/);
+  assert.match(transcriptLine({ at: 0, who: 'her', to: 'user:9', text: 'hi' }), /我（发给 user:9）：hi/);
+});
+
+function harness({ llmReply = '{}' } = {}) {
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
+  const listeners = [], contexts = [], tools = {}, effects = [], injected = [], archived = [], audit = [];
+  let session = 's1'; let tokens = 1000; let frozen = 0, released = 0;
+  const agents = new Map();
+  const agentFor = (id) => agents.get(id) ?? agents.set(id, { session: { id }, inject: (m) => injected.push({ id, m }) }).get(id);
+  const services = {
+    dshDot: { session: () => session, setSession: (id) => { session = id; }, isErrand: (id) => id === 'errand', isIm: () => false, freeze: () => { frozen++; return () => { released++; }; } },
+    sessionController: { create: async () => ({ sessionId: 's2' }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) },
+    workspaceRegistry: { archiveSession: async (id) => { archived.push(id); } },
+    agents: { get: (id) => agentFor(id) },
+    tokenMeter: { measure: () => ({ totalTokens: tokens }) },
+    dshQq: { owner: '7' },
+    dshComputer: { audit: (e) => audit.push(e) },
+  };
+  const calls = [];
+  const ctx = {
+    logger: () => ({ info() {}, warn() {}, error() {} }),
+    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
+    effect(fn) { effects.push(fn()); },
+    get: (n) => services[n],
+    provide(n, v) { services[n] = v; },
+    inject(deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: (t) => { tools[t.name] = t; return () => {}; } }, effect: (f) => f() }); },
+    llm: { stream: (opts) => { calls.push(opts); return (async function* () { yield { type: 'text-delta', text: llmReply }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'deepseek-v4-flash' }) },
+  };
+  const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
+  return { ctx, home, services, contexts, tools, injected, archived, audit, calls, emit, effects, get session() { return session; }, set tokens(n) { tokens = n; }, get frozen() { return [frozen, released]; } };
+}
+const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
+
+test('transcript: what he said, what she really sent over QQ, phone and errand notes; the errand is not her conversation', async () => {
+  const h = harness();
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'tool/call', { name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬去哪<sep/>要帮忙吗' }) });
+  h.emit('s1', 'assistant/message', msg('回了'));
+  h.emit('s1', 'turn/end', {});
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'errand-note' }, content: [{ type: 'text', text: '[刚才拿起手机看了一眼] 小黑盒有人回复我\n（这是你自己刚做过的事…）' }] }, { surfaceOp: 'append' });
+  h.emit('errand', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '不该记' }] }, { surfaceOp: 'append' });
+  await wait(10);
+  const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.who, l.text]), [['owner', '下周六我搬家'], ['her', '搬去哪 / 要帮忙吗'], ['note', '[刚才拿起手机看了一眼] 小黑盒有人回复我']]);
+  const mem = h.services.dotMemory;
+  assert.equal(mem.status().people, 1, 'sending to the owner touched his card');
+  // standing context: empty until there is something
+  assert.equal(h.contexts[0].text({ agent: { session: { id: 's1', header: { cwd: h.home } } } }), '');
+  const found = await h.tools.recall.execute({ query: '搬家' });
+  assert.match(found.found, /原话：[\s\S]*他：下周六我搬家/);
+});
+
+test('consolidation and handoff: memory written, old session archived before the new one, handoff note injected, deliveries frozen', async () => {
+  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家，搬去光谷' }], fragments: [{ text: '他问她要不要帮忙搬家前先说好时间', kind: 'plan', tag: 2 }], handoff: { now: '刚聊完搬家', promises: ['周五提醒他打包'] } });
+  const h = harness({ llmReply: reply });
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('搬去哪'));
+  h.tokens = 150000;
+  h.emit('s1', 'turn/end', {});
+  await wait(50);
+  assert.deepEqual(h.archived, ['s1']);
+  assert.equal(h.session, 's2');
+  assert.deepEqual(h.frozen, [1, 1]);
+  assert.equal(h.injected.length, 1);
+  assert.equal(h.injected[0].id, 's2');
+  assert.match(h.injected[0].m.content[0].text, /第 2 段[\s\S]*刚聊完搬家[\s\S]*周五提醒他打包[\s\S]*他：下周六我搬家[\s\S]*我：搬去哪/);
+  assert.match(h.calls[0].messages[0].content[0].text, /=== 这段时间的记录 ===[\s\S]*他：下周六我搬家[\s\S]*这次要写 handoff/);
+  const ctxText = h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } });
+  assert.match(ctxText, /关于他\n- 他下周六搬家，搬去光谷[\s\S]*最近的事[\s\S]*帮忙搬家/);
+  assert.ok(existsSync(join(h.home, 'memory', 'memory.md')));
+  assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
+});
+
+test('people cards for the people who wake her; owner excluded', () => {
+  const h = harness();
+  apply(h.ctx, { home: h.home });
+  const mem = h.services.dotMemory;
+  mem.touch({ id: 'qq:42', name: '阿满', tier: 'talked', kind: 'group' });
+  mem.touch({ id: 'qq:7', name: '宽', tier: 'owner', kind: 'dm' });
+  assert.match(mem.cardsFor([{ from: 'qq:42' }, { from: 'qq:42' }, { from: 'qq:7' }]), /^阿满（qq:42）：聊过；群里说话 1 次/);
+  assert.ok(!mem.cardsFor([{ from: 'qq:7' }]));
+});

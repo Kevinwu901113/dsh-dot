@@ -30,13 +30,14 @@ History: `dsh-computer` (v0.1–0.5) and `dsh-interlude` were separate plugins; 
 
 dsh-dot 让 dsh 里住进一个**在自己手机上过日子的角色**。她有自己的安卓手机（插件自己装、自己开）、自己的账号、自己的作息：你们不聊天的时候她也在过日子——把发生的事写下来、拿起手机去看她好奇的东西、偶尔有个真实的理由找你说句话。你是她 QQ / 微信 / 飞书里的一个联系人（dsh-im 负责通道）。想让她也能干活——shell、脚本、桌面浏览器、定时任务——再给她那台可选的电脑。
 
-### 一、组成：一个插件、五个组件
+### 一、组成：一个插件、六个组件
 
 | 组件 | 是什么 | 依赖 |
 |---|---|---|
 | **`dsh-dot/phone`** 她的手机 | Android 模拟器。插件自己从 Google 仓库下载模拟器、platform-tools 和一个系统镜像（约 2 GB，先要你接受 SDK 许可），自己写 AVD（不需要 Java / Android Studio），开机、保活，以 `mcp__phone__*` 暴露给模型（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）。模拟器窗口就是实时画面；App 和登录态在 AVD 里，重启不丢。详见 [docs/phone.md](docs/phone.md) | 硬件虚拟化：Apple silicon / Intel Mac，Linux 要 KVM，Windows 要 WHPX |
 | **`dsh-dot/interlude`** 幕间 | 按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：Canon（人设，HDSI 分享码导入）作为系统提示的一段；两次对话之间的生活——剧本、连续性、打算；想看什么就拿手机（或电脑浏览器）去看，只读、无审批；可选的主动联系。详见 [docs/interlude.md](docs/interlude.md) | — |
 | **`dsh-dot/qq`** 她电脑上的 QQ | [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11）跑在她的电脑 VM 里，和手机上的 QQ 同一个账号；消息到的瞬间叫醒她，她用 `qq_send` 秒回；dot 的提醒和她的主动联系也走这里，官方机器人退为后备。详见 [docs/qq.md](docs/qq.md) | 电脑组件 |
+| **`dsh-dot/memory`** 她记得的 | 关于你的画像和她自己的笔记（按 Hermes 的做法，有字数上限，她自己能改），她在各个 App 里遇到的人（每人一张卡：互动次数由代码根据真实事件记，印象和事由模型写；只在帖子里互动过的人只记次数和一句印象；关于别人的事先进待核实区），发生过的事（按 dsh-whale-inurqq：碎片带重要度、被说起几次、会老化）。她的对话到 15 万 token 就交班换一个新会话，远早于 dsh 自己在 80% 窗口时的压缩。详见 [docs/memory.md](docs/memory.md) | — |
 | **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
 | **`dsh-dot/computer`**（可选）她的电脑 | 自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志。干活时的隔离边界。`DSH_DOT_COMPUTER=off` 关掉。详见 [docs/computer.md](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker |
 
@@ -66,6 +67,7 @@ open -a "DeepSeek Harness"
 - 你们聊天：dsh 自己跑对话，dsh-im 接 IM；她的人设（Canon）和工作规则是系统提示里的两段，不需要 `AGENTS.md`。
 - 聊天安静下来 `idleMinutes` 后、或每 `advanceEveryMinutes` 一次（只在 `activeHours` 内）、或某个打算到了时间：**幕间一轮**——一次模型调用，她写下这段时间过的日子、更新连续性快照、记下打算，顺便说她想去看点什么（`browserIntents`）。
 - **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__phone__*` / `mcp__vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
+- **跑腿会话**：拿起手机、App 通知、幕间的「去看」和「玩」都在她的另一个会话「dot · 跑腿」里跑，截图和屏幕元素不进你们的对话；跑腿有结果时，只在她的对话里留一句「[刚才拿起手机看了一眼] …」（不叫醒她，下一轮她就知道）。跑腿会话超过 6 万 token 自动换新。QQ / 微信的消息和你的话照常直接叫醒她的对话。
 - **拿起手机**：手机没响她也会隔一阵拿起来看一眼（`phoneCheckEveryMinutes`，默认 30，只在 `notifyHours` 内、最近没被叫醒过时）：有没回的消息就回，App 里有新动态就看，没事 `DOT_SILENT` 回桌面。`/dot check` 立刻来一次。
 - **手机响了**：任何 App 的新通知（QQ 消息、小黑盒的更新、以后她自己装的任何 App）都会叫醒她：`[手机通知] QQ · 宽：在吗`，她自己去 App 里回，或者不理。按 App 静音：`/phone notify mute <包名>`。
 - **玩**（`play: true`，默认关）：幕间里她想"给那篇点个赞 / 评论一句 / 关注他"，就变成一条 `[想玩会儿手机]`，她用手机去做；每天有上限，发帖 / 私信 / 花钱不在允许的动作里。守则是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给 agent 定的：参与 > 创造，真有话说才发。
@@ -77,9 +79,10 @@ open -a "DeepSeek Harness"
 | | |
 |---|---|
 | `~/dot/interlude/` | 人设 `canon.json`、剧本 `script.md`、连续性 `state.json`、打算 `intents.json`、看到的东西 `web-context.jsonl`、每轮原始回复 `calls.jsonl` |
+| `~/dot/memory/` | `memory.md`（给你看的：关于你、她的笔记、认识的人、待核实、碎片）、`memory.json`、真实发生过的对话 `transcript.jsonl`、交班记录 `handoffs.jsonl`、每次整理的原始回复 `calls.jsonl` |
 | `~/.dsh/phone/` | 模拟器、platform-tools、系统镜像、AVD（`avd/dot.avd/`）；`~/.dsh/dsh-phone.log` 日志、`dsh-phone-audit.jsonl` 审计、`dsh-phone.json` 设置 |
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
-| `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test]` | 三个组件的状态和操作 |
+| `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|handoff]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |
 
 dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（默认 `08:00-23:00`，夜里手机不响）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 

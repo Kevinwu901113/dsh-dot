@@ -83,6 +83,14 @@
       config:
         # dot's home: its working files live here and sessions started here are dot's.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
+    # 6b. What she remembers (after Hermes and dsh-whale-inurqq): you, her own notes, the people she
+    #     meets in her apps, what happened. Her conversation is handed over to a fresh session past
+    #     handoffTokens (long before dsh's own compaction at 80% of the window). Files: <home>/memory/.
+    - id: dot-memory
+      name: 'dsh-dot/memory'
+      config:
+        home: !!js "process.env.DSH_DOT_HOME ?? ''"
+        # handoffTokens: 150000
     # 7. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
       name: 'dsh-dot/interlude'
