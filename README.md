@@ -68,7 +68,7 @@ open -a "DeepSeek Harness"
 - 聊天安静下来 `idleMinutes` 后、或每 `advanceEveryMinutes` 一次（只在 `activeHours` 内）、或某个打算到了时间：**幕间一轮**——一次模型调用，她写下这段时间过的日子、更新连续性快照、记下打算，顺便说她想去看点什么（`browserIntents`）。
 - **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__phone__*` / `mcp__vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
 - **跑腿会话**：拿起手机、App 通知、幕间的「去看」和「玩」都在她的另一个会话「dot · 跑腿」里跑，截图和屏幕元素不进你们的对话；跑腿有结果时，只在她的对话里留一句「[刚才拿起手机看了一眼] …」（不叫醒她，下一轮她就知道）。跑腿会话超过 6 万 token 自动换新。QQ / 微信的消息和你的话照常直接叫醒她的对话。
-- **拿起手机**：手机没响她也会隔一阵拿起来看一眼（`phoneCheckEveryMinutes`，默认 30，只在 `notifyHours` 内、最近没被叫醒过时）：有没回的消息就回，App 里有新动态就看，没事 `DOT_SILENT` 回桌面。`/dot check` 立刻来一次。
+- **拿起手机**：手机没响她也会隔一阵拿起来看一眼（`phoneCheckEveryMinutes`，默认 30，最近没被叫醒过时）：有没回的消息就回，App 里有新动态就看，没事 `DOT_SILENT` 回桌面。`/dot check` 立刻来一次。
 - **手机响了**：任何 App 的新通知（QQ 消息、小黑盒的更新、以后她自己装的任何 App）都会叫醒她：`[手机通知] QQ · 宽：在吗`，她自己去 App 里回，或者不理。按 App 静音：`/phone notify mute <包名>`。
 - **玩**（`play: true`，默认关）：幕间里她想"给那篇点个赞 / 评论一句 / 关注他"，就变成一条 `[想玩会儿手机]`，她用手机去做；每天有上限，发帖 / 私信 / 花钱不在允许的动作里。守则是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给 agent 定的：参与 > 创造，真有话说才发。
 - **找你**：`speak: true` 时，幕间里 `contact` 过四道闸（活跃时段、意愿值、每日上限、有投递目标）才通过 dsh-im 发出去。
@@ -84,7 +84,7 @@ open -a "DeepSeek Harness"
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
 | `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|handoff]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |
 
-dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（默认 `08:00-23:00`，夜里手机不响）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
+dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（可选的静音时段，默认不设：任何时候来通知都叫醒她）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 
 ### 六、原则
 

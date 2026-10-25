@@ -106,8 +106,8 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
-  phoneCheckEveryMinutes: 30, // inside notifyHours, if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
-  notifyHours: '08:00-23:00', // outside it the phone stays silent (she sleeps); '' = always
+  phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
+  notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
   // Her errand session: phone checks, app notifications, interlude observations and plays run here,
   // so screenshots and element dumps never enter the conversation she has with you. Only the
   // conclusion of an errand reaches her conversation, as context for her next turn there.
