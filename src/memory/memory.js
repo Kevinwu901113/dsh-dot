@@ -117,6 +117,32 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
   return report;
 }
 
+/**
+ * Transcript lines from a session's raw event log (sessionQuery.readSession): used once, to give
+ * memory the conversation that happened before memory was installed.
+ */
+export function transcriptFromEvents(events, session) {
+  const out = [];
+  for (const e of events ?? []) {
+    const at = Number(e?.time) || 0;
+    if (e?.type === 'user/message') {
+      const src = e.data?.source ?? {};
+      const text = contentText(e.data?.content);
+      if (src.kind === 'user') out.push({ at, session, who: 'owner', text });
+      else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') out.push({ at, session, who: 'phone', text: text.split('\n（')[0] });
+    } else if (e?.type === 'tool/call' && e.data?.name === 'qq_send') {
+      let args = {};
+      try { args = JSON.parse(e.data.arguments ?? '{}'); } catch (error) { void error; }
+      const text = String(args.text ?? '').replace(/<sep\s*\/>/gi, ' / ');
+      if (text) out.push({ at, session, who: 'her', to: String(args.to ?? ''), text });
+    } else if (e?.type === 'assistant/message' && !e.data?.interrupted) {
+      const text = contentText(e.data?.message?.content);
+      if (text.trim() && !isSilent(text) && text.length <= 600) out.push({ at, session, who: 'her', text });
+    }
+  }
+  return out.filter((l) => String(l.text ?? '').trim()).map((l) => ({ ...l, text: clip(String(l.text).trim(), 2000) }));
+}
+
 /** The note a new session opens with after a handoff. */
 export function renderHandoff(h, tail, gen) {
   const lines = [`【交接 · 第 ${gen} 段】这是你自己上一段对话留下的交接，不是谁的新消息；接着往下过就行，别回应它，也别提"交接"。`];
@@ -176,6 +202,33 @@ export function apply(ctx, config = {}) {
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
 
+  // First run: memory starts after a conversation may already be long. Read that conversation's log
+  // once so the first consolidation (and the first handoff) has it.
+  let backfilling = null;
+  function backfill() {
+    if (backfilling) return backfilling;
+    backfilling = (async () => {
+      if (lines.length || memory.consolidations || memory.backfilled) return 0;
+      const id = dot()?.session?.();
+      const sq = ctx.get('sessionQuery');
+      if (!id || typeof sq?.readSession !== 'function') { backfilling = null; return 0; }
+      try {
+        const { events } = await sq.readSession(id);
+        const old = transcriptFromEvents(events, id).slice(-400);
+        if (!old.length) return 0;
+        lines = [...old, ...lines];
+        writeFileSync(files.transcript, `${[...lines].map((l) => JSON.stringify(l)).join('\n')}\n`);
+        memory.backfilled = { session: id, lines: old.length, at: Date.now() };
+        save();
+        audit('backfilled', { session: id, lines: old.length });
+        logger.info(`backfilled ${old.length} line(s) from ${id}`);
+        return old.length;
+      } catch (err) { logger.warn(`backfill failed: ${err.message}`); backfilling = null; return 0; }
+    })();
+    return backfilling;
+  }
+  ctx.effect(() => { const t = setTimeout(() => { void backfill(); }, 15000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: backfill');
+
   // ── her conversation, as it happens ──
   const isConversation = (id, cwd) => {
     const d = dot();
@@ -229,6 +282,7 @@ export function apply(ctx, config = {}) {
   async function consolidate({ withHandoff = false, reason = 'lines' } = {}) {
     if (consolidating) return consolidating;
     consolidating = (async () => {
+      await backfill();
       const fresh = sinceCursor();
       if (!fresh.length && !withHandoff) return { skipped: 'nothing new' };
       const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
@@ -288,6 +342,7 @@ export function apply(ctx, config = {}) {
     if (!d || typeof controller?.create !== 'function') return { skipped: 'no dot or session controller' };
     if (d.isIm?.(fromId)) return { skipped: 'IM bot session (its bot owns the binding)' };
     handingOff = true;
+    await backfill();
     const release = d.freeze?.() ?? (() => {});
     const t0 = Date.now();
     try {

@@ -165,3 +165,21 @@ test('people cards for the people who wake her; owner excluded', () => {
   assert.match(mem.cardsFor([{ from: 'qq:42' }, { from: 'qq:42' }, { from: 'qq:7' }]), /^阿满（qq:42）：聊过；群里说话 1 次/);
   assert.ok(!mem.cardsFor([{ from: 'qq:7' }]));
 });
+
+test('backfill: the conversation from before memory was installed is read once from the session log', async () => {
+  const { transcriptFromEvents } = await import('../src/memory/memory.js');
+  const events = [
+    { type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '我下周搬家' }] } },
+    { type: 'tool/call', time: 2, data: { name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬哪' }) } },
+    { type: 'assistant/message', time: 3, data: { message: { content: [{ type: 'text', text: 'DOT_SILENT' }] } } },
+    { type: 'user/message', time: 4, data: { source: { kind: 'dsh-dot', form: 'phone-check' }, content: [{ type: 'text', text: '[拿起手机]' }] } },
+  ];
+  assert.deepEqual(transcriptFromEvents(events, 's1').map((l) => [l.who, l.text]), [['owner', '我下周搬家'], ['her', '搬哪']]);
+  const h = harness({ llmReply: JSON.stringify({ owner: [{ action: 'add', content: '他下周搬家' }] }) });
+  h.services.sessionQuery = { readSession: async () => ({ events }) };
+  apply(h.ctx, { home: h.home });
+  const r = await h.services.dotMemory.consolidate({ reason: 'manual' });
+  assert.ok(r.ok);
+  assert.match(h.calls[0].messages[0].content[0].text, /他：我下周搬家[\s\S]*我：搬哪/);
+  assert.equal(h.services.dotMemory.status().owner, 1);
+});
