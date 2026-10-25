@@ -19,7 +19,7 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
-  observeFragment, personId, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments,
+  observeFragment, personId, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
 } from './store.js';
 
 export const name = 'dot-memory';
@@ -74,7 +74,8 @@ export const EXTRACT_RULES = `你在帮她整理记忆。上面是她这段时�
 - fragments：这段时间发生的具体的事，每条 60 字以内，保留时间、人名、数字、地点。tag：0=知道就行；1=影响接下来怎么说话（他今天心情、正在做的事、刚纠正过的说法）；2=不记住就会出错（他的计划和截止、她答应过的事、他明确的要求）。和已有碎片说的是同一件事就给 mergeWith（填已有 id），拿不准就新增。
 - confirm：待核实清单里，这段记录明确又证实了一次的条目，填它们的 id。
 - handoff：只有要求时才写，否则给 null。
-- 没有可写的就给空数组。寒暄、语气词、系统和工具的事一律不记。`;
+- 没有可写的就给空数组。寒暄、语气词、系统和工具的事一律不记。
+- 密码、验证码、手机号、银行卡号、各种 token 和密钥一律不记，哪一栏都不行（写了也会被丢掉）；只记"她有这个账号"这种事实。`;
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
 export function parseLooseJson(raw) {
@@ -123,6 +124,7 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
  */
 export function transcriptFromEvents(events, session) {
   const out = [];
+  const qqTurns = new Set((events ?? []).filter((e) => e?.type === 'tool/call' && e.data?.name === 'qq_send').map((e) => e.data?.turn));
   for (const e of events ?? []) {
     const at = Number(e?.time) || 0;
     if (e?.type === 'user/message') {
@@ -135,7 +137,7 @@ export function transcriptFromEvents(events, session) {
       try { args = JSON.parse(e.data.arguments ?? '{}'); } catch (error) { void error; }
       const text = String(args.text ?? '').replace(/<sep\s*\/>/gi, ' / ');
       if (text) out.push({ at, session, who: 'her', to: String(args.to ?? ''), text });
-    } else if (e?.type === 'assistant/message' && !e.data?.interrupted) {
+    } else if (e?.type === 'assistant/message' && !e.data?.interrupted && !qqTurns.has(e.data?.turn)) {
       const text = contentText(e.data?.message?.content);
       if (text.trim() && !isSilent(text) && text.length <= 600) out.push({ at, session, who: 'her', text });
     }
@@ -151,7 +153,7 @@ export function renderHandoff(h, tail, gen) {
   list('手上还没做完的', h?.inFlight);
   list('你答应过的', h?.promises);
   list('还没问清、或他还没回的', h?.openQuestions);
-  if (tail.length) { lines.push('· 上一段最后几句（原文）：'); for (const l of tail) lines.push(`  ${transcriptLine(l)}`); }
+  if (tail.length) { lines.push('· 上一段最后几句（原文）：'); for (const l of tail) lines.push(`  ${clip(transcriptLine(l).replace(/\s*\n+\s*/g, ' / '), 240)}`); }
   return lines.join('\n');
 }
 
@@ -280,6 +282,8 @@ export function apply(ctx, config = {}) {
   // ── consolidation ──
   let consolidating = null;
   async function consolidate({ withHandoff = false, reason = 'lines' } = {}) {
+    // A handoff needs its own run (it writes the handoff); it waits for one already going.
+    if (consolidating && withHandoff) { try { await consolidating; } catch (error) { void error; } }
     if (consolidating) return consolidating;
     consolidating = (async () => {
       await backfill();
@@ -289,9 +293,12 @@ export function apply(ctx, config = {}) {
       if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
       let text = fresh.map(transcriptLine).join('\n');
       if (text.length > cfg.inputChars) text = `…${text.slice(-cfg.inputChars)}`;
+      // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
+      const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.tier}`).join('\n');
       const frags = [...memory.fragments].sort(compareFragments).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
       const prompt = [
+        ...(recent ? ['=== 更早一点的对话（已经整理过，只用来写 handoff，别重复记）===', clip(recent, 12000), ''] : []),
         '=== 这段时间的记录 ===', text || '（这段时间没有新记录）', '',
         '=== 已有：关于他 ===', memory.owner.map((e) => `- ${e}`).join('\n') || '（空）',
         '=== 已有：她自己记下的 ===', memory.self.map((e) => `- ${e}`).join('\n') || '（空）',
@@ -438,7 +445,7 @@ export function apply(ctx, config = {}) {
       async execute({ query }) {
         const people = search(Object.values(memory.people).map((p) => ({ text: `${p.names.join(' ')} ${p.impression} ${p.facts.join(' ')}`, p })), query, 3).map((x) => renderPerson(x.p));
         const frags = search(memory.fragments, query, 5).map((f) => `- ${f.text}`);
-        const said = search(lines, query, 8).map(transcriptLine);
+        const said = search(lines.filter((l) => rejectReason(l.text) !== 'secret'), query, 8).map(transcriptLine);
         const found = [people.length ? `认识的人：\n${people.join('\n')}` : '', frags.length ? `记得的事：\n${frags.join('\n')}` : '', said.length ? `原话：\n${said.join('\n')}` : ''].filter(Boolean).join('\n\n');
         return { found: found || '没翻到。' };
       },

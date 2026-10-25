@@ -183,3 +183,12 @@ test('backfill: the conversation from before memory was installed is read once f
   assert.match(h.calls[0].messages[0].content[0].text, /他：我下周搬家[\s\S]*我：搬哪/);
   assert.equal(h.services.dotMemory.status().owner, 1);
 });
+
+test('credentials never enter memory', () => {
+  for (const t of ['手机 QQ 号 1234567890 / 密码 Example99', '给了手机号 13800000000 和验证码 4321', 'api key 是 sk-xxx', '卡号 6222020200112233445']) assert.equal(rejectReason(t), 'secret', t);
+  assert.equal(rejectReason('他的小黑盒玩家号 21873448'), '');
+  const m = emptyMemory();
+  const r = applyExtraction(m, { self: [{ action: 'add', content: 'QQ 密码是 abc123，记住' }], fragments: [{ text: '他给了验证码 4321，登录成功了', tag: 1 }] });
+  assert.equal(m.self.length + m.fragments.length, 0);
+  assert.match(r.errors[0], /secret/);
+});

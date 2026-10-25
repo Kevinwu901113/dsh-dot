@@ -69,9 +69,13 @@ function fnv1a(text) {
 const META = /(系统提示|提示词|system prompt|token|上下文|DOT_SILENT|调用了|工具调用|交接记录|作为(一个)?AI|语言模型|我会记住|已记录|记忆库)/i;
 const VACUOUS = /^(他|她|对方|用户)?(说)?(无所谓|随便|没什么|还行|一般|不知道|嗯|哦|好的?)[。.!！]?$/;
 
+// Credentials never enter memory: memory is shown to every turn, and her logins are hers to type, not to recite.
+const SECRET = /(密码|口令|验证码|校验码|password|passwd|passcode|api[ _-]?key|token|secret|私钥|助记词)|(?<!\d)1[3-9]\d{9}(?!\d)|(?<!\d)\d{16,19}(?!\d)/i;
+
 /** Why a remembered line should not be kept, or '' when it is fine. */
 export function rejectReason(text) {
   const t = String(text ?? '').trim();
+  if (SECRET.test(t)) return 'secret';
   if (normText(t).length < 4) return 'too-short';
   if (META.test(t)) return 'meta';
   if (VACUOUS.test(t)) return 'vacuous';
