@@ -7,7 +7,7 @@ import {
   bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson,
 } from '../src/memory/store.js';
-import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine } from '../src/memory/memory.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk } from '../src/memory/memory.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -225,9 +225,23 @@ test('backfill: the conversation from before memory was installed is read once f
 test('passwords and keys never enter memory; phone numbers and verification codes do', () => {
   for (const t of ['手机 QQ 号 1234567890 / 密码 Example99', 'api key 是 sk-xxx', 'GitHub token ghp_xxx']) assert.equal(rejectReason(t), 'secret', t);
   for (const t of ['他的手机号 13800000000', '他给了验证码 4321，登录成功了', '他的小黑盒玩家号 21873448']) assert.equal(rejectReason(t), '', t);
+  // His work is about agents: talk of tokens, context windows and prompts is ordinary — not a secret, not plumbing.
+  for (const t of ['他在做 dsh 插件，担心长上下文和 token 消耗', '他说提示词要少写找补的话', '他的记忆模块交班阈值定在 15 万 token']) assert.equal(rejectReason(t), '', t);
+  for (const t of ['他的 access token 是 abc', 'bot token 换了', '密钥在 .env 里是 xyz', 'ghp_abcdefgh12345']) assert.equal(rejectReason(t), 'secret', t);
+  assert.equal(rejectReason('这轮我调用了 phone 工具看了一眼'), 'meta');
   const m = emptyMemory();
   const r = applyExtraction(m, { self: [{ action: 'add', content: 'QQ 密码是 abc123，记住' }], fragments: [{ text: '他给了验证码 4321，登录成功了', tag: 1 }] });
   assert.equal(m.self.length, 0);
   assert.equal(m.fragments.length, 1);
   assert.match(r.errors[0], /secret/);
+});
+
+test('a backlog is consolidated oldest-first in chunks; the cursor never jumps past unread lines', () => {
+  const fresh = Array.from({ length: 50 }, (_, i) => ({ at: 1000 + i, who: 'owner', text: `第 ${i} 句，` + 'x'.repeat(100) }));
+  const one = takeChunk(fresh, 1000);
+  assert.ok(one.length >= 1 && one.length < 50);
+  assert.equal(one[0].at, 1000, 'oldest first');
+  assert.ok(one.map(transcriptLine).join('\n').length <= 1000);
+  assert.equal(takeChunk(fresh, 10).length, 1, 'always at least one line, however long');
+  assert.equal(takeChunk(fresh, 1e9).length, 50);
 });

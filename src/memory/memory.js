@@ -56,7 +56,22 @@ export function transcriptLine(l) {
   return `[${stamp(l.at)}] ${who}${to}：${l.text}`;
 }
 
-export const EXTRACT_RULES = `你在帮她整理记忆。上面是她这段时间真实发生的事（"他"是她的人；"我"是她自己真正发出去的话；[手机] 是手机通知；[我刚做的] 是她自己在手机上做过的事）。只根据这些记录，不要猜，不要补。
+/**
+ * The oldest transcript lines whose rendered text fits in `maxChars` (always at least one), so a
+ * backlog is consolidated in order and the cursor never jumps past unread lines.
+ */
+export function takeChunk(fresh, maxChars) {
+  const out = [];
+  let used = 0;
+  for (const l of fresh) {
+    const n = transcriptLine(l).length + 1;
+    if (out.length && used + n > maxChars) break;
+    out.push(l); used += n;
+  }
+  return out;
+}
+
+export const EXTRACT_RULES =`你在帮她整理记忆。上面是她这段时间真实发生的事（"他"是她的人；"我"是她自己真正发出去的话；[手机] 是手机通知；[我刚做的] 是她自己在手机上做过的事）。只根据这些记录，不要猜，不要补。
 
 只输出一个 JSON 对象，不要代码围栏，不要解释：
 {
@@ -289,6 +304,9 @@ export function apply(ctx, config = {}) {
   });
 
   // ── consolidation ──
+  // A backlog larger than one call reads (consolidations that failed, a long backfill) is consolidated
+  // oldest-first in chunks: the cursor only ever moves past lines the model has actually read, so
+  // nothing is skipped. The handoff, when asked for, is written with the last chunk.
   let consolidating = null;
   async function consolidate({ withHandoff = false, reason = 'lines' } = {}) {
     // A handoff needs its own run (it writes the handoff); it waits for one already going.
@@ -296,12 +314,24 @@ export function apply(ctx, config = {}) {
     if (consolidating) return consolidating;
     consolidating = (async () => {
       await backfill();
-      const fresh = sinceCursor();
-      if (!fresh.length && !withHandoff) return { skipped: 'nothing new' };
+      let result = { skipped: 'nothing new' };
+      for (let round = 0; round < 20; round++) {
+        const all = sinceCursor();
+        if (!all.length && !withHandoff) return round ? result : { skipped: 'nothing new' };
+        const fresh = takeChunk(all, cfg.inputChars);
+        const last = fresh.length === all.length;
+        result = await consolidateOnce(fresh, { withHandoff: withHandoff && last, reason: round ? `${reason}+${round}` : reason });
+        if (!result.ok || last) return result;
+      }
+      return result;
+    })();
+    try { return await consolidating; } finally { consolidating = null; }
+  }
+  async function consolidateOnce(fresh, { withHandoff, reason }) {
+    {
       const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
       if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
-      let text = fresh.map(transcriptLine).join('\n');
-      if (text.length > cfg.inputChars) text = `…${text.slice(-cfg.inputChars)}`;
+      const text = fresh.map(transcriptLine).join('\n');
       // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
@@ -339,8 +369,7 @@ export function apply(ctx, config = {}) {
       audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
       logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, people ${report.people} (+${report.pending} pending), fragments ${report.fragments}`);
       return { ok: true, report, handoff: out.handoff ?? null };
-    })();
-    try { return await consolidating; } finally { consolidating = null; }
+    }
   }
 
   // ── handoff ──

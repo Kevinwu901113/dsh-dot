@@ -66,12 +66,16 @@ function fnv1a(text) {
 
 // ── quality gate (after molly-qq-whale's memory gate, the rules that matter here) ──────────────
 
-const META = /(系统提示|提示词|system prompt|token|上下文|DOT_SILENT|调用了|工具调用|交接记录|作为(一个)?AI|语言模型|我会记住|已记录|记忆库)/i;
+// Lines about the plumbing (her silence marker, tool calls, handoff notes, "as an AI") are not
+// memories. "token", "上下文", "提示词", "系统提示" are NOT in this list: the owner's own work is
+// about agents and context windows, and a fact about him that mentions them is still a fact.
+const META = /(DOT_SILENT|调用了.{0,12}工具|工具调用|交接记录|作为(一个)?AI|语言模型|我会记住|已记录|记忆库)/i;
 const VACUOUS = /^(他|她|对方|用户)?(说)?(无所谓|随便|没什么|还行|一般|不知道|嗯|哦|好的?)[。.!！]?$/;
 
 // Passwords and keys never enter memory: memory is shown to every turn. (Phone numbers and one-time
-// verification codes are ordinary facts and stay.)
-const SECRET = /(密码|口令|password|passwd|passcode|api[ _-]?key|access[ _-]?key|secret[ _-]?key|token|私钥|助记词|seed phrase)/i;
+// verification codes are ordinary facts and stay.) "token" alone is not a secret — a sentence about
+// token usage is ordinary talk; a secret token is one named as a credential, or one that looks like one.
+const SECRET = /(密码|口令|密钥|令牌|password|passwd|passcode|api[ _-]?key|(access|secret|private|app|client)[ _-]?(key|secret)|(access|refresh|bearer|auth|session|github|gitlab|bot|api|personal access)[ _-]?token|私钥|助记词|seed phrase|\b(sk|ghp|gho|ghu|ghs|glpat|xox[abpr]|AKIA)[-_][A-Za-z0-9_-]{6,})/i;
 
 /** Why a remembered line should not be kept, or '' when it is fine. */
 export function rejectReason(text) {
