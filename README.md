@@ -70,7 +70,7 @@ open -a "DeepSeek Harness"
 - **跑腿会话**：拿起手机、App 通知、幕间的「去看」和「玩」都在她的另一个会话「dot · 跑腿」里跑，截图和屏幕元素不进你们的对话；跑腿有结果时，只在她的对话里留一句「[刚才拿起手机看了一眼] …」（不叫醒她，下一轮她就知道）。跑腿会话超过 6 万 token 自动换新。QQ / 微信的消息和你的话照常直接叫醒她的对话。
 - **拿起手机**：手机没响她也会隔一阵拿起来看一眼（`phoneCheckEveryMinutes`，默认 30，最近没被叫醒过时）：有没回的消息就回，App 里有新动态就看，没事 `DOT_SILENT` 回桌面。`/dot check` 立刻来一次。
 - **手机响了**：任何 App 的新通知（QQ 消息、小黑盒的更新、以后她自己装的任何 App）都会叫醒她：`[手机通知] QQ · 宽：在吗`，她自己去 App 里回，或者不理。按 App 静音：`/phone notify mute <包名>`。
-- **玩**（`play: true`，默认关）：幕间里她想"给那篇点个赞 / 评论一句 / 关注他"，就变成一条 `[想玩会儿手机]`，她用手机去做；每天有上限，发帖 / 私信 / 花钱不在允许的动作里。守则是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给 agent 定的：参与 > 创造，真有话说才发。
+- **玩**（默认开，`DSH_DOT_PLAY=off` 关）：幕间里她想"给那篇点个赞 / 评论一句 / 关注他"，就变成一条 `[想玩会儿手机]`，她用手机去做——只在她自己装了的 App 里。玩多少不是配额，是她自己的习惯（记忆 self 栏里她自己记下的）；发帖 / 私信 / 花钱不在允许的动作里。守则是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给 agent 定的：参与 > 创造，真有话说才发。
 - **找你**：`speak: true` 时，幕间里 `contact` 过四道闸（活跃时段、意愿值、每日上限、有投递目标）才通过 dsh-im 发出去。
 - **干活**（装了电脑时）：你说"每天早上看看 X 有没有更新"，她建定时任务；到点在电脑里查，有新内容推到 IM，没有就 `DOT_SILENT`；危险操作弹审批卡，附实时画面链接。
 
@@ -78,8 +78,8 @@ open -a "DeepSeek Harness"
 
 | | |
 |---|---|
-| `~/dot/interlude/` | 人设 `canon.json`、剧本 `script.md`、连续性 `state.json`、打算 `intents.json`、看到的东西 `web-context.jsonl`、每轮原始回复 `calls.jsonl` |
-| `~/dot/memory/` | `memory.md`（给你看的：关于你、她的笔记、认识的人、待核实、碎片）、`memory.json`、真实发生过的对话 `transcript.jsonl`、交班记录 `handoffs.jsonl`、每次整理的原始回复 `calls.jsonl` |
+| `~/dot/interlude/` | 人设 `canon.json`、剧本 `script.md`、连续性 `state.json`、打算 `intents.json`、看到的东西 `web-context.jsonl`、每轮原始回复和 token 用量 `calls.jsonl` |
+| `~/dot/memory/` | `memory.md`（给你看的：关于你、她的笔记、认识的人、待核实、碎片）、`diary.md`（她每天 23:30 写的日记）、`memory.json`、真实发生过的对话 `transcript.jsonl`、交班记录 `handoffs.jsonl`、每次整理的原始回复 `calls.jsonl` |
 | `~/.dsh/phone/` | 模拟器、platform-tools、系统镜像、AVD（`avd/dot.avd/`）；`~/.dsh/dsh-phone.log` 日志、`dsh-phone-audit.jsonl` 审计、`dsh-phone.json` 设置 |
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
 | `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|handoff]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |

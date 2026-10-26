@@ -6,16 +6,26 @@ import { join } from 'node:path';
 import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE } from '../src/interlude/core.js';
 
 function fakeStream(text) {
+  // A reply starting with "TOOL:" is streamed as an `interval` tool call (arguments in deltas), as dsh-llm does.
+  const tool = text.startsWith('TOOL:') ? text.slice(5) : null;
   return (async function* () {
+    if (tool !== null) {
+      yield { type: 'block-start', index: 0, blockType: 'tool-call' };
+      for (const part of tool.match(/[\s\S]{1,7}/g) ?? []) yield { type: 'tool-call-delta', index: 0, id: 'c1', name: 'interval', argumentsDelta: part };
+      yield { type: 'usage', usage: { inputTokens: 1000, outputTokens: 50, cacheReadTokens: 200 } };
+      yield { type: 'finish', reason: { kind: 'tool-calls' } };
+      return;
+    }
     yield { type: 'block-start', index: 0, blockType: 'text' };
     for (const part of text.match(/[\s\S]{1,7}/g) ?? []) yield { type: 'text-delta', index: 0, text: part };
+    yield { type: 'usage', usage: { inputTokens: 500, outputTokens: 20 } };
     yield { type: 'finish', reason: { kind: 'stop' } };
   })();
 }
 
 const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手，话少，不打句号。' };
 
-function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null } = {}) {
+function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null, memory = undefined } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
   const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [];
@@ -30,6 +40,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
       commands: { register: (c) => { cmd = c; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
+      dotMemory: memory,
       web,
       sessionController: vm ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => { followups.push({ id, m }); vm.onFollowup?.(id, m); } } }) } : undefined,
       sessions: vm ? { flush: async () => {} } : undefined,
@@ -61,7 +72,7 @@ const GOOD = `\`\`\`json
 {"script":"他让我看了两次提交，第二次没变化，我按静默规则没出声。之后我把 dsh-computer 那个锁的问题记在了便签上。","continuity":{"current":"整理便签","recent":["晚点看看锁的修复有没有合进去"],"salient":["盯 dsh-dot 的提交"]},"overlay":[],"intents":[{"at":"${soon}","kind":"reminder","text":"看看锁的修复合进去没有","willingness":0.7}],"contact":null}
 \`\`\``;
 
-test('parseReply normalises intents, overlay, contact; rejects past intents and garbage', () => {
+test('parseReply normalises intents, contact; rejects past intents and garbage', () => {
   const p = parseReply(GOOD);
   assert.equal(p.state.current, '整理便签');
   assert.equal(p.intents.length, 1);
@@ -80,11 +91,11 @@ test('inHours and describeNow', () => {
 });
 
 test('renderContext: empty before the first round; restart and near intents shown after', () => {
-  assert.equal(renderContext({ state: null, overlay: '', entries: [], intents: [], cursor: 0 }), '');
-  const t = renderContext({ state: { mood: 'ok', now: 'x', next: 'y', threads: ['a'] }, overlay: '- 2026-10-1 喜欢上早起', entries: ['e1'], intents: [{ at: soon, text: '提醒他' }], cursor: Date.now() - 90 * 60000, restarted: true });
+  assert.equal(renderContext({ state: null, entries: [], intents: [], cursor: 0 }), '');
+  const t = renderContext({ state: { mood: 'ok', now: 'x', next: 'y', threads: ['a'] }, entries: ['e1'], intents: [{ at: soon, text: '提醒他' }], cursor: Date.now() - 90 * 60000, restarted: true });
   assert.match(t, /"continuitySnapshotAgeMinutes": 90/);
   assert.match(t, /"hostRestartedSinceSnapshot": true/);
-  assert.match(t, /"settingOverlay": "- 2026-10-1 喜欢上早起"/);
+  assert.doesNotMatch(t, /settingOverlay/, 'slow change lives in memory\'s self bank now, not an overlay');
   assert.match(t, /"upcomingPlans"[\s\S]*提醒他/);
   assert.match(t, /"current": "x"/);
   assert.ok(t.length <= 2400);
@@ -122,13 +133,35 @@ test('follow-up round: writes script, state, intents; later acts in home see the
   h.stop();
 });
 
-test('advance round runs without any conversation and says so to the model', async () => {
-  const h = harness({ reply: GOOD.replace('"overlay":[]', '"overlay":["开始习惯在下午整理便签"]') });
+test('advance round runs without any conversation and says so to the model; the fields arrive as an `interval` tool call', async () => {
+  const h = harness({ reply: `TOOL:${GOOD.replace(/```(json)?/g, '').trim()}` });
   const r = await h.cmd().handler({ rawInput: 'advance' });
   assert.match(r.text, /ran:/);
   assert.match(h.calls[0].system, /CURRENT PHASE: INDEPENDENT LIFE ADVANCE/);
+  assert.match(h.calls[0].system, /ONE call of the `interval` tool/);
+  assert.equal(h.calls[0].tools[0].name, 'interval');
+  assert.deepEqual(h.calls[0].tools[0].parameters.required, ['script', 'continuity', 'intents', 'browserIntents', 'playIntents', 'contact']);
   assert.match(h.calls[0].messages[0].content[0].text, /"currentEvent": \{\s*"type": "none"/);
-  assert.match(readFileSync(join(h.home, 'interlude', 'overlay.md'), 'utf8'), /开始习惯在下午整理便签/);
+  assert.equal(h.calls.length, 1, 'a tool call needs no refresh');
+  const state = JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8'));
+  assert.equal(state.current, '整理便签');
+  const call = JSON.parse(readFileSync(join(h.home, 'interlude', 'calls.jsonl'), 'utf8').trim().split('\n')[0]);
+  assert.equal(call.viaTool, true);
+  assert.deepEqual(call.usage, { in: 1000, out: 50, cached: 200 });
+  const meta = JSON.parse(readFileSync(join(h.home, 'interlude', 'meta.json'), 'utf8'));
+  assert.equal(meta.dayTokensIn, 1200); assert.equal(meta.dayTokensOut, 50);
+  const st = await h.cmd().handler({ rawInput: '' });
+  assert.match(st.text, /today 1200 in \/ 50 out tokens/);
+  h.stop();
+});
+
+test('her life: the self bank reaches the interlude as herLife with its own contract line', async () => {
+  const h = harness({ reply: GOOD, memory: { forInterlude: () => ['关于他：他叫宽'], herLife: () => ['学会了在小黑盒翻角色卡帖', '每天晚上刷一会儿小黑盒'] } });
+  await h.cmd().handler({ rawInput: 'advance' });
+  const user = h.calls[0].messages[0].content[0].text;
+  assert.match(user, /"herLife": \[\s*"学会了在小黑盒翻角色卡帖"/);
+  assert.match(user, /"memories": \[\s*"关于他：他叫宽"/);
+  assert.match(h.calls[0].system, /HER OWN LIFE: herLife is what she really does these days/);
   h.stop();
 });
 

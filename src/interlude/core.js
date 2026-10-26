@@ -12,7 +12,7 @@
 //   advance    — independent life progression at a regular interval, even with no conversation
 //   intent     — a stored intent (reminder, promised reply, contact check) came due
 // Continuity layers kept from HDSI: Canon (the identity file), recent script (script.md), the
-// continuity snapshot (state.json), Overlay (overlay.md, slow non-destructive change), intents
+// continuity snapshot (state.json), intents; slow change in who she is lives in dsh-dot/memory's self bank
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -69,7 +69,7 @@ export const defaults = {
   // rulebook (heartbeat.md / rules.md), translated — not written here.
   play: false,
   playActions: ['like', 'comment', 'follow'],
-  maxPlaysPerDay: 3,
+  maxPlaysPerDay: 0,          // 0 = no cap: how often she plays is her own habit (her self notes); a round yields at most one play, so ≤ maxRoundsPerDay
   playApps: {},               // app label → package she may act in ({ 小黑盒: 'com.max.xiaoheihe' }); {} = none
   speak: false,               // allow proactive contact over dsh-im
   maxContactsPerDay: 2,
@@ -234,6 +234,7 @@ export const HDSI = {
 export const DOT = {
   REAL_LEDGER: 'OBSERVED LEDGER: recentScript items owned by "user", "phone" or "character" with a time are real events — they happened on her real phone, her real computer and in her real chats (the phone and the computer in the story are these devices). Weave every one of them into the script at its time, as something she did, saw or was told in her life; a quiet one (she looked and found nothing) can be one clause. The invented life around them may be anything the Canon allows, but it must not contradict them, and it must not invent further phone or computer activity of hers beyond them.',
   CONTACT_MARK: 'MESSAGES TO THE USER: the user is reached only through the contact field. In script, never write a message to the user as already sent: at the moment she sends him something, write the marker <contact/> and nothing else — the host replaces it with what actually went out, or with her deleting it. Messages to the supporting cast are part of the story and may be written out. In continuity, never claim the user ignored, missed or did not answer something unless the observed ledger shows a real message from her that he left unanswered.',
+  HER_LIFE: 'HER OWN LIFE: herLife is what she really does these days and what she has learned, in her own notes — the apps she uses, the things she is working on, the habits she has formed. This interval of her life is built around those: the invented everyday around them fills the gaps and may be anything the Canon allows, but it must not give her a school, a job, a routine or a project that herLife and the Canon do not establish, and it must not contradict them. When herLife is empty, keep the everyday small and concrete rather than inventing a life story.',
   CONTACT_OFF: 'MESSAGES TO THE USER: proactive contact is off in this interval — she does not message the user at all. She may think of him or start to type and stop, but the script must not show any message to him as sent, and continuity must never claim he ignored or failed to answer her.',
 };
 
@@ -257,7 +258,7 @@ export function lengthBlockFor(model = '') {
 }
 
 /** The round's prompt: HDSI's lite-tier assembly. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, overlay, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], memories = [] }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], memories = [], herLife = [] }) {
   const isDeepseek = /deepseek/i.test(String(model));
   const isGlm = /glm/i.test(String(model));
   const phaseText = phase === 'follow-up' ? HDSI.PHASE_FOLLOW_UP : phase === 'intent' ? HDSI.PHASE_INTENT_DUE : HDSI.PHASE_ADVANCE;
@@ -270,13 +271,14 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     phaseText,
     HDSI.LITE_NEVER_INVENT,
     DOT.REAL_LEDGER,
+    herLife.length ? DOT.HER_LIFE : '',
     speak ? DOT.CONTACT_MARK : DOT.CONTACT_OFF,
     HDSI.LITE_OWNERSHIP,
     HDSI.LITE_EVENT_SOURCES,
     browser === 'disabled' ? HDSI.BROWSING_DISABLED : HDSI.BROWSING_DEFERRED,
     HDSI.WEB_CONTEXT,
     speak && phase !== 'follow-up' ? HDSI.AGENCY_SEPARATION : '',
-    play && playApps.length ? `${PLAY_RULES}\n她手机上有这些 App 可以玩：${playApps.join('、')}。一个 playIntent 是她此刻真想做的一件小事，不是任务；大多数轮次为空。` : '',
+    play && playApps.length ? `${PLAY_RULES}\n她手机上有这些 App 可以玩：${playApps.join('、')}。一个 playIntent 是她此刻真想做的一件小事，不是任务。玩多少、什么时候玩，按她自己的习惯来（herLife 里她自己记下的）；没有习惯就是还没养成，随她。` : '',
     isGlm ? HDSI.EXTRA_GLM : '',
     'MAIN NARRATIVE PROMPT (user-configurable):',
     HDSI.MAIN_PROMPT_DEFAULT,
@@ -284,11 +286,12 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     HDSI.DEFAULT_STYLE_PROMPT,
     style?.trim() || 'No additional story-specific style instruction was provided.',
     'FORMAT AND REALITY CONTRACT (fixed by the plugin; do not change it):',
-    // The field list is this plugin's; everything around it is HDSI's.
-    'Return one JSON object with a continuous prose field named script first, then continuity, overlay, intents, browserIntents, playIntents and contact. Do not wrap it in Markdown fences.',
+    // The field list is this plugin's; everything around it is HDSI's. The fields travel as the
+    // arguments of one `interval` tool call, so the provider guarantees their shape; a reply that
+    // is prose only is still accepted (the host fills the other fields from it afterwards).
+    'Write the whole round as ONE call of the `interval` tool: its arguments are script, continuity, intents, browserIntents, playIntents and contact. Do not write the passage as plain text and do not wrap anything in Markdown fences; if you cannot call tools, return the same fields as one bare JSON object.',
     `script: the passage for this interval, Chinese prose, third person${phase === 'seed' ? ', covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]' : ''}. When she sends a message to someone in the story, write its exact words at the sending action (several bubbles separated by <sep/>); a message to the user is the <contact/> marker only.`,
     HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'after writing script, include'),
-    'overlay: ["a stable change formed in this interval: a habit, a view, a shift in a relationship — usually an empty array"].',
     'intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.',
     'browserIntents: [{"mode":"search|visit","query":"...","url":"...","purpose":"why she looks","timing":"deferred"}] or [].',
     play && playApps.length
@@ -302,7 +305,6 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
   const payload = {
     interval: { from: cursor ? describeNow(new Date(cursor)) : null, nowLocal: describeNow(now) },
     continuitySnapshot: state ?? null,
-    settingOverlay: overlay || null,
     recentScript: [
       // readScript() lines are "<header>：<body>"; the header is a time stamp, not prose.
       ...(script ? String(script).split('\n').filter(Boolean).map((line) => { const i = line.indexOf('：'); return i > 0 ? { owner: 'narrator', at: line.slice(0, i).replace(/ · \w[\w-]*$/, ''), content: line.slice(i + 1) } : { owner: 'narrator', content: line }; }) : []),
@@ -312,11 +314,40 @@ export function buildPrompt({ phase, identity, state, overlay, script, digest, c
     webContext,
     // What she knows to be true (dsh-dot/memory): established past, like recentScript.
     memories,
+    // Her own notes (dsh-dot/memory's self bank): what she does these days and what she has learned.
+    herLife,
     currentEvent: { type: 'none' },
-    output: 'one JSON object: script, continuity, overlay, intents, browserIntents, playIntents, contact',
+    output: 'one `interval` tool call: script, continuity, intents, browserIntents, playIntents, contact',
   };
   void digest;
-  return { system, user: JSON.stringify(payload, null, 1) };
+  return { system, user: JSON.stringify(payload, null, 1), tools: [intervalTool({ play: play && playApps.length > 0, playApps, playActions, speak })] };
+}
+
+/** The round's fields as a tool: the provider validates the arguments, so a call is always JSON. */
+export function intervalTool({ play = false, playApps = [], playActions = [], speak = false } = {}) {
+  const str = { type: 'string' };
+  const strs = { type: 'array', items: str };
+  const willingness = { type: 'number', minimum: 0, maximum: 1 };
+  return {
+    name: 'interval',
+    description: 'Write this interval of her life: the passage (script) and the fields the host keeps. Call it exactly once per round.',
+    parameters: {
+      type: 'object',
+      properties: {
+        script: { ...str, description: 'The passage for this interval, Chinese prose, third person.' },
+        continuity: { type: 'object', properties: { current: str, recent: strs, salient: strs }, required: ['current', 'recent', 'salient'] },
+        intents: { type: 'array', items: { type: 'object', properties: { at: { ...str, description: 'ISO-8601, strictly after now' }, kind: { type: 'string', enum: ['reminder', 'reply', 'contact'] }, text: str, willingness }, required: ['at', 'kind', 'text'] } },
+        browserIntents: { type: 'array', items: { type: 'object', properties: { mode: { type: 'string', enum: ['search', 'visit'] }, query: str, url: str, purpose: str }, required: ['mode'] } },
+        playIntents: play
+          ? { type: 'array', maxItems: 1, items: { type: 'object', properties: { app: { type: 'string', enum: playApps }, action: { type: 'string', enum: playActions }, target: str, text: str, why: str, willingness }, required: ['app', 'action', 'target'] } }
+          : { type: 'array', maxItems: 0, items: {} },
+        contact: speak
+          ? { anyOf: [{ type: 'null' }, { type: 'object', properties: { content: str, willingness, reason: str }, required: ['content'] }] }
+          : { type: 'null' },
+      },
+      required: ['script', 'continuity', 'intents', 'browserIntents', 'playIntents', 'contact'],
+    },
+  };
 }
 
 /** Pull the JSON object out of a model reply (fenced or bare) and normalise it. */
@@ -346,7 +377,6 @@ export function parseReply(text, now = Date.now()) {
           recent: [].concat(cont.recent ?? cont.next ?? []).map(str).filter(Boolean).slice(0, 5),
           salient: [].concat(cont.salient ?? cont.threads ?? []).map(str).filter(Boolean).slice(0, 5),
         },
-        overlay: [].concat(o.overlay ?? []).map(str).filter(Boolean).slice(0, 3),
         intents, contact,
         browserIntents: [].concat(o.browserIntents ?? []).map((b) => ({
           mode: b?.mode === 'visit' ? 'visit' : 'search', query: str(b?.query), url: str(b?.url), purpose: str(b?.purpose),
@@ -361,20 +391,19 @@ export function parseReply(text, now = Date.now()) {
   // A reply cut off by the token limit is not JSON any more; keep at least the script.
   const m = /"script"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
   if (m) {
-    try { return { script: JSON.parse(`"${m[1]}"`), state: null, overlay: [], intents: [], contact: null, truncated: true }; } catch (error) { void error; }
+    try { return { script: JSON.parse(`"${m[1]}"`), state: null, intents: [], contact: null, truncated: true }; } catch (error) { void error; }
   }
   return null;
 }
 
 /** Render the context later acts see: HDSI's continuity fields as data, no added prose. */
-export function renderContext({ state, overlay, entries, intents, cursor, restarted, now = Date.now() }) {
+export function renderContext({ state, entries, intents, cursor, restarted, now = Date.now() }) {
   if (!state && !entries.length) return '';
   const upcoming = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text }));
   const payload = {
     continuitySnapshot: state ? { current: state.current ?? state.now ?? state.mood ?? '', recent: state.recent ?? (state.next ? [state.next] : []), salient: state.salient ?? state.threads ?? [] } : null,
     continuitySnapshotAgeMinutes: cursor ? Math.round((now - cursor) / 60000) : null,
     hostRestartedSinceSnapshot: Boolean(restarted),
-    settingOverlay: overlay || null,
     recentScript: entries.map((content) => ({ owner: 'narrator', content })),
     upcomingPlans: upcoming,
   };
@@ -393,20 +422,35 @@ export function readScript(file, n) {
     .map((s) => { const [head, ...body] = s.split('\n'); return `${head.trim()}：${body.join(' ').replace(/\s+/g, ' ').trim()}`; });
 }
 
-/** Collect the model reply text from an llm stream. */
-export async function collectText(stream) {
+/**
+ * Collect a model reply from an llm stream: its text, the arguments of the first tool call (the
+ * `interval` tool carries the round's fields as provider-validated JSON), and the token usage.
+ */
+export async function collectReply(stream) {
   let text = '';
+  const calls = new Map(); // tool-call index → arguments so far
+  let usage = null;
   let finish = null;
   for await (const chunk of stream) {
     if (chunk.type === 'text-delta') text += chunk.text;
-    if (chunk.type === 'finish') finish = chunk.reason;
+    else if (chunk.type === 'tool-call-delta') calls.set(chunk.index, (calls.get(chunk.index) ?? '') + (chunk.argumentsDelta ?? ''));
+    else if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call' && chunk.block.arguments) calls.set(chunk.index, chunk.block.arguments);
+    else if (chunk.type === 'usage') usage = chunk.usage ?? null;
+    else if (chunk.type === 'finish') finish = chunk.reason;
   }
   // FinishReason kinds: stop | tool-calls | max-tokens | aborted | error.
   if (finish && (finish.kind === 'aborted' || finish.kind === 'error')) {
     throw new Error(`interlude model call ended with ${finish.kind}: ${finish.failure?.message ?? finish.failure?.code ?? ''}`);
   }
-  return text;
+  const args = [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v).find(Boolean) ?? '';
+  return { text, args, usage };
 }
+
+/** Collect the model reply text from an llm stream. */
+export async function collectText(stream) { return (await collectReply(stream)).text; }
+
+/** Token usage of one call, as the ledger records it (dsh-llm's TokenUsage, or null when the provider gave none). */
+export const usageOf = (u) => (u ? { in: Number(u.inputTokens ?? 0), out: Number(u.outputTokens ?? 0), cached: Number(u.cacheReadTokens ?? 0) } : null);
 
 /** HDSI storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
 export function renderCanon(canon, { withStyle = false } = {}) {
@@ -447,7 +491,7 @@ export function apply(ctx, config = {}) {
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const files = {
-    script: join(dir, 'script.md'), state: join(dir, 'state.json'), overlay: join(dir, 'overlay.md'),
+    script: join(dir, 'script.md'), state: join(dir, 'state.json'),
     intents: join(dir, 'intents.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
     canon: join(dir, 'canon.json'), web: join(dir, 'web-context.jsonl'),
   };
@@ -466,10 +510,9 @@ export function apply(ctx, config = {}) {
   let intents = readJson(files.intents, []);
   const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
   if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayTokensIn = 0; meta.dayTokensOut = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
-  const readOverlay = () => { try { return readFileSync(files.overlay, 'utf8').trim(); } catch (error) { void error; return ''; } };
 
   // 1. 幕前: watch the acts in <home>.
   const turns = new Map();
@@ -660,31 +703,41 @@ export function apply(ctx, config = {}) {
         i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', content: i.assistant } : null,
       ]).filter(Boolean);
-      const { system, user } = buildPrompt({
-        phase, identity: clip(identity, 6000), state, overlay: readOverlay(), script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
+      const mem = ctx.get('dotMemory');
+      // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
+      const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
+      const playApps = Object.keys(cfg.playApps).filter((label) => !onPhone.length || onPhone.includes(cfg.playApps[label]));
+      const { system, user, tools } = buildPrompt({
+        phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
-        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps: Object.keys(cfg.playApps), playActions: cfg.playActions,
-        memories: ctx.get('dotMemory')?.forInterlude?.() ?? [],
+        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions,
+        memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [],
       });
-      const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, maxTokens: cfg.maxTokens,
+      const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
-      const reply = await collectText(ctx.llm.stream(options));
+      const r1 = await collectReply(ctx.llm.stream(options));
+      const spent = [usageOf(r1.usage)];
+      // The `interval` tool call carries the fields; a bare JSON reply is accepted too.
+      const reply = r1.args || r1.text;
       let parsed = parseReply(reply, now);
-      const script = parsed?.script || reply.trim();
+      const script = parsed?.script || r1.text.trim();
       if (!script) throw new Error('empty script');
-      // Prose without the JSON object (or cut off before it): HDSI's post-commit continuity refresh
-      // as a second, short call over the script just written.
+      // Prose without the fields (the model wrote the passage as text, or was cut off): a second
+      // call over the script just written fills every other field — HDSI's post-commit continuity
+      // refresh, widened so nothing the round should have produced is lost.
       if (!parsed?.state) {
-        const refresh = await collectText(ctx.llm.stream({
-          ...options, maxTokens: 600,
-          system: [HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'the script is already written; return only'),
-            'Also include intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"...","willingness":0.0}] (concrete future possibilities only, else []) and overlay: [] unless a stable change formed. Return one JSON object, no Markdown fences.'].join('\n'),
+        const r2 = await collectReply(ctx.llm.stream({
+          ...options, maxTokens: 2000,
+          system: [HDSI.CONTINUITY_REFRESH.replace('after writing script and transport, include', 'the script is already written; call the `interval` tool once with script set to "-" and'),
+            'Also fill from the script: intents (concrete future possibilities it names, ISO-8601 strictly after now; else []), browserIntents (something she wanted to look up; else []), playIntents (a small social action she wanted to take on her phone; else []), and contact (the <contact/> marker in the script is a message to the user: put its words in contact.content; no marker → null). Do not rewrite the script.'].join('\n'),
           messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
-        })).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return ''; });
+        })).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
+        spent.push(usageOf(r2.usage));
+        const refresh = r2.args || r2.text;
         const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
-        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: `${phase}:refresh`, reply: clip(refresh, 1500) })}\n`); } catch (error) { void error; }
-        if (p2?.state) parsed = { ...(parsed ?? { overlay: [], intents: [], contact: null }), script, state: p2.state, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], overlay: p2.overlay?.length ? p2.overlay : parsed?.overlay ?? [] };
+        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: `${phase}:refresh`, usage: usageOf(r2.usage), reply: clip(refresh, 1500) })}\n`); } catch (error) { void error; }
+        if (p2?.state) parsed = { ...p2, script, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], contact: p2.contact ?? parsed?.contact ?? null };
         audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
       }
       if (phase === 'seed') {
@@ -710,7 +763,6 @@ export function apply(ctx, config = {}) {
       if (parsed && parsed.state) {
         state = { ...parsed.state, updatedAt: new Date(now).toISOString() };
         writeFileSync(files.state, JSON.stringify(state, null, 2));
-        if (parsed.overlay.length) appendFileSync(files.overlay, parsed.overlay.map((o) => `- ${dayOf(new Date(now))} ${o}\n`).join(''));
         if (intent) intents = intents.filter((i) => i.id !== intent.id);
         // An intent round settles the intent that woke it; it does not plant the next one, or the
         // character keeps waking herself all day. New intents come from follow-up and advance rounds.
@@ -718,9 +770,11 @@ export function apply(ctx, config = {}) {
         intents = intents.slice(-20);
         saveIntents();
       }
-      try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date(now).toISOString(), phase, acts: items.length, model: `${sel.provider}/${sel.model}`, reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
+      try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date(now).toISOString(), phase, acts: items.length, model: `${sel.provider}/${sel.model}`, usage: spent[0], viaTool: Boolean(r1.args), reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
       writeFileSync(files.pending, '');
       meta.cursor = now; meta.count++; meta.dayRounds++;
+      // The ledger: tokens this round, added to today's count (/interlude shows it).
+      for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
       if (phase === 'advance') meta.lastAdvance = now;
       saveMeta();
       // HDSI deferred browsing: the character's browserIntent runs now through dsh's web service;
@@ -748,7 +802,7 @@ export function apply(ctx, config = {}) {
     if (!inHours(cfg.activeHours)) return held('outside active hours');
     if (p.willingness < cfg.willingnessThreshold) return held('willingness');
     rollDay();
-    if (meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
+    if (cfg.maxPlaysPerDay > 0 && meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
     if (!ctx.get('dshPhone')?.isReady) return held('phone not ready');
     // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
     const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
@@ -837,7 +891,7 @@ export function apply(ctx, config = {}) {
       order: 905,
       text: (c) => {
         if (!inHome(c)) return '';
-        return renderContext({ state, overlay: readOverlay(), entries: readScript(files.script, cfg.scriptEntriesInPrompt), intents, cursor: meta.cursor, restarted: meta.cursor > 0 && meta.cursor < startedAt });
+        return renderContext({ state, entries: readScript(files.script, cfg.scriptEntriesInPrompt), intents, cursor: meta.cursor, restarted: meta.cursor > 0 && meta.cursor < startedAt });
       },
     });
   });
@@ -870,10 +924,10 @@ export function apply(ctx, config = {}) {
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
           `continuity: ${state?.current || state?.mood || '(none yet)'}`,
-          `script: ${readScript(files.script, 10000).length} entries · overlay: ${readOverlay().split('\n').filter(Boolean).length} lines · intents: ${intents.length}`,
+          `script: ${readScript(files.script, 10000).length} entries · intents: ${intents.length} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
           `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
-          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}/${cfg.maxPlaysPerDay})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
+          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },

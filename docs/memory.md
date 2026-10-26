@@ -28,7 +28,17 @@
 
 ## 整理
 
+每天 `dailyAt`（23:30）固定一次：把这一天新的记录整理掉，并让她写日记。
+
 一次模型调用，读上次整理之后的记录（一次最多 `inputChars` 40000 字；积压更多就从最旧的开始分几次读，游标只走到真正读过的位置，不会跳过），输出画像的增删改、人物、碎片、待核实的确认。触发：新记录满 `consolidateEveryLines`（20）条；或安静 `consolidateIdleMinutes`（30）分钟且有 3 条以上；或交班；或 `/dot memory now`。
+
+## 日记
+
+`~/dot/memory/diary.md`：每天 `dailyAt` 一篇，她自己的口吻、第一人称、40–120 字，素材只许是真实记录（transcript）和她自己记下的东西，不引幕间的虚构。`/dot memory diary` 立刻写一篇。这是给你看的：她这一天过了什么、学了什么。
+
+## 她的生活进幕间
+
+幕间（dsh-dot/interlude）每轮拿到两样：`memories`（关于你的事 + 最要紧的碎片，作为已确立的过去）和 `herLife`（self 栏原文：她现在真实在做的事、会的事、习惯）。幕间的契约要求她这一段的生活围着 `herLife` 展开，虚构只填空隙。self 栏因此也是她"玩多少、什么时候玩"的来源——整理时模型会把她在手机上做什么、多常做写进去。
 
 ## 交班
 
@@ -44,10 +54,10 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 
 ## 文件和命令
 
-- `~/dot/memory/memory.md`：给你看的版本；`memory.json`：数据；`handoffs.jsonl`：每次交班；`calls.jsonl`：每次整理的原始回复。
-- `/dot memory`：状态（第几段、当前 token、距离下次整理还有几条）；`/dot memory now`：立刻整理；`/dot memory handoff`：立刻交班。
+- `~/dot/memory/memory.md`：给你看的版本；`diary.md`：她的日记；`memory.json`：数据；`handoffs.jsonl`：每次交班；`calls.jsonl`：每次整理的原始回复和 token 用量。
+- `/dot memory`：状态（第几段、当前 token、今天整理花了多少 token、距离下次整理还有几条、上次日记）；`/dot memory now`：立刻整理；`/dot memory diary`：立刻整理并写日记；`/dot memory handoff`：立刻交班。
 - `/dot people`：认识的人、待核实、待确认的合并；`approve <p…|m…>` / `drop <p…>`：处理待核实和合并；`merge <a> <b>`：手动合并两张卡；`forget <名字>`：删掉一个人。
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }`
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }`

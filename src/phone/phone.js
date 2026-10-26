@@ -250,6 +250,14 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.ready = new Promise((r) => (markReady = r));
   phone.adbExec = (args, opts) => exec(paths.adb, ['-s', serial, ...args], opts);
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
+  /** Third-party packages on her phone — the apps she installed herself (cached a minute). */
+  let appsCache = { at: 0, pkgs: [] };
+  phone.apps = async () => {
+    if (!phone.isReady) return [];
+    if (Date.now() - appsCache.at < 60000) return appsCache.pkgs;
+    try { appsCache = { at: Date.now(), pkgs: (await phone.shell('pm list packages -3')).split('\n').map((l) => l.replace(/^package:/, '').trim()).filter(Boolean) }; } catch (error) { void error; }
+    return appsCache.pkgs;
+  };
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
   // Notifications: what her phone shows her (see notifications.js). Listeners get posted and

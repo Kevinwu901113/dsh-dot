@@ -36,7 +36,8 @@ export const defaults = {
   agingEveryGens: 5,
   maxFragments: 300,
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
-  inputChars: 40000,            // transcript characters a consolidation reads (newest kept)
+  inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
+  dailyAt: '23:30',             // once a day, after her active hours: consolidate whatever is new and write her diary
   maxTokens: 16384,
   limits: DEFAULT_LIMITS,
 };
@@ -48,6 +49,8 @@ const contentText = (content) => (typeof content === 'string' ? content : (Array
 const isSilent = (t) => /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(String(t ?? ''));
 const stamp = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+/** "2026-10-27 周一" — a day as the diary heads it (local time). */
+export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${'周日周一周二周三周四周五周六'.slice(d.getDay() * 2, d.getDay() * 2 + 2)}`; };
 
 /** One transcript line as the consolidation reads it. */
 export function transcriptLine(l) {
@@ -81,17 +84,19 @@ export const EXTRACT_RULES =`你在帮她整理记忆。上面是她这段时间
   "same": [{"a":"u0003","b":"u0007","why":"为什么认定是同一个人（记录里的证据）"}],
   "fragments": [{"text":"...","kind":"event|plan|promise|preference|fact","tag":0,"mergeWith":null}],
   "confirm": ["这段记录又一次证实了的待核实条目 id"],
-  "handoff": {"now":"她此刻在做什么、什么心情","inFlight":[],"promises":[],"openQuestions":[]}
+  "handoff": {"now":"她此刻在做什么、什么心情","inFlight":[],"promises":[],"openQuestions":[]},
+  "diary": "今天的日记，只有要求时才写，否则 null"
 }
 
 各栏怎么写：
 - owner：关于他、长期有效的事（他是谁、在做什么、喜好、雷点、称呼、长期计划）。一次性的事不进这里，进 fragments。已有的条目要改就 replace（oldText 写原条目里一小段），过时了就 remove。每条一句话。
-- self：她自己长期的东西：学会了什么（装了什么 App、学会怎么用）、形成的习惯、自己的看法。不写她的设定（设定在别处）。
+- self：她自己长期的东西：学会了什么（装了什么 App、学会怎么用）、在做的事、形成的习惯（比如常用哪个 App、多久看一次、喜欢在什么时候做什么）、自己的看法。不写她的设定（设定在别处）。
 - people：除了他以外，这段记录里和她真正打过交道的人，不管在哪个 App。已认识的写 id；新认识的留空 id、写 platform 和 name。互发过消息的 tier=talked；只是看/点赞/评论过对方帖子的 tier=seen（seen 只写 impression，不写 facts）。
 - same：已认识的人里，记录明确显示是同一个人的两张卡（比如同一个人在 QQ 和小黑盒都出现、自己说了另一个号是他）。要有证据才写，拿不准就不写。
 - fragments：这段时间发生的具体的事，每条 60 字以内，保留时间、人名、数字、地点。tag：0=知道就行；1=影响接下来怎么说话（他今天心情、正在做的事、刚纠正过的说法）；2=不记住就会出错（他的计划和截止、她答应过的事、他明确的要求）。和已有碎片说的是同一件事就给 mergeWith（填已有 id），拿不准就新增。
 - confirm：待核实清单里，这段记录明确又证实了一次的条目，填它们的 id。
 - handoff：只有要求时才写，否则给 null。
+- diary：只有要求时才写，否则给 null。用她自己的口吻、第一人称，40 到 120 字，写今天：只写记录里真实发生的事和她自己记下的东西，不编、不抒情、不总结人生；没发生什么就写没发生什么。
 - 没有可写的就给空数组。寒暄、语气词、系统和工具的事一律不记。
 - 密码和 API key / token / 密钥一律不记，哪一栏都不行（写了也会被丢掉）；账号本身、手机号这些可以记。`;
 
@@ -185,7 +190,7 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot/memory');
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'memory');
-  const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl') };
+  const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md') };
   mkdirSync(dir, { recursive: true });
   const dot = () => ctx.get('dshDot');
   const audit = (event, data = {}) => (ctx.get('dshComputer')?.audit ?? ctx.get('dshPhone')?.audit)?.({ kind: 'memory', event, ...data });
@@ -254,6 +259,14 @@ export function apply(ctx, config = {}) {
   }
   ctx.effect(() => { const t = setTimeout(() => { void backfill(); }, 15000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: backfill');
 
+  const dailyDue = () => {
+    if (!/^\d{2}:\d{2}$/.test(String(cfg.dailyAt))) return false;
+    const now = new Date();
+    const today = dayLabel(now).slice(0, 10);
+    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+    return hhmm >= cfg.dailyAt && memory.lastDiary !== today;
+  };
+
   // ── her conversation, as it happens ──
   const isConversation = (id, cwd) => {
     const d = dot();
@@ -308,7 +321,7 @@ export function apply(ctx, config = {}) {
   // oldest-first in chunks: the cursor only ever moves past lines the model has actually read, so
   // nothing is skipped. The handoff, when asked for, is written with the last chunk.
   let consolidating = null;
-  async function consolidate({ withHandoff = false, reason = 'lines' } = {}) {
+  async function consolidate({ withHandoff = false, withDiary = false, reason = 'lines' } = {}) {
     // A handoff needs its own run (it writes the handoff); it waits for one already going.
     if (consolidating && withHandoff) { try { await consolidating; } catch (error) { void error; } }
     if (consolidating) return consolidating;
@@ -317,17 +330,17 @@ export function apply(ctx, config = {}) {
       let result = { skipped: 'nothing new' };
       for (let round = 0; round < 20; round++) {
         const all = sinceCursor();
-        if (!all.length && !withHandoff) return round ? result : { skipped: 'nothing new' };
+        if (!all.length && !withHandoff && !withDiary) return round ? result : { skipped: 'nothing new' };
         const fresh = takeChunk(all, cfg.inputChars);
         const last = fresh.length === all.length;
-        result = await consolidateOnce(fresh, { withHandoff: withHandoff && last, reason: round ? `${reason}+${round}` : reason });
+        result = await consolidateOnce(fresh, { withHandoff: withHandoff && last, withDiary: withDiary && last, reason: round ? `${reason}+${round}` : reason });
         if (!result.ok || last) return result;
       }
       return result;
     })();
     try { return await consolidating; } finally { consolidating = null; }
   }
-  async function consolidateOnce(fresh, { withHandoff, reason }) {
+  async function consolidateOnce(fresh, { withHandoff, reason, withDiary = false }) {
     {
       const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
       if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
@@ -346,12 +359,15 @@ export function apply(ctx, config = {}) {
         '=== 待核实（关于别人的事，说过一次）===', memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n') || '（没有）', '',
         EXTRACT_RULES,
         withHandoff ? '\n这次要写 handoff：她马上换到一段新对话，handoff 让她接得上。' : '\nhandoff 给 null。',
+        withDiary ? `\n这次要写 diary：今天是 ${dayLabel(new Date())}，写今天的日记。` : '\ndiary 给 null。',
       ].join('\n');
       let raw = '';
+      let usage = null;
       try {
         let finish = null;
         for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'dsh-dot-memory' } })] })) {
           if (chunk.type === 'text-delta') raw += chunk.text;
+          if (chunk.type === 'usage') usage = chunk.usage ?? null;
           if (chunk.type === 'finish') finish = chunk.reason;
         }
         if (finish && (finish.kind === 'error' || finish.kind === 'aborted')) throw new Error(`model call ended with ${finish.kind}: ${finish.failure?.message ?? ''}`);
@@ -359,12 +375,19 @@ export function apply(ctx, config = {}) {
         logger.warn(`consolidation failed: ${err.message}`); audit('consolidate-failed', { reason, error: clip(err.message, 200) });
         return { error: err.message };
       }
-      try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, reply: clip(raw, 4000) })}\n`); } catch (error) { void error; }
+      const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
+      if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
+      try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: spent, reply: clip(raw, 4000) })}\n`); } catch (error) { void error; }
       const out = parseLooseJson(raw);
       if (!out) { audit('consolidate-unparsed', { reason }); return { error: 'reply was not JSON' }; }
       const report = applyExtraction(memory, out, { limits: cfg.limits });
       memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
       memory.consolidations++;
+      if (withDiary) {
+        memory.lastDiary = dayLabel(new Date()).slice(0, 10);
+        const entry = String(out.diary ?? '').trim();
+        if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${dayLabel(new Date())}\n${entry}\n\n`); report.diary = true; } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
+      }
       save();
       audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
       logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, people ${report.people} (+${report.pending} pending), fragments ${report.fragments}`);
@@ -431,6 +454,8 @@ export function apply(ctx, config = {}) {
     const timer = setInterval(() => {
       const fresh = sinceCursor();
       if (fresh.length >= 3 && Date.now() - lastLineAt >= cfg.consolidateIdleMinutes * 60000) void consolidate({ reason: 'idle' });
+      // Once a day at dailyAt: whatever is new is consolidated, and she writes her diary.
+      if (dailyDue()) void consolidate({ reason: 'daily', withDiary: true });
     }, 60000);
     timer.unref?.();
     return () => clearInterval(timer);
@@ -506,7 +531,9 @@ export function apply(ctx, config = {}) {
         .filter((p) => p && p.tier !== 'owner' && !seen.has(p.id) && seen.add(p.id)).map((p) => renderPerson(p)).join('\n');
     },
     /** For the interlude: what she knows to be true (memories, in HDSI's payload terms). */
-    forInterlude() { return [...memory.owner.map((e) => `关于他：${e}`), ...memory.self.map((e) => `她自己：${e}`), ...[...memory.fragments].sort(compareFragments).slice(0, 12).map((f) => f.text)]; },
+    forInterlude() { return [...memory.owner.map((e) => `关于他：${e}`), ...[...memory.fragments].sort(compareFragments).slice(0, 12).map((f) => f.text)]; },
+    /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
+    herLife() { return [...memory.self]; },
     consolidate, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, people: Object.keys(memory.people).length, pending: memory.pending.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length }),
     /** `/dot memory …` and `/dot people …` */
     async command(arg) {
@@ -521,13 +548,15 @@ export function apply(ctx, config = {}) {
         return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · pending: ${memory.pending.length} · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : []), ...(memory.pending.length ? ['pending (/dot people approve <id> | drop <id>):', ...memory.pending.slice(-20).map((x) => `  ${x.id} · ${x.person}：${x.text}`)] : [])].join('\n');
       }
       if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
+      if (sub === 'diary') { const r = await consolidate({ reason: 'manual-diary', withDiary: true }); return r.ok ? `consolidated: ${JSON.stringify(r.report)} → ${files.diary}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
       const s = api.status();
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · people ${s.people} (+${s.pending} pending) · fragments ${s.fragments}`,
+      const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · people ${s.people} (+${s.pending} pending) · fragments ${s.fragments} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines}, or ${cfg.consolidateIdleMinutes} min quiet)`,
-        `files: ${files.md}`, '/dot memory now | handoff · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
+        `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
     },
   };
   // Her QQ (dsh-dot/qq): the owner's number makes his card the owner's, and the friend list — the

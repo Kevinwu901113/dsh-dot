@@ -245,3 +245,25 @@ test('a backlog is consolidated oldest-first in chunks; the cursor never jumps p
   assert.equal(takeChunk(fresh, 10).length, 1, 'always at least one line, however long');
   assert.equal(takeChunk(fresh, 1e9).length, 50);
 });
+
+test('daily diary: `/dot memory diary` consolidates with a diary; the entry is her own words, headed by the day; herLife is the self bank', async () => {
+  const reply = JSON.stringify({ self: [{ action: 'add', content: '每天晚上刷一会儿小黑盒，看角色卡帖' }], diary: '今天没什么事。晚上在小黑盒看了几个角色卡帖，有一个写记忆的挺细，记下了。他没来。', handoff: null });
+  const h = harness({ llmReply: reply });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, dailyAt: '23:30' });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('在'));
+  h.emit('s1', 'turn/end', {});
+  await wait(20);
+  const r = await h.services.dotMemory.command('memory diary');
+  assert.match(r, /"diary":true/);
+  assert.match(h.calls[0].messages[0].content[0].text, /这次要写 diary：今天是 \d{4}-\d{2}-\d{2} 周./);
+  const diary = readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8');
+  assert.match(diary, /^## \d{4}-\d{2}-\d{2} 周.\n今天没什么事。/);
+  assert.deepEqual(h.services.dotMemory.herLife(), ['每天晚上刷一会儿小黑盒，看角色卡帖']);
+  assert.ok(!h.services.dotMemory.forInterlude().some((x) => x.startsWith('她自己')), 'self notes travel as herLife, not among memories');
+  const again = await h.services.dotMemory.command('memory diary');
+  assert.match(again, /not run|consolidated/, 'a second diary the same day is not an error');
+  const status = await h.services.dotMemory.command('memory');
+  assert.match(status, /diary \d{4}-\d{2}-\d{2} \(daily at 23:30\)/);
+});

@@ -100,9 +100,14 @@
         # looked at by her — in the app on her phone (phoneApps, host → package) or in her own VM
         # browser (vmSites) — read-only, no approvals. Add the sites she is logged into.
         # browser: auto
-        # phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili, weibo.com: com.sina.weibo }
+        # Her phone's apps she looks things up in (host → package). Only apps she has installed herself are ever used.
+        phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }
         # vmSites: [x.com]
         # vmDailyCap: 2
+        # 玩: small social actions on her own accounts (like / comment / follow). How often is her own
+        # habit (her self notes), not a quota; DSH_DOT_PLAY=off turns it off.
+        play: !!js "process.env.DSH_DOT_PLAY !== 'off'"
+        playApps: { 小黑盒: com.max.xiaoheihe, B站: tv.danmaku.bili }
     # 8. Her QQ on the computer (NapCat in the VM). /qq install once, /qq account <number>, /qq qr to log in.
     - id: dot-qq
       name: 'dsh-dot/qq'

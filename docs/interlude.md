@@ -16,7 +16,7 @@ Three kinds of rounds, after HDSI's phases:
 | `advance` | independent life progression on an interval, even with no conversation (`advanceEveryMinutes`, inside `activeHours`) |
 | `intent` | a stored intent came due (a reminder, a promised reply, a contact check); settles it, plants no new one |
 
-Files, all plain text under `~/dot/interlude/`: `canon.json` (who the character is — HDSI `storyDefaults`, imported from the HDSI preset hub with `/interlude preset <share code>` or set in config; no `AGENTS.md` needed), `script.md` (the life script, append-only), `state.json` (mood / now / next / threads), `overlay.md` (slow, non-destructive change in how it reads itself), `intents.json`, `calls.jsonl` (audit). The Canon is injected as a system-prompt section for sessions in the home directory.
+Files, all plain text under `~/dot/interlude/`: `canon.json` (who the character is — HDSI `storyDefaults`, imported from the HDSI preset hub with `/interlude preset <share code>` or set in config; no `AGENTS.md` needed), `script.md` (the life script, append-only), `state.json` (continuity: current / recent / salient), `intents.json`, `calls.jsonl` (audit). The Canon is injected as a system-prompt section for sessions in the home directory.
 
 ```bash
 dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot
@@ -40,14 +40,13 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 0. **Canon（人设）由插件管理，不用 AGENTS.md**：`/interlude preset <分享码>` 从 HDSI 官方预设站 [typ0.space](https://typ0.space) 拉一份 `storyDefaults`（角色设定、视角、关系、配角、世界、文风、回复规则）存到 `~/dot/interlude/canon.json`，立即作为系统提示的一段注入 `~/dot` 里的每个会话（紧跟 dsh 的 persona 之后，静态，不破坏提示前缀缓存）。也可以在 `cordis.patch.yml` 的 `canon` 配置里直接写。`/interlude canon` 查看当前人设。HDSI 社区分享的任何人设因此都能直接用在 dsh 上。
 1. **看着幕前**：记录 `~/dot` 里每一轮对话的梗概（谁发起的、用户说了什么、它最后答了什么、有没有审批）。定时任务触发的轮次也算。
-2. **幕间一轮**：一次模型调用。模型看到：身份文件（Canon）、当前状态、最近两段剧本、Overlay、待办的打算、这段时间幕前发生了什么、现在是星期几什么时段、距上一次幕间多久。它输出 JSON：
+2. **幕间一轮**：一次模型调用。模型看到：身份文件（Canon）、当前状态、最近两段剧本、她自己的笔记（`herLife`，来自 dsh-dot/memory 的 self 栏：她现在真实在做的事、会的事、习惯——这段生活围着它展开，虚构只填空隙，不发明学业/工作背景）、记忆里的事、待办的打算、这段时间幕前发生了什么、现在是星期几什么时段、距上一次幕间多久。它以**一次 `interval` 工具调用**交出这些字段（参数由 API 保证是 JSON；只写了散文的回复也收，由第二次小调用把其余字段补齐）：
    - `script`：从上次故事光标到现在，它过的日子（≤150 字，第一人称，可以和用户无关）；
    - `state`：`mood` 一句话、`now` 在做什么、`next` 接下来打算、`threads` 挂念的事；
-   - `overlay`：对自己的理解有没有一点慢变化（通常为空）；
    - `intents`：确实要在未来某个时刻处理的事，带时间、类型（提醒 / 答应的回复 / 想联系）和意愿值；
    - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
 3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
-4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、Overlay、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
+4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
 5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。看的方式有两种：
    - **web**：dsh 的 `web` 服务。匿名、只读、便宜、看不见。适合好奇心：搜个新闻、看个公开页。
    - **vm**：她自己的电脑（dsh-computer 的虚拟机浏览器）。带着她的登录态和标签页，实时画面里看得见。适合"她的站"——微博、B 站、小红书、X 这些登录后才像样的地方。实现上是往她最近一个会话里追加一条 `[幕间观察]` 消息，让她用 `mcp__vm__browser_*` 自己去看，最后那段回复就是观察结果；这一轮**不算幕**（不进剧本），也**没有审批**：只读工具（打开、滚动、读文字、截图、标签页）直接放行，其他任何工具——点击、输入、下载、shell——直接拒绝，不弹审批卡。她只能看，不能动。
@@ -65,7 +64,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | Canon / storyDefaults | `canon.json`，同一套字段；可用 HDSI 分享码直接导入 typ0.space 上的预设 |
 | recentScript | `script.md` 最近两段 |
 | continuitySnapshot | `state.json` |
-| Overlay | `overlay.md`，追加式 |
+| Overlay | 不移植：慢变化由 dsh-dot/memory 的 self 栏承担（整理时由模型写，有依据），幕间只读它（`herLife`） |
 | intents | `intents.json`，到期触发 |
 | Agency Window + 意愿 | `speak` / `activeHours` / `willingnessThreshold` / `maxContactsPerDay` |
 | Alter（情绪漂移）、Perspective、长期事实检索、多参与者剧情、对话内的已读/延迟回复 | 没有移植。情绪由模型在幕间里写一句话；要长期记忆另装记忆插件 |
@@ -121,7 +120,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 ### 六、文件
 
-全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`overlay.md`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
+全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
 
 ### 七、原则
 
