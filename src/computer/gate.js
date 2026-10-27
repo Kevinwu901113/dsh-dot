@@ -44,12 +44,14 @@ export function apply(ctx, config = {}) {
   const shell = cfg.shellPatterns.map((p) => new RegExp(p, 'i'));
   const sensitive = cfg.sensitivePatterns.map((p) => new RegExp(p, 'i'));
   // Prefer the reachable-from-anywhere link (IM approvals are read on a phone); keep the local one too.
-  const watch = vm.publicLiveViewUrl
-    ? `\n实时画面 / live view: ${vm.publicLiveViewUrl}\n(本机 / local: ${vm.liveViewUrl})`
-    : `\n实时画面 / live view: ${vm.liveViewUrl}`;
+  // Read at ask time: the live view mounts on dsh's web server after this plugin starts.
+  const watch = () => {
+    const local = vm.liveViewUrl ?? '(starting)';
+    return vm.publicLiveViewUrl ? `\n实时画面 / live view: ${vm.publicLiveViewUrl}\n(本机 / local: ${local})` : `\n实时画面 / live view: ${local}`;
+  };
   const ask = (exec, reason) => {
     audit({ kind: 'approval-asked', tool: exec.name, session: sessionOf(exec), args: clip(exec.arguments, 300), reason });
-    return { kind: 'ask', reason: `${reason}${watch}` };
+    return { kind: 'ask', reason: `${reason}${watch()}` };
   };
 
   ctx.on('tools/pre-execute', async (exec, next) => {

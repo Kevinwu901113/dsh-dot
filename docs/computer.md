@@ -14,7 +14,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 - **Its own browser** (`mcp__vm__browser_*` tools), with logins that persist across restarts.
 - **Live view inside dsh**: a monitor button in the session header opens a Computer tab in the right sidebar. Watch, click, type, or take over for a QR login or CAPTCHA.
 - **Audit log**: every command, VM tool call, approval and folder change is appended to `~/.dsh/dsh-computer-audit.jsonl`.
-- **Phone-friendly live view**: set `publicUrl` (e.g. via `tailscale serve`) and approval messages — including IM approval cards — link to it.
+- **Phone-friendly live view**: the desktop is served on dsh's own web server behind dsh's login (`/dsh-dot/computer/`); the VM gateway port is keyed (`SANDBOX_API_KEY`, generated per machine). Expose dsh itself (e.g. `tailscale serve`), set `publicUrl`, and approval messages — including IM approval cards — link to it.
 - **Approval gates** for risky actions (`sudo`, `rm -rf`, `curl | sh`, `git push`, payment/login/delete clicks), with a link to the live view.
 - **Always there**: the VM keeps running after dsh quits and dsh reconnects to the same machine on next start.
 - **Lightweight**: a bundled [microsandbox](https://github.com/microsandbox/microsandbox) microVM (Hypervisor.framework on Apple silicon, WHP on Windows, KVM on Linux); Intel Macs fall back to Docker.
@@ -88,7 +88,7 @@ cd ~/某个项目 && dsh web
 插件会自动下载镜像（几 GB）并创建虚拟机，这期间 agent 的命令排队等待，不会报错。完成后日志出现：
 
 ```
-computer ready — live view: http://127.0.0.1:18080/vnc/index.html?autoconnect=true&resize=scale
+computer ready — live view: http://127.0.0.1:<dsh 端口>/dsh-dot/computer/vnc/index.html?autoconnect=true&resize=scale&…
 ```
 
 ## 三、共享文件夹
@@ -102,23 +102,21 @@ computer ready — live view: http://127.0.0.1:18080/vnc/index.html?autoconnect=
 
 **在 dsh 界面里**：会话顶部右侧有一个显示器按钮，点一下就在右侧栏打开"虚拟机"标签页，可以直接点击和输入；再点一下收起。也可以在右侧栏的"+"引导页里选"虚拟机"。虚拟机还没就绪时，标签页会显示等待状态并自动重试。
 
-**在浏览器里**：
+**在浏览器里**：打开 dsh 的地址加 `/dsh-dot/computer/`（日志 `computer ready — live view:` 一行有完整链接）。它挂在 dsh 自己的 web server 上，每个请求和 VNC 的 WebSocket 都先过 dsh 的登录态（和手机实时画面、dot 面板同一道门），然后由插件带着网关密钥转给虚拟机。看到的就是 agent 的电脑桌面，可以直接点击、输入。
 
-```
-http://127.0.0.1:18080/vnc/index.html?autoconnect=true&resize=scale
-```
-
-看到的就是 agent 的电脑桌面，可以直接点击、输入。
-
-**在手机上（不在电脑旁时）**：端口只监听本机，不要直接暴露到公网。推荐用 [Tailscale](https://tailscale.com) 把它安全地转发到你自己的设备：
+**在手机上（不在电脑旁时）**：暴露 **dsh 本身**，而不是虚拟机端口。推荐用 [Tailscale](https://tailscale.com)：
 
 ```bash
-tailscale serve --bg --https=443 http://127.0.0.1:18080   # 只在你的 tailnet 内可见
+tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 tailnet 内可见
 ```
 
-然后把得到的地址（如 `https://my-mac.tailnet-xxxx.ts.net`）写进设置文件的 `publicUrl`。之后审批消息（包括转发到 IM 的审批卡片）里的实时画面链接会用这个地址，在手机上点开就能看和接管。
+然后把得到的地址（如 `https://my-mac.tailnet-xxxx.ts.net`）写进设置文件的 `publicUrl`（或 `DSH_COMPUTER_PUBLIC_URL`）。之后审批消息（包括转发到 IM 的审批卡片）里的实时画面链接会用这个地址，在手机上点开、用 dsh 的登录态登录，就能看和接管。
 
-> 风险：虚拟机的 web 服务本身没有鉴权。`tailscale serve` 只对你 tailnet 里的设备开放；不要用 `tailscale funnel`、端口转发或任何公网隧道直接暴露 18080。
+### 网关密钥
+
+虚拟机镜像（AIO sandbox）的网关在本机的 `127.0.0.1:18080` 上同时提供 shell、文件、浏览器 CDP、MCP、noVNC 和网页终端；镜像默认不设密钥时这些全部开放给本机任何进程。插件在第一次启动时生成一把密钥，存在 `~/.dsh/dsh-computer.key`（仅属主可读），创建虚拟机和每次启动镜像服务时作为 `SANDBOX_API_KEY` 交给镜像；插件内部所有调用方（就绪探测、`mcp__vm__*` 的 MCP 客户端、实时画面中继、QQ 桥接）都带着这把钥匙，别的程序没有。已存在的虚拟机会在下次启动时自动补上密钥（microsandbox 重启镜像服务，Docker 重建容器、保留家目录卷）；如果重启后网关仍然不要密钥就放行，dot 面板会亮红色的「电脑网关 无密钥开放」，状态接口里 `gatewayOpen: true`，日志里有 error——那是镜像版本不认 `SANDBOX_API_KEY`，请升级镜像。
+
+想和别的工具共用一把钥匙，在设置文件里写 `apiKey`。
 
 ## 五、配置
 
@@ -136,8 +134,10 @@ tailscale serve --bg --https=443 http://127.0.0.1:18080   # 只在你的 tailnet
 |---|---|---|
 | `mounts` / `DSH_COMPUTER_MOUNTS` | 自动（见第三节） | 固定共享的文件夹；环境变量用 `:` 分隔（Windows 用 `;`） |
 | `memory` / `cpus` | `4G` / `2` | 虚拟机资源上限 |
-| `publicUrl` / `DSH_COMPUTER_PUBLIC_URL` | 空 | 从别的设备访问虚拟机 web 服务的地址（见第四节），用于审批消息和状态接口 |
-| `DSH_COMPUTER_PORT` | `18080` | 虚拟机服务在本机的端口（仅监听 127.0.0.1）；只能用环境变量设置 |
+| `publicUrl` / `DSH_COMPUTER_PUBLIC_URL` | 空 | 你暴露出去的 **dsh 本身**的地址（见第四节），实时画面链接用它，用于审批消息和状态接口；不是虚拟机端口 |
+| `apiKey` | 自动生成 | 虚拟机网关密钥（`SANDBOX_API_KEY`）；空则用 `~/.dsh/dsh-computer.key` 里自动生成的那把 |
+| `mcp` | `true` | 由本组件挂载虚拟机的 `mcp__vm__*` 工具（MCP 客户端带网关密钥）；不要再在 `cordis.patch.yml` 里单独配 dsh-mcp-client 指向 `/mcp` |
+| `DSH_COMPUTER_PORT` | `18080` | 虚拟机网关在本机的端口（仅监听 127.0.0.1，需要密钥）；只能用环境变量设置 |
 | `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |
 | `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 拦危险命令和敏感浏览器动作；`browser` 每个浏览器动作都审批 |
@@ -176,7 +176,7 @@ tail -n 50 ~/.dsh/dsh-computer.log
 ## 八、已知限制
 
 - Mac 休眠时虚拟机暂停；真正 7×24 常驻需要一直开着的机器。
-- 本机端口没有鉴权：`127.0.0.1:18080` 只对本机开放，但本机其他程序都能访问。不要在虚拟机里登录高价值账号。
+- `127.0.0.1:18080` 只对本机开放且需要密钥（见第四节）；但密钥文件对本机当前用户可读，以当前用户身份运行的程序仍可拿到。不要在虚拟机里登录高价值账号。
 - 浏览器登录后约 30–45 秒才把 cookie 写盘，立刻共享新文件夹或重启可能丢失刚完成的登录。
 - 共享文件夹以外的虚拟机文件（如 `/home/gem`），dsh 的文件读写工具看不到，只能通过命令访问。
 - 一个 dsh 配一台虚拟机，还没有“每个会话一台”。
@@ -185,7 +185,7 @@ tail -n 50 ~/.dsh/dsh-computer.log
 
 ## 九、开发：界面部分
 
-界面代码在 `ui/`（虚拟机、手机、dot 三个标签页）。`lib/client.js` 可以用 dsh 官方仓库的 tsdown 预设编译，也可以照 dsh-companion-core 的做法手改（它就是一段可读的 `__ModuleLoader__.load`）；dot 标签页就是手改加上的，`ui/src` 已同步，重新编译结果一致。编译方法：把 `ui/` 放进官方仓库的 `packages/client/dsh-dot-ui/`，执行 `pnpm install --filter "dsh-dot-ui..."`，然后在该目录运行 `npx tsc -p tsconfig.json --noCheck && npx tsdown`，把生成的 `lib/client.js` 复制到本插件的 `lib/`。虚拟机端口固定读 18080；改了 `DSH_COMPUTER_PORT` 时，标签页暂时仍连 18080。
+界面代码在 `ui/`（虚拟机、手机、dot 三个标签页）。`lib/client.js` 可以用 dsh 官方仓库的 tsdown 预设编译，也可以照 dsh-companion-core 的做法手改（它就是一段可读的 `__ModuleLoader__.load`）；dot 标签页就是手改加上的，`ui/src` 已同步，重新编译结果一致。编译方法：把 `ui/` 放进官方仓库的 `packages/client/dsh-dot-ui/`，执行 `pnpm install --filter "dsh-dot-ui..."`，然后在该目录运行 `npx tsc -p tsconfig.json --noCheck && npx tsdown`，把生成的 `lib/client.js` 复制到本插件的 `lib/`。虚拟机标签页走同源的 `/dsh-dot/computer/`，不关心 `DSH_COMPUTER_PORT`。
 
 ## 十、审计日志与状态接口
 

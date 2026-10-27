@@ -41,8 +41,8 @@
         backend: !!js "process.env.DSH_COMPUTER_BACKEND ?? ''"
         port: !!js "Number(process.env.DSH_COMPUTER_PORT ?? 18080)"
         image: !!js "process.env.DSH_COMPUTER_IMAGE ?? ''"
-        # Base URL reaching the VM's web services from elsewhere (e.g. `tailscale serve`), used in approval messages.
-        # The public origin of this dsh (your own exposure); never the VM gateway port itself.
+        # Public origin of this dsh (your own exposure, e.g. `tailscale serve`); the live view is served there
+        # behind dsh's login. Never the VM gateway port: it is keyed and answers only to dsh-dot.
         publicUrl: !!js "process.env.DSH_COMPUTER_PUBLIC_URL ?? ''"
         # Folders shared with the VM at the same path (':' separated; ';' on Windows). Default: each session's workspace, shared on first use (see README).
         mounts: !!js "process.env.DSH_COMPUTER_MOUNTS ? process.env.DSH_COMPUTER_MOUNTS.split(process.platform === 'win32' ? ';' : ':').filter(Boolean) : []"
@@ -54,18 +54,8 @@
       name: '@kevinwu901113/dsh-dot/gate'
       config:
         mode: !!js "process.env.DSH_COMPUTER_GATE ?? 'risky'"
-    # 3. Browser + desktop tools served from inside the VM (tool names: mcp__vm__*).
-    - id: dot-mcp
-      disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
-      name: '@deepseek-ai/dsh-mcp-client'
-      config:
-        serverName: vm
-        transport: streamable-http
-        url: !!js "`http://127.0.0.1:${process.env.DSH_COMPUTER_PORT ?? 18080}/mcp`"
-        toolCallTimeoutMs: 120000
-        # The first boot may spend minutes pulling the image; keep retrying until the VM answers.
-        reconnect:
-          maxAttempts: 1000
+    # 3. Browser + desktop tools served from inside the VM (tool names: mcp__vm__*) are mounted by the
+    #    computer component itself, so the MCP client carries the gateway key (see docs/computer.md).
     # 4. Desktop/Web UI: right-Sidebar "Computer" tab (live view) and a header toggle.
     - id: dot-ui
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"

@@ -82,7 +82,8 @@ export function createMicrosandboxBackend(config, logger) {
     return out.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
   }
 
-  const serviceEnv = config.slim ? { DISABLE_JUPYTER: 'true', DISABLE_CODE_SERVER: 'true', DISABLE_NODEJS_REPL: 'true' } : {};
+  // SANDBOX_API_KEY makes the image's gateway refuse callers without the key (see ../key.js).
+  const serviceEnv = { ...(config.apiKey ? { SANDBOX_API_KEY: config.apiKey } : {}), ...(config.slim ? { DISABLE_JUPYTER: 'true', DISABLE_CODE_SERVER: 'true', DISABLE_NODEJS_REPL: 'true' } : {}) };
   const mountSpec = (m) => `${m}:${guestPath(m)}:uid=1000,gid=1000`;
 
   async function startServices(waitHealthy) {
@@ -96,6 +97,12 @@ export function createMicrosandboxBackend(config, logger) {
       logger.info('starting VM services (/opt/gem/run.sh)');
       await msb(['exec', '-d', '-u', 'root', ...envFlags(serviceEnv), name, '--', '/opt/gem/run.sh']);
     }
+  }
+  /** Stop the image's services and start them again with the current env (used when they run without the key). */
+  async function restartServices(waitHealthy) {
+    await msb(['exec', '-u', 'root', '--no-tty', '--no-stdin', name, '--', 'sh', '-c',
+      'supervisorctl -c /opt/gem/supervisord.conf shutdown >/dev/null 2>&1; i=0; while pgrep -x supervisord >/dev/null && [ $i -lt 30 ]; do i=$((i+1)); sleep 1; done; pkill -x nginx; true']).catch(() => {});
+    await startServices(waitHealthy);
   }
 
   // Snapshots of this computer live in <msb home>/snapshots/<name>/snap_*/ (group = sandbox name).
@@ -153,6 +160,8 @@ export function createMicrosandboxBackend(config, logger) {
     async rootShell(script) {
       return msb(['exec', '-u', 'root', '--no-tty', '--no-stdin', name, '--', '/bin/bash', '-c', script]);
     },
+
+    restartServices,
 
     async ensure({ mounts, port, waitHealthy }) {
       // 1. Host virtualization (Hypervisor.framework / WHP / KVM).

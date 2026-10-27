@@ -9,6 +9,9 @@ import { join, relative, resolve, isAbsolute, sep } from 'node:path';
 import { createMicrosandboxBackend } from './backends/microsandbox.js';
 import { createDockerBackend } from './backends/docker.js';
 import { createAudit } from './audit.js';
+import { computerApiKey, keyHeaders, KEY_HEADER } from './key.js';
+import { mountComputerView, LIVE_VIEW_PAGE } from './live-view.js';
+import { localUrl, publicUrlOf } from '../web-auth.js';
 
 export const name = 'dot-computer';
 
@@ -22,9 +25,14 @@ export const defaults = {
   cpus: 2,
   mounts: [],
   readyTimeoutMs: 240_000,
-  // Base URL that reaches the computer's web services from elsewhere (e.g. `tailscale serve` →
-  // https://my-mac.tailnet.ts.net). Used in approval messages and status; unset = local only.
+  // Public origin of *dsh itself* (your own exposure, e.g. `tailscale serve` → https://my-mac.tailnet.ts.net):
+  // the live view lives on dsh's web server behind dsh's login. Used in approval messages and status.
   publicUrl: '',
+  // Gateway key handed to the VM as SANDBOX_API_KEY; '' = one generated per machine ($DSH_HOME/dsh-computer.key).
+  apiKey: '',
+  // Mount the VM's browser/desktop tools (mcp__vm__*) through dsh-mcp-client with the key attached.
+  mcp: true,
+  mcpToolCallTimeoutMs: 120_000,
   // Turn off AIO services the agent does not use (Jupyter, code-server, Node REPLs).
   slim: true,
   // docker backend only
@@ -33,7 +41,6 @@ export const defaults = {
 };
 
 const PROFILE_DIR = '/home/gem/.config/browser';
-const LIVE_VIEW_PATH = '/vnc/index.html?autoconnect=true&resize=scale';
 
 function dshHome() {
   return process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -88,18 +95,18 @@ export function shareable(dir) {
 }
 
 /** GET a loopback URL without any proxy; resolves to the HTTP status (0 on error). */
-function probe(url) {
+function probe(url, headers = {}) {
   return new Promise((done) => {
-    const req = http.get(url, { timeout: 3000 }, (res) => { res.resume(); done(res.statusCode ?? 0); });
+    const req = http.get(url, { timeout: 3000, headers }, (res) => { res.resume(); done(res.statusCode ?? 0); });
     req.on('error', () => done(0));
     req.on('timeout', () => { req.destroy(); done(0); });
   });
 }
 
-async function waitFor(url, ms) {
+async function waitFor(url, ms, headers = {}) {
   const end = Date.now() + ms;
   do {
-    if ((await probe(url)) === 200) return true;
+    if ((await probe(url, headers)) === 200) return true;
     await new Promise((r) => setTimeout(r, 1000));
   } while (Date.now() < end);
   return false;
@@ -127,24 +134,35 @@ function pickBackend(config, logger) {
 
 /** Phase 1 (gates shell tools): VM exists, runs and accepts commands. */
 export async function ensureShell(config, computer, logger) {
-  const waitHealthy = (ms) => waitFor(`${computer.baseUrl}/v1/sandbox`, ms);
+  const waitHealthy = (ms) => waitFor(`${computer.baseUrl}/v1/sandbox`, ms, computer.authHeaders());
   return computer.backend.ensure({ mounts: computer.mounts, port: config.port, waitHealthy });
 }
 
 /** Phase 2 (browser / live view): the image's web services answer; repairs common failures. */
 export async function ensureServices(config, computer, logger) {
   const base = computer.baseUrl;
-  const waitHealthy = (ms) => waitFor(`${base}/v1/sandbox`, ms);
+  const auth = computer.authHeaders();
+  const waitHealthy = (ms) => waitFor(`${base}/v1/sandbox`, ms, auth);
   if (!(await waitHealthy(config.readyTimeoutMs))) {
     // Hosts without IPv6 make AIO's nginx fail on "listen [::]"; drop those lines and retry once.
     logger.warn('VM services not healthy yet; retrying nginx without IPv6 listeners');
     await computer.backend.rootShell('for f in $(grep -rln "listen \\[::\\]" /opt/gem /etc/nginx 2>/dev/null); do sed -i "/listen \\[::\\]/d" $f; done; supervisorctl -c /opt/gem/supervisord.conf restart nginx').catch(() => {});
     if (!(await waitHealthy(60_000))) throw new Error(`dsh-computer: VM services did not become healthy on ${base}`);
   }
+  // The gateway must refuse callers without the key; an open gateway means the VM's services were
+  // started without it (an older dsh-dot) — restart them with the key before anything else uses them.
+  if ((await probe(`${base}/v1/sandbox`)) === 200) {
+    logger.warn('VM gateway answers without the key; restarting its services with SANDBOX_API_KEY');
+    await computer.backend.restartServices?.(waitHealthy).catch((err) => logger.warn(`restarting VM services failed: ${err.message}`));
+    if ((await probe(`${base}/v1/sandbox`)) === 200) {
+      computer.gatewayOpen = true;
+      logger.error('VM gateway still open without the key — this image ignores SANDBOX_API_KEY; the port is reachable by every local process');
+    } else computer.gatewayOpen = false;
+  } else computer.gatewayOpen = false;
   // Two stale locks keep the browser down after a restart, because /tmp and the profile persist:
   // an X lock left by the previous boot stops the X server (tigervnc) and with it the desktop, and a
   // profile SingletonLock naming an earlier host stops Chrome. Clear both and start them once.
-  if (!(await waitFor(`${base}/cdp/json/version`, 20_000))) {
+  if (!(await waitFor(`${base}/cdp/json/version`, 20_000, auth))) {
     logger.info('browser not up; clearing stale X and profile locks and restarting the desktop');
     const sv = 'supervisorctl -c /opt/gem/supervisord.conf';
     await computer.backend.rootShell([
@@ -152,14 +170,15 @@ export async function ensureServices(config, computer, logger) {
       `rm -f ${PROFILE_DIR}/Singleton*`,
       `${sv} restart agent-browser || ${sv} start agent-browser`,
     ].join('; ')).catch(() => {});
-    if (!(await waitFor(`${base}/cdp/json/version`, 30_000))) logger.warn('browser still not reachable; shell tools work, browser tools may fail');
+    if (!(await waitFor(`${base}/cdp/json/version`, 30_000, auth))) logger.warn('browser still not reachable; shell tools work, browser tools may fail');
   }
 }
 
 export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...readSettingsFile(), ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
   const logger = withFileLog(ctx.logger('dsh-computer'));
-  const backend = pickBackend(cfg, logger);
+  const apiKey = computerApiKey(cfg.apiKey);
+  const backend = pickBackend({ ...cfg, apiKey }, logger);
   const base = `http://127.0.0.1:${cfg.port}`;
   // Folders actually bound into the VM: what earlier runs recorded, plus the configured defaults.
   const state = readState();
@@ -178,10 +197,14 @@ export function apply(ctx, config = {}) {
     lockFile: lockFile(),
     port: cfg.port,
     baseUrl: base,
-    liveViewUrl: `${base}${LIVE_VIEW_PATH}`,
-    publicLiveViewUrl: cfg.publicUrl ? `${String(cfg.publicUrl).replace(/\/+$/, '')}${LIVE_VIEW_PATH}` : undefined,
+    // The desktop is watched through dsh's web server (behind dsh's login), never through the port.
+    liveViewUrl: undefined, // filled when the relay mounts: <dsh origin>/dsh-dot/computer/…
+    publicLiveViewUrl: publicUrlOf(cfg.publicUrl, LIVE_VIEW_PAGE),
     cdpUrl: `${base}/cdp`,
     mcpUrl: `${base}/mcp`,
+    /** Headers that authenticate against the gateway (for in-process callers only). */
+    authHeaders: () => keyHeaders(apiKey),
+    keyHeader: KEY_HEADER,
     isReady: false,
   };
   computer.audit = createAudit(auditFile());
@@ -193,6 +216,7 @@ export function apply(ctx, config = {}) {
     backend: backend.kind,
     liveViewUrl: computer.liveViewUrl,
     publicLiveViewUrl: computer.publicLiveViewUrl,
+    gatewayOpen: computer.gatewayOpen,
     mounts: [...computer.mounts],
     error: (computer.error || computer.servicesError)?.message,
   });
@@ -227,7 +251,7 @@ export function apply(ctx, config = {}) {
     try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
     computer.remounting = true; changed();
     const run = (pending || computer.ready).then(() =>
-      backend.remount({ mounts: next, previous, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms) }));
+      backend.remount({ mounts: next, previous, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms, computer.authHeaders()) }));
     pending = run.then(
       () => { writeState({ mounts: next }); logger.info(`shared with the computer: ${dir}`); computer.audit({ kind: 'mount', action: 'share', dir, mounts: next }); },
       (err) => { computer.mounts = previous; writeState({ mounts: previous }); logger.error(`could not share ${dir}: ${err.message}`); computer.audit({ kind: 'mount', action: 'share-failed', dir, error: err.message }); },
@@ -241,6 +265,31 @@ export function apply(ctx, config = {}) {
 
   ctx.provide('dshComputer', computer);
   logger.info(`backend: ${backend.kind} (${backend.bin}); shared folders: ${computer.mounts.join(', ')}`);
+
+  // The live view: dsh's web server + dsh's login in front, the gateway key behind.
+  ctx.inject?.(['webServer', 'connection'], (c) => c.effect(() => {
+    const view = mountComputerView({ webServer: c.webServer, connection: c.connection, gateway: { host: '127.0.0.1', port: cfg.port }, key: () => apiKey, status: () => computer.status(), logger });
+    computer.liveViewUrl = localUrl(c.webServer, LIVE_VIEW_PAGE) || LIVE_VIEW_PAGE;
+    changed();
+    return () => { view.close(); computer.liveViewUrl = undefined; };
+  }));
+
+  // The VM's browser/desktop tools (mcp__vm__*): mounted here, not in cordis.patch.yml, so the
+  // client carries the gateway key (the gate in gate.js covers these tools like any other).
+  let mcpFork = null;
+  async function mountMcp() {
+    if (!cfg.mcp || mcpFork) return;
+    let mcpClient;
+    try { mcpClient = config.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client'); } catch (err) { logger.error(`mcp__vm__* unavailable: ${err.message}`); return; }
+    mcpFork = ctx.plugin(mcpClient, {
+      serverName: 'vm', transport: 'streamable-http', url: computer.mcpUrl,
+      headers: { ...computer.authHeaders(), authorization: `Bearer ${apiKey}` },
+      toolCallTimeoutMs: cfg.mcpToolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
+    });
+    logger.info('mcp__vm__* mounted (gateway key attached)');
+  }
+  computer.mcpMounted = () => Boolean(mcpFork);
+  ctx.effect?.(() => () => { mcpFork?.dispose?.(); mcpFork = null; }, 'dsh-dot/computer: mcp client');
   ensureShell(cfg, computer, logger).then(
     async (result) => {
       // An existing VM is bound to what it was bound to before, not to this run's defaults:
@@ -253,7 +302,7 @@ export function apply(ctx, config = {}) {
         if (missing.length) logger.info(`sharing folder(s) not yet bound to the existing computer: ${missing.join(', ')}`);
         // Hold every command (incl. the host-side readiness probe) until the VM is back.
         try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
-        await backend.remount({ mounts: computer.mounts, previous: recorded, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms) })
+        await backend.remount({ mounts: computer.mounts, previous: recorded, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms, computer.authHeaders()) })
           .then(() => { logger.info(`now shared: ${computer.mounts.join(', ')}`); computer.audit({ kind: 'mount', action: 'rebind', unshared: disallowedBound, shared: missing, mounts: computer.mounts }); })
           .catch((err) => { computer.mounts = bound.filter(allowed); logger.error(`could not rebind folders: ${err.message}`); })
           .finally(() => { try { rmSync(computer.lockFile, { force: true }); } catch {} });
@@ -262,7 +311,7 @@ export function apply(ctx, config = {}) {
       computer.isReady = true; markReady(true); changed();
       logger.info('computer shell ready');
       return ensureServices(cfg, computer, logger).then(
-        () => { computer.servicesReady = true; logger.info(`computer ready — live view: ${computer.liveViewUrl}`); changed(); },
+        async () => { computer.servicesReady = true; await mountMcp(); logger.info(`computer ready — live view: ${computer.liveViewUrl}`); changed(); },
         (err) => { computer.servicesError = err; logger.error(err.message); changed(); },
       );
     },

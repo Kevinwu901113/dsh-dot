@@ -5,30 +5,30 @@ export interface ComputerEndpoint {
 }
 
 /**
- * noVNC page that scales the remote desktop to the panel and reconnects after VM restarts.
- * @param endpoint - computer host and port.
+ * noVNC page relayed by dsh-dot/computer on dsh's own web server (same origin, behind dsh's
+ * login); the VNC socket goes through the same relay. The gateway port is never addressed.
+ * @param _endpoint - unused; the live view is same-origin.
  * @returns the live view URL.
  */
-export function liveViewUrl(endpoint: ComputerEndpoint): string {
-  return `http://${endpoint.host}:${endpoint.port}/vnc/index.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000`
+export function liveViewUrl(_endpoint: ComputerEndpoint): string {
+  const base = (() => { try { return window.location.origin } catch { return '' } })()
+  return `${base}/dsh-dot/computer/vnc/index.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000&path=dsh-dot%2Fcomputer%2Fwebsockify`
 }
 
 /**
- * Whether the computer's sandbox API accepts a connection. An opaque `no-cors`
- * response still proves the listener is up; a refused connection rejects.
- * @param endpoint - computer host and port.
+ * Whether the computer's desktop answers: its status, served by the relay for the signed-in owner.
+ * @param _endpoint - unused; the status is same-origin.
  * @param signal - aborts the probe.
- * @returns `true` when the computer answered within three seconds.
+ * @returns `true` when the computer's web services are ready.
  */
-export async function probe(endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
+export async function probe(_endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
   const timeout = AbortSignal.timeout(3000)
   try {
-    await fetch(`http://${endpoint.host}:${endpoint.port}/v1/sandbox`, {
-      mode: 'no-cors', cache: 'no-store', signal: AbortSignal.any([signal, timeout]),
-    })
-    return true
+    const res = await fetch('/dsh-dot/computer/status', { cache: 'no-store', credentials: 'same-origin', signal: AbortSignal.any([signal, timeout]) })
+    if (!res.ok) return false
+    return ((await res.json()) as { state?: string }).state === 'ready'
   } catch {
-    // Refused, timed out, or aborted: the computer is not answering.
+    // Not signed in, timed out, or aborted: the computer is not answering.
     return false
   }
 }

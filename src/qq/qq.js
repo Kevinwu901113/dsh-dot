@@ -254,7 +254,8 @@ export function apply(ctx, config = {}, deps = {}) {
     closed = false;
     if (ws) return;
     const url = `ws://127.0.0.1:${c.port}/`;
-    const socket = new WebSocketImpl(url, { headers: { Host: `${cfg.wsPort}-napcat`, Authorization: `Bearer ${cfg.token}` } });
+    // `Authorization` carries the OneBot token for NapCat; the gateway key travels in its own header.
+    const socket = new WebSocketImpl(url, { headers: { Host: `${cfg.wsPort}-napcat`, Authorization: `Bearer ${cfg.token}`, ...(c.authHeaders?.() ?? {}) } });
     ws = socket;
     socket.on('open', () => { logger.info('OneBot connected (NapCat in the computer)'); });
     socket.on('message', (data) => { try { onEvent(JSON.parse(String(data))); } catch (err) { logger.debug(`bad event: ${err.message}`); } });

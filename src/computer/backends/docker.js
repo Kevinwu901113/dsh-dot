@@ -11,6 +11,27 @@ function envFlags(env) {
 export function createDockerBackend(config, logger) {
   const bin = resolveDockerBin();
   const name = config.name;
+  const serviceEnv = { ...(config.apiKey ? { SANDBOX_API_KEY: config.apiKey } : {}), ...(config.slim ? { DISABLE_JUPYTER: 'true', DISABLE_CODE_SERVER: 'true', DISABLE_NODEJS_REPL: 'true' } : {}) };
+  async function create(mounts, port) {
+    const args = [
+      'run', '-d', '--name', name, '--hostname', name, '--restart', 'unless-stopped',
+      '--shm-size', config.shmSize, '--security-opt', 'seccomp=unconfined',
+      '-p', `127.0.0.1:${port}:8080`,
+      '-v', `${config.homeVolume}:/home/gem`,
+      '--label', 'dsh-computer=1', '--label', `dsh-computer.mounts=${JSON.stringify(mounts)}`,
+      ...envFlags(serviceEnv),
+    ];
+    for (const m of mounts) args.push('-v', `${m}:${m}`);
+    args.push(config.image);
+    logger.info(`creating computer "${name}" (mounts: ${mounts.join(', ')})`);
+    await docker(bin, args);
+  }
+  /** Does the running container carry the current gateway key? Env is fixed at `docker run`. */
+  async function hasKey() {
+    if (!config.apiKey) return true;
+    const env = await docker(bin, ['inspect', '-f', '{{json .Config.Env}}', name]).catch(() => '[]');
+    try { return JSON.parse(env).includes(`SANDBOX_API_KEY=${config.apiKey}`); } catch { return false; }
+  }
   return {
     kind: 'docker',
     bin,
@@ -43,19 +64,19 @@ export function createDockerBackend(config, logger) {
           logger.info(`pulling ${config.image} (first run only, a few GB)…`);
           await docker(bin, ['pull', config.image], { timeout: 60 * 60_000 });
         }
-        const args = [
-          'run', '-d', '--name', name, '--hostname', name, '--restart', 'unless-stopped',
-          '--shm-size', config.shmSize, '--security-opt', 'seccomp=unconfined',
-          '-p', `127.0.0.1:${port}:8080`,
-          '-v', `${config.homeVolume}:/home/gem`,
-          '--label', 'dsh-computer=1', '--label', `dsh-computer.mounts=${JSON.stringify(mounts)}`,
-        ];
-        if (config.slim) args.push('-e', 'DISABLE_JUPYTER=true', '-e', 'DISABLE_CODE_SERVER=true', '-e', 'DISABLE_NODEJS_REPL=true');
-        for (const m of mounts) args.push('-v', `${m}:${m}`);
-        args.push(config.image);
-        logger.info(`creating computer "${name}" (mounts: ${mounts.join(', ')})`);
-        await docker(bin, args);
+        await create(mounts, port);
         return { fresh: true };
+      }
+      // A container created without the key (older dsh-dot) answers to anyone: re-create it with the
+      // key. Its home is a named volume and its folders are recorded in a label, so nothing is lost.
+      if (!(await hasKey())) {
+        const label = await docker(bin, ['inspect', '-f', '{{index .Config.Labels "dsh-computer.mounts"}}', name]).catch(() => '');
+        let bound = [];
+        try { bound = JSON.parse(label); } catch {}
+        logger.warn(`computer "${name}" runs without a gateway key; re-creating it with one (home volume kept)`);
+        await docker(bin, ['rm', '-f', name]);
+        await create(Array.isArray(bound) ? bound : mounts, port);
+        return { fresh: false, mounts: Array.isArray(bound) ? bound : mounts };
       }
       if (state !== 'running') {
         logger.info(`waking computer "${name}" (was ${state})`);

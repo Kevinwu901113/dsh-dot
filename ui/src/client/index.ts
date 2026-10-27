@@ -21,17 +21,10 @@ const PHONE_KIND = 'dsh-phone'
 const DOT_ID = 'dsh-dot-panel'
 const DOT_KIND = 'dsh-dot-panel'
 
-// The VM host plugin publishes on 127.0.0.1:18080 unless DSH_COMPUTER_PORT changes it;
-// client rows receive no Loader config, so the page may override the port by query (?dshComputerPort=).
+// The computer's live view is same-origin (relayed by dsh-dot/computer on dsh's web server); the
+// gateway port is keyed and not addressed by the client. Port 0 hides the host:port in the status bar.
 function endpoint(): ComputerEndpoint {
-  let port = 18080
-  try {
-    const override = Number(new URLSearchParams(window.location.search).get('dshComputerPort'))
-    if (Number.isInteger(override) && override > 0 && override < 65536) port = override
-  } catch {
-    // No readable location (non-browser test runtime): keep the default port.
-  }
-  return { host: '127.0.0.1', port }
+  return { host: '127.0.0.1', port: 0 }
 }
 
 // dsh-dot/phone's live view is same-origin (/dsh-dot/phone/ on dsh's web server, behind dsh's login); the endpoint
