@@ -95,7 +95,7 @@ export function apply(ctx: Context): void {
 
   // The phone: same tab body against dsh-dot/phone's live view page.
   const tp = phoneCopy(t)
-  const phoneAt = phoneEndpoint()
+  const phoneAt: ComputerEndpoint = { host: '', port: 0 } // same-origin: nothing to show beside the status
   ctx.effect(() => c.sidebarRightTabs.register({
     id: PHONE_ID, kind: PHONE_KIND, priority: 'extension', keepMounted: true, title: () => tp('title'),
     guide: [{ id: 'open', order: 41, title: () => tp('open'), description: () => tp('description'), icon: PhoneArtwork }],

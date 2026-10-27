@@ -58,7 +58,7 @@ export function ComputerView({ useTabInfo, t, endpoint, url: urlProp, probe: pro
     <section className={css.root} data-dsh-computer-view>
       <div className={css.bar}>
         <span className={dotClass} aria-hidden="true" />
-        <span className={css.label}>{status === 'ready' ? t('ready') : t('starting')} · {endpoint.host}:{endpoint.port}</span>
+        <span className={css.label}>{status === 'ready' ? t('ready') : t('starting')}{endpoint.port ? ` · ${endpoint.host}:${endpoint.port}` : ''}</span>
         <Tooltip label={t('reload')} side="bottom" delayMs={400}>
           <Button size="sm" variant="ghost" aria-label={t('reload')} onClick={reload}><IconRefreshOutlineRegular /></Button>
         </Tooltip>
