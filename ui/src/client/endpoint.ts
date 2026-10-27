@@ -35,7 +35,7 @@ export async function probe(endpoint: ComputerEndpoint, signal: AbortSignal): Pr
 
 /** The dot panel, served by dsh-dot/dot on dsh's own web server (same origin as the client). */
 export function panelUrl(): string {
-  try { return `${window.location.origin}/dsh-dot/` } catch { return '/dsh-dot/' }
+  try { return `${window.location.origin}/dsh-dot/panel/` } catch { return '/dsh-dot/panel/' }
 }
 
 /**
@@ -55,24 +55,25 @@ export async function probePanel(_endpoint: ComputerEndpoint, signal: AbortSigna
 }
 
 /**
- * The phone's live view page served by dsh-dot/phone.
- * @param endpoint - live view host and port.
+ * The phone's live view page, served by dsh-dot/phone on dsh's own web server (same origin,
+ * behind dsh's login).
+ * @param _endpoint - unused; the live view is same-origin.
  * @returns the page URL.
  */
-export function phoneLiveViewUrl(endpoint: ComputerEndpoint): string {
-  return `http://${endpoint.host}:${endpoint.port}/`
+export function phoneLiveViewUrl(_endpoint: ComputerEndpoint): string {
+  try { return `${window.location.origin}/dsh-dot/phone/` } catch { return '/dsh-dot/phone/' }
 }
 
 /**
  * Whether the phone answers (its live view reports `ready`).
- * @param endpoint - live view host and port.
+ * @param _endpoint - unused; the live view is same-origin.
  * @param signal - aborts the probe.
  * @returns `true` when the phone is booted.
  */
-export async function probePhone(endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
+export async function probePhone(_endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
   const timeout = AbortSignal.timeout(3000)
   try {
-    const res = await fetch(`http://${endpoint.host}:${endpoint.port}/status`, { cache: 'no-store', signal: AbortSignal.any([signal, timeout]) })
+    const res = await fetch(`${phoneLiveViewUrl(_endpoint)}status`, { cache: 'no-store', signal: AbortSignal.any([signal, timeout]) })
     const body = await res.json() as { ready?: boolean }
     return body.ready === true
   } catch {

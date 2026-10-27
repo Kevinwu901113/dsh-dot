@@ -34,7 +34,8 @@ function endpoint(): ComputerEndpoint {
   return { host: '127.0.0.1', port }
 }
 
-// dsh-dot/phone serves its live view on 127.0.0.1:18090 unless liveViewPort changes it (?dshPhonePort= overrides).
+// dsh-dot/phone's live view is same-origin (/dsh-dot/phone/ on dsh's web server, behind dsh's login); the endpoint
+// object is kept only for ComputerView's signature. The query override is a leftover and ignored by the URL helpers.
 function phoneEndpoint(): ComputerEndpoint {
   let port = 18090
   try {

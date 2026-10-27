@@ -42,6 +42,7 @@
         port: !!js "Number(process.env.DSH_COMPUTER_PORT ?? 18080)"
         image: !!js "process.env.DSH_COMPUTER_IMAGE ?? ''"
         # Base URL reaching the VM's web services from elsewhere (e.g. `tailscale serve`), used in approval messages.
+        # The public origin of this dsh (your own exposure); never the VM gateway port itself.
         publicUrl: !!js "process.env.DSH_COMPUTER_PUBLIC_URL ?? ''"
         # Folders shared with the VM at the same path (':' separated; ';' on Windows). Default: each session's workspace, shared on first use (see README).
         mounts: !!js "process.env.DSH_COMPUTER_MOUNTS ? process.env.DSH_COMPUTER_MOUNTS.split(process.platform === 'win32' ? ';' : ':').filter(Boolean) : []"
@@ -77,6 +78,9 @@
       config:
         window: !!js "process.env.DSH_DOT_PHONE_WINDOW !== 'off'"
         acceptLicense: !!js "process.env.DSH_DOT_PHONE_ACCEPT_LICENSE === 'yes' ? true : undefined"
+        # Live view + controls at <dsh>/dsh-dot/phone/, behind dsh's own login (no port of its own).
+        # publicUrl: the public origin of this dsh if you expose it (tailscale serve, remote access).
+        publicUrl: !!js "process.env.DSH_DOT_PUBLIC_URL ?? process.env.DSH_COMPUTER_PUBLIC_URL ?? ''"
     # 6. The always-on glue (was the standalone dsh-dot plugin).
     - id: dot
       name: '@kevinwu901113/dsh-dot/dot'

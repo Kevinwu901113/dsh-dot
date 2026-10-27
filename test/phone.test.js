@@ -76,9 +76,14 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     provide(n, v) { ctx[n] = v; },
     plugin(p, c) { plugins.push({ p, c }); return { dispose() {} }; },
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
-    get: (n) => ({ systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
+    get: (n) => ({
+      systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } },
+      webServer: { register: (r) => { routes.push(r); return () => {}; }, getOrigin: () => 'http://127.0.0.1:3080' },
+      connection: { requestRejection: () => undefined },
+    }[n]),
   };
-  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true, liveViewPort: 18090 }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' }, startLiveView: () => ({ url: 'http://127.0.0.1:18090/', close() {} }) });
+  const routes = [];
+  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
   return { ctx, home, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
@@ -99,7 +104,7 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.match(h.sections[0].text(), /emulator-5554/);
   const out = await h.cmd().handler({ rawInput: '' });
   assert.match(out.text, /phone: ready/);
-  assert.match(out.text, /live view: http:\/\/127\.0\.0\.1:18090\//);
+  assert.match(out.text, /live view: http:\/\/127\.0\.0\.1:3080\/dsh-dot\/phone\//, 'the live view lives on dsh\'s own web server');
   // the emulator dies → error state, relaunch
   h.child().emit('exit', 1);
   assert.equal(h.ctx.dshPhone.state, 'error');
@@ -134,22 +139,35 @@ test('phone gate asks through tools/pre-execute', async () => {
   h.stop();
 });
 
-test('live view server: page, status, one stream frame, input mapped to screen pixels, origin check', async () => {
-  const { startLiveView, shellQuote } = await import('../src/phone/live-view.js');
+test('live view on dsh\'s web server: every request passes dsh\'s connection gate; forwarded headers buy nothing', async () => {
+  const { mountLiveView, LIVE_VIEW_PATH, shellQuote } = await import('../src/phone/live-view.js');
+  const http = await import('node:http');
   const shells = [];
-  const port = 18190 + Math.floor(Math.random() * 100);
-  const view = startLiveView({ port, screenshot: async () => Buffer.from('PNG!'), shell: async (c) => { shells.push(c); return c === 'wm size' ? 'Physical size: 1080x2400\n' : ''; }, ready: () => true, logger: {} });
-  await new Promise((r) => setTimeout(r, 100));
-  const base = `http://127.0.0.1:${port}`;
-  assert.match(await (await fetch(`${base}/`)).text(), /<img id="screen" src="stream/);
-  assert.deepEqual(await (await fetch(`${base}/status`)).json(), { ready: true, size: null });
+  // A stand-in for dsh: its web server dispatches the prefix route; its connection service admits
+  // only the signed-in owner (here: the dsh login cookie) and ignores X-Forwarded-* entirely.
+  let route = null;
+  const webServer = { register: (r) => { route = r; return () => { route = null; }; } };
+  const connection = { requestRejection: (req) => (/\bdsh=owner\b/.test(String(req.headers.cookie ?? '')) ? undefined : 401) };
+  const view = mountLiveView({ webServer, connection, screenshot: async () => Buffer.from('PNG!'), shell: async (c) => { shells.push(c); return c === 'wm size' ? 'Physical size: 1080x2400\n' : ''; }, ready: () => true, logger: {} });
+  assert.equal(route.kind, 'prefix'); assert.equal(route.path, LIVE_VIEW_PATH);
+  const server = http.createServer((req, res) => (req.url.startsWith(LIVE_VIEW_PATH) && route ? route.handler(req, res) : (res.writeHead(404), res.end())));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const base = `http://127.0.0.1:${server.address().port}${LIVE_VIEW_PATH}`;
+  const owner = { cookie: 'dsh=owner' };
+  // Nobody without dsh's login: not the page, not the stream, not a tap — whatever headers they bring.
+  assert.equal((await fetch(`${base}/`)).status, 401);
+  assert.equal((await fetch(`${base}/status`, { headers: { 'x-forwarded-host': 'dsh.local', 'x-forwarded-for': '127.0.0.1' } })).status, 401);
+  assert.equal((await fetch(`${base}/tap`, { method: 'POST', body: '{"x":0.5,"y":0.5}', headers: { 'content-type': 'application/json', 'x-forwarded-host': 'dsh.local', origin: 'http://127.0.0.1' } })).status, 401);
+  assert.equal(shells.length, 0, 'the phone was never touched');
+  // The owner, on dsh's origin.
+  assert.match(await (await fetch(`${base}/`, { headers: owner })).text(), /<img id="screen" src="stream/);
+  assert.deepEqual(await (await fetch(`${base}/status`, { headers: owner })).json(), { ready: true, size: null });
   const ac = new AbortController();
-  const res = await fetch(`${base}/stream?fps=5`, { signal: ac.signal });
-  const reader = res.body.getReader();
-  const { value } = await reader.read();
+  const res = await fetch(`${base}/stream?fps=5`, { signal: ac.signal, headers: owner });
+  const { value } = await res.body.getReader().read();
   assert.match(Buffer.from(value).toString(), /--frame\r\ncontent-type: image\/png\r\ncontent-length: 4\r\n\r\nPNG!/);
   ac.abort();
-  const post = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', origin: base, ...headers } });
+  const post = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...owner, ...headers } });
   assert.equal((await post('/tap', { x: 0.5, y: 0.25 })).status, 204);
   assert.equal(shells.at(-1), 'input tap 540 600');
   assert.equal((await post('/swipe', { from: { x: 0.5, y: 0.8 }, to: { x: 0.5, y: 0.2 }, ms: 300 })).status, 204);
@@ -158,9 +176,11 @@ test('live view server: page, status, one stream frame, input mapped to screen p
   assert.equal((await post('/key', { key: 'rm -rf' })).status, 400);
   assert.equal((await post('/text', { text: 'hi there' })).status, 204);
   assert.equal(shells.at(-1), "input text 'hi%sthere'");
-  assert.equal((await post('/tap', { x: 0.5, y: 0.5 }, { origin: 'http://evil.example' })).status, 403);
+  assert.equal((await fetch(`${base}/tap`, { method: 'POST', body: 'x=1', headers: { ...owner, 'content-type': 'application/x-www-form-urlencoded' } })).status, 415, 'a form post (what a cross-site page can send) is not accepted');
   assert.equal(shellQuote("a b'c"), "'a%sb'\\''c'");
   view.close();
+  assert.equal(route, null, 'close unregisters the route');
+  server.close(); server.closeAllConnections?.();
 });
 
 import { shade, SYSTEM, QQ_KUAN } from './fixtures/shade.js';

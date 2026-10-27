@@ -1,12 +1,14 @@
 // dsh-dot/dot panel: one read-only page about her — devices, where her life stands, today's
 // numbers, what she remembers, her diary, the last two passages of her script — served on dsh's
-// own web server (`/dsh-dot/`), so the "dot" sidebar tab is an iframe of the same origin and
+// own web server (`/dsh-dot/panel/`), so the "dot" sidebar tab is an iframe of the same origin and
 // nothing new listens on a port. The page is one file with no dependencies, like the phone's live
-// view; it polls `/dsh-dot/api/state` every 3 s while visible. The layout follows what the
+// view; it polls `/dsh-dot/panel/api/state` every 3 s while visible. The layout follows what the
 // companion consoles around dsh show (NimuQDock's overview row, qq-bridge's number tiles,
 // companion-core's diary list); nothing here can change her — actions stay in /dot, /interlude.
 
-export const PANEL_PATH = '/dsh-dot';
+import { rejectUnlessOwner } from '../web-auth.js';
+
+export const PANEL_PATH = '/dsh-dot/panel'; // the phone's live view is /dsh-dot/phone; prefixes must not nest
 
 /** Everything the page shows, gathered from the services that exist right now. */
 export async function collectState(ctx) {
@@ -127,11 +129,13 @@ tick();setInterval(tick,3000);document.addEventListener('visibilitychange',()=>{
 }
 
 /** Mount the page and its JSON on dsh's web server. Returns the dispose function. */
-export function mountPanel(ctx, webServer, logger) {
+export function mountPanel(ctx, webServer, logger, connection = ctx.get?.('connection')) {
   const html = pageHtml();
   return webServer.register({
     kind: 'prefix', path: PANEL_PATH,
     handler: async (req, res) => {
+      // dsh's own login and Host/Origin fence decide who may read about her (src/web-auth.js).
+      if (rejectUnlessOwner(connection, req, res)) return;
       let url;
       try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); } catch (error) { void error; res.writeHead(400).end(); return; }
       const sub = url.pathname.slice(PANEL_PATH.length);

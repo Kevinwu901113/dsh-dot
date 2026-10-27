@@ -410,8 +410,10 @@ test('panel: `/dsh-dot/` and `/dsh-dot/api/state` on dsh\'s web server; state ga
   const h = harness();
   const routes = [];
   const webServer = { register: (r) => { routes.push(r); return () => {}; } };
+  // dsh's connection service decides who may read the panel: here, whoever carries dsh's login cookie.
   const svc = {
     webServer,
+    connection: { requestRejection: (req) => (/\bdsh=owner\b/.test(String(req.headers?.cookie ?? '')) ? undefined : 401) },
     dshPhone: { status: () => ({ state: 'ready' }) },
     dshQq: { status: () => ({ connected: true, selfId: '2450548644' }) },
     dshInterlude: { status: () => ({ state: { current: '在看帖' }, today: { rounds: 2, maxRounds: 12, plays: 1, browses: 0, contacts: 0, tokensIn: 100, tokensOut: 10 }, intents: [], script: [{ head: '2026-10-27 22:00 · advance', text: '她……' }], cursor: Date.now() }) },
@@ -422,17 +424,19 @@ test('panel: `/dsh-dot/` and `/dsh-dot/api/state` on dsh\'s web server; state ga
   h.ctx.get = ((get) => (n) => svc[n] ?? provided[n] ?? get(n))(h.ctx.get);
   apply(h.ctx, h.config);
   try {
-  const route = routes.find((r) => r.path === '/dsh-dot');
+  const route = routes.find((r) => r.path === '/dsh-dot/panel');
   assert.ok(route && route.kind === 'prefix');
-  const call = async (url) => { let status = 0, body = '', headers = {}; const res = { writeHead(s, hd) { status = s; headers = hd ?? {}; return res; }, end(b) { body = String(b ?? ''); } }; await route.handler({ method: 'GET', url }, res); return { status, body, headers }; };
-  const page = await call('/dsh-dot/');
+  const call = async (url, reqHeaders = { cookie: 'dsh=owner' }) => { let status = 0, body = '', headers = {}; const res = { writeHead(s, hd) { status = s; headers = hd ?? {}; return res; }, end(b) { body = String(b ?? ''); } }; await route.handler({ method: 'GET', url, headers: reqHeaders }, res); return { status, body, headers }; };
+  assert.equal((await call('/dsh-dot/panel/', {})).status, 401, 'no dsh login, no panel');
+  assert.equal((await call('/dsh-dot/panel/api/state', { 'x-forwarded-host': 'dsh.local', 'x-forwarded-for': '127.0.0.1' })).status, 401, 'forwarded headers are not an identity');
+  const page = await call('/dsh-dot/panel/');
   assert.equal(page.status, 200); assert.match(page.headers['content-type'], /text\/html/); assert.match(page.body, /她现在/);
-  const state = await call('/dsh-dot/api/state');
+  const state = await call('/dsh-dot/panel/api/state');
   assert.equal(state.status, 200);
   const s = JSON.parse(state.body);
   assert.equal(s.devices.phone.state, 'ready'); assert.equal(s.devices.qq.selfId, '2450548644');
   assert.equal(s.interlude.state.current, '在看帖'); assert.equal(s.memory.diary[0].text, '今天没什么事。');
   assert.deepEqual(s.dot.today, { day: s.dot.today.day, woke: 0, owner: 0 });
-  assert.equal((await call('/dsh-dot/nope')).status, 404);
+  assert.equal((await call('/dsh-dot/panel/nope')).status, 404);
   } finally { stop(h); }
 });

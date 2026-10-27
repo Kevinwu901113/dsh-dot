@@ -13,7 +13,8 @@ import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
 import { createAudit } from '../computer/audit.js';
 import { systemProxyEnv } from '../computer/backends/proxy.js';
-import { startLiveView } from './live-view.js';
+import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
+import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 
 /** @deprecated name kept for callers; see notifications.js */
@@ -45,8 +46,8 @@ export const defaults = {
   channel: 'stable',        // emulator release channel
   bootTimeoutMs: 300_000,
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
-  liveViewPort: 18090,      // the phone's live view page on 127.0.0.1 (screen + tap/swipe/type); 0 = off
-  publicUrl: '',            // base URL reaching the live view from elsewhere (e.g. tailscale serve), used in notices
+  liveView: true,           // the live view page (screen + tap/swipe/type) at /dsh-dot/phone/ on dsh's own web server, behind dsh's login
+  publicUrl: '',            // the public origin of THIS dsh (your own exposure, e.g. tailscale serve of dsh's port); the live view is <publicUrl>/dsh-dot/phone/
   // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
   // listeners (dot wakes her for them). notifyApps: packages that count; [] = every non-system app.
   notifications: true,      // watch the shade at all
@@ -231,8 +232,8 @@ export function apply(ctx, config = {}, deps = {}) {
   const phone = {
     serial, home, abi, api: cfg.api, avd: cfg.avd, adb: paths.adb,
     state: 'starting', error: undefined, isReady: false, licenseUrl: LICENSE_URL,
-    liveViewUrl: cfg.liveViewPort ? `http://127.0.0.1:${cfg.liveViewPort}/` : undefined,
-    publicLiveViewUrl: cfg.liveViewPort && cfg.publicUrl ? `${String(cfg.publicUrl).replace(/\/+$/, '')}/` : undefined,
+    liveViewUrl: undefined, // filled when the live view mounts (dsh's origin + /dsh-dot/phone/)
+    publicLiveViewUrl: cfg.liveView ? publicUrlOf(cfg.publicUrl, `${LIVE_VIEW_PATH}/`) : undefined,
     audit,
   };
   const listeners = new Set();
@@ -436,11 +437,13 @@ export function apply(ctx, config = {}, deps = {}) {
   };
 
   ctx.provide('dshPhone', phone);
-  if (cfg.liveViewPort) {
-    ctx.effect(() => {
-      const view = (deps.startLiveView ?? startLiveView)({ port: cfg.liveViewPort, screenshot: phone.screenshot, shell: phone.shell, ready: () => phone.isReady, logger, name: cfg.avd });
-      return () => view.close();
-    }, 'dsh-dot/phone: live view');
+  // The live view rides on dsh's own web server and login (see src/web-auth.js): no port of its own.
+  if (cfg.liveView) {
+    ctx.inject(['webServer', 'connection'], (c) => c.effect(() => {
+      const view = (deps.mountLiveView ?? mountLiveView)({ webServer: c.webServer, connection: c.connection, screenshot: phone.screenshot, shell: phone.shell, ready: () => phone.isReady, logger, name: cfg.avd });
+      phone.liveViewUrl = localUrl(c.webServer, `${LIVE_VIEW_PATH}/`) || `${LIVE_VIEW_PATH}/`;
+      return () => { view.close(); phone.liveViewUrl = undefined; };
+    }, 'dsh-dot/phone: live view'));
   }
 
   // Approval gate for phone tools: installs/uninstalls, and typing that looks like a secret or a payment.

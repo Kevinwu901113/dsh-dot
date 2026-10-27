@@ -1,11 +1,16 @@
-// dsh-dot/phone live view: a small HTTP page on 127.0.0.1 that shows the phone's screen as it
-// changes and lets a person tap, swipe, type and press keys — the phone's noVNC. It is how you log
-// her into an app from the dsh "Phone" tab (or from your own phone over tailscale) without the
-// emulator window, and how you see what she is doing. Frames are PNG screencaps over adb, pushed as
-// a multipart stream a few times a second; input goes back through `adb shell input`.
-import http from 'node:http';
+// dsh-dot/phone live view: a page that shows the phone's screen as it changes and lets a person
+// tap, swipe, type and press keys — the phone's noVNC. It is how you log her into an app from the
+// dsh "Phone" tab (or from your own phone, through your own dsh exposure) without the emulator
+// window, and how you see what she is doing. Frames are PNG screencaps over adb, pushed as a
+// multipart stream a few times a second; input goes back through `adb shell input`.
+//
+// It is mounted on dsh's own web server at /dsh-dot/phone/ and every request — the page, the
+// stream, each tap — is gated by dsh's connection service (src/web-auth.js): the signed-in owner
+// of this dsh, on dsh's own origin, and nobody else. There is no port of its own and no
+// same-origin guesswork; a forwarded header buys nothing.
+import { rejectUnlessOwner } from '../web-auth.js';
 
-export const LIVE_VIEW_PATH = '/';
+export const LIVE_VIEW_PATH = '/dsh-dot/phone';
 
 /** HTML of the page. One file, no dependencies; the stream and input endpoints are relative. */
 export function pageHtml({ name = 'dot', fps = 2 }) {
@@ -46,17 +51,18 @@ img.addEventListener('load',()=>status.textContent='live');img.addEventListener(
 }
 
 /**
- * Start the live view server.
+ * Mount the live view on dsh's web server.
  * @param {object} o
- * @param {number} o.port - listen port on 127.0.0.1.
+ * @param {object} o.webServer - dsh's `webServer` service (register prefix routes).
+ * @param {object} o.connection - dsh's `connection` service (requestRejection).
  * @param {() => Promise<Buffer>} o.screenshot - PNG of the screen now.
  * @param {(cmd: string) => Promise<string>} o.shell - `adb shell <cmd>`.
  * @param {() => boolean} o.ready - whether the phone answers.
  * @param {object} o.logger
  * @param {string} [o.name]
- * @returns {{ url: string, close: () => void }}
+ * @returns {{ close: () => void }}
  */
-export function startLiveView({ port, screenshot, shell, ready, logger, name = 'dot' }) {
+export function mountLiveView({ webServer, connection, screenshot, shell, ready, logger, name = 'dot' }) {
   let size = null; // { w, h } in pixels, read once from the device
   const screenSize = async () => {
     if (size) return size;
@@ -65,23 +71,30 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
     return size;
   };
   const px = async ({ x, y }) => { const s = await screenSize(); return [Math.round(x * s.w), Math.round(y * s.h)]; };
-  const json = (req) => new Promise((resolve, reject) => { let b = ''; req.on('data', (d) => { b += d; if (b.length > 65536) reject(new Error('too large')); }); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { reject(e); } }); });
-  // Only the page itself may post input (same-origin fetch); nothing else on the machine should drive her phone.
-  const sameOrigin = (req) => { const o = req.headers.origin ?? req.headers.referer ?? ''; return !o || o.startsWith(`http://127.0.0.1:${port}`) || o.startsWith(`http://localhost:${port}`) || Boolean(req.headers['x-forwarded-host']); };
+  const json = (req) => new Promise((resolve, reject) => {
+    if (!/^application\/json\b/i.test(String(req.headers['content-type'] ?? ''))) { reject(new Error('json body required')); return; }
+    let b = ''; req.on('data', (d) => { b += d; if (b.length > 65536) reject(new Error('too large')); }); req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch (e) { reject(e); } });
+  });
+  const html = pageHtml({ name });
 
   const streams = new Set(); // stop functions of open /stream loops, ended on close()
-  const server = http.createServer(async (req, res) => {
-    const url = new URL(req.url, `http://127.0.0.1:${port}`);
+  const handler = async (req, res) => {
+    // dsh decides who this is; nothing below runs for anyone else.
+    if (rejectUnlessOwner(connection, req, res)) return;
+    let url;
+    try { url = new URL(req.url ?? '/', 'http://127.0.0.1'); } catch (error) { void error; res.writeHead(400); return res.end(); }
+    const sub = url.pathname.slice(LIVE_VIEW_PATH.length);
     try {
-      if (req.method === 'GET' && url.pathname === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(pageHtml({ name })); }
-      if (req.method === 'GET' && url.pathname === '/status') { res.writeHead(200, { 'content-type': 'application/json', 'access-control-allow-origin': '*', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ ready: ready(), size })); }
-      if (req.method === 'GET' && url.pathname === '/screenshot.png') { const png = await screenshot(); res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }); return res.end(png); }
-      if (req.method === 'GET' && url.pathname === '/stream') {
+      if (req.method === 'GET' && sub === '') { res.writeHead(302, { location: `${LIVE_VIEW_PATH}/` }); return res.end(); }
+      if (req.method === 'GET' && sub === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }); return res.end(html); }
+      if (req.method === 'GET' && sub === '/status') { res.writeHead(200, { 'content-type': 'application/json', 'cache-control': 'no-store' }); return res.end(JSON.stringify({ ready: ready(), size })); }
+      if (req.method === 'GET' && sub === '/screenshot.png') { const png = await screenshot(); res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' }); return res.end(png); }
+      if (req.method === 'GET' && sub === '/stream') {
         const fps = Math.min(5, Math.max(0.5, Number(url.searchParams.get('fps')) || 2));
         res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=frame', 'cache-control': 'no-store', connection: 'keep-alive' });
         let open = true;
         req.on('close', () => { open = false; });
-        const stop = () => { open = false; };
+        const stop = () => { open = false; try { res.destroy(); } catch (error) { void error; } }; // drop the socket: nothing of ours outlives close()
         streams.add(stop);
         while (open) {
           const started = Date.now();
@@ -94,26 +107,23 @@ export function startLiveView({ port, screenshot, shell, ready, logger, name = '
         return res.end();
       }
       if (req.method === 'POST') {
-        if (!sameOrigin(req)) { res.writeHead(403); return res.end(); }
         if (!ready()) { res.writeHead(503); return res.end('phone not ready'); }
         const body = await json(req);
-        if (url.pathname === '/tap') { const [x, y] = await px(body); await shell(body.ms > 0 ? `input swipe ${x} ${y} ${x} ${y} ${Math.round(body.ms)}` : `input tap ${x} ${y}`); }
-        else if (url.pathname === '/swipe') { const [x1, y1] = await px(body.from); const [x2, y2] = await px(body.to); await shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${Math.round(body.ms ?? 300)}`); }
-        else if (url.pathname === '/key') { if (!/^KEYCODE_[A-Z0-9_]+$/.test(String(body.key))) { res.writeHead(400); return res.end(); } await shell(`input keyevent ${body.key}`); }
-        else if (url.pathname === '/text') { await shell(`input text ${shellQuote(String(body.text ?? ''))}`); }
+        if (sub === '/tap') { const [x, y] = await px(body); await shell(body.ms > 0 ? `input swipe ${x} ${y} ${x} ${y} ${Math.round(body.ms)}` : `input tap ${x} ${y}`); }
+        else if (sub === '/swipe') { const [x1, y1] = await px(body.from); const [x2, y2] = await px(body.to); await shell(`input swipe ${x1} ${y1} ${x2} ${y2} ${Math.round(body.ms ?? 300)}`); }
+        else if (sub === '/key') { if (!/^KEYCODE_[A-Z0-9_]+$/.test(String(body.key))) { res.writeHead(400); return res.end(); } await shell(`input keyevent ${body.key}`); }
+        else if (sub === '/text') { await shell(`input text ${shellQuote(String(body.text ?? ''))}`); }
         else { res.writeHead(404); return res.end(); }
         res.writeHead(204); return res.end();
       }
       res.writeHead(404); res.end();
-    } catch (err) { logger.warn?.(`live view: ${err.message}`); if (!res.headersSent) res.writeHead(500); res.end(); }
-  });
-  server.listen(port, '127.0.0.1');
-  server.on('error', (err) => logger.warn?.(`live view port ${port}: ${err.message}`));
-  return { url: `http://127.0.0.1:${port}${LIVE_VIEW_PATH}`, close: () => {
-    // server.close() alone waits for every open connection, and a /stream left open in the dsh
-    // window would keep the Host alive past shutdown. End the loops and drop the sockets.
+    } catch (err) { logger.warn?.(`live view: ${err.message}`); if (!res.headersSent) res.writeHead(err.message === 'json body required' ? 415 : 500); res.end(); }
+  };
+  const unregister = webServer.register({ kind: 'prefix', path: LIVE_VIEW_PATH, handler });
+  return { close: () => {
+    // A /stream left open in the dsh window would keep the Host alive past shutdown: end the loops.
     for (const stop of streams) stop(); streams.clear();
-    server.close(); server.closeAllConnections?.();
+    unregister();
   } };
 }
 

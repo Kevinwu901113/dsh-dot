@@ -30,7 +30,7 @@ test('phone: a long-lived emulator (left running across restarts) does not keep 
     const effects = [];
     const ctx = { logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), on: () => () => {}, effect(fn) { effects.push(fn()); },
       provide() {}, plugin() { return { dispose() {} }; }, inject() {}, get: () => undefined };
-    apply(ctx, { home: ${JSON.stringify(home)}, abi: 'arm64-v8a', acceptLicense: true, mcp: false, notifications: false, keepAppsAlive: false, liveViewPort: 0, bootTimeoutMs: 5000 });
+    apply(ctx, { home: ${JSON.stringify(home)}, abi: 'arm64-v8a', acceptLicense: true, mcp: false, notifications: false, keepAppsAlive: false, liveView: false, bootTimeoutMs: 5000 });
     const until = async (p) => { for (let i = 0; i < 300 && !p(); i++) await new Promise((r) => setTimeout(r, 20)); };
     const { execSync } = await import('node:child_process');
     await until(() => { try { return execSync('pgrep -f "[s]leep 61[.]5"').length > 0; } catch { return false; } });
@@ -44,11 +44,15 @@ test('phone: a long-lived emulator (left running across restarts) does not keep 
 
 test('phone live view: an open /stream does not keep dsh alive after close()', () => {
   const code = `
-    const { startLiveView } = await import(${JSON.stringify(src('phone/live-view.js'))});
+    const { mountLiveView, LIVE_VIEW_PATH } = await import(${JSON.stringify(src('phone/live-view.js'))});
     const http = await import('node:http');
-    const view = startLiveView({ port: 18191, screenshot: async () => Buffer.from('png'), shell: async () => '', ready: () => true, logger: {}, name: 't' });
-    await new Promise((r) => setTimeout(r, 100));
-    await new Promise((r) => http.get('http://127.0.0.1:18191/stream?fps=2', (res) => { res.on('data', () => {}); res.on('error', () => {}); r(); }).on('error', () => {}));
+    let route;
+    const view = mountLiveView({ webServer: { register: (r) => { route = r; return () => {}; } }, connection: { requestRejection: () => undefined }, screenshot: async () => Buffer.from('png'), shell: async () => '', ready: () => true, logger: {}, name: 't' });
+    // dsh's web server stays up in this test (it is dsh's, not ours); only our stream loop and route must let go.
+    const server = http.createServer((req, res) => route.handler(req, res));
+    server.unref();
+    await new Promise((r) => server.listen(18191, '127.0.0.1', r));
+    await new Promise((r) => http.get('http://127.0.0.1:18191' + LIVE_VIEW_PATH + '/stream?fps=2', (res) => { res.on('data', () => {}); res.on('error', () => {}); r(); }).on('error', () => {}));
     view.close();
   `;
   const r = exitsWithin(code, 8000);

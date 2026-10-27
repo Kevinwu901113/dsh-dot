@@ -566,7 +566,7 @@ export function apply(ctx, config = {}) {
   });
 
   // The panel: `/dsh-dot/` on dsh's own web server (the "dot" sidebar tab is an iframe of it).
-  ctx.inject(['webServer'], (c) => c.effect(() => mountPanel(ctx, c.webServer, logger), 'dsh-dot: panel'));
+  ctx.inject(['webServer', 'connection'], (c) => c.effect(() => mountPanel(ctx, c.webServer, logger, c.connection), 'dsh-dot: panel'));
 
   logger.info(`dot ready — home ${home}`);
 }
