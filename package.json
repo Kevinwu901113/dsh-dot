@@ -1,23 +1,30 @@
 {
-  "name": "dsh-dot",
-  "version": "0.7.1",
-  "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates), the always-on glue (schedules → IM, silence protocol, approval cards), and an interlude — a life between conversations after HDS-Interlude (Canon by share code, script, continuity, browsing in her own browser). Works with dsh-im and the official schedule bundle.",
+  "name": "@kevinwu901113/dsh-dot",
+  "version": "0.8.0",
+  "description": "dot — a character who lives on her own phone, for DeepSeek Harness (dsh): an Android phone the plugin installs and runs, her own QQ, memory and a diary from real events, a life between conversations (幕间, after HDS-Interlude), an optional microVM computer with approval gates. One plugin, six components.",
   "type": "module",
   "license": "AGPL-3.0-only",
   "keywords": [
-    "agent",
-    "always-on",
-    "computer-use",
-    "deepseek-harness",
-    "dots",
     "dsh",
     "dsh-plugin",
-    "hds-interlude",
+    "dsh-bundle",
+    "deepseek-harness",
+    "companion",
+    "character",
+    "养鱼",
+    "陪伴",
+    "qq",
+    "napcat",
+    "android",
+    "emulator",
+    "phone",
+    "memory",
+    "diary",
     "interlude",
-    "microsandbox",
-    "microvm",
+    "hds-interlude",
     "persona",
-    "sandbox"
+    "microvm",
+    "microsandbox"
   ],
   "repository": {
     "type": "git",
@@ -77,5 +84,8 @@
     "microsandbox": "0.7.8",
     "@mobilenext/mobile-mcp": "1.0.12",
     "ws": "^8.18.0"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
