@@ -43,7 +43,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 - agent 的 bash 命令在虚拟机里执行，不碰你的系统。
 - agent 的浏览器（`mcp__vm__browser_*` 工具）在虚拟机里，登录态长期保留。
 - 你随时可以打开实时画面观看或接手操作（扫码、验证码）。
-- 危险操作（`sudo`、`rm -rf`、`curl | sh`、`git push`，以及涉及支付、登录、删除的浏览器动作）先弹审批，审批信息附实时画面链接。闸门同时覆盖 dsh 的 `bash` 和虚拟机自带的 `sandbox_execute_bash` / `sandbox_execute_code`。
+- 虚拟机的每个工具都有分类，审批信息附实时画面链接：只读工具（截图、取文本、看目录）不问；shell（dsh 的 `bash`、虚拟机的 `sandbox_execute_bash` / `sandbox_execute_code`）按命令文本判——`sudo`、`rm -rf`、`curl | sh`、`base64 -d | sh`、`python -c`、`eval`、`git push`、`crontab` 等问；文件工具（`sandbox_file_operations`、`sandbox_str_replace_editor`）删除/移动问，普通读写不问；浏览器动作按页面内容判（支付、登录、删除等问）；`browser_evaluate`（在登录态页面里跑任意 JS）和 `browser_gui_execute_action`（绕过浏览器工具的桌面级输入）**总是问**；任何工具的参数里出现受保护位置（`~/.ssh`、浏览器 profile/Cookies、`.aws`、`.env`、`/etc/shadow`、NapCat 配置等）**总是问**；镜像以后新增的、这里没见过的工具按浏览器动作对待并记一条审计。
 - 会话所在的工作区文件夹自动共享进虚拟机，路径不变。
 - dsh 退出后虚拟机继续运行；下次启动自动连回同一台。
 
@@ -140,7 +140,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 | `DSH_COMPUTER_PORT` | `18080` | 虚拟机网关在本机的端口（仅监听 127.0.0.1，需要密钥）；只能用环境变量设置 |
 | `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |
-| `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 拦危险命令和敏感浏览器动作；`browser` 每个浏览器动作都审批 |
+| `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 按上面的分类拦；`browser` 另外每个浏览器动作都审批。分类表（`readOnlyTools`、`alwaysAskTools`、`fileTools`、`protectedPaths`、`shellPatterns`…）可在 `dot-gate` 的 config 里覆盖 |
 | `DSH_COMPUTER_PRESET` | `computer` | `computer-auto` 关闭审批，只建议在虚拟机里没有重要登录态时用 |
 
 ## 六、维护

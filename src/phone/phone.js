@@ -5,7 +5,7 @@
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. The phone's window is its
 // live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { spawn, execFile } from 'node:child_process';
-import { closeSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { chmodSync, closeSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
@@ -76,7 +76,8 @@ export function readSettingsFile() {
 function writeSettings(patch) {
   const next = { ...readSettingsFile(), ...patch };
   mkdirSync(dirname(settingsFile()), { recursive: true });
-  writeFileSync(settingsFile(), JSON.stringify(next, null, 2));
+  writeFileSync(settingsFile(), JSON.stringify(next, null, 2), { mode: 0o600 });
+  try { chmodSync(settingsFile(), 0o600); } catch {}
   return next;
 }
 

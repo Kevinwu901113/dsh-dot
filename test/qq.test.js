@@ -46,6 +46,8 @@ function harness({ installed = true, running = false } = {}) {
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     effect(fn) { effects.push(fn()); },
+    on(name, fn) { ctx.handlers[name] = fn; },
+    handlers: {},
     provide(n, v) { ctx[n] = v; },
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
     get: (n) => ({ dshComputer: computer, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
@@ -129,5 +131,32 @@ test('qq: not installed → state says so; /qq account sets the number', async (
   const out = await h.cmd().handler({ rawInput: 'account 10002' });
   assert.match(out.text, /account set: 10002/);
   assert.equal(h.ctx.dshQq.qq, '10002');
+  h.stop();
+});
+
+test('qq_send gate: owner free; replies to live conversations free; new contacts, silent groups and device files ask', async () => {
+  const { sendGate } = await import('../src/qq/qq.js');
+  const now = Date.now();
+  const recent = (k) => ({ 'user:30003': now - 5 * 60_000, 'group:7777777': now - 2 * 60_000, 'user:40004': now - 2 * 3_600_000 })[k] ?? 0;
+  const opt = { owner: '20002', recent, now };
+  assert.equal(sendGate({ to: 'owner', text: 'hi' }, opt), null);
+  assert.equal(sendGate({ to: 'user:20002', images: ['/home/gem/.ssh/id_rsa'] }, opt), null, 'the owner may receive anything');
+  assert.equal(sendGate({ to: 'user:30003', text: '在' }, opt), null, 'answering someone who just wrote');
+  assert.equal(sendGate({ to: 'group:7777777', text: '哈哈', images: ['https://x/y.png'] }, opt), null, 'web image into a live group');
+  assert.match(sendGate({ to: 'user:40004', text: '在' }, opt), /not written to her recently/);
+  assert.match(sendGate({ to: 'user:99999', text: '你好' }, opt), /not written to her recently/);
+  assert.match(sendGate({ to: 'user:30003', images: ['phone:screen'] }, opt), /file\(s\) from her devices/);
+  assert.match(sendGate({ to: 'group:7777777', images: ['/home/gem/notes.png'] }, opt), /file\(s\) from her devices/);
+  assert.match(sendGate({ to: 'user:30003', text: '在' }, { ...opt, policy: 'always' }), /message to user:30003/);
+  assert.equal(sendGate({ to: 'user:99999', images: ['phone:latest'] }, { ...opt, policy: 'off' }), null);
+});
+
+test('qq_send gate is wired: a tool call to a stranger becomes an ask, one to the owner runs', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  const gate = (args) => h.ctx.handlers['tools/pre-execute']({ name: 'qq_send', input: args, agent: { session: { id: 's' } } }, async () => 'ran');
+  assert.equal(await gate({ to: 'owner', text: 'x' }), 'ran');
+  assert.equal((await gate({ to: 'user:55555', text: 'x' })).kind, 'ask');
+  assert.equal(await h.ctx.handlers['tools/pre-execute']({ name: 'bash', input: {} }, async () => 'ran'), 'ran');
   h.stop();
 });

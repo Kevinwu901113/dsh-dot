@@ -6,7 +6,7 @@
 // gateway (the AIO sandbox proxies `Host: <port>-x` to the VM's loopback port, WebSocket included),
 // so nothing is exposed outside 127.0.0.1 and no extra port is opened on the VM.
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
@@ -23,6 +23,12 @@ export const defaults = {
   githubProxy: '',          // mirror prefix for the installer's GitHub downloads, e.g. https://ghfast.top/ ; '' = direct
   autoStart: true,          // start NapCat when the computer is ready and the account is set
   groupPolicy: 'mention',   // group messages that wake her: 'mention' (@her), 'all', 'none'
+  // qq_send approval: 'reply' (default) lets her write to the owner, and answer with text or web
+  // images whoever wrote to her within replyWindowMinutes (a conversation, group or private); anything
+  // else asks — a new contact, a group nobody spoke in, or files from her phone or computer (those
+  // could carry anything). 'always' asks for everything but the owner; 'off' never asks.
+  sendPolicy: 'reply',
+  replyWindowMinutes: 30,
   reconnectMs: 5000,
   requestTimeoutMs: 15000,
 };
@@ -31,7 +37,8 @@ const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-qq.json');
 export const auditFile = () => join(dshHome(), 'dsh-qq-audit.jsonl');
 export function readSettingsFile() { try { return existsSync(settingsFile()) ? JSON.parse(readFileSync(settingsFile(), 'utf8')) : {}; } catch { return {}; } }
-function writeSettings(patch) { const next = { ...readSettingsFile(), ...patch }; mkdirSync(dirname(settingsFile()), { recursive: true }); writeFileSync(settingsFile(), JSON.stringify(next, null, 2)); return next; }
+// Holds the OneBot token: owner-only like the computer's gateway key.
+function writeSettings(patch) { const next = { ...readSettingsFile(), ...patch }; mkdirSync(dirname(settingsFile()), { recursive: true }); writeFileSync(settingsFile(), JSON.stringify(next, null, 2), { mode: 0o600 }); try { chmodSync(settingsFile(), 0o600); } catch {} return next; }
 
 // Paths inside the VM (NapCat's rootless install under $HOME of the user it runs as; we run it as root).
 const VM_HOME = '/root';
@@ -81,6 +88,23 @@ export function imageSource(ref) {
   if (phonePath) return { kind: 'phone', ref: phonePath };
   if (s.startsWith('/')) return { kind: 'computer', ref: s };
   return null;
+}
+
+/**
+ * Approval decision for a qq_send call (null = allow, otherwise the reason to ask). `recent` says
+ * when a conversation ("user:<n>" / "group:<n>") last wrote to her (ms epoch).
+ */
+export function sendGate({ to, text = '', images = [] }, { owner, policy = 'reply', windowMs = 30 * 60_000, recent = () => 0, now = Date.now() }) {
+  if (policy === 'off') return null;
+  const target = parseTarget(to, owner);
+  if (!target) return null; // qq.send rejects it with a clear error
+  if (owner && target.user_id === Number(owner)) return null;
+  const local = [].concat(images ?? []).filter((r) => r && !/^https?:\/\//i.test(String(r)));
+  const who = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
+  if (local.length) return `dsh-dot/qq: sending ${local.length} file(s) from her devices to ${who} (${local.map((r) => String(r).slice(0, 40)).join(', ')})`;
+  if (policy === 'always') return `dsh-dot/qq: message to ${who}: ${String(text).slice(0, 80)}`;
+  if (now - (recent(who) || 0) <= windowMs) return null;
+  return `dsh-dot/qq: message to ${who}, who has not written to her recently: ${String(text).slice(0, 80)}`;
 }
 
 /** Does a group message count, under the policy? */
@@ -262,6 +286,8 @@ export function apply(ctx, config = {}, deps = {}) {
     socket.on('close', () => { if (ws !== socket) return; ws = null; qq.connected = false; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
     socket.on('error', (err) => { logger.debug(`OneBot socket: ${err.message}`); });
   }
+  /** Conversations that wrote to her lately: "user:<n>" / "group:<n>" → last message time (sendGate). */
+  const recent = new Map();
   function onEvent(ev) {
     if (ev.echo !== undefined && pending.has(ev.echo)) {
       const p = pending.get(ev.echo); pending.delete(ev.echo); clearTimeout(p.timer);
@@ -283,6 +309,8 @@ export function apply(ctx, config = {}, deps = {}) {
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
     const fromOwner = !isGroup && Boolean(qq.owner) && String(ev.user_id) === String(qq.owner);
     const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
+    recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
+    if (recent.size > 500) recent.delete(recent.keys().next().value);
     audit({ kind: 'message', ...msg, text: text.slice(0, 200) });
     for (const fn of listeners) { try { fn(msg); } catch (err) { logger.warn(`qq listener: ${err.message}`); } }
   }
@@ -344,6 +372,18 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['dshComputer'], (c) => {
     const boot = async () => { if (!cfg.autoStart || !cfg.qq) { setState(cfg.qq ? 'idle' : 'needs-account', cfg.qq ? undefined : 'set the QQ number: /qq account <number>'); return; } try { await qq.start(); } catch (err) { setState('error', err.message); logger.warn(`qq start failed: ${err.message}`); } };
     c.effect(() => { let gone = false; c.dshComputer.ready?.then(() => { if (!gone) void boot(); }); return () => { gone = true; closeWs(); }; }, 'dsh-dot/qq: boot with the computer');
+  });
+
+  // Approval in front of qq_send (see defaults.sendPolicy): the owner always; a conversation that is
+  // going on, with text or web images; everything else — new people, silent groups, files from her
+  // devices — is asked, with the live-view-free reason the IM approval card shows.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.name !== 'qq_send') return next();
+    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
+    const reason = sendGate(args, { owner: qq.owner, policy: cfg.sendPolicy, windowMs: cfg.replyWindowMinutes * 60_000, recent: (k) => recent.get(k) });
+    if (!reason) return next();
+    audit({ kind: 'approval-asked', tool: exec.name, session: exec.agent?.session?.id, to: args.to, reason });
+    return { kind: 'ask', reason };
   });
 
   // The tool she answers with. Only text, only to a user or a group; nothing that manages friends,

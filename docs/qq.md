@@ -29,9 +29,9 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 
 | | |
 |---|---|
-| **你**（owner）私聊她 | 你打的字原样进她的会话，以"人说的话"的身份（和 dsh-im 转发 IM 一样，`kind: user`）——所以你能在 QQ 上给她派长任务，她可以建目标（`create_goal`）一轮轮做下去。夜间静音对你不生效 |
+| **你**（owner）私聊她 | 你打的字原样进她的会话，以"人说的话"的身份（和 dsh-im 转发 IM 一样，`kind: user`）——所以你能在 QQ 上给她派长任务，她可以建目标（`create_goal`）一轮轮做下去。夜间静音对你不生效。**只有电脑端 QQ 按 QQ 号认出的你才算**：手机通知只有昵称，谁都能改成和你一样，所以电脑端掉线时你从手机 QQ/微信发来的话会标成「未验证身份」，当普通消息看、不当指令 |
 | 别人私聊她 / 群里 @ 她 | `[手机通知] QQ · 路人（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音）；这些不算人的直接输入，建不了目标 |
-| 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，`<sep/>` 分几条发 |
+| 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，`<sep/>` 分几条发。**审批**（`sendPolicy: reply`）：发给你永远不问；回最近 30 分钟内给她发过消息的人或群（文字、网图）不问；发给没找过她的人、沉默的群，或者发她手机/电脑上的文件（`phone:*`、`/sdcard/…`、电脑路径）——先弹审批 |
 | 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB |
 | 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
 | dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
@@ -46,6 +46,8 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
 | `wsPort` | `3001` | VM 内的 OneBot WS 端口 |
 | `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` |
+| `sendPolicy` | `reply` | `qq_send` 审批：`reply`（见上表）/ `always`（除了你，发谁都问）/ `off`（不问） |
+| `replyWindowMinutes` | `30` | `reply` 策略里"最近给她发过消息"的时间窗 |
 | `githubProxy` / `DSH_DOT_GITHUB_PROXY` | 无 | 安装脚本下载 GitHub 资源的镜像前缀 |
 | `autoStart` | `true` | 电脑就绪后自动启动 |
 | `DSH_DOT_QQ=off` | | 不加载；电脑关了它也不加载 |
