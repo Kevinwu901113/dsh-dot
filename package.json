@@ -1,6 +1,6 @@
 {
   "name": "dsh-dot",
-  "version": "0.7.0",
+  "version": "0.7.1",
   "description": "dot — a Dots-style always-on agent for DeepSeek Harness, in one plugin: its own computer (a bundled microVM with shell, browser, live view and approval gates), the always-on glue (schedules → IM, silence protocol, approval cards), and an interlude — a life between conversations after HDS-Interlude (Canon by share code, script, continuity, browsing in her own browser). Works with dsh-im and the official schedule bundle.",
   "type": "module",
   "license": "AGPL-3.0-only",

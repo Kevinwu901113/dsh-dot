@@ -16,6 +16,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { mountPanel } from './panel.js';
 
 export const name = 'dsh-dot';
 // Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
@@ -275,6 +276,10 @@ export function apply(ctx, config = {}) {
     } catch (err) { logger.warn(`errand note failed: ${err.message}`); }
   }
 
+  // Today's counters for the panel (persisted; reset when the day changes).
+  const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
+  const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
+
   // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text }
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
@@ -413,13 +418,14 @@ export function apply(ctx, config = {}) {
         // His words reached her on the phone while her computer QQ is not up: she answers in the phone app.
         if (fromOwner.some((n) => n.via === 'phone') && !ctx.get('dshQq')?.connected) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: '（他下面这条是发到你手机上的；你电脑上的 QQ 现在没在线，回他就在手机 QQ 里回。）' }], source: PHONE_NOTIFICATION_SOURCE }));
         found.agent.followup(createUserMessage({ content: [{ type: 'text', text: fromOwner.map((n) => n.text).join('\n') }], source: ownerSource() }));
-        audit('owner-message', { session: id, count: fromOwner.length, whileBusy });
+        audit('owner-message', { session: id, count: fromOwner.length, whileBusy }); bump('owner', fromOwner.length);
       }
       if (!items.length) return;
       // The people in these messages, as she remembers them (dsh-dot/memory).
       const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
       const text = `${notificationText(items, { whileBusy })}${cards ? `\n（你记得的人：\n${cards}）` : ''}`;
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text }], source: PHONE_NOTIFICATION_SOURCE }));
+      bump('woke', 1);
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
@@ -540,6 +546,8 @@ export function apply(ctx, config = {}) {
     session: () => lastSession,
     setSession: (id) => { if (id && id !== lastSession) { lastSession = id; store.set('lastSession', id); } },
     errand: ensureErrand,
+    errandId: () => errandId,
+    stats,
     isErrand,
     busy: (id) => turns.has(id),
     isIm: (id) => imSessions.has(id),
@@ -556,6 +564,9 @@ export function apply(ctx, config = {}) {
       };
     },
   });
+
+  // The panel: `/dsh-dot/` on dsh's own web server (the "dot" sidebar tab is an iframe of it).
+  ctx.inject(['webServer'], (c) => c.effect(() => mountPanel(ctx, c.webServer, logger), 'dsh-dot: panel'));
 
   logger.info(`dot ready — home ${home}`);
 }

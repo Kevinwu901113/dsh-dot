@@ -28,6 +28,22 @@ export const PhoneArtwork = ({ size = 36, className }: { size?: number; classNam
 )
 
 /** Sixteen-pixel phone glyph in the surrounding text color. */
+/** Guide artwork: dot herself — a filled dot with a ring, same palette. */
+export const DotArtwork = ({ size = 36, className }: { size?: number; className?: string }): ReactNode => (
+  <svg width={size} height={size} className={className} viewBox="0 0 36 36" fill="none" aria-hidden="true">
+    <circle cx="18" cy="18" r="11" stroke="#5BB98C" strokeWidth="2.5" />
+    <circle cx="18" cy="18" r="4" fill="#5BB98C" />
+  </svg>
+)
+
+/** Sixteen-pixel dot glyph in the surrounding text color. */
+export const DotIcon = (): ReactNode => (
+  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+    <circle cx="8" cy="8" r="5.25" stroke="currentColor" strokeWidth="1.2" />
+    <circle cx="8" cy="8" r="2" fill="currentColor" />
+  </svg>
+)
+
 export const PhoneIcon = (): ReactNode => (
   <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <rect x="4.75" y="1.75" width="6.5" height="12.5" rx="1.5" stroke="currentColor" strokeWidth="1.2" />

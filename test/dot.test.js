@@ -404,3 +404,35 @@ test('the owner on her phone: a notification from a name that resolves to the ow
   assert.ok(followups.some((f) => /\[手机通知\] QQ · 阿满：有人吗/.test(f.m.content[0].text)));
   stop(h);
 });
+
+test('panel: `/dsh-dot/` and `/dsh-dot/api/state` on dsh\'s web server; state gathers the services that exist', async () => {
+  const { apply } = await import('../src/dot/core.js');
+  const h = harness();
+  const routes = [];
+  const webServer = { register: (r) => { routes.push(r); return () => {}; } };
+  const svc = {
+    webServer,
+    dshPhone: { status: () => ({ state: 'ready' }) },
+    dshQq: { status: () => ({ connected: true, selfId: '2450548644' }) },
+    dshInterlude: { status: () => ({ state: { current: '在看帖' }, today: { rounds: 2, maxRounds: 12, plays: 1, browses: 0, contacts: 0, tokensIn: 100, tokensOut: 10 }, intents: [], script: [{ head: '2026-10-27 22:00 · advance', text: '她……' }], cursor: Date.now() }) },
+    dotMemory: { panel: async () => ({ gen: 2, owner: { entries: ['a'], chars: 2, limit: 1375 }, self: { entries: [], chars: 0, limit: 2200 }, people: 3, contacts: 1, pending: 0, merges: 0, fragments: 9, sinceCursor: 1, consolidations: 1, ledger: { in: 5, out: 1, calls: 1 }, conversation: { session: 's1', tokens: 1234, handoffAt: 150000 }, diary: [{ day: '2026-10-27 周二', text: '今天没什么事。' }], dailyAt: '23:30' }) },
+  };
+  const provided = {};
+  h.ctx.provide = (n, v) => { provided[n] = v; };
+  h.ctx.get = ((get) => (n) => svc[n] ?? provided[n] ?? get(n))(h.ctx.get);
+  apply(h.ctx, h.config);
+  try {
+  const route = routes.find((r) => r.path === '/dsh-dot');
+  assert.ok(route && route.kind === 'prefix');
+  const call = async (url) => { let status = 0, body = '', headers = {}; const res = { writeHead(s, hd) { status = s; headers = hd ?? {}; return res; }, end(b) { body = String(b ?? ''); } }; await route.handler({ method: 'GET', url }, res); return { status, body, headers }; };
+  const page = await call('/dsh-dot/');
+  assert.equal(page.status, 200); assert.match(page.headers['content-type'], /text\/html/); assert.match(page.body, /她现在/);
+  const state = await call('/dsh-dot/api/state');
+  assert.equal(state.status, 200);
+  const s = JSON.parse(state.body);
+  assert.equal(s.devices.phone.state, 'ready'); assert.equal(s.devices.qq.selfId, '2450548644');
+  assert.equal(s.interlude.state.current, '在看帖'); assert.equal(s.memory.diary[0].text, '今天没什么事。');
+  assert.deepEqual(s.dot.today, { day: s.dot.today.day, woke: 0, owner: 0 });
+  assert.equal((await call('/dsh-dot/nope')).status, 404);
+  } finally { stop(h); }
+});

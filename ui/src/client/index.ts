@@ -7,8 +7,8 @@ import type { Context } from '@deepseek-ai/cordis'
 import { ComputerView, type ComputerViewProps } from './view.tsx'
 import { HeaderButton } from './HeaderButton.tsx'
 import { ComputerArtwork } from './icons.tsx'
-import { phoneLiveViewUrl, probePhone, type ComputerEndpoint } from './endpoint.ts'
-import { PhoneArtwork, PhoneIcon } from './icons.tsx'
+import { panelUrl, phoneLiveViewUrl, probePanel, probePhone, type ComputerEndpoint } from './endpoint.ts'
+import { DotArtwork, DotIcon, PhoneArtwork, PhoneIcon } from './icons.tsx'
 import { en, NS, zh } from './locales.ts'
 
 /** Services the tab and the header button use. */
@@ -18,6 +18,8 @@ const ID = 'dsh-computer'
 const KIND = 'dsh-computer'
 const PHONE_ID = 'dsh-phone'
 const PHONE_KIND = 'dsh-phone'
+const DOT_ID = 'dsh-dot-panel'
+const DOT_KIND = 'dsh-dot-panel'
 
 // The VM host plugin publishes on 127.0.0.1:18080 unless DSH_COMPUTER_PORT changes it;
 // client rows receive no Loader config, so the page may override the port by query (?dshComputerPort=).
@@ -47,6 +49,12 @@ function phoneEndpoint(): ComputerEndpoint {
 /** Copy accessor for the phone tab: phone-specific keys first, shared status keys as they are. */
 const phoneCopy = (t: (key: string) => string) => (key: string): string => {
   const own: Record<string, string> = { title: 'phoneTitle', open: 'phoneOpen', description: 'phoneDescription', toggle: 'phoneToggle', checking: 'phoneChecking', offline: 'phoneOffline' }
+  return t(own[key] ?? key)
+}
+
+/** Copy accessor for the dot panel tab. */
+const dotCopy = (t: (key: string) => string) => (key: string): string => {
+  const own: Record<string, string> = { title: 'dotTitle', open: 'dotOpen', description: 'dotDescription', toggle: 'dotToggle', checking: 'dotChecking', offline: 'dotOffline' }
   return t(own[key] ?? key)
 }
 
@@ -104,4 +112,25 @@ export function apply(ctx: Context): void {
   ctx.effect(() => c.slots.inject('conversation.session.header.utilities', () => c.slots.register({
     name: 'conversation.session.header.utilities', id: PHONE_ID, order: -19, locale: NS,
   }, PhoneHeader)), 'dsh-phone.header')
+
+  // The dot panel: the same tab body, against dsh-dot/dot's page on dsh's own web server (same origin).
+  const td = dotCopy(t)
+  const panelAt: ComputerEndpoint = { host: '', port: 0 }
+  ctx.effect(() => c.sidebarRightTabs.register({
+    id: DOT_ID, kind: DOT_KIND, priority: 'extension', keepMounted: true, title: () => td('title'),
+    guide: [{ id: 'open', order: 42, title: () => td('open'), description: () => td('description'), icon: DotArtwork }],
+  }), 'dsh-dot-panel.type')
+  const DotBody = (props: Omit<ComputerViewProps, 'endpoint'>): ReactNode => createElement(ComputerView, { ...props, t: td, endpoint: panelAt, url: panelUrl(), probe: probePanel })
+  ctx.effect(() => c.slots.inject('sidebar.right.pane.tab', () => c.slots.register(
+    { name: 'sidebar.right.pane.tab', key: DOT_ID, locale: NS }, DotBody,
+  )), 'dsh-dot-panel.body')
+  const toggleDot = (): void => {
+    const sidebar = c.sidebarRight
+    if (sidebar.isExpanded() && sidebar.active()?.kind === DOT_KIND) sidebar.toggleExpanded()
+    else sidebar.openTab(DOT_KIND)
+  }
+  const DotHeader = (props: { t: (key: string) => string }): ReactNode => createElement(HeaderButton, { t: dotCopy(props.t), toggle: toggleDot, icon: DotIcon })
+  ctx.effect(() => c.slots.inject('conversation.session.header.utilities', () => c.slots.register({
+    name: 'conversation.session.header.utilities', id: DOT_ID, order: -18, locale: NS,
+  }, DotHeader)), 'dsh-dot-panel.header')
 }

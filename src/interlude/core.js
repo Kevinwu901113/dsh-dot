@@ -934,5 +934,22 @@ export function apply(ctx, config = {}) {
     }), 'dsh-interlude: /interlude command');
   });
 
+  // For the panel (dsh-dot/dot): where her life stands, as data.
+  ctx.provide?.('dshInterlude', {
+    status() {
+      rollDay();
+      const script = (() => { let t = ''; try { t = readFileSync(files.script, 'utf8'); } catch (error) { void error; } return t.split(/^## /m).filter((x) => x.trim()).slice(-2).map((x) => { const [head, ...body] = x.split('\n'); return { head: head.trim(), text: body.join('\n').trim() }; }); })();
+      return {
+        name: canon?.storyDefaults?.characterName ?? 'dot',
+        state, cursor: meta.cursor, lastAdvance: meta.lastAdvance, rounds: meta.count,
+        today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
+        intents: intents.map((i) => ({ at: i.at, kind: i.kind, text: i.text })),
+        script,
+        speak: cfg.speak, play: cfg.play, activeHours: cfg.activeHours, advanceEveryMinutes: cfg.advanceEveryMinutes,
+        nextAdvanceAt: cfg.advanceEveryMinutes > 0 ? Math.max(meta.cursor, meta.lastAdvance) + cfg.advanceEveryMinutes * 60000 : null,
+      };
+    },
+  });
+
   logger.info(`interlude ready — ${dir}`);
 }

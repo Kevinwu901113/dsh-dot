@@ -535,6 +535,23 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     consolidate, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, people: Object.keys(memory.people).length, pending: memory.pending.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length }),
+    /** For the panel: banks with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
+    async panel() {
+      const id = dot()?.session?.();
+      const d = dayLabel(new Date()).slice(0, 10);
+      let diary = [];
+      try { diary = readFileSync(files.diary, 'utf8').split(/^## /m).filter((x) => x.trim()).map((x) => { const [head, ...body] = x.split('\n'); return { day: head.trim(), text: body.join('\n').trim() }; }).reverse().slice(0, 14); } catch (error) { void error; }
+      return {
+        gen: memory.gen, consolidations: memory.consolidations,
+        owner: { entries: memory.owner, chars: memory.owner.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.owner },
+        self: { entries: memory.self, chars: memory.self.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.self },
+        people: Object.values(memory.people).filter((p) => p.tier !== 'contact').length, contacts: Object.values(memory.people).filter((p) => p.tier === 'contact').length,
+        pending: memory.pending.length, merges: memory.merges.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length,
+        ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
+        conversation: { session: id || '', tokens: id ? await measure(id) : 0, handoffAt: cfg.handoffTokens },
+        diary, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
+      };
+    },
     /** `/dot memory …` and `/dot people …` */
     async command(arg) {
       const [verb, sub, ...rest] = String(arg ?? '').trim().split(/\s+/);

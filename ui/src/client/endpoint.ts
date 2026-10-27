@@ -33,6 +33,27 @@ export async function probe(endpoint: ComputerEndpoint, signal: AbortSignal): Pr
   }
 }
 
+/** The dot panel, served by dsh-dot/dot on dsh's own web server (same origin as the client). */
+export function panelUrl(): string {
+  try { return `${window.location.origin}/dsh-dot/` } catch { return '/dsh-dot/' }
+}
+
+/**
+ * Whether the panel answers (dsh-dot/dot is loaded and its route is mounted).
+ * @param _endpoint - unused; the panel is same-origin.
+ * @param signal - aborts the probe.
+ * @returns `true` when `/dsh-dot/api/state` answered 200.
+ */
+export async function probePanel(_endpoint: ComputerEndpoint, signal: AbortSignal): Promise<boolean> {
+  const timeout = AbortSignal.timeout(3000)
+  try {
+    const res = await fetch(`${panelUrl()}api/state`, { cache: 'no-store', signal: AbortSignal.any([signal, timeout]) })
+    return res.ok
+  } catch {
+    return false
+  }
+}
+
 /**
  * The phone's live view page served by dsh-dot/phone.
  * @param endpoint - live view host and port.

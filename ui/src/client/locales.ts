@@ -20,6 +20,12 @@ export const zh = {
   phoneToggle: '手机画面',
   phoneChecking: '正在连接手机…',
   phoneOffline: '手机还没有就绪（第一次要先在对话里发 /phone accept，下载约 2 GB）。',
+  dotTitle: 'dot',
+  dotOpen: 'dot',
+  dotDescription: '她现在在干什么、今天做了什么、记得什么',
+  dotToggle: 'dot 面板',
+  dotChecking: '正在连接 dot…',
+  dotOffline: 'dot 还没有加载（dsh-dot/dot 组件未启用，或 dsh 还在启动）。',
 } satisfies Record<string, string>
 
 export const en = {
@@ -41,4 +47,10 @@ export const en = {
   phoneToggle: 'Phone screen',
   phoneChecking: 'Connecting to the phone…',
   phoneOffline: 'The phone is not ready yet (first time: send /phone accept in a chat; it downloads about 2 GB).',
+  dotTitle: 'dot',
+  dotOpen: 'dot',
+  dotDescription: 'What she is doing now, today, and what she remembers',
+  dotToggle: 'dot panel',
+  dotChecking: 'Connecting to dot…',
+  dotOffline: 'dot is not loaded (the dsh-dot/dot component is off, or dsh is still starting).',
 } satisfies Record<keyof typeof zh, string>

@@ -185,7 +185,7 @@ tail -n 50 ~/.dsh/dsh-computer.log
 
 ## 九、开发：界面部分
 
-界面代码在 `ui/`，必须用 dsh 官方仓库的 tsdown 预设编译。把 `ui/` 放进官方仓库的 `packages/client/dsh-dot-ui/`，执行 `pnpm install --filter "dsh-dot-ui..."`，然后在该目录运行 `npx tsc -p tsconfig.json --noCheck && npx tsdown`，把生成的 `lib/client.js` 复制到本插件的 `lib/`。虚拟机端口固定读 18080；改了 `DSH_COMPUTER_PORT` 时，标签页暂时仍连 18080。
+界面代码在 `ui/`（虚拟机、手机、dot 三个标签页）。`lib/client.js` 可以用 dsh 官方仓库的 tsdown 预设编译，也可以照 dsh-companion-core 的做法手改（它就是一段可读的 `__ModuleLoader__.load`）；dot 标签页就是手改加上的，`ui/src` 已同步，重新编译结果一致。编译方法：把 `ui/` 放进官方仓库的 `packages/client/dsh-dot-ui/`，执行 `pnpm install --filter "dsh-dot-ui..."`，然后在该目录运行 `npx tsc -p tsconfig.json --noCheck && npx tsdown`，把生成的 `lib/client.js` 复制到本插件的 `lib/`。虚拟机端口固定读 18080；改了 `DSH_COMPUTER_PORT` 时，标签页暂时仍连 18080。
 
 ## 十、审计日志与状态接口
 

@@ -82,7 +82,8 @@ open -a "DeepSeek Harness"
 | `~/dot/memory/` | `memory.md`（给你看的：关于你、她的笔记、认识的人、待核实、碎片）、`diary.md`（她每天 23:30 写的日记）、`memory.json`、真实发生过的对话 `transcript.jsonl`、交班记录 `handoffs.jsonl`、每次整理的原始回复 `calls.jsonl` |
 | `~/.dsh/phone/` | 模拟器、platform-tools、系统镜像、AVD（`avd/dot.avd/`）；`~/.dsh/dsh-phone.log` 日志、`dsh-phone-audit.jsonl` 审计、`dsh-phone.json` 设置 |
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
-| `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|handoff]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |
+| `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|diary\|handoff]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |
+| 右侧栏 **dot** 标签页（会话顶部 ◎ 按钮） | 一页看全：手机 / 电脑 QQ / 电脑 状态、她的对话交班进度、她此刻在做什么和打算、今天的轮数 / 玩 / 去看 / 叫醒 / token、记忆用量、日记、最近两段剧本。只读，3 秒刷新；页面由 `dsh-dot/dot` 挂在 dsh 自己的 web server 上（`/dsh-dot/`），不开新端口 |
 
 dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（可选的静音时段，默认不设：任何时候来通知都叫醒她）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。
 
