@@ -7,17 +7,25 @@
 // key check and then into an internal server that includes /opt/gem/nginx/*.conf — dsh-dot drops a
 // location there (/dsh-dot/napcat/ → 127.0.0.1:<wsPort>, WebSocket included). NapCat listens on the
 // VM's loopback only, the route needs the gateway key, and no extra port is opened anywhere.
+// A second backend, SnowLuma, instead ptrace-hooks a running Linux QQ *GUI* on the VM desktop and
+// speaks the same OneBot 11 — so everything past the WebSocket (qq_send, gates, scoring) is shared.
+// SnowLuma also ships an MCP server over its OneBot HTTP API (219 actions): mounted as dot-qq and
+// gated by qqToolGate; it reaches SnowLuma through a second gateway location, /dsh-dot/onebot/.
 import { randomBytes } from 'node:crypto';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
+import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 
 export const name = 'dot-qq';
 export const inject = [];
 
 export const defaults = {
-  qq: '',                   // the account (QQ number) NapCat logs into — her small account, the same one as on the phone
+  backend: 'napcat',        // 'napcat' (headless) | 'snowluma' (hooks the QQ GUI on the VM desktop); /qq backend <name>
+  snowlumaVersion: '',      // a SnowLuma release tag to pin; '' = latest
+  snowlumaMcp: true,        // backend snowluma: mount SnowLuma's MCP server (mcp__dot-qq__*, gated) once connected
+  qq: '',                  // the account (QQ number) NapCat logs into — her small account, the same one as on the phone
   owner: '',                // your QQ number: set it with /qq owner <number>. Your private messages count as your own words (they can start long tasks); everyone else's do not. Never learned automatically.
   wsPort: 3001,             // OneBot 11 WebSocket server port inside the VM (loopback only)
   token: '',                // OneBot access token; generated once and kept in $DSH_HOME/dsh-qq.json
@@ -60,6 +68,18 @@ const NAPCAT_DIR = `${NAPCAT}/opt/QQ/resources/app/app_launcher/napcat`;
 const CONFIG_DIR = `${NAPCAT_DIR}/config`;
 const QR_FILE = `${NAPCAT_DIR}/cache/qrcode.png`;
 const LOG_FILE = `${VM_HOME}/napcat.log`;
+// SnowLuma: unpacked lite release (index.mjs at the top), its log, and the GUI QQ it hooks.
+export const BACKENDS = ['napcat', 'snowluma'];
+const SL_DIR = `${VM_HOME}/snowluma`;
+const SL_LOG = `${VM_HOME}/snowluma.log`;
+const SL_QQ_LOG = `${VM_HOME}/snowluma-qq.log`;
+const SL_HTTP_PORT = 3000;
+// The GUI QQ: /opt/QQ/qq when a system linuxqq exists, else the one NapCat's installer unpacked.
+const SL_QQ = `QQ=/opt/QQ/qq; [ -x "$QQ" ] || QQ=${QQ_BIN}`;
+// The VM desktop's X display (tigervnc), as ":N".
+const SL_DISPLAY = 'D=$(ls /tmp/.X11-unix/ 2>/dev/null | sed -n \'s/^X//p\' | head -1); D=":${D:-1}"';
+// "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
+const SL_PGREP = '[s]nowluma/index.mjs';
 
 /** OneBot 11 message segments → plain text the way a person would read them. */
 export function segmentsToText(message, selfId = '') {
@@ -231,6 +251,67 @@ export function onebotConfig({ port, token }) {
   };
 }
 
+/**
+ * SnowLuma's two config files: runtime (WebUI on its default 5099, hook loads itself) and OneBot —
+ * a loopback WS server (dsh's socket, cfg.token, like NapCat) and a loopback HTTP server (the MCP).
+ * The HTTP token is the *gateway key* when the MCP is mounted: the MCP sends one `Authorization:
+ * Bearer`, the gateway checks it and passes it through unchanged, and SnowLuma checks the same
+ * header — so both sides must expect the same value. The WS keeps cfg.token (key in its own header).
+ */
+export function snowlumaConfig({ port, token, httpToken = token, httpPort = SL_HTTP_PORT }) {
+  const common = { enabled: true, host: '127.0.0.1', path: '/', messageFormat: 'array', reportSelfMessage: false };
+  return {
+    runtime: { webuiPort: 5099, hookAutoLoad: true },
+    onebot: {
+      networks: {
+        httpServers: [{ name: 'dot-http', ...common, port: httpPort, accessToken: httpToken }], httpClients: [],
+        wsServers: [{ name: 'dot', ...common, port, role: 'Universal', accessToken: token }], wsClients: [],
+      },
+      musicSignUrl: '',
+    },
+  };
+}
+
+// ---- SnowLuma's MCP: which of her 219 actions run without asking ----
+const QQ_DOC_TOOLS = new Set(['list_actions', 'search_actions', 'get_action', 'list_categories', 'get_runtime_info']);
+const QQ_SEND_ACTIONS = new Set(['send_private_msg', 'send_msg', 'send_group_msg', 'send_private_forward_msg', 'send_group_forward_msg']);
+// Always asked, whatever the prefix says: raw packets, login secrets, her profile, people and groups.
+const QQ_ASK_ACTIONS = new Set(['send_packet', 'get_cookies', 'get_csrf_token', 'get_rkey', 'get_credentials', 'set_qq_profile', 'set_qq_avatar', 'delete_friend', 'set_group_kick', 'set_group_ban', 'set_group_whole_ban', 'set_group_admin', 'set_group_leave', 'set_restart']);
+const QQ_SPACE_WRITE = /(qzone|feed|moment|shuoshuo)/i;
+const qqReadOnly = (a) => /^(get_|fetch_|can_|list_|search_)/.test(a) || a.includes('preview') || a.endsWith('_check') || a === 'ocr_image' || a === 'download_file';
+/** Does any key named file/path appear anywhere in the params (a local file she would send)? */
+const hasFileKey = (v, depth = 0) => depth < 6 && v && typeof v === 'object' && Object.entries(v).some(([k, x]) => k === 'file' || k === 'path' || hasFileKey(x, depth + 1));
+
+/**
+ * Approval for a SnowLuma MCP tool call (null = allow, else the reason to ask). The docs/query tools
+ * only describe actions; invoke_action* carry an OneBot action in `action` and its params in
+ * `params` (or `input`/`args`, JSON string or object). Messages go through the same sendGate as
+ * qq_send; files, unknown shapes and everything that changes her account, friends or groups ask.
+ * helpers: { recent(k) → ms, now }.
+ */
+export function qqToolGate(name, args = {}, cfg = {}, helpers = {}) {
+  const tool = String(name ?? '').startsWith(QQ_TOOL_PREFIX) ? String(name).slice(QQ_TOOL_PREFIX.length) : String(name ?? '');
+  if (QQ_DOC_TOOLS.has(tool) || tool.startsWith('query_action')) return null;
+  if (!tool.startsWith('invoke_action')) return `dsh-dot/qq: unknown QQ tool ${tool}`;
+  const action = typeof args?.action === 'string' ? args.action.trim() : '';
+  if (!action) return `dsh-dot/qq: QQ action call without a readable action name (${tool})`;
+  let params = args.params ?? args.input ?? args.args ?? args.arguments ?? {};
+  if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = {}; } }
+  if (QQ_ASK_ACTIONS.has(action)) return `dsh-dot/qq: QQ action ${action} (account, people, groups or secrets)`;
+  if (QQ_SPACE_WRITE.test(action) && !/^(get_|fetch_|list_|search_)/.test(action)) return `dsh-dot/qq: QQ action ${action} (QQ space)`;
+  if (qqReadOnly(action)) return null;
+  if (QQ_SEND_ACTIONS.has(action)) {
+    if (hasFileKey(params)) return `dsh-dot/qq: QQ action ${action} with a file`;
+    const group = params?.group_id;
+    const to = group ? `group:${group}` : params?.user_id ? `user:${params.user_id}` : '';
+    if (!parseTarget(to, '')) return `dsh-dot/qq: QQ action ${action} without a clear recipient`;
+    const msg = params.message ?? params.messages ?? '';
+    const text = typeof msg === 'string' ? msg : Array.isArray(msg) ? segmentsToText(msg.map((s) => (s?.type === 'node' ? { type: 'text', data: { text: segmentsToText(s.data?.content ?? []) } } : s))) : '';
+    return sendGate({ to, text, images: [] }, { owner: cfg.owner, policy: cfg.sendPolicy, windowMs: (cfg.replyWindowMinutes ?? 30) * 60_000, recent: helpers.recent, now: helpers.now });
+  }
+  return `dsh-dot/qq: QQ action ${action}`;
+}
+
 /** Parse a `to` the model or dot gives: "user:123", "group:456", "owner", or a bare number (user). */
 export function parseTarget(to, owner) {
   const s = String(to ?? '').trim();
@@ -261,6 +342,8 @@ export function apply(ctx, config = {}, deps = {}) {
   sanitise('token', assertSafeToken, '');
   sanitise('installer', (v) => assertSafeShellUrl(v, 'installer'), defaults.installer);
   sanitise('githubProxy', (v) => assertSafeShellUrl(v, 'githubProxy'), '');
+  sanitise('backend', (v) => { if (!BACKENDS.includes(v)) throw new Error(`unknown backend "${String(v).slice(0, 20)}" (${BACKENDS.join(' | ')})`); return v; }, defaults.backend);
+  sanitise('snowlumaVersion', (v) => { if (!/^[A-Za-z0-9._-]{1,40}$/.test(String(v))) throw new Error('bad release tag'); return String(v); }, '');
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
   const computer = () => ctx.get('dshComputer');
@@ -269,8 +352,28 @@ export function apply(ctx, config = {}, deps = {}) {
   const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit, sentToOwnerAt: 0 };
   const listeners = new Set();
   qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
-  qq.status = () => ({ state: qq.state, connected: qq.connected, qq: qq.qq, owner: qq.owner, selfId: qq.selfId, error: qq.error, wsPort: cfg.wsPort });
-  const setState = (state, error) => { if (qq.state !== state || qq.error !== error) { qq.state = state; qq.error = error; audit({ kind: 'status', state, error }); } };
+  qq.status = () => ({ state: qq.state, connected: qq.connected, qq: qq.qq, owner: qq.owner, selfId: qq.selfId, error: qq.error, wsPort: cfg.wsPort, backend: cfg.backend });
+  const setState = (state, error) => { if (qq.state !== state || qq.error !== error) { qq.state = state; qq.error = error; audit({ kind: 'status', state, error }); } if (state === 'connected') void mountMcp(); };
+  // ---- SnowLuma's MCP server (backend snowluma): her 219 OneBot actions as mcp__dot-qq__* ----
+  let mcpFork = null;
+  async function mountMcp() {
+    if (mcpFork || !mcpWanted() || !ctx.plugin) return;
+    const c = computer();
+    const key = gatewayKey();
+    if (!c?.port || !key) { logger.warn(`${QQ_TOOL_PREFIX}* not mounted: no gateway key`); return; }
+    let mcpClient;
+    try { mcpClient = deps.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client'); } catch (err) { logger.error(`${QQ_TOOL_PREFIX}* unavailable: ${err.message}`); return; }
+    if (mcpFork) return;
+    mcpFork = ctx.plugin(mcpClient, {
+      transport: 'stdio', serverName: QQ_SERVER, command: 'npx', args: ['-y', '@snowluma/mcp'],
+      // The key is SnowLuma's HTTP token too (snowlumaConfig): one Bearer satisfies gateway and SnowLuma.
+      env: { SNOWLUMA_MCP_ENDPOINT: `http://127.0.0.1:${c.port}${ONEBOT_ROUTE}`, SNOWLUMA_MCP_TOKEN: key, SNOWLUMA_MCP_MODE: 'write', SNOWLUMA_MCP_EVENTS_URL: '' },
+      failOnStartupError: false, reconnect: { maxAttempts: 1000 },
+    });
+    audit({ kind: 'mcp-mounted' });
+    logger.info(`${QQ_TOOL_PREFIX}* mounted (SnowLuma MCP via the gateway)`);
+  }
+  function unmountMcp() { const f = mcpFork; mcpFork = null; try { f?.dispose?.(); } catch {} }
 
   // ---- the VM side: install, configure, start, stop, QR ----
   const vmShell = async (script, timeoutMs = 120_000) => {
@@ -278,48 +381,103 @@ export function apply(ctx, config = {}, deps = {}) {
     if (!c?.backend?.rootShell) throw new Error('the computer is not available (dsh-dot/computer)');
     return deps.rootShell ? deps.rootShell(script, timeoutMs) : c.backend.rootShell(script);
   };
-  qq.installed = async () => { try { return (await vmShell(`test -x ${QQ_BIN} && echo yes || echo no`)).trim() === 'yes'; } catch { return false; } };
+  const sl = () => cfg.backend === 'snowluma';
+  /** Is the given backend (default: the configured one) installed in the computer? */
+  qq.installed = async (which = cfg.backend) => {
+    // SnowLuma needs both its own files and a Linux QQ to hook.
+    const probe = which === 'snowluma' ? `${SL_QQ}; test -x "$QQ" && test -f ${SL_DIR}/index.mjs && echo yes || echo no` : `test -x ${QQ_BIN} && echo yes || echo no`;
+    try { return (await vmShell(probe)).trim() === 'yes'; } catch { return false; }
+  };
   const INSTALL_LOG = `${VM_HOME}/napcat-install.log`;
   const INSTALL_DONE = `${VM_HOME}/napcat-install.done`;
+  const SL_INSTALL_LOG = `${VM_HOME}/snowluma-install.log`;
+  const SL_INSTALL_DONE = `${VM_HOME}/snowluma-install.done`;
   const MIRRORS = ['', 'https://ghfast.top/', 'https://gh-proxy.com/', 'https://mirror.ghproxy.com/'];
   let installing = null;
+  /** Run `script` detached in the VM (nohup), then poll its done file (exit code) for up to 40 minutes. */
+  async function runDetached(label, script, log, done) {
+    await vmShell(`cat > ${VM_HOME}/${label}-install-run.sh <<'DOT_RUN_EOF'\n${script}\nDOT_RUN_EOF\nnohup bash ${VM_HOME}/${label}-install-run.sh > ${log} 2>&1 < /dev/null & disown; echo started`);
+    const deadline = Date.now() + 40 * 60_000;
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, deps.pollMs ?? 10_000));
+      const rc = (await vmShell(`cat ${done} 2>/dev/null || true`)).trim();
+      if (rc === '') continue;
+      if (rc !== '0') { const tail = await vmShell(`tail -n 25 ${log} 2>/dev/null || true`); throw new Error(`installer exited ${rc}:\n${tail.trim().slice(-1200)}`); }
+      return;
+    }
+    throw new Error('installer still running after 40 minutes — /qq log');
+  }
   /**
-   * Install NapCat in the computer. The work runs detached inside the VM (a host-side `msb exec`
-   * is cut off after a couple of minutes; apt + linuxqq take longer) and is polled to completion.
-   * GitHub is tried direct first, then through public mirrors; QQ itself comes from Tencent.
+   * The NapCat installer script. The work runs detached inside the VM (a host-side `msb exec` is cut
+   * off after a couple of minutes; apt + linuxqq take longer) and is polled to completion. GitHub is
+   * tried direct first, then through public mirrors; QQ itself comes from Tencent.
    */
-  qq.install = () => (installing ??= (async () => {
+  function napcatInstallScript() {
+    const prefixes = cfg.githubProxy ? [cfg.githubProxy] : MIRRORS;
+    const attempts = prefixes.map((pre) => `(curl -fsSL --connect-timeout 15 --max-time 120 -o napcat-install.sh ${JSON.stringify(pre + cfg.installer)} && echo ${JSON.stringify(pre || 'direct')} > github.prefix)`).join(' || ');
+    return [
+      `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${INSTALL_DONE} github.prefix`,
+      // A half-finished earlier attempt leaves the folder behind and the installer refuses to touch it.
+      `test -x ${QQ_BIN} || rm -rf ${NAPCAT} ${VM_HOME}/NapCat`,
+      `{ ${attempts}; } || { echo "cannot download the installer from GitHub (direct or mirrors)"; echo 2 > ${INSTALL_DONE}; exit 2; }`,
+      'pre=$(cat github.prefix); [ "$pre" = direct ] && flag="--github-proxy 0" || flag="--github-proxy $pre"',
+      'echo "installer fetched via $pre"; bash napcat-install.sh --docker n --cli n $flag --confirm y; rc=$?',
+      `test -x ${QQ_BIN} && rc=0; echo $rc > ${INSTALL_DONE}`,
+    ].join('\n');
+  }
+  /**
+   * The SnowLuma installer script: the lite release for the VM's arch (needs the VM's node ≥ 22),
+   * unpacked so index.mjs sits in SL_DIR, our config written before its first start, and QQ's hot
+   * update host blocked (an updated QQ may no longer match the hook). QQ itself is NapCat's.
+   */
+  function snowlumaInstallScript() {
+    const prefixes = cfg.githubProxy ? [cfg.githubProxy] : MIRRORS;
+    const fail = (rc, msg) => `{ echo ${JSON.stringify(msg)}; echo ${rc} > ${SL_INSTALL_DONE}; exit ${rc}; }`;
+    const fetch = prefixes.map((pre) => `curl -fSL --connect-timeout 15 --max-time 600 -o snowluma.tgz "${pre}$asset"`).join(' || ');
+    return [
+      `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${SL_INSTALL_DONE} snowluma.tgz; rm -rf ${SL_DIR}.tmp`,
+      `${SL_QQ}; [ -x "$QQ" ] || ${fail(3, 'no Linux QQ in the computer (/opt/QQ/qq) — run /qq install first (NapCat + QQ), then /qq install snowluma')}`,
+      `node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || ${fail(4, 'SnowLuma needs Node >= 22 in the computer')}`,
+      `case "$(uname -m)" in aarch64|arm64) arch=arm64;; x86_64|amd64) arch=x64;; *) ${fail(4, 'unsupported CPU for SnowLuma')};; esac`,
+      `tag=${JSON.stringify(cfg.snowlumaVersion)}`,
+      '[ -n "$tag" ] || tag=$(curl -fsSL --connect-timeout 15 --max-time 30 https://api.github.com/repos/SnowLuma/SnowLuma/releases/latest | sed -n \'s/.*"tag_name": *"\\([^"]*\\)".*/\\1/p\' | head -1)',
+      `case "$tag" in ''|*[!A-Za-z0-9._-]*) ${fail(2, 'cannot resolve the latest SnowLuma release (set snowlumaVersion to pin one)')};; esac`,
+      'asset="https://github.com/SnowLuma/SnowLuma/releases/download/$tag/SnowLuma-$tag-linux-$arch-lite.tar.gz"; echo "SnowLuma $tag ($arch)"',
+      `{ ${fetch}; } || ${fail(2, 'cannot download SnowLuma from GitHub (direct or mirrors)')}`,
+      // Whatever the tarball's top level is, take the folder that holds index.mjs; config/ survives an update.
+      `mkdir -p ${SL_DIR}.tmp && tar -xzf snowluma.tgz -C ${SL_DIR}.tmp || ${fail(5, 'bad SnowLuma tarball')}`,
+      `src=$(dirname "$(find ${SL_DIR}.tmp -maxdepth 3 -name index.mjs | head -1)"); [ -f "$src/index.mjs" ] || ${fail(5, 'no index.mjs in the SnowLuma tarball')}`,
+      `mkdir -p ${SL_DIR} && cp -a "$src"/. ${SL_DIR}/ && rm -rf ${SL_DIR}.tmp snowluma.tgz`,
+      snowlumaConfigScript(),
+      "grep -q 'qqpatch.gtimg.cn' /etc/hosts || echo '0.0.0.0 qqpatch.gtimg.cn' >> /etc/hosts",
+      `echo "$tag" > ${SL_DIR}/.dot-version; echo 0 > ${SL_INSTALL_DONE}`,
+    ].join('\n');
+  }
+  /** Install a backend: 'napcat' (NapCat + linuxqq) or 'snowluma' (needs NapCat's QQ already there). */
+  qq.install = (which = 'napcat') => (installing ??= (async () => {
+    const snow = which === 'snowluma';
     setState('installing');
-    logger.info('installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes; /qq log follows it');
+    logger.info(snow ? 'installing SnowLuma in the computer (lite release); /qq log follows it' : 'installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes; /qq log follows it');
     try {
-      const prefixes = cfg.githubProxy ? [cfg.githubProxy] : MIRRORS;
-      const attempts = prefixes.map((pre) => `(curl -fsSL --connect-timeout 15 --max-time 120 -o napcat-install.sh ${JSON.stringify(pre + cfg.installer)} && echo ${JSON.stringify(pre || 'direct')} > github.prefix)`).join(' || ');
-      const script = [
-        `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${INSTALL_DONE} github.prefix`,
-        // A half-finished earlier attempt leaves the folder behind and the installer refuses to touch it.
-        `test -x ${QQ_BIN} || rm -rf ${NAPCAT} ${VM_HOME}/NapCat`,
-        `{ ${attempts}; } || { echo "cannot download the installer from GitHub (direct or mirrors)"; echo 2 > ${INSTALL_DONE}; exit 2; }`,
-        'pre=$(cat github.prefix); [ "$pre" = direct ] && flag="--github-proxy 0" || flag="--github-proxy $pre"',
-        'echo "installer fetched via $pre"; bash napcat-install.sh --docker n --cli n $flag --confirm y; rc=$?',
-        `test -x ${QQ_BIN} && rc=0; echo $rc > ${INSTALL_DONE}`,
-      ].join('\n');
-      await vmShell(`cat > ${VM_HOME}/napcat-install-run.sh <<'EOF'\n${script}\nEOF\nnohup bash ${VM_HOME}/napcat-install-run.sh > ${INSTALL_LOG} 2>&1 < /dev/null & disown; echo started`);
-      const deadline = Date.now() + 40 * 60_000;
-      while (Date.now() < deadline) {
-        await new Promise((r) => setTimeout(r, 10_000));
-        const rc = (await vmShell(`cat ${INSTALL_DONE} 2>/dev/null || true`)).trim();
-        if (rc === '') continue;
-        if (rc !== '0') { const tail = await vmShell(`tail -n 25 ${INSTALL_LOG} 2>/dev/null || true`); throw new Error(`installer exited ${rc}:\n${tail.trim().slice(-1200)}`); }
-        audit({ kind: 'installed' });
-        logger.info('NapCat installed');
-        setState('installed');
-        return true;
-      }
-      throw new Error('installer still running after 40 minutes — /qq log');
+      if (snow) await runDetached('snowluma', snowlumaInstallScript(), SL_INSTALL_LOG, SL_INSTALL_DONE);
+      else await runDetached('napcat', napcatInstallScript(), INSTALL_LOG, INSTALL_DONE);
+      audit({ kind: 'installed', backend: which });
+      logger.info(`${snow ? 'SnowLuma' : 'NapCat'} installed`);
+      setState('installed');
+      return true;
     } catch (err) { setState('error', `install failed: ${String(err.message).slice(0, 1500)}`); logger.error(`install failed: ${err.message}`); return false; }
     finally { installing = null; }
   })());
+  /** The gateway key, which the SnowLuma MCP presents as its Bearer token (see snowlumaConfig). */
+  const gatewayKey = () => { const c = computer(); const k = String(c?.authHeaders?.()?.[c?.keyHeader ?? 'X-AIO-API-Key'] ?? ''); return /^[\x21-\x7e]{1,256}$/.test(k) ? k : ''; };
+  const mcpWanted = () => sl() && cfg.snowlumaMcp !== false && cfg.snowlumaMcp !== 'false';
+  /** Shell lines writing SnowLuma's config. Written into both config/ and data/config/: which one a release reads is not pinned down in its docs. */
+  function snowlumaConfigScript() {
+    const { runtime, onebot } = snowlumaConfig({ port: cfg.wsPort, token: cfg.token, httpToken: (mcpWanted() && gatewayKey()) || cfg.token });
+    return [`${SL_DIR}/config`, `${SL_DIR}/data/config`].map((d) => `mkdir -p ${d}; cat > ${d}/runtime.json <<'EOF'\n${JSON.stringify(runtime, null, 2)}\nEOF\ncat > ${d}/onebot.json <<'EOF'\n${JSON.stringify(onebot, null, 2)}\nEOF`).join('\n');
+  }
   qq.configure = async () => {
+    if (sl()) { await vmShell(snowlumaConfigScript()); return; }
     if (!cfg.qq) throw new Error('set the QQ number first: /qq account <number>');
     const ob = JSON.stringify(onebotConfig({ port: cfg.wsPort, token: cfg.token }));
     await vmShell(`mkdir -p ${CONFIG_DIR}; cat > ${CONFIG_DIR}/onebot11_${cfg.qq}.json <<'EOF'\n${ob}\nEOF\n` +
@@ -327,29 +485,72 @@ export function apply(ctx, config = {}, deps = {}) {
       `test -f ${CONFIG_DIR}/webui.json || cat > ${CONFIG_DIR}/webui.json <<'EOF'\n${JSON.stringify({ host: '127.0.0.1', port: 6099, token: cfg.token.slice(0, 16), loginRate: 10 })}\nEOF\n`);
   };
   // "[o]pt" keeps pgrep/pkill from matching the shell that runs them (which would say "running" forever, or kill itself).
-  qq.running = async () => { try { return (await vmShell('pgrep -f "[o]pt/QQ/qq" >/dev/null && echo yes || echo no')).trim() === 'yes'; } catch { return false; } };
+  // NapCat: a QQ without SnowLuma; SnowLuma: the GUI QQ and SnowLuma both.
+  qq.running = async () => {
+    const probe = sl() ? `pgrep -f "[o]pt/QQ/qq" >/dev/null && pgrep -f "${SL_PGREP}" >/dev/null && echo yes || echo no` : `pgrep -f "[o]pt/QQ/qq" >/dev/null && ! pgrep -f "${SL_PGREP}" >/dev/null && echo yes || echo no`;
+    try { return (await vmShell(probe)).trim() === 'yes'; } catch { return false; }
+  };
+  // One account, one desktop client: NapCat and SnowLuma's QQ are both "the computer"; never both.
+  const KILL_ALL = `pkill -f "${SL_PGREP}" || true; pkill -f "[o]pt/QQ/qq" || true; sleep 1`;
+  /** The GUI QQ on the VM desktop, then SnowLuma hooking it (as root: no setcap needed for ptrace). */
+  const snowlumaStartScript = () => [
+    `cd ${VM_HOME}; export HOME=${VM_HOME}`,
+    'ps=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0); [ "$ps" = 3 ] && { echo ptrace-blocked; exit 0; }',
+    "grep -q 'qqpatch.gtimg.cn' /etc/hosts || echo '0.0.0.0 qqpatch.gtimg.cn' >> /etc/hosts",
+    KILL_ALL,
+    `${SL_QQ}; ${SL_DISPLAY}; export DISPLAY=$D`,
+    `setsid nohup "$QQ" --no-sandbox --disable-gpu --disable-software-rasterizer --disable-gpu-compositing > ${SL_QQ_LOG} 2>&1 < /dev/null & disown`,
+    'sleep 5',
+    // By absolute path, so pgrep -f sees "snowluma/index.mjs"; spelled through $SL so this shell's own
+    // command line does not match it (KILL_ALL above would otherwise kill the script running it).
+    `SL=${SL_DIR}; cd "$SL" && setsid nohup node "$SL"/index.mjs >> ${SL_LOG} 2>&1 < /dev/null & disown`,
+    'sleep 1; echo "started on $D"',
+  ].join('\n');
   qq.start = async () => {
-    if (!(await qq.installed())) { setState('not-installed', 'NapCat is not installed in the computer — /qq install'); return false; }
-    if (!cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
+    if (!(await qq.installed())) { setState('not-installed', sl() ? 'SnowLuma is not installed in the computer — /qq install (QQ), then /qq install snowluma' : 'NapCat is not installed in the computer — /qq install'); return false; }
+    if (!sl() && !cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
     await qq.configure();
-    await qq.ensureRoute().catch((err) => logger.warn(`NapCat route: ${err.message}`));
+    await qq.ensureRoute().catch((err) => logger.warn(`OneBot route: ${err.message}`));
     if (!(await qq.running())) {
-      await vmShell(`cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
-      audit({ kind: 'napcat-started', qq: cfg.qq });
-      logger.info(`NapCat started for ${cfg.qq}`);
+      if (sl()) {
+        const out = String(await vmShell(snowlumaStartScript()));
+        if (out.includes('ptrace-blocked')) { setState('error', 'the computer forbids ptrace (kernel.yama.ptrace_scope = 3); SnowLuma cannot hook QQ — use the napcat backend'); return false; }
+        audit({ kind: 'snowluma-started' });
+        logger.info('SnowLuma started (QQ on the computer desktop; log in by QR there)');
+      } else {
+        await vmShell(`${KILL_ALL}; cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
+        audit({ kind: 'napcat-started', qq: cfg.qq });
+        logger.info(`NapCat started for ${cfg.qq}`);
+      }
     }
     setState('starting');
     connect();
     return true;
   };
-  qq.stop = async () => { closeWs(); try { await vmShell('pkill -f "[o]pt/QQ/qq" || true'); } catch {} setState('stopped'); audit({ kind: 'napcat-stopped' }); };
-  /** The login QR NapCat wrote (PNG), or null while there is none (already logged in, or not yet started). */
+  qq.stop = async () => { closeWs(); unmountMcp(); try { await vmShell(KILL_ALL); } catch {} setState('stopped'); audit({ kind: `${cfg.backend}-stopped` }); };
+  /** SnowLuma's login QR is drawn by the QQ GUI: a picture of the VM screen, with whichever tool exists. */
+  async function screenQr() {
+    try {
+      const out = String(await vmShell([
+        `${SL_DISPLAY}`,
+        'if command -v import >/dev/null; then DISPLAY=$D import -window root png:- | base64 -w0',
+        'elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D | convert xwd:- png:- | base64 -w0',
+        'elif command -v scrot >/dev/null; then f=/tmp/dot-screen.png; DISPLAY=$D scrot -o $f && base64 -w0 $f; rm -f $f',
+        'else echo no-screenshot-tool; fi',
+      ].join('\n'))).trim();
+      if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
+      const png = Buffer.from(out.split('\n').pop(), 'base64');
+      return png.length ? { png, ageS: 0 } : null;
+    } catch (err) { logger.warn(`qr: ${err.message}`); return null; }
+  }
   /**
    * A fresh login QR. QQ's codes live about a minute, and after a failed or expired attempt NapCat
    * does not always draw another, so: if the file is older than `maxAgeS` or the log shows a login
    * error after it was written, restart NapCat and wait for the new code. Returns { png, ageS } or null.
+   * SnowLuma: the VM screen (the QQ window draws the code itself).
    */
   qq.qr = async ({ maxAgeS = 45 } = {}) => {
+    if (sl()) return screenQr();
     const probe = async () => {
       const out = await vmShell(`if [ -f ${QR_FILE} ]; then age=$(( $(date +%s) - $(stat -c %Y ${QR_FILE}) )); err=$(awk -v t="$(date -r ${QR_FILE} '+%H:%M:%S')" '/Login Error|登录失败|二维码已过期/ && $2 > t' ${LOG_FILE} 2>/dev/null | tail -1); echo "age=$age"; echo "err=$err"; base64 -w0 ${QR_FILE}; else echo "age=-1"; fi`);
       const age = Number(/age=(-?\d+)/.exec(out)?.[1] ?? -1);
@@ -370,6 +571,15 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   qq.log = async (lines = 40) => {
     try {
+      if (sl()) return await vmShell([
+        `if [ -f ${SL_INSTALL_LOG} ] && [ ! -f ${SL_INSTALL_DONE} ]; then echo "== installing SnowLuma =="; tail -n ${lines} ${SL_INSTALL_LOG}; exit 0; fi`,
+        `echo "== snowluma.log (${SL_LOG}) =="; tail -n ${lines} ${SL_LOG} 2>/dev/null || echo "(no log file)"`,
+        // SnowLuma prints a one-time WebUI admin password on first start.
+        `echo "== WebUI password =="; grep -E "临时密码|initial credentials" ${SL_LOG} 2>/dev/null | tail -2 || echo "(none in the log)"`,
+        `echo "== processes =="; pgrep -af "[o]pt/QQ/qq|${SL_PGREP}" || echo "(none)"`,
+        `echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":${cfg.wsPort}|:${SL_HTTP_PORT}|:5099" || echo "(nothing on ${cfg.wsPort}/${SL_HTTP_PORT}/5099)"`,
+        `echo "== ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo n/a) · version: $(cat ${SL_DIR}/.dot-version 2>/dev/null || echo ?)"`,
+      ].join('\n'));
       return await vmShell([
         `if [ -f ${INSTALL_LOG} ] && [ ! -f ${INSTALL_DONE} ]; then echo "== installing =="; tail -n ${lines} ${INSTALL_LOG}; exit 0; fi`,
         `echo "== napcat.log (${LOG_FILE}) =="; tail -n ${lines} ${LOG_FILE} 2>/dev/null || echo "(no log file)"`,
@@ -384,6 +594,7 @@ export function apply(ctx, config = {}, deps = {}) {
   /** The gateway path that reaches NapCat (served by the location below, behind the gateway's key check). */
   const ROUTE = '/dsh-dot/napcat/';
   const ROUTE_FILE = '/opt/gem/nginx/dsh-dot-napcat.conf';
+  const ONEBOT_ROUTE = '/dsh-dot/onebot/';
   const routeConf = () => [
     '# dsh-dot: her QQ (NapCat, OneBot 11 WebSocket on the VM loopback) behind the gateway key.',
     `location ${ROUTE} {`,
@@ -394,6 +605,13 @@ export function apply(ctx, config = {}, deps = {}) {
     `    proxy_set_header Host 127.0.0.1:${cfg.wsPort};`,
     '    proxy_read_timeout 3600s;',
     '    proxy_send_timeout 3600s;',
+    '}',
+    // SnowLuma's OneBot HTTP API, for its MCP server (same key check; Authorization passes through).
+    `location ${ONEBOT_ROUTE} {`,
+    `    proxy_pass http://127.0.0.1:${SL_HTTP_PORT}/;`,
+    '    proxy_http_version 1.1;',
+    `    proxy_set_header Host 127.0.0.1:${SL_HTTP_PORT};`,
+    '    proxy_read_timeout 300s;',
     '}',
   ].join('\n');
   /** Put the route in the VM's nginx (idempotent; reloads only when the file changed). */
@@ -577,7 +795,7 @@ export function apply(ctx, config = {}, deps = {}) {
       const off = c.dshComputer.onStatus?.(onState);
       const now = c.dshComputer.status?.();
       if (now) onState(now); else c.dshComputer.ready?.then(() => { if (!gone) void boot(); }); // older computer service: no status()
-      return () => { gone = true; off?.(); closeWs(); };
+      return () => { gone = true; off?.(); closeWs(); unmountMcp(); };
     }, 'dsh-dot/qq: boot with the computer');
   });
 
@@ -585,8 +803,15 @@ export function apply(ctx, config = {}, deps = {}) {
   // going on, with text or web images; everything else — new people, silent groups, files from her
   // devices — is asked, with the live-view-free reason the IM approval card shows.
   ctx.on('tools/pre-execute', async (exec, next) => {
-    if (exec.name !== 'qq_send') return next();
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
+    if (String(exec.name ?? '').startsWith(QQ_TOOL_PREFIX)) {
+      // SnowLuma's MCP tools: docs and reads run; sends go through sendGate; the rest asks.
+      const why = qqToolGate(exec.name, args, { owner: qq.owner, sendPolicy: cfg.sendPolicy, replyWindowMinutes: cfg.replyWindowMinutes }, { recent: (k) => recent.get(k) });
+      if (!why) return next();
+      audit({ kind: 'approval-asked', tool: exec.name, session: exec.agent?.session?.id, action: args?.action, reason: why });
+      return { kind: 'ask', reason: why };
+    }
+    if (exec.name !== 'qq_send') return next();
     const reason = sendGate(args, { owner: qq.owner, policy: cfg.sendPolicy, windowMs: cfg.replyWindowMinutes * 60_000, recent: (k) => recent.get(k) });
     if (!reason) return next();
     audit({ kind: 'approval-asked', tool: exec.name, session: exec.agent?.session?.id, to: args.to, reason });
@@ -621,13 +846,20 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'qq',
-      description: 'her QQ on the computer (NapCat): status; "install", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
-      input: { hint: '[install | account <n> | start | stop | qr | log | owner <n> | group <mention|all|none|score>]' },
+      description: 'her QQ on the computer (NapCat or SnowLuma): status; "install" (NapCat + QQ), "install snowluma", "backend <napcat|snowluma>", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
+      input: { hint: '[install [snowluma] | backend <napcat|snowluma> | account <n> | start | stop | qr | log | owner <n> | group <mention|all|none|score>]' },
       handler: async ({ rawInput }) => {
         const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
         let extra = '';
         try {
-          if (verb === 'install') { void qq.install(); extra = '\ninstalling in the background (several minutes) — /qq log to follow, /qq for the state'; }
+          if (verb === 'install') {
+            const which = arg === 'snowluma' ? 'snowluma' : 'napcat';
+            void qq.install(which); extra = `\ninstalling ${which} in the background (several minutes) — /qq log to follow, /qq for the state`;
+          }
+          else if (verb === 'backend') {
+            if (BACKENDS.includes(arg)) { cfg.backend = arg; writeSettings({ backend: arg }); audit({ kind: 'backend', backend: arg }); extra = `\nbackend: ${arg}; /qq start to switch (stops the other one — one account, one desktop client)`; }
+            else extra = `\nbackend: ${cfg.backend} (${BACKENDS.join(' | ')})`;
+          }
           else if (verb === 'account' && arg) { qq.setAccount(arg); extra = `\naccount set: ${arg}; /qq start`; }
           else if (verb === 'owner' && arg) { qq.setOwner(arg); extra = `\nowner set: ${arg}`; }
           else if (verb === 'group') {
@@ -639,7 +871,7 @@ export function apply(ctx, config = {}, deps = {}) {
           else if (verb === 'log') { extra = `\n${await qq.log(30)}`; }
           else if (verb === 'qr') {
             const got = await qq.qr();
-            if (!got) extra = '\nno login QR (already logged in, or NapCat could not draw one — /qq log)';
+            if (!got) extra = sl() ? '\nno screenshot of the computer screen (/qq log; or open the 虚拟机 tab)' : '\nno login QR (already logged in, or NapCat could not draw one — /qq log)';
             else {
               // A new file name every time: the phone's gallery caches thumbnails by path, and a stale
               // thumbnail of an expired code is exactly what "一直过期" looks like.
@@ -647,7 +879,7 @@ export function apply(ctx, config = {}, deps = {}) {
               const file = join(dshHome(), 'phone', `qq-login-${stamp}.png`);
               mkdirSync(dirname(file), { recursive: true });
               writeFileSync(file, got.png);
-              extra = `\nQR saved: ${file} (drawn ${got.ageS}s ago; valid about a minute)`;
+              extra = sl() ? `\nthe computer screen saved: ${file} (SnowLuma: the QR is in the QQ window; if it is not showing, open the 虚拟机 tab)` : `\nQR saved: ${file} (drawn ${got.ageS}s ago; valid about a minute)`;
               const phone = ctx.get('dshPhone');
               if (phone?.isReady) {
                 try {
@@ -664,7 +896,7 @@ export function apply(ctx, config = {}, deps = {}) {
           }
         } catch (err) { extra = `\nerror: ${err.message}`; }
         const s = qq.status();
-        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not set — /qq owner <your QQ number>)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
+        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''} · backend: ${s.backend}${sl() ? ` · mcp: ${mcpFork ? 'mounted' : 'not mounted'}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not set — /qq owner <your QQ number>)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
       },
     }), 'dsh-dot/qq: /qq command');
   });

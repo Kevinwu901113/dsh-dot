@@ -6,3 +6,6 @@ export const VM_SERVER = 'dot-vm';
 export const PHONE_SERVER = 'dot-phone';
 export const VM_TOOL_PREFIX = `mcp__${VM_SERVER}__`;
 export const PHONE_TOOL_PREFIX = `mcp__${PHONE_SERVER}__`;
+// SnowLuma's own MCP server (qq.js, backend 'snowluma'): her 219 OneBot actions, gated by qqToolGate.
+export const QQ_SERVER = 'dot-qq';
+export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;

@@ -39,10 +39,45 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
 | 她能做什么 | 发文字和图片。加好友、进群、撤回、发文件都没有工具 |
 
+## SnowLuma 后端
+
+[SnowLuma](https://github.com/SnowLuma/SnowLuma) 是另一种 OneBot 11 实现：不自己当 QQ，而是用 ptrace 把钩子注入一个**正在运行的 Linux QQ 图形界面进程**，对外提供 OneBot 11（219 个 action）。dsh 这边（WebSocket、`qq_send`、审批、群打分、转发给你）对两个后端完全一样。
+
+```
+/qq install            # 先装 NapCat：它顺带装好 Linux QQ，SnowLuma 用的就是这个 QQ
+/qq install snowluma   # 下载 SnowLuma lite 版（按 VM 的 arm64/x64，tag 取 latest，可用 snowlumaVersion 固定），解到 /root/snowluma，写配置，屏蔽 QQ 热更新（/etc/hosts 加 qqpatch.gtimg.cn）
+/qq backend snowluma   # 切后端，写进 dsh-qq.json
+/qq start              # 停掉 NapCat，在 VM 桌面上开 QQ 图形界面，再以 root 启动 SnowLuma（日志 /root/snowluma.log）
+/qq qr                 # snowluma 下是「VM 屏幕的截图」：登录码在 QQ 窗口里，截图照样放到她手机摄像头前和相册；也可以直接打开「虚拟机」标签页扫
+```
+
+- **一个账号一个电脑端**：NapCat 和 SnowLuma 都是这个号的"电脑登录"，不能同时跑。`/qq start` 总会先停掉另一个。
+- **需要 ptrace**：`kernel.yama.ptrace_scope` 为 3 时 SnowLuma 注入不了，`/qq start` 会直接报错，请换回 `napcat`。
+- **配置**：`config/runtime.json`（WebUI 5099、自动加载钩子）和 `config/onebot.json`（回环 WS 服务器用 `wsPort` + 同一个 OneBot token；回环 HTTP 服务器 3000 给 MCP 用）。文档没说清配置目录是工作目录下的 `config/` 还是 `data/config/`，所以两处都写；`/qq start` 每次都重写，token/端口改动会生效。
+- **WebUI**：端口 5099，只在 VM 回环、网关不转发它。首次启动打印的一次性管理员密码在 `/qq log` 里。
+- **早期软件**：SnowLuma 很新，QQ 版本一变钩子可能就失效（所以屏蔽了热更新）。出问题先 `/qq log`，不行就 `/qq backend napcat`。
+
+### 219 个 action（MCP）
+
+`snowlumaMcp: true`（snowluma 后端下默认开）时，WebSocket 连上后挂载 SnowLuma 官方的 MCP 服务器（`npx -y @snowluma/mcp`），工具名 `mcp__dot-qq__*`。它经网关的第二个认证路径 `/dsh-dot/onebot/` → VM 内 `127.0.0.1:3000`（同一个 conf 文件）访问 SnowLuma 的 HTTP API。MCP 只发一个 `Authorization: Bearer`：网关验它、原样透传，SnowLuma 再验同一个头，所以 HTTP 服务器的 accessToken 就是**网关密钥**；WS 仍用 OneBot token。
+
+审批（`qqToolGate`）：
+
+| 调用 | 结果 |
+|---|---|
+| 文档类（`list_actions`、`search_actions`、`get_action`、`list_categories`、`get_runtime_info`、`query_action*`） | 直接跑 |
+| 只读 action（`get_*`、`fetch_*`、`can_*`、`list_*`、`search_*`、`*preview*`、`*_check`、`ocr_image`、`download_file`） | 直接跑 |
+| 发消息（`send_private_msg`、`send_group_msg`、`send_msg`、两个 forward） | 和 `qq_send` 同一道 `sendPolicy` 审批；参数里有 `file`/`path` 视为本地文件，问 |
+| `send_packet`、`get_cookies`、`get_csrf_token`、`get_rkey`、改资料/头像、删好友、踢人/禁言/设管理/退群、`set_restart`、QQ 空间发/删 | 永远问 |
+| 其他所有 action、读不出 action 名的调用 | 问，理由里写 action 名 |
+
 ## 配置
 
 | 配置项 | 默认 | 作用 |
 |---|---|---|
+| `backend` | `napcat` | `napcat` / `snowluma`；`/qq backend <名>` 可改 |
+| `snowlumaVersion` | 无 | 固定 SnowLuma 的 release tag；空 = latest |
+| `snowlumaMcp` | `true` | snowluma 后端下挂载 SnowLuma 的 MCP（`mcp__dot-qq__*`） |
 | `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
 | `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
 | `wsPort` | `3001` | VM 内的 OneBot WS 端口（只听回环）。dsh 经网关的**认证**路径连它：插件在 VM 的 `/opt/gem/nginx/dsh-dot-napcat.conf` 放一个 `location /dsh-dot/napcat/`，网关先验密钥再转进来 |
