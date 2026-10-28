@@ -135,3 +135,8 @@ dsh 0.2.0-rc.2，云端，模拟模型：一幕结束后 `/interlude now` 发起
 待验证：真机上用真实模型跑几天，看剧本是否自然、主动联系是否节制。
 
 AGPL-3.0-only（随 dsh-dot）。想法和 lite 档提示词来自 HDS-Interlude（AGPL-3.0）；对话层没有复用其代码。
+
+
+## 说话的样子（口癖、标点、长度）
+
+她怎么说话由 Canon 决定，三处：`storyDefaults.replyRules`（长度、先情绪后内容、标点习惯）、`blacklist`（出现即失败的 AI 口癖、转折套话、夸张修辞、符号）、`examples`（对话范例和「只学结构不照抄」的真人句式）。改 `~/dot/interlude/canon.json` 即可，立刻生效。机械能保证的一层放在代码里：`dsh-dot/qq` 的 `tidy` 会把发出去的文字里的句号、引号、破折号、冒号、星号、井号去掉；二十字、先情绪后内容、不用套话这些只能靠 Canon 和模型。

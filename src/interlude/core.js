@@ -936,6 +936,8 @@ export function apply(ctx, config = {}) {
 
   // For the panel (dsh-dot/dot): where her life stands, as data.
   ctx.provide?.('dshInterlude', {
+    /** One line on who she is (for the QQ group scorer): name + the character profile. */
+    who() { const sd = canon?.storyDefaults ?? {}; return `${sd.characterName ?? 'dot'}：${String(sd.characterProfile ?? '').replace(/\s+/g, ' ').slice(0, 240)}`; },
     status() {
       rollDay();
       const script = (() => { let t = ''; try { t = readFileSync(files.script, 'utf8'); } catch (error) { void error; } return t.split(/^## /m).filter((x) => x.trim()).slice(-2).map((x) => { const [head, ...body] = x.split('\n'); return { head: head.trim(), text: body.join('\n').trim() }; }); })();

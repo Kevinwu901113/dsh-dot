@@ -185,3 +185,37 @@ test('gateway auth fallback: a 401 from nginx moves the OneBot token to the quer
   assert.equal(third.opts.headers['X-AIO-API-Key'], 'k');
   h.stop();
 });
+
+test('tidyVoice: chat punctuation goes, URLs, clock times and line structure stay', async () => {
+  const { tidyVoice } = await import('../src/qq/qq.js');
+  assert.equal(tidyVoice('“行吧”——那就 8:30 见。'), '行吧 那就 8:30 见');
+  assert.equal(tidyVoice('看这个：https://a.b/c?x=1#top 别点错。'), '看这个 https://a.b/c?x=1#top 别点错');
+  assert.equal(tidyVoice('**重点**：#1 算了。'), '重点 1 算了');
+  assert.equal(tidyVoice('哈哈\n草 别逗我笑了。\n你觉得可能吗？'), '哈哈\n草 别逗我笑了\n你觉得可能吗？');
+  assert.equal(tidyVoice('28到34度，晴天。'), '28到34度，晴天');
+});
+
+test('groupPolicy score: @-mentions pass straight through; other group messages wake her only when the model rates them high', async () => {
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const effects = [], got = [];
+  let onReady;
+  const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), backend: { rootShell: async () => 'yes\n' }, ready: new Promise((r) => { onReady = r; }) };
+  const llm = { stream: async function* ({ messages }) { const u = messages[0].content[0].text; yield { type: 'text-delta', text: /林晚舟|你怎么看/.test(u) ? '9' : '2' }; } };
+  const ctx = {
+    logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), effect(fn) { effects.push(fn()); }, on() {}, provide(n, v) { ctx[n] = v; },
+    inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
+    get: (n) => ({ dshComputer: computer, llm, agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) }, tools: { register: () => () => {} }, systemPrompt: { section: () => () => {} }, commands: { register: () => () => {} } }[n]),
+  };
+  apply(ctx, { qq: '10001', groupPolicy: 'score', scoreThreshold: 7 }, { WebSocket: FakeSocket, rootShell: async () => 'yes\n' });
+  ctx.dshQq.onMessage((m) => got.push(m));
+  onReady(true); await tick(30);
+  const sock = FakeSocket.last;
+  const ev = (text, extra = {}) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'group', group_id: 7777777, user_id: 30003, self_id: 10001, sender: { nickname: '路人' }, message: [{ type: 'text', data: { text } }, ...(extra.at ? [{ type: 'at', data: { qq: '10001' } }] : [])], message_id: 1 }));
+  ev('今天吃啥'); await tick(30);
+  assert.equal(got.length, 0, 'small talk is not delivered');
+  ev('林晚舟你怎么看'); await tick(30);
+  assert.equal(got.length, 1); assert.equal(got[0].score, 9);
+  ev('在吗', { at: true }); await tick(30);
+  assert.equal(got.length, 2, 'an @ always wakes her, unscored'); assert.equal(got[1].score, undefined);
+  effects.forEach((d) => typeof d === 'function' && d());
+});

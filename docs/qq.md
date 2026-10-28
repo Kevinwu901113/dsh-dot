@@ -45,7 +45,8 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
 | `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
 | `wsPort` | `3001` | VM 内的 OneBot WS 端口（只听回环）。dsh 经网关的**认证**路径连它：插件在 VM 的 `/opt/gem/nginx/dsh-dot-napcat.conf` 放一个 `location /dsh-dot/napcat/`，网关先验密钥再转进来 |
-| `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` |
+| `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` / `score`。`/qq group <值>` 可改。`score`：没 @ 她的群消息先用一次很短的模型调用打 0–10 分（和她相关、问到她、她明显有话说才高分），到 `scoreThreshold`（默认 7）才叫醒她，@ 永远算；每群每分钟最多 `scoreMaxPerMinute`（6）次打分；`scoreModel`（"provider/model"）可指定便宜模型，默认用当前模型。这就是"价值评分插话" |
+| `tidy` | `true` | 发出去的文字按她的聊天口吻整理：去掉行末句号、引号、破折号、冒号、星号、井号（网址和时间不动）。关掉就原样发 |
 | `sendPolicy` | `reply` | `qq_send` 审批：`reply`（见上表）/ `always`（除了你，发谁都问）/ `off`（不问） |
 | `replyWindowMinutes` | `30` | `reply` 策略里"最近给她发过消息"的时间窗 |
 | `githubProxy` / `DSH_DOT_GITHUB_PROXY` | 无 | 安装脚本下载 GitHub 资源的镜像前缀 |

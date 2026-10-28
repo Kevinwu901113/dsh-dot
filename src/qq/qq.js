@@ -24,7 +24,17 @@ export const defaults = {
   installer: 'https://raw.githubusercontent.com/NapNeko/NapCat-Installer/main/script/install.sh',
   githubProxy: '',          // mirror prefix for the installer's GitHub downloads, e.g. https://ghfast.top/ ; '' = direct
   autoStart: true,          // start NapCat when the computer is ready and the account is set
-  groupPolicy: 'mention',   // group messages that wake her: 'mention' (@her), 'all', 'none'
+  groupPolicy: 'mention',   // group messages that wake her: 'mention' (@her), 'all', 'none', 'score' (see below)
+  // groupPolicy 'score': a group message that does not @ her is rated 0–10 by a short model call
+  // (is this worth her chiming in, given who she is and the last few lines?); at or above the
+  // threshold it wakes her like a mention. @-mentions always count. Rated with the current model
+  // unless scoreModel names one ("provider/model"); at most scoreMaxPerMinute calls per group.
+  scoreThreshold: 7,
+  scoreModel: '',
+  scoreMaxPerMinute: 6,
+  // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
+  // hashes (times and URLs keep theirs). Off = send exactly what the model wrote.
+  tidy: true,
   // qq_send approval: 'reply' (default) lets her write to the owner, and answer with text or web
   // images whoever wrote to her within replyWindowMinutes (a conversation, group or private); anything
   // else asks — a new contact, a group nobody spoke in, or files from her phone or computer (those
@@ -109,11 +119,36 @@ export function sendGate({ to, text = '', images = [] }, { owner, policy = 'repl
   return `dsh-dot/qq: message to ${who}, who has not written to her recently: ${String(text).slice(0, 80)}`;
 }
 
+/**
+ * Her chat voice, enforced where it matters: the text that leaves for QQ. Removes the punctuation a
+ * real chat never types (full stops at line ends, quotes, dashes, colons, asterisks, hashes), keeps
+ * URLs and clock times intact, collapses the gaps left behind. Line structure is kept.
+ */
+export function tidyVoice(text) {
+  return String(text ?? '').split('\n').map((line) => {
+    const keep = [];
+    let t = line.replace(/https?:\/\/\S+|\b\d{1,2}:\d{2}(:\d{2})?\b/g, (m) => { keep.push(m); return `\u0000${keep.length - 1}\u0000`; });
+    t = t.replace(/[“”"‘’「」『』]/g, '').replace(/[—–]+|--+/g, ' ').replace(/[：:]/g, ' ').replace(/[*#]/g, '');
+    t = t.replace(/[。．]+(?=\s|$)/g, '').replace(/[。．]/g, ' ');
+    t = t.replace(/[ \t]{2,}/g, ' ').trim();
+    return t.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);
+  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/** The scoring prompt for groupPolicy 'score': who she is (short), the last lines, the message. */
+export function scorePrompt({ who, recent, message, group }) {
+  return {
+    system: `你是一个群聊的过滤器。判断下面这条群消息值不值得「她」插一句话。她是：${who || '一个话少、直接、有自己看法的群友'}。只有和她直接相关、问到她、她明显有话可说、或者她插嘴会很自然的消息才值得；寒暄、刷屏、与她无关的闲聊、纯表情、广告都不值得。只回一个 0 到 10 的整数，不要任何别的字。`,
+    user: `群 ${group} 最近几条：\n${recent || '（无）'}\n\n这条：${message}`,
+  };
+}
+
 /** Does a group message count, under the policy? */
 export function groupWanted(ev, policy, selfId) {
   if (policy === 'all') return true;
   if (policy === 'none') return false;
-  return (Array.isArray(ev.message) ? ev.message : []).some((s) => s?.type === 'at' && String(s.data?.qq) === String(selfId));
+  const mentioned = (Array.isArray(ev.message) ? ev.message : []).some((s) => s?.type === 'at' && String(s.data?.qq) === String(selfId));
+  return mentioned ? true : policy === 'score' ? 'score' : false;
 }
 
 /** NapCat's OneBot 11 config for this account: one WebSocket server on loopback, token required. */
@@ -347,14 +382,50 @@ export function apply(ctx, config = {}, deps = {}) {
     const text = segmentsToText(ev.message, selfId);
     if (!text) return;
     const isGroup = ev.message_type === 'group';
-    if (isGroup && !groupWanted(ev, cfg.groupPolicy, selfId)) return;
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
+    const wanted = isGroup ? groupWanted(ev, cfg.groupPolicy, selfId) : true;
+    if (isGroup) {
+      // The last lines of each group, for the scorer's context (kept whether or not she is woken).
+      const g = groupLines.get(String(ev.group_id)) ?? [];
+      g.push(`${who}：${text.slice(0, 120)}`); while (g.length > 8) g.shift(); groupLines.set(String(ev.group_id), g);
+    }
+    if (!wanted) return;
     const fromOwner = !isGroup && Boolean(qq.owner) && String(ev.user_id) === String(qq.owner);
     const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
     recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
     if (recent.size > 500) recent.delete(recent.keys().next().value);
-    audit({ kind: 'message', ...msg, text: text.slice(0, 200) });
+    if (wanted === 'score') { void scoreAndDeliver(msg); return; }
+    deliver(msg);
+  }
+  function deliver(msg) {
+    audit({ kind: 'message', ...msg, text: msg.text.slice(0, 200) });
     for (const fn of listeners) { try { fn(msg); } catch (err) { logger.warn(`qq listener: ${err.message}`); } }
+  }
+  /** groupPolicy 'score': one short model call decides whether this group message wakes her. */
+  const groupLines = new Map();
+  const scoreBudget = new Map(); // group → [timestamps of calls in the last minute]
+  async function scoreAndDeliver(msg) {
+    const llm = ctx.get?.('llm');
+    const sel = (() => { try { return ctx.get?.('agentDefaultModel')?.currentSelection?.(); } catch { return null; } })();
+    if (!llm?.stream) return;
+    const now = Date.now();
+    const used = (scoreBudget.get(msg.groupId) ?? []).filter((t) => now - t < 60_000);
+    if (used.length >= cfg.scoreMaxPerMinute) { audit({ kind: 'group-score-skipped', group: msg.groupId, why: 'budget' }); return; }
+    used.push(now); scoreBudget.set(msg.groupId, used);
+    const [provider, model] = cfg.scoreModel ? [cfg.scoreModel.split('/')[0], cfg.scoreModel.split('/').slice(1).join('/')] : [sel?.provider, sel?.model];
+    if (!provider || !model) return;
+    const lines = (groupLines.get(msg.groupId) ?? []).slice(0, -1).join('\n');
+    const who = (() => { try { return String(ctx.get?.('dshInterlude')?.who?.() ?? '').slice(0, 300); } catch { return ''; } })();
+    const { system, user } = scorePrompt({ who, recent: lines, message: `${msg.who}：${msg.text.slice(0, 300)}`, group: msg.groupId });
+    let text = '';
+    try {
+      for await (const chunk of llm.stream({ provider, model, system, maxTokens: 8, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }] })) {
+        if (chunk?.type === 'text-delta') text += chunk.text ?? chunk.delta ?? '';
+      }
+    } catch (err) { logger.debug(`group score failed: ${err.message}`); return; }
+    const score = Number((/\d+/.exec(text) ?? [NaN])[0]);
+    audit({ kind: 'group-score', group: msg.groupId, from: msg.userId, score, text: msg.text.slice(0, 80) });
+    if (Number.isFinite(score) && score >= cfg.scoreThreshold) deliver({ ...msg, score });
   }
   function call(action, params) {
     return new Promise((resolve, reject) => {
@@ -394,7 +465,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const target = parseTarget(to, qq.owner);
     if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
-    const parts = String(text ?? '').split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
+    const parts = String(text ?? '').split(/<sep\s*\/>/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
     const ids = [];
     for (const part of parts) ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
     for (const ref of [].concat(images ?? []).filter(Boolean)) ids.push((await call(action, { ...target, message: [await imageSegment(ref)] }))?.message_id);
@@ -448,7 +519,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq:channel',
       order: 61,
       text: () => (qq.connected
-        ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
+        ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。${cfg.groupPolicy === 'score' ? '群消息先过了一道筛，叫醒你的都是和你相关或你明显有话说的；插话就只聊天，一两句，回 to 用 group:<群号>，没话说就不回。' : ''}要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
         : ''),
     }), 'dsh-dot/qq: channel section');
   });
@@ -456,8 +527,8 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'qq',
-      description: 'her QQ on the computer (NapCat): status; "install", "account <number>", "start", "stop", "qr" (login QR → the phone album), "log", "owner <number>"',
-      input: { hint: '[install | account <n> | start | stop | qr | log | owner <n>]' },
+      description: 'her QQ on the computer (NapCat): status; "install", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
+      input: { hint: '[install | account <n> | start | stop | qr | log | owner <n> | group <mention|all|none|score>]' },
       handler: async ({ rawInput }) => {
         const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
         let extra = '';
@@ -465,6 +536,10 @@ export function apply(ctx, config = {}, deps = {}) {
           if (verb === 'install') { void qq.install(); extra = '\ninstalling in the background (several minutes) — /qq log to follow, /qq for the state'; }
           else if (verb === 'account' && arg) { qq.setAccount(arg); extra = `\naccount set: ${arg}; /qq start`; }
           else if (verb === 'owner' && arg) { qq.setOwner(arg); extra = `\nowner set: ${arg}`; }
+          else if (verb === 'group') {
+            if (['mention', 'all', 'none', 'score'].includes(arg)) { cfg.groupPolicy = arg; writeSettings({ groupPolicy: arg }); audit({ kind: 'group-policy', policy: arg }); extra = `\ngroup policy: ${arg}`; }
+            else extra = `\ngroup policy: ${cfg.groupPolicy} (mention | all | none | score — score rates each message with a short model call, threshold ${cfg.scoreThreshold})`;
+          }
           else if (verb === 'start') { extra = (await qq.start()) ? '\nstarting; if this account is new here, /qq qr to log in' : `\n${qq.error}`; }
           else if (verb === 'stop') { await qq.stop(); extra = '\nstopped'; }
           else if (verb === 'log') { extra = `\n${await qq.log(30)}`; }
