@@ -41,7 +41,7 @@ function harness({ installed = true, running = false } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const shells = [], effects = [], tools = [], sections = [];
   let cmd, onReady;
-  const computer = { port: 18080, backend: { rootShell: async () => '', execArgv: ({ argv }) => ['msb', 'exec', '-u', 'root', 'vm', '--', ...argv] }, ready: new Promise((r) => { onReady = r; }) };
+  const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), keyHeader: 'X-AIO-API-Key', backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
   const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
@@ -57,7 +57,7 @@ function harness({ installed = true, running = false } = {}) {
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
-test('qq: boots with the computer — configures, starts NapCat, connects through an exec tunnel; messages wake listeners; qq_send answers; owner learned', async () => {
+test('qq: boots with the computer — configures, starts NapCat, connects through the keyed gateway route; messages wake listeners; qq_send answers; owner learned', async () => {
   const h = harness();
   const got = [];
   h.ctx.dshQq.onMessage((m) => got.push(m));
@@ -65,10 +65,10 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.ok(h.shells.some((s) => s.includes('onebot11_10001.json')), 'OneBot config written for the account');
   assert.ok(h.shells.some((s) => s.includes('xvfb-run -a') && s.includes('-q 10001')), 'NapCat started for the account');
   const sock = FakeSocket.last;
-  assert.equal(sock.url, 'ws://napcat/');
-  assert.equal(sock.opts.headers.Host, undefined, 'no gateway hop');
-  assert.equal(typeof sock.opts.createConnection, 'function', 'an exec tunnel into the VM carries the socket');
-  assert.equal(sock.opts.headers.Authorization, `Bearer ${JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-qq.json'), 'utf8')).token}`);
+  assert.equal(sock.url, 'ws://127.0.0.1:18080/dsh-dot/napcat/');
+  assert.equal(sock.opts.headers['X-AIO-API-Key'], 'k', 'the gateway key rides in its own header');
+  assert.equal(sock.opts.headers.Authorization, `Bearer ${JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-qq.json'), 'utf8')).token}`, 'the OneBot token in Authorization');
+  assert.ok(h.shells.some((x) => x.includes('/opt/gem/nginx/dsh-dot-napcat.conf') && x.includes('proxy_pass http://127.0.0.1:3001/')), 'the route is written into the VM nginx');
   assert.match(sock.opts.headers.Authorization, /^Bearer [0-9a-f]{48}$/);
   sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
   assert.equal(h.ctx.dshQq.connected, true);
@@ -165,32 +165,23 @@ test('qq_send gate is wired: a tool call to a stranger becomes an ask, one to th
   h.stop();
 });
 
-test('the exec tunnel really carries a WebSocket: a real ws server behind `bash -c` stdio', async () => {
-  const { WebSocketServer, WebSocket } = await import('ws');
-  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
-  await new Promise((r) => wss.on('listening', r));
-  const seen = [];
-  wss.on('connection', (s, req) => { seen.push(req.headers.authorization); s.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 })); });
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
-  const effects = [];
-  let onReady;
-  // execArgv hands the VM-side argv back unchanged, so `bash -c <tunnel script>` runs here against the test server.
-  const computer = { port: 1, backend: { rootShell: async () => '', execArgv: ({ argv }) => argv }, ready: new Promise((r) => { onReady = r; }) };
-  const rootShell = async (script) => (script.includes('test -x') ? 'yes\n' : script.includes('pgrep -f') ? 'yes\n' : '');
-  const ctx = {
-    logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), effect(fn) { effects.push(fn()); }, on() {}, provide(n, v) { ctx[n] = v; },
-    inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
-    get: (n) => ({ dshComputer: computer, tools: { register: () => () => {} }, systemPrompt: { section: () => () => {} }, commands: { register: () => () => {} } }[n]),
-  };
-  apply(ctx, { qq: '10001', wsPort: wss.address().port }, { WebSocket, rootShell });
-  onReady(true);
-  for (let i = 0; i < 100 && !ctx.dshQq.connected; i++) await tick(50);
-  try {
-    assert.equal(ctx.dshQq.connected, true, 'connected through the tunnel');
-    assert.match(seen[0], /^Bearer [0-9a-f]{48}$/, 'the OneBot token travelled in Authorization');
-  } finally {
-    effects.forEach((d) => typeof d === 'function' && d());
-    wss.clients.forEach((c) => c.terminate());
-    wss.close();
-  }
+test('gateway auth fallback: a 401 from nginx moves the OneBot token to the query string; NapCat 1403 drops the Authorization header', async () => {
+  const h = harness();
+  h.ready();
+  await tick(30);
+  const first = FakeSocket.last;
+  assert.equal(first.url, 'ws://127.0.0.1:18080/dsh-dot/napcat/');
+  first.emit('unexpected-response', {}, { statusCode: 401 }); first.close();
+  await tick(5100 + 50);
+  const second = FakeSocket.last;
+  assert.notEqual(second, first);
+  assert.match(second.url, /\/dsh-dot\/napcat\/\?access_token=[0-9a-f]{48}$/);
+  assert.equal(second.opts.headers.Authorization, 'Bearer k', 'the key took Authorization');
+  second.emit('message', JSON.stringify({ status: 'failed', retcode: 1403, message: 'token验证失败' })); second.close();
+  await tick(5100 + 50);
+  const third = FakeSocket.last;
+  assert.match(third.url, /access_token=/);
+  assert.equal(third.opts.headers.Authorization, undefined, 'no Authorization at all; key header only');
+  assert.equal(third.opts.headers['X-AIO-API-Key'], 'k');
+  h.stop();
 });

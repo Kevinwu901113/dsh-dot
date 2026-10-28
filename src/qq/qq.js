@@ -2,13 +2,12 @@
 // the computer VM, logged into the same account as the QQ app on her phone — QQ allows a phone and a
 // computer at once, so this is her "电脑端 QQ": messages arrive as events the moment they are sent
 // (no notification shade, no background freezing), and she can answer in a second with `qq_send`.
-// The phone app stays for everything else. dsh reaches NapCat's WebSocket over an exec tunnel into
-// the VM (the same channel the `bash` tool uses: `msb exec` / `docker exec` with a shell that joins
-// stdio to 127.0.0.1:<wsPort>), so NapCat listens on the VM's loopback only — not on the gateway's
-// port proxy, which does not ask for the gateway key — and no extra port is opened anywhere.
+// The phone app stays for everything else. dsh reaches NapCat's WebSocket through the computer's
+// *authenticated* gateway: the image's nginx routes every request on the gateway port through its
+// key check and then into an internal server that includes /opt/gem/nginx/*.conf — dsh-dot drops a
+// location there (/dsh-dot/napcat/ → 127.0.0.1:<wsPort>, WebSocket included). NapCat listens on the
+// VM's loopback only, the route needs the gateway key, and no extra port is opened anywhere.
 import { randomBytes } from 'node:crypto';
-import { spawn } from 'node:child_process';
-import { Duplex } from 'node:stream';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -222,6 +221,7 @@ export function apply(ctx, config = {}, deps = {}) {
     if (!(await qq.installed())) { setState('not-installed', 'NapCat is not installed in the computer — /qq install'); return false; }
     if (!cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
     await qq.configure();
+    await qq.ensureRoute().catch((err) => logger.warn(`NapCat route: ${err.message}`));
     if (!(await qq.running())) {
       await vmShell(`cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
       audit({ kind: 'napcat-started', qq: cfg.qq });
@@ -269,29 +269,34 @@ export function apply(ctx, config = {}, deps = {}) {
     } catch (err) { return `log unavailable: ${err.message}`; }
   };
 
-  // ---- the OneBot side: one WebSocket over an exec tunnel into the VM ----
-  /** A duplex to 127.0.0.1:<wsPort> inside the VM: a shell in the VM joins its stdio to that port. */
-  function tunnel(c) {
-    const script = `exec 3<>/dev/tcp/127.0.0.1/${cfg.wsPort} || exit 1; cat <&3 & cat >&3; kill $! 2>/dev/null`;
-    const argv = c.backend.execArgv({ user: 'root', cwd: '/', env: {}, argv: ['bash', '-c', script] });
-    const child = (deps.spawn ?? spawn)(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'ignore'] });
-    const d = Duplex.from({ readable: child.stdout, writable: child.stdin });
-    // What http.ClientRequest expects of a socket and a pipe has not got.
-    for (const m of ['setNoDelay', 'setKeepAlive', 'setTimeout', 'ref', 'unref']) d[m] = () => d;
-    child.on('exit', () => d.destroy());
-    child.on('error', (err) => d.destroy(err));
-    // Closing the duplex ends the shell: stdin EOF stops the writer `cat`, the script kills the reader;
-    // a shell stuck in the foreground `cat` ignores SIGTERM until then, so SIGKILL follows if needed.
-    d.on('close', () => { try { child.stdin.destroy(); } catch {} try { child.kill(); } catch {} setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 1000).unref(); });
-    return d;
-  }
-  let ws = null, closed = false, reconnectTimer = null, echo = 0, failedConnects = 0;
+  // ---- the OneBot side: one WebSocket through the computer's keyed gateway ----
+  /** The gateway path that reaches NapCat (served by the location below, behind the gateway's key check). */
+  const ROUTE = '/dsh-dot/napcat/';
+  const ROUTE_FILE = '/opt/gem/nginx/dsh-dot-napcat.conf';
+  const routeConf = () => [
+    '# dsh-dot: her QQ (NapCat, OneBot 11 WebSocket on the VM loopback) behind the gateway key.',
+    `location ${ROUTE} {`,
+    `    proxy_pass http://127.0.0.1:${cfg.wsPort}/;`,
+    '    proxy_http_version 1.1;',
+    '    proxy_set_header Upgrade $http_upgrade;',
+    '    proxy_set_header Connection "upgrade";',
+    `    proxy_set_header Host 127.0.0.1:${cfg.wsPort};`,
+    '    proxy_read_timeout 3600s;',
+    '    proxy_send_timeout 3600s;',
+    '}',
+  ].join('\n');
+  /** Put the route in the VM's nginx (idempotent; reloads only when the file changed). */
+  qq.ensureRoute = async () => {
+    const conf = routeConf();
+    await vmShell(`mkdir -p /opt/gem/nginx; want=$(cat <<'EOF'\n${conf}\nEOF\n); if [ "$(cat ${ROUTE_FILE} 2>/dev/null)" != "$want" ]; then printf '%s\n' "$want" > ${ROUTE_FILE}; nginx -t -c /opt/gem/nginx.conf >/dev/null 2>&1 && (nginx -s reload || supervisorctl -c /opt/gem/supervisord.conf restart nginx) || echo route-failed; fi`).then((out) => { if (String(out).includes('route-failed')) logger.warn('nginx rejected the NapCat route; /qq log'); });
+  };
+  let ws = null, closed = false, reconnectTimer = null, echo = 0, failedConnects = 0, authMode = 'header';
   const pending = new Map(); // echo → { resolve, reject, timer }
-  function closeWs() { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; const s = ws; ws = null; qq.connected = false; try { s?.close(); } catch {} try { s?.tunnel?.()?.destroy(); } catch {} }
+  function closeWs() { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; const s = ws; ws = null; qq.connected = false; try { s?.close(); } catch {} }
   function connect() { void connectAsync(); }
   async function connectAsync() {
     const c = computer();
-    if (!c?.backend?.execArgv) return;
+    if (!c?.port) return;
     if (!WebSocketImpl) { try { WebSocketImpl = (await import('ws')).default; } catch (err) { setState('error', `the ws package is missing: ${err.message}`); return; } }
     closed = false;
     if (ws) return;
@@ -301,18 +306,31 @@ export function apply(ctx, config = {}, deps = {}) {
       audit({ kind: 'napcat-restart', after: failedConnects });
       try { await qq.start(); return; } catch (err) { logger.warn(`restart failed: ${err.message}`); }
     }
-    let opened = false, pipe = null;
-    const socket = new WebSocketImpl(`ws://napcat/`, { headers: { Authorization: `Bearer ${cfg.token}` }, createConnection: () => (pipe = tunnel(c)) });
+    let opened = false;
+    // The gateway key in its own header; `Authorization` carries the OneBot token for NapCat. Should
+    // the gateway insist on the key in Authorization (401 from nginx, not from NapCat), the OneBot
+    // token moves to the query string NapCat also accepts, and the key takes Authorization.
+    const key = c.authHeaders?.()?.[c.keyHeader ?? 'X-AIO-API-Key'] ?? '';
+    const url = `ws://127.0.0.1:${c.port}${ROUTE}${authMode !== 'header' ? `?access_token=${encodeURIComponent(cfg.token)}` : ''}`;
+    const headers = { ...(c.authHeaders?.() ?? {}), ...(authMode === 'header' ? { Authorization: `Bearer ${cfg.token}` } : authMode === 'query' ? { Authorization: `Bearer ${key}` } : {}) };
+    const socket = new WebSocketImpl(url, { headers });
     ws = socket;
-    socket.tunnel = () => pipe;
-    socket.on('open', () => { opened = true; failedConnects = 0; logger.info('OneBot connected (NapCat in the computer)'); });
+    socket.on('open', () => { opened = true; failedConnects = 0; logger.info(`OneBot connected (NapCat in the computer, via the gateway${authMode === 'query' ? ', token in query' : ''})`); });
+    socket.on('unexpected-response', (_req, res) => {
+      // nginx's 401 page (not NapCat's JSON 1403 over an open socket): the gateway wants the key in Authorization.
+      if (res?.statusCode === 401 && authMode === 'header') { authMode = 'query'; logger.info('gateway rejected the header combination; switching the OneBot token to the query string'); }
+      else if (res?.statusCode === 404) { logger.warn('the NapCat route is missing in the VM nginx; adding it'); void qq.ensureRoute().catch(() => {}); }
+      try { socket.terminate?.(); } catch {}
+    });
     socket.on('message', (data) => { try { onEvent(JSON.parse(String(data))); } catch (err) { logger.debug(`bad event: ${err.message}`); } });
-    socket.on('close', () => { try { pipe?.destroy(); } catch {} if (ws !== socket) return; ws = null; qq.connected = false; if (!opened) failedConnects++; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
+    socket.on('close', () => { if (ws !== socket) return; ws = null; qq.connected = false; if (!opened) failedConnects++; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
     socket.on('error', (err) => { logger.debug(`OneBot socket: ${err.message}`); });
   }
   /** Conversations that wrote to her lately: "user:<n>" / "group:<n>" → last message time (sendGate). */
   const recent = new Map();
   function onEvent(ev) {
+    // NapCat refusing the token while the key sits in Authorization: send the key in its own header only.
+    if (ev.retcode === 1403 && authMode === 'query') { authMode = 'query-only'; logger.info('NapCat rejected the Authorization header; keeping the token in the query string only'); }
     if (ev.echo !== undefined && pending.has(ev.echo)) {
       const p = pending.get(ev.echo); pending.delete(ev.echo); clearTimeout(p.timer);
       if (ev.status === 'ok' || ev.retcode === 0) p.resolve(ev.data); else p.reject(new Error(ev.message || ev.wording || `retcode ${ev.retcode}`));

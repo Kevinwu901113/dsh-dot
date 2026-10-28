@@ -118,7 +118,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 
 想和别的工具共用一把钥匙，在设置文件里写 `apiKey`。
 
-镜像的 nginx 还有一个按 `Host: <端口>-x` 转发到 VM 内任意回环端口的 server（浏览器的 CDP 9222 也在内），它不检查密钥；插件在每次服务启动后把它改成 404 并 reload（`portRelayOpen` 状态为 true 表示没改成）。她的 QQ（NapCat）改走 exec 隧道，不再需要它。
+镜像的 nginx 还有一个按 `Host: <端口>-x` 转发到 VM 内任意回环端口的 server（浏览器的 CDP 9222 也在内），它不检查密钥；插件在每次服务启动后把它改成 404 并 reload（`portRelayOpen` 状态为 true 表示没改成）。她的 QQ（NapCat）改走网关的认证路径（内部路由 server 会 include `/opt/gem/nginx/*.conf`，插件把自己的 location 放在那里），不再需要它。
 
 ## 五、配置
 
