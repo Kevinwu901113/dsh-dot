@@ -12,6 +12,7 @@
 //   2. an approval asked during such a turn is announced on IM with the live-view link;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
+import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -88,11 +89,11 @@ export const SCHEDULED_RULE = '这一轮由定时任务触发，用户不在对�
 /** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
 export const workingRules = ({ computer = true, phone = false } = {}) => [
   '# dot 的工作方式',
-  [computer ? '你有一台自己的电脑（虚拟机）：命令和浏览器都在那台电脑里运行，用户可以随时看到实时画面。' : '', phone ? '你有一部自己的手机（Android）：App 都在手机上，用 mcp__phone__* 操作。' : '', '用户主要在 IM 里和你说话。'].filter(Boolean).join(''),
+  [computer ? '你有一台自己的电脑（虚拟机）：命令和浏览器都在那台电脑里运行，用户可以随时看到实时画面。' : '', phone ? `你有一部自己的手机（Android）：App 都在手机上，用 ${PHONE_TOOL_PREFIX}* 操作。` : '', '用户主要在 IM 里和你说话。'].filter(Boolean).join(''),
   '- 定时任务：用户的要求里只要带有未来的时间点或周期（"2 分钟后"、"明天早上"、"每天 8 点"、"每周一"），一律用 `schedule_create` 建任务（带时区），现在不要去做。建好后只回复任务内容和触发时间。到点你会收到提醒，那时再去做。',
   `- 静默协议：被定时任务叫醒时，如果检查后没有值得告诉用户的内容，最终回复只写 ${SILENT}，这条不会发给用户。有内容就简要说，附链接。用户主动跟你说话时，正常回复。`,
-  computer ? '- 用你的电脑：网页在你电脑的浏览器里打开（`mcp__vm__browser_*` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。' : '',
-  phone ? '- 用你的手机：App 里的事在手机上做（`mcp__phone__*` 工具）；遇到验证码、人脸、短信验证就停下来告诉用户。' : '',
+  computer ? `- 用你的电脑：网页在你电脑的浏览器里打开（\`${VM_TOOL_PREFIX}browser_*\` 工具），需要登录、扫码或验证码时，告诉用户并请他在实时画面里接管。` : '',
+  phone ? `- 用你的手机：App 里的事在手机上做（\`${PHONE_TOOL_PREFIX}*\` 工具）；遇到验证码、人脸、短信验证就停下来告诉用户。` : '',
   '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；不要试图绕过。',
   '- 长一点的事：别人当面交给你一件一轮做不完的事（"长任务""慢慢来""多逛逛""把能找到的都……""每 N 个跟我说一声"），即使他没说"目标"，也用 `create_goal` 建一个目标——它会让你在这个会话里一轮接一轮地自动继续，直到你把它标记完成。先回一句收到；每做完一段就汇报一次；标记完成前先确认整件事真的做完了，没做完就留着让下一轮继续。一轮就能做完的事不用建目标。',
   '- 回复可以拆成几句很短的话，一句一行（IM 里直接投递，不要写 <sep/> 之类的分隔标记）。',
@@ -330,7 +331,7 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'approval/asked') {
       // Payload: { id, toolName, reason? }. dsh-computer's gate puts the live-view link in reason.
-      const onPhone = String(event.data?.toolName ?? '').startsWith('mcp__phone__');
+      const onPhone = String(event.data?.toolName ?? '').startsWith(PHONE_TOOL_PREFIX);
       const vm = (onPhone ? phone()?.status?.() : computer()?.status?.()) ?? {};
       const link = vm.publicLiveViewUrl || vm.liveViewUrl;
       const reason = String(event.data?.reason ?? '').trim();

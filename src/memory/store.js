@@ -461,10 +461,11 @@ export function normalizeMemory(m) {
  * What every turn of hers sees: you, her own notes, what still matters. Byte-stable for the same
  * memory (no clocks, no counters), because a context snapshot is re-sent only when its text changes.
  */
-export function renderStanding(memory, { budgetTokens = 600 } = {}) {
+export function renderStanding(memory, { budgetTokens = 600, banks = true } = {}) {
   const parts = [];
-  if (memory.owner.length) parts.push(`## 关于他\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
-  if (memory.self.length) parts.push(`## 你自己记下的\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
+  // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
+  if (banks && memory.owner.length) parts.push(`## 关于他\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.self.length) parts.push(`## 你自己记下的\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
   const picked = selectFragments(memory.fragments, budgetTokens);
   if (picked.length) parts.push(`## 最近的事（越靠前越要紧）\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${f.text}`).join('\n')}`);
   if (!parts.length) return '';

@@ -1,13 +1,13 @@
 # dsh-dot/phone · 她的手机
 
-An Android phone the plugin installs and runs for the character, exposed to the model as `mcp__phone__*`. No Android Studio, no Java: the plugin fetches three archives from Google's repository, writes the AVD itself, boots the emulator and mounts [mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb.
+An Android phone the plugin installs and runs for the character, exposed to the model as `mcp__dot-phone__*`. No Android Studio, no Java: the plugin fetches three archives from Google's repository, writes the AVD itself, boots the emulator and mounts [mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb.
 
 ## 它做什么
 
 1. **安装**（第一次）：接受 [Android SDK 许可](https://developer.android.com/studio/terms)后（`/phone accept`，或配置 `acceptLicense: true`，或 `~/.dsh/dsh-phone.json` 里 `{"acceptLicense": true}`），从 `dl.google.com/android/repository` 读索引，下载 stable 通道的 emulator、platform-tools 和 `system-images;android-<api>;google_apis;<abi>`（约 1.7 GB），解压到 `~/.dsh/phone/`。`google_apis` 镜像没有 Play 商店——检测面最小，App 用 APK 装。
 2. **AVD**：`~/.dsh/phone/avd/dot.avd/config.ini` 由插件写（Pixel 6 尺寸、1080×2400、3 GB 内存、8 GB 数据分区、不带 Play）。想改尺寸或内存，改配置后删掉这个目录重建。
 3. **开机**：`emulator -avd dot -port 5554 -no-boot-anim -gpu auto`，等 `sys.boot_completed`，然后常亮屏幕、关动画、解锁。上一次 dsh 留下的还在跑的模拟器会被直接接管，不会开两个。模拟器自己退出会在 `restartDelayMs` 后重开。
-4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
+4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
 6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
 7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[手机通知] QQ · 宽：……`，她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；dot 的 `notifyHours` 可以设一个静音时段（默认不设）。`/phone notifications` 看最近 20 条。

@@ -37,7 +37,7 @@
 - `src/backends/docker.js`：Intel Mac 的后备。
 - `src/subprocess.js`：替换 dsh 的 `ctx.subprocess`，所有命令在虚拟机里执行；`spawn` 保持同步，虚拟机未就绪或换绑中时用等待前缀排队。
 - `src/gate.js`：`tools/pre-execute` 审批闸门（危险命令、敏感浏览器动作），审批信息附实时画面链接。
-- `cordis.patch.yml`：禁用本机 subprocess、`danger-full-access`（虚拟机即隔离边界）、Computer 权限预设、接入虚拟机里的 MCP（`mcp__vm__browser_*`）、界面行。
+- `cordis.patch.yml`：禁用本机 subprocess、`danger-full-access`（虚拟机即隔离边界）、Computer 权限预设、接入虚拟机里的 MCP（`mcp__dot-vm__browser_*`）、界面行。
 - `lib/client.js`（源码在 `ui/`）：右侧栏“虚拟机”标签页（noVNC 内嵌）和会话顶部的显示器按钮。
 
 ### 已验证（Mac 桌面版 0.2.0-rc.2，Apple 芯片）

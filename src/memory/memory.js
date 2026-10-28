@@ -40,6 +40,12 @@ export const defaults = {
   dailyAt: '23:30',             // once a day, after her active hours: consolidate whatever is new and write her diary
   maxTokens: 16384,
   limits: DEFAULT_LIMITS,
+  // Living next to another memory plugin. full: everything on. people-only: keep people, fragments
+  // and the diary, but leave the owner/self banks (prompt text and consolidation) to the other one,
+  // so two plugins do not both narrate what she knows about him. auto: people-only when one of
+  // otherMemoryServices is provided (cordis has no public way to list services, so it is a list).
+  coexist: 'auto',
+  otherMemoryServices: ['memory', 'hermesMemory', 'autoMemory'],
 };
 
 export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
@@ -193,6 +199,15 @@ export function apply(ctx, config = {}) {
   const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md') };
   mkdirSync(dir, { recursive: true });
   const dot = () => ctx.get('dshDot');
+  // Checked when used, not once at boot: the other plugin may start after this one.
+  let coexistLogged = false;
+  const peopleOnly = () => {
+    if (cfg.coexist === 'people-only') return true;
+    if (cfg.coexist !== 'auto') return false;
+    const other = [].concat(cfg.otherMemoryServices ?? []).find((n) => { try { return ctx.get(n) != null; } catch { return false; } });
+    if (other && !coexistLogged) { coexistLogged = true; logger.info(`another memory service (${other}) is present: people-only mode (owner/self banks left to it)`); }
+    return Boolean(other);
+  };
   const audit = (event, data = {}) => (ctx.get('dshComputer')?.audit ?? ctx.get('dshPhone')?.audit)?.({ kind: 'memory', event, ...data });
 
   let memory;
@@ -345,6 +360,7 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
       if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
       const text = fresh.map(transcriptLine).join('\n');
+      const bankless = peopleOnly();
       // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
@@ -352,8 +368,9 @@ export function apply(ctx, config = {}) {
       const prompt = [
         ...(recent ? ['=== 更早一点的对话（已经整理过，只用来写 handoff，别重复记）===', clip(recent, 12000), ''] : []),
         '=== 这段时间的记录 ===', text || '（这段时间没有新记录）', '',
-        '=== 已有：关于他 ===', memory.owner.map((e) => `- ${e}`).join('\n') || '（空）',
-        '=== 已有：她自己记下的 ===', memory.self.map((e) => `- ${e}`).join('\n') || '（空）',
+        ...(bankless ? ['=== 关于他 / 她自己记下的 ===', '（由别的记忆插件负责：owner 和 self 都给 []）'] : [
+          '=== 已有：关于他 ===', memory.owner.map((e) => `- ${e}`).join('\n') || '（空）',
+          '=== 已有：她自己记下的 ===', memory.self.map((e) => `- ${e}`).join('\n') || '（空）']),
         '=== 已认识的人 ===', known || '（还没有）',
         '=== 已有碎片 ===', frags || '（还没有）',
         '=== 待核实（关于别人的事，说过一次）===', memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n') || '（没有）', '',
@@ -380,6 +397,7 @@ export function apply(ctx, config = {}) {
       try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: spent, reply: clip(raw, 4000) })}\n`); } catch (error) { void error; }
       const out = parseLooseJson(raw);
       if (!out) { audit('consolidate-unparsed', { reason }); return { error: 'reply was not JSON' }; }
+      if (bankless) { delete out.owner; delete out.self; }
       const report = applyExtraction(memory, out, { limits: cfg.limits });
       memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
       memory.consolidations++;
@@ -469,7 +487,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         const s = c.agent?.session;
         if (!s || !(dot()?.isErrand?.(s.id) || isConversation(s.id, s.header?.cwd))) return '';
-        return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens });
+        return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens, banks: !peopleOnly() });
       },
     });
   });

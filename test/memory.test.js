@@ -267,3 +267,38 @@ test('daily diary: `/dot memory diary` consolidates with a diary; the entry is h
   const status = await h.services.dotMemory.command('memory');
   assert.match(status, /diary \d{4}-\d{2}-\d{2} \(daily at 23:30\)/);
 });
+
+test('coexist auto: another memory service present → owner/self banks neither consolidated nor in the prompt; people and fragments kept', async () => {
+  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }], fragments: [{ text: '他问她要不要帮忙搬家', kind: 'plan', tag: 2 }] });
+  const h = harness({ llmReply: reply });
+  h.services.hermesMemory = {};
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('搬去哪'));
+  h.tokens = 150000;
+  h.emit('s1', 'turn/end', {});
+  await wait(50);
+  assert.match(h.calls[0].messages[0].content[0].text, /由别的记忆插件负责/);
+  const md = readFileSync(join(h.home, 'memory', 'memory.md'), 'utf8');
+  assert.doesNotMatch(md, /他下周六搬家|我喜欢猫/);
+  const ctxText = h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } });
+  assert.match(ctxText, /最近的事[\s\S]*帮忙搬家/);
+  assert.doesNotMatch(ctxText, /关于他|你自己记下的/);
+  // full forces the banks back on even with the other service there
+  const m = emptyMemory(); m.owner.push('他住光谷');
+  assert.match(renderStanding(m), /关于他/);
+  assert.doesNotMatch(renderStanding(m, { banks: false }), /关于他/);
+});
+
+test('coexist full: banks on even next to another memory service', async () => {
+  const h = harness({ llmReply: JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }] }) });
+  h.services.memory = {};
+  apply(h.ctx, { home: h.home, coexist: 'full', handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
+  h.tokens = 150000;
+  h.emit('s1', 'turn/end', {});
+  await wait(50);
+  assert.match(h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } }), /关于他\n- 他下周六搬家/);
+});

@@ -4,14 +4,15 @@
 
 A character who lives on her own phone, for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh). She has her own Android phone (this plugin installs and runs it), her own accounts, her own days: between your conversations she keeps living — writes what happened, goes to look at things she is curious about on her phone, and sometimes has a real reason to message you. You are one of her contacts on QQ / WeChat / Feishu…; dsh-im carries the chat. If you also want her to *work* — shell, scripts, a desktop browser, scheduled jobs — give her the optional computer.
 
-One plugin, four components:
+One plugin, six components (living next to other dsh plugins: see 「与其他插件共存」 in the Chinese section):
 
 | Component | What it is | Needs |
 |---|---|---|
-| **`dsh-dot/phone`** | Her phone: an Android emulator the plugin downloads (emulator + platform-tools + one system image, ~2 GB, after you accept the SDK license), boots, keeps alive and exposes as `mcp__phone__*` ([mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb). The emulator window is the live view; her apps and logins live in the AVD and survive restarts. [Details](docs/phone.md) | hardware virtualization (Apple silicon or Intel Mac, Linux with KVM, Windows with WHPX) |
-| **`dsh-dot/interlude`** | 幕间, after [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): the Canon (persona; HDSI presets by share code) as a prompt section; a life between conversations — script, continuity, intents; going to look at things on her phone or in her browser (read-only, no approvals); optional proactive contact. [Details](docs/interlude.md) | — |
-| **`dsh-dot/qq`** | Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot 11) inside the computer VM, the same account as the QQ app on her phone; messages wake her the moment they arrive, she answers with `qq_send`. [Details](docs/qq.md) | the computer component |
-| **`dsh-dot/dot`** | The contact layer: scheduled results → IM unless the reply is `DOT_SILENT`, approval and device notices on IM, working rules as a prompt section | [dsh-im](https://github.com/xmanrui/dsh-im) for IM; dsh's built-in schedule service |
+| **`dsh-dot/phone`** | Her phone: an Android emulator the plugin downloads (emulator + platform-tools + one system image, ~2 GB, after you accept the SDK license), boots, keeps alive and exposes as `mcp__dot-phone__*` ([mobile-mcp](https://github.com/mobile-next/mobile-mcp) over adb). The emulator window is the live view; her apps and logins live in the AVD and survive restarts. `DSH_DOT_PHONE=off` turns it off. [Details](docs/phone.md) | hardware virtualization (Apple silicon or Intel Mac, Linux with KVM, Windows with WHPX) |
+| **`dsh-dot/interlude`** | 幕间, after [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): the Canon (persona; HDSI presets by share code) as a prompt section; a life between conversations — script, continuity, intents; going to look at things on her phone or in her browser (read-only, no approvals); optional proactive contact. `DSH_DOT_INTERLUDE=off` turns it off. [Details](docs/interlude.md) | — |
+| **`dsh-dot/qq`** | Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) (OneBot 11) inside the computer VM, the same account as the QQ app on her phone; messages wake her the moment they arrive, she answers with `qq_send`. `DSH_DOT_QQ=off` turns it off. [Details](docs/qq.md) | the computer component |
+| **`dsh-dot/memory`** | What she remembers: you, her own notes, the people she meets, what happened; hands her conversation over to a fresh session past 150k tokens. `DSH_DOT_MEMORY=off` turns it off. [Details](docs/memory.md) | — |
+| **`dsh-dot/dot`** | The contact layer: scheduled results → IM unless the reply is `DOT_SILENT`, approval and device notices on IM, working rules as a prompt section. `DSH_DOT_CONTACT=off` turns it off | [dsh-im](https://github.com/xmanrui/dsh-im) for IM; dsh's built-in schedule service |
 | **`dsh-dot/computer`** (optional) | A bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates and an audit log — the isolation boundary for work. `DSH_DOT_COMPUTER=off` turns it off. [Details](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox) (bundled) or Docker |
 
 ```bash
@@ -34,14 +35,14 @@ dsh-dot 让 dsh 里住进一个**在自己手机上过日子的角色**。她有
 
 | 组件 | 是什么 | 依赖 |
 |---|---|---|
-| **`dsh-dot/phone`** 她的手机 | Android 模拟器。插件自己从 Google 仓库下载模拟器、platform-tools 和一个系统镜像（约 2 GB，先要你接受 SDK 许可），自己写 AVD（不需要 Java / Android Studio），开机、保活，以 `mcp__phone__*` 暴露给模型（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）。模拟器窗口就是实时画面；App 和登录态在 AVD 里，重启不丢。详见 [docs/phone.md](docs/phone.md) | 硬件虚拟化：Apple silicon / Intel Mac，Linux 要 KVM，Windows 要 WHPX |
-| **`dsh-dot/interlude`** 幕间 | 按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：Canon（人设，HDSI 分享码导入）作为系统提示的一段；两次对话之间的生活——剧本、连续性、打算；想看什么就拿手机（或电脑浏览器）去看，只读、无审批；可选的主动联系。详见 [docs/interlude.md](docs/interlude.md) | — |
-| **`dsh-dot/qq`** 她电脑上的 QQ | [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11）跑在她的电脑 VM 里，和手机上的 QQ 同一个账号；消息到的瞬间叫醒她，她用 `qq_send` 秒回；dot 的提醒和她的主动联系也走这里，官方机器人退为后备。详见 [docs/qq.md](docs/qq.md) | 电脑组件 |
-| **`dsh-dot/memory`** 她记得的 | 关于你的画像和她自己的笔记（按 Hermes 的做法，有字数上限，她自己能改），她在各个 App 里遇到的人（每人一张卡：互动次数由代码根据真实事件记，印象和事由模型写；只在帖子里互动过的人只记次数和一句印象；关于别人的事先进待核实区），发生过的事（按 dsh-whale-inurqq：碎片带重要度、被说起几次、会老化）。她的对话到 15 万 token 就交班换一个新会话，远早于 dsh 自己在 80% 窗口时的压缩。详见 [docs/memory.md](docs/memory.md) | — |
-| **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
+| **`dsh-dot/phone`** 她的手机 | Android 模拟器。插件自己从 Google 仓库下载模拟器、platform-tools 和一个系统镜像（约 2 GB，先要你接受 SDK 许可），自己写 AVD（不需要 Java / Android Studio），开机、保活，以 `mcp__dot-phone__*` 暴露给模型（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）。模拟器窗口就是实时画面；App 和登录态在 AVD 里，重启不丢。`DSH_DOT_PHONE=off` 关掉。详见 [docs/phone.md](docs/phone.md) | 硬件虚拟化：Apple silicon / Intel Mac，Linux 要 KVM，Windows 要 WHPX |
+| **`dsh-dot/interlude`** 幕间 | 按 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：Canon（人设，HDSI 分享码导入）作为系统提示的一段；两次对话之间的生活——剧本、连续性、打算；想看什么就拿手机（或电脑浏览器）去看，只读、无审批；可选的主动联系。`DSH_DOT_INTERLUDE=off` 关掉。详见 [docs/interlude.md](docs/interlude.md) | — |
+| **`dsh-dot/qq`** 她电脑上的 QQ | [NapCat](https://github.com/NapNeko/NapCatQQ)（OneBot 11）跑在她的电脑 VM 里，和手机上的 QQ 同一个账号；消息到的瞬间叫醒她，她用 `qq_send` 秒回；dot 的提醒和她的主动联系也走这里，官方机器人退为后备。`DSH_DOT_QQ=off` 关掉（电脑关了它也关）。详见 [docs/qq.md](docs/qq.md) | 电脑组件 |
+| **`dsh-dot/memory`** 她记得的 | 关于你的画像和她自己的笔记（按 Hermes 的做法，有字数上限，她自己能改），她在各个 App 里遇到的人（每人一张卡：互动次数由代码根据真实事件记，印象和事由模型写；只在帖子里互动过的人只记次数和一句印象；关于别人的事先进待核实区），发生过的事（按 dsh-whale-inurqq：碎片带重要度、被说起几次、会老化）。她的对话到 15 万 token 就交班换一个新会话，远早于 dsh 自己在 80% 窗口时的压缩。`DSH_DOT_MEMORY=off` 关掉。详见 [docs/memory.md](docs/memory.md) | — |
+| **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段。`DSH_DOT_CONTACT=off` 关掉 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
 | **`dsh-dot/computer`**（可选）她的电脑 | 自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志。干活时的隔离边界。`DSH_DOT_COMPUTER=off` 关掉。详见 [docs/computer.md](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker |
 
-v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件，git 历史一起并了。对外没变：`mcp__vm__*`、`dshComputer`、`~/.dsh/dsh-computer*`、`~/dot/interlude/`、`/dot` `/interlude`。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。**v0.9 起 npm 包名是 `dsh-dot-life`**（`dsh-dot` 在 npm 上被占位包占着；v0.8.x 曾叫 `@kevinwu901113/dsh-dot`，已标记 deprecated）：之前装过旧名的，先 `dsh plugin --profile desktop remove @kevinwu901113/dsh-dot`（或 `dsh-dot`）再装；`~/dot`、`~/.dsh/phone`、虚拟机都不用动。
+v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件，git 历史一起并了。对外没变：`dshComputer`、`~/.dsh/dsh-computer*`、`~/dot/interlude/`、`/dot` `/interlude`。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。**v0.9 起 npm 包名是 `dsh-dot-life`**（`dsh-dot` 在 npm 上被占位包占着；v0.8.x 曾叫 `@kevinwu901113/dsh-dot`，已标记 deprecated）：之前装过旧名的，先 `dsh plugin --profile desktop remove @kevinwu901113/dsh-dot`（或 `dsh-dot`）再装；`~/dot`、`~/.dsh/phone`、虚拟机都不用动。**v0.9.2 起 MCP 工具名带了命名空间**：`mcp__vm__*` → `mcp__dot-vm__*`，`mcp__phone__*` → `mcp__dot-phone__*`（见下文「与其他插件共存」）；自己写过这些工具名的规则或提示要跟着改。
 
 ### 二、安装
 
@@ -75,7 +76,7 @@ Web 版：`dsh plugin --profile web add dsh-dot-life`。从源码装：把包名
 
 - 你们聊天：dsh 自己跑对话，dsh-im 接 IM；她的人设（Canon）和工作规则是系统提示里的两段，不需要 `AGENTS.md`。
 - 聊天安静下来 `idleMinutes` 后、或每 `advanceEveryMinutes` 一次（只在 `activeHours` 内）、或某个打算到了时间：**幕间一轮**——一次模型调用，她写下这段时间过的日子、更新连续性快照、记下打算，顺便说她想去看点什么（`browserIntents`）。
-- **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__phone__*` / `mcp__vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
+- **去看**：有 App 的站用手机（`phoneApps`），登录过的网站用电脑浏览器（`vmSites`），其他先走 dsh 的 `web` 服务；被挡了就自己去看。实现是往她最近的会话里追加一条"[幕间观察]"消息，她用 `mcp__dot-phone__*` / `mcp__dot-vm__browser_*` 自己看，最后那段回复作为 `webContext` 进入之后的幕间。这一轮不算幕，**也没有审批**——只读工具直接放行，输入、安装、下单一类直接拒绝。
 - **跑腿会话**：拿起手机、App 通知、幕间的「去看」和「玩」都在她的另一个会话「dot · 跑腿」里跑，截图和屏幕元素不进你们的对话；跑腿有结果时，只在她的对话里留一句「[刚才拿起手机看了一眼] …」（不叫醒她，下一轮她就知道）。跑腿会话超过 6 万 token 自动换新。QQ / 微信的消息和你的话照常直接叫醒她的对话。
 - **拿起手机**：手机没响她也会隔一阵拿起来看一眼（`phoneCheckEveryMinutes`，默认 30，最近没被叫醒过时）：有没回的消息就回，App 里有新动态就看，没事 `DOT_SILENT` 回桌面。`/dot check` 立刻来一次。
 - **手机响了**：任何 App 的新通知（QQ 消息、小黑盒的更新、以后她自己装的任何 App）都会叫醒她：`[手机通知] QQ · 宽：在吗`，她自己去 App 里回，或者不理。按 App 静音：`/phone notify mute <包名>`。
@@ -105,10 +106,40 @@ dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）�
 - **可审计**：她看到什么、为什么没出声、哪次工具被拒了，`calls.jsonl` 和两份审计日志里都有。
 - **用小号**。
 
-### 七、路线
+### 七、与其他插件共存
+
+dsh-dot 尽量不占公共名字，但有几处是全局的，装别的插件前先看一眼：
+
+- **电脑组件开着时会改全局设置**（`cordis.patch.yml` 顶部三段）：本机 subprocess provider 换成虚拟机里的那个（`dot-subprocess`），`sandbox-policy` 设成 `danger-full-access`（虚拟机才是隔离边界），权限预设整套改写成 `computer` / `computer-auto`。所以**不要同时装别的沙箱、subprocess 或权限预设插件**；要用它们，就 `DSH_DOT_COMPUTER=off`，这三处恢复 dsh 默认。
+- **MCP 工具名有命名空间**：虚拟机的工具是 `mcp__dot-vm__*`，手机是 `mcp__dot-phone__*`（serverName `dot-vm` / `dot-phone`；dsh 规范化工具名时 `-` 合法、原样保留）。别的插件挂一个叫 `vm` 或 `phone` 的 MCP 不会再撞名。前缀定义在 `src/tool-prefixes.js`，改名只改一处。
+- **每个组件都能单独关**，在启动 dsh 的环境里设：
+
+  | 组件 | 关掉 |
+  |---|---|
+  | computer（连带 qq） | `DSH_DOT_COMPUTER=off` |
+  | phone | `DSH_DOT_PHONE=off` |
+  | qq | `DSH_DOT_QQ=off` |
+  | memory | `DSH_DOT_MEMORY=off` |
+  | interlude | `DSH_DOT_INTERLUDE=off` |
+  | dot（联系人层） | `DSH_DOT_CONTACT=off` |
+
+  组件之间只通过 `ctx.get(...)?.` 找彼此，缺了哪个其余的照常跑（比如关了 dot，记忆不再自动交班；关了 memory，通知里不带人物卡）。
+- **记忆共存模式**：`dot-memory` 的 `coexist`（环境变量 `DSH_DOT_MEMORY_COEXIST`），默认 `auto`——发现另一个记忆服务（`otherMemoryServices`，默认 `memory`、`hermesMemory`、`autoMemory`；cordis 没有公开的服务枚举，所以是名单）就打一行 info 日志，切到 `people-only`：人物卡、碎片、日记照旧，但**关于他 / 她自己记下的**两栏不再写进系统提示，整理时也不再改这两栏，免得两个插件一起"讲记忆"。`full` 强制全开，`people-only` 强制只留人物。
+- **一个 QQ 号只能有一个应答者**：她电脑上的 NapCat 已经用这个号收发消息，不要再在同一个号上跑 qq-bridge 或别的 OneBot 机器人，否则两边都会回。
+- **上下文压缩插件**：dsh-dot 注入会话的消息带固定的 `source`，压缩时请保留（或至少别把它们当成用户原话）：
+  - `{ kind: 'dsh-dot', form: 'phone-notification' }` 手机通知叫醒她
+  - `{ kind: 'dsh-dot', form: 'phone-check' }` 定时看一眼手机
+  - `{ kind: 'dsh-dot', form: 'errand-note' }` 跑腿会话做完的事回写到主对话
+  - `{ kind: 'dsh-interlude', form: 'observation' }` 幕间观察
+  - `{ kind: 'dsh-interlude', form: 'play' }` 幕间「玩」
+  - `{ kind: 'handoff', generation }` 记忆交班时注入新会话的交接
+  - 来自她 QQ 上主人的消息是 `{ kind: 'user', rpcId: 'qq-…' }`，即普通用户消息。
+- **`bash` 也过 dsh-dot 的电脑闸门**（`dot-gate` 的 `shellTools` 含 `bash`），别的插件再给 `bash` 加审批，同一条命令会弹两次审批。
+
+### 八、路线
 
 现状、分期和待定的决定见 [docs/ROADMAP.md](docs/ROADMAP.md)。
 
-### 八、许可证
+### 九、许可证
 
 AGPL-3.0-only。幕间组件按原文使用 HDS-Interlude（AGPL-3.0）的提示词，所以整个包按 AGPL 发布；v0.3 之前以 MIT 发布的 computer / dot 代码，那些版本仍按 MIT 可用。

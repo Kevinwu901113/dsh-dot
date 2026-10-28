@@ -60,4 +60,8 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }`
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [memory, hermesMemory, autoMemory]
+
+`DSH_DOT_MEMORY=off` 整个组件不加载。
+
+**和别的记忆插件共存**（`coexist`，环境变量 `DSH_DOT_MEMORY_COEXIST`）：`auto` 时，`otherMemoryServices` 里任何一个服务存在（每次用到时用 `ctx.get` 查，所以晚启动的插件也算；cordis 没有公开的服务枚举，只能按名单）就打一行 info 日志，进入 `people-only`：人物卡、碎片、日记、交班照旧，画像的 `owner` / `self` 两栏不再进系统提示，整理时模型给的这两栏改动也丢掉，交给那个插件。`full` 强制全开；`people-only` 强制只留人物。

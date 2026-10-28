@@ -8,6 +8,7 @@
 // and where, a browser action by what the page is about, and the protected locations in the VM
 // (keys, browser profile, credentials) are watched in every argument of every tool.
 
+import { VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { clip } from './audit.js';
 
 export const name = 'dot-gate';
@@ -19,7 +20,7 @@ export const defaults = {
   mode: 'risky',
   // Tools whose arguments reach a shell in the VM. dsh's own `bash` is routed into the VM; the VM's
   // MCP server also exposes its own shell and code runners, which must pass the same gate.
-  shellTools: ['bash', 'mcp__vm__sandbox_execute_bash', 'mcp__vm__sandbox_execute_code'],
+  shellTools: ['bash', `${VM_TOOL_PREFIX}sandbox_execute_bash`, `${VM_TOOL_PREFIX}sandbox_execute_code`],
   shellPatterns: [
     String.raw`\brm\s+-[a-zA-Z]*[rf]`, String.raw`\bsudo\b`, String.raw`\b(curl|wget)\b[^|]*\|\s*(ba|z|da)?sh\b`,
     String.raw`\b(curl|wget)\b[^|]*\|\s*(python|node|perl)`, String.raw`\bbase64\s+(-d|--decode)\b[^|]*\|`,
@@ -30,7 +31,7 @@ export const defaults = {
   ],
   // VM tools that read or write files directly (no shell): asked when the operation is destructive
   // or touches a protected location.
-  fileTools: ['mcp__vm__sandbox_file_operations', 'mcp__vm__sandbox_str_replace_editor'],
+  fileTools: [`${VM_TOOL_PREFIX}sandbox_file_operations`, `${VM_TOOL_PREFIX}sandbox_str_replace_editor`],
   destructivePatterns: [String.raw`"(operation|action|command|op)"\s*:\s*"(delete|remove|rm|move|rename|mv|chmod|chown|truncate)`, String.raw`\bdelete\b|\bremove\b|\brmdir\b`],
   // Locations in the VM whose mention in any argument of any VM tool asks: her keys, logins and the
   // browser profile (cookies, saved passwords), system credentials.
@@ -54,7 +55,7 @@ export const defaults = {
   alwaysAskTools: ['browser_evaluate', 'browser_gui_execute_action'],
 };
 
-/** Browser/desktop action tools this file knows; any other mcp__vm__ tool is audited once as unknown and treated like them. */
+/** Browser/desktop action tools this file knows; any other mcp__dot-vm__ tool is audited once as unknown and treated like them. */
 const KNOWN_ACTIONS = new Set(['browser_navigate', 'browser_go_back', 'browser_go_forward', 'browser_form_input_fill', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab', 'browser_click', 'browser_select', 'browser_close', 'browser_press_key']);
 
 export function compile(cfg) {
@@ -69,7 +70,7 @@ export function compile(cfg) {
 export function decide(call, cfg, compiled = compile(cfg)) {
   if (cfg.mode === 'off') return null;
   const { name: tool, args } = call;
-  const vmTool = tool.startsWith('mcp__vm__') ? tool.slice('mcp__vm__'.length) : '';
+  const vmTool = tool.startsWith(VM_TOOL_PREFIX) ? tool.slice(VM_TOOL_PREFIX.length) : '';
   if (!vmTool && !cfg.shellTools.includes(tool)) return null;
   // A protected location in any argument of any VM tool is a reason on its own.
   if (compiled.protectedPaths.some((r) => r.test(args))) return `dsh-computer: touches a protected location in the VM (${vmTool || tool})`;
@@ -90,7 +91,7 @@ export function apply(ctx, config = {}) {
 
   // Audit every VM-side tool call and its outcome (denied asks surface here as failures).
   ctx.on('tools/result', (exec, result) => {
-    if (exec.name !== 'bash' && !exec.name.startsWith('mcp__vm__')) return;
+    if (exec.name !== 'bash' && !exec.name.startsWith(VM_TOOL_PREFIX)) return;
     audit({
       kind: 'tool', tool: exec.name, session: sessionOf(exec), args: clip(exec.arguments, 300),
       ok: !result.isError, ...(result.isError ? { error: clip(result.error?.code ?? result.error?.message ?? result.error, 200) } : {}),
@@ -105,12 +106,12 @@ export function apply(ctx, config = {}) {
     const local = vm.liveViewUrl ?? '(starting)';
     return vm.publicLiveViewUrl ? `\n实时画面 / live view: ${vm.publicLiveViewUrl}\n(本机 / local: ${local})` : `\n实时画面 / live view: ${local}`;
   };
-  const classified = new Set([...cfg.readOnlyTools, ...cfg.alwaysAskTools, ...KNOWN_ACTIONS, ...cfg.shellTools, ...cfg.fileTools].map((t) => t.replace(/^mcp__vm__/, '')));
+  const classified = new Set([...cfg.readOnlyTools, ...cfg.alwaysAskTools, ...KNOWN_ACTIONS, ...cfg.shellTools, ...cfg.fileTools].map((t) => t.replace(new RegExp(`^${VM_TOOL_PREFIX}`), '')));
   const unknown = new Set();
 
   ctx.on('tools/pre-execute', async (exec, next) => {
     const args = JSON.stringify(exec.input ?? exec.args ?? exec.arguments ?? {});
-    const vmTool = exec.name.startsWith('mcp__vm__') ? exec.name.slice('mcp__vm__'.length) : '';
+    const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
     if (vmTool && !classified.has(vmTool) && !unknown.has(vmTool)) {
       unknown.add(vmTool);
       audit({ kind: 'unknown-vm-tool', tool: exec.name, note: 'not classified here; treated as a browser/desktop action' });

@@ -413,10 +413,10 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   assert.deepEqual(h.followups[0].m.source, OBSERVATION_SOURCE);
   assert.match(h.followups[0].m.content[0].text, /bilibili\.com\/u\/1/);
   // while it runs: read-only vm tools pass without reaching the next gate, anything else is denied, other sessions untouched
-  assert.deepEqual(await h.gate('s1', 'mcp__vm__browser_get_markdown'), { kind: 'allow' });
-  assert.equal((await h.gate('s1', 'mcp__vm__browser_click')).kind, 'deny');
-  assert.equal((await h.gate('s1', 'mcp__vm__sandbox_execute_bash')).kind, 'deny');
-  assert.equal((await h.gate('s2', 'mcp__vm__browser_click')).via, 'next');
+  assert.deepEqual(await h.gate('s1', 'mcp__dot-vm__browser_get_markdown'), { kind: 'allow' });
+  assert.equal((await h.gate('s1', 'mcp__dot-vm__browser_click')).kind, 'deny');
+  assert.equal((await h.gate('s1', 'mcp__dot-vm__sandbox_execute_bash')).kind, 'deny');
+  assert.equal((await h.gate('s2', 'mcp__dot-vm__browser_click')).via, 'next');
   h.emit('s1', 'turn/start', { turn: 2 });
   h.emit('s1', 'user/message', { content: h.followups[0].m.content, source: OBSERVATION_SOURCE }, { surfaceOp: 'append' });
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '她 10 月 20 日发了新视频，标题是《秋天》，播放 1.2 万。' }] } });
@@ -426,7 +426,7 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   assert.equal(seen.length, 1);
   assert.equal(seen[0].via, 'vm');
   assert.match(seen[0].content, /秋天/);
-  assert.equal((await h.gate('s1', 'mcp__vm__browser_click')).via, 'next', 'gate released after the turn');
+  assert.equal((await h.gate('s1', 'mcp__dot-vm__browser_click')).via, 'next', 'gate released after the turn');
   assert.equal(readFileSync(join(h.home, 'interlude', 'pending.jsonl'), 'utf8').trim(), '', 'the observation turn is not an act');
   // vm cap reached: a second intent on her site is held, not read anonymously
   h.act('s1', 'again', 'ok');

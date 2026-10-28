@@ -1,9 +1,10 @@
 // dsh-dot/phone: the character's own phone — an Android emulator this plugin installs, boots and
-// keeps alive, exposed to the model as mcp__phone__* (mobile-mcp over adb). Nothing to install by
+// keeps alive, exposed to the model as mcp__dot-phone__* (mobile-mcp over adb). Nothing to install by
 // hand: on first start the plugin fetches the emulator, platform-tools and one system image from
 // Google's repository (after the SDK license is accepted), writes the AVD itself (no Java, no
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. The phone's window is its
 // live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
+import { PHONE_SERVER, PHONE_TOOL_PREFIX } from '../tool-prefixes.js';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
@@ -54,7 +55,7 @@ export const defaults = {
   notifyPollMs: 4000,       // reconcile snapshot interval (events trigger immediate reads); 0 = events only
   notifyApps: [],           // [] = every app she installs, now or later, until muted
   notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
-  mcp: true,                // mount mobile-mcp as mcp__phone__*
+  mcp: true,                // mount mobile-mcp as mcp__dot-phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
   askTools: ['mobile_install_app', 'mobile_uninstall_app'],
@@ -142,8 +143,8 @@ export function avdConfig({ avd, api, tag, abi, device, ramMb, dataGb }) {
 
 /** Approval decision for a phone tool call (null = allow). */
 export function phoneGate(exec, cfg) {
-  if (!exec.name.startsWith('mcp__phone__')) return null;
-  const tool = exec.name.slice('mcp__phone__'.length);
+  if (!exec.name.startsWith(PHONE_TOOL_PREFIX)) return null;
+  const tool = exec.name.slice(PHONE_TOOL_PREFIX.length);
   if (cfg.askTools.includes(tool)) return `dsh-dot/phone: ${tool}`;
   if (tool === 'mobile_type_keys') {
     const text = JSON.stringify(exec.input ?? exec.args ?? exec.arguments ?? {});
@@ -406,14 +407,14 @@ export function apply(ctx, config = {}, deps = {}) {
     try {
       entry = createRequire(import.meta.url).resolve('@mobilenext/mobile-mcp/lib/index.js');
       mcpClient = deps.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client');
-    } catch (err) { logger.error(`mcp__phone__* unavailable: ${err.message}`); return; }
+    } catch (err) { logger.error(`${PHONE_TOOL_PREFIX}* unavailable: ${err.message}`); return; }
     mcpFork = ctx.plugin(mcpClient, {
-      transport: 'stdio', serverName: 'phone', command: process.execPath, args: [entry], cwd: home,
+      transport: 'stdio', serverName: PHONE_SERVER, command: process.execPath, args: [entry], cwd: home,
       // ELECTRON_RUN_AS_NODE: inside the desktop app process.execPath is Electron; this makes it run as plain Node.
       env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ELECTRON_RUN_AS_NODE: '1' },
       toolCallTimeoutMs: cfg.toolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
-    logger.info('mcp__phone__* mounted (mobile-mcp over adb)');
+    logger.info(`${PHONE_TOOL_PREFIX}* mounted (mobile-mcp over adb)`);
   }
   /** Is this AVD already up (left from a previous dsh run)? Then attach instead of launching twice. */
   async function alreadyRunning() {
@@ -497,7 +498,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? `你有一部自己的手机：Android（设备 ${serial}，工具 mcp__phone__*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看——但 App 开在前台时不会有通知，所以每次用完 App 记得按 HOME 回到桌面。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
+        ? `你有一部自己的手机：Android（设备 ${serial}，工具 ${PHONE_TOOL_PREFIX}*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看——但 App 开在前台时不会有通知，所以每次用完 App 记得按 HOME 回到桌面。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
         : ''),
     }), 'dsh-dot/phone: device section');
   });

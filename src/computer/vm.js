@@ -2,6 +2,7 @@
 // Backend: a microsandbox microVM by default (bundled, no Docker needed), Docker as fallback.
 // The service is provided immediately so tools register at boot; `ready` settles once the VM
 // answers. Disposal never stops the machine: files, logins and running apps outlive dsh restarts.
+import { VM_SERVER, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import http from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -30,7 +31,7 @@ export const defaults = {
   publicUrl: '',
   // Gateway key handed to the VM as SANDBOX_API_KEY; '' = one generated per machine ($DSH_HOME/dsh-computer.key).
   apiKey: '',
-  // Mount the VM's browser/desktop tools (mcp__vm__*) through dsh-mcp-client with the key attached.
+  // Mount the VM's browser/desktop tools (mcp__dot-vm__*) through dsh-mcp-client with the key attached.
   mcp: true,
   mcpToolCallTimeoutMs: 120_000,
   // Turn off AIO services the agent does not use (Jupyter, code-server, Node REPLs).
@@ -291,19 +292,19 @@ export function apply(ctx, config = {}) {
     return () => { view.close(); computer.liveViewUrl = undefined; };
   }));
 
-  // The VM's browser/desktop tools (mcp__vm__*): mounted here, not in cordis.patch.yml, so the
+  // The VM's browser/desktop tools (mcp__dot-vm__*): mounted here, not in cordis.patch.yml, so the
   // client carries the gateway key (the gate in gate.js covers these tools like any other).
   let mcpFork = null;
   async function mountMcp() {
     if (!cfg.mcp || mcpFork) return;
     let mcpClient;
-    try { mcpClient = config.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client'); } catch (err) { logger.error(`mcp__vm__* unavailable: ${err.message}`); return; }
+    try { mcpClient = config.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client'); } catch (err) { logger.error(`${VM_TOOL_PREFIX}* unavailable: ${err.message}`); return; }
     mcpFork = ctx.plugin(mcpClient, {
-      serverName: 'vm', transport: 'streamable-http', url: computer.mcpUrl,
+      serverName: VM_SERVER, transport: 'streamable-http', url: computer.mcpUrl,
       headers: { ...computer.authHeaders(), authorization: `Bearer ${apiKey}` },
       toolCallTimeoutMs: cfg.mcpToolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
-    logger.info('mcp__vm__* mounted (gateway key attached)');
+    logger.info(`${VM_TOOL_PREFIX}* mounted (gateway key attached)`);
   }
   computer.mcpMounted = () => Boolean(mcpFork);
   ctx.effect?.(() => () => { mcpFork?.dispose?.(); mcpFork = null; }, 'dsh-dot/computer: mcp client');

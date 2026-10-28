@@ -11,7 +11,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 *The agent runs commands and opens a page inside its own VM; the Computer panel in dsh shows its desktop live. (Recorded with a scripted model.)*
 
 - **Every agent command runs in the VM**, never on your machine. The session's workspace folder is shared into the VM at the same path.
-- **Its own browser** (`mcp__vm__browser_*` tools), with logins that persist across restarts.
+- **Its own browser** (`mcp__dot-vm__browser_*` tools), with logins that persist across restarts.
 - **Live view inside dsh**: a monitor button in the session header opens a Computer tab in the right sidebar. Watch, click, type, or take over for a QR login or CAPTCHA.
 - **Audit log**: every command, VM tool call, approval and folder change is appended to `~/.dsh/dsh-computer-audit.jsonl`.
 - **Phone-friendly live view**: the desktop is served on dsh's own web server behind dsh's login (`/dsh-dot/computer/`); the VM gateway port is keyed (`SANDBOX_API_KEY`, generated per machine). Expose dsh itself (e.g. `tailscale serve`), set `publicUrl`, and approval messages — including IM approval cards — link to it.
@@ -41,7 +41,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 给 DeepSeek Harness（dsh）一台自己的电脑：一台常驻的 Linux 微型虚拟机，带浏览器、实时桌面画面和审批闸门。不需要装 Docker。
 
 - agent 的 bash 命令在虚拟机里执行，不碰你的系统。
-- agent 的浏览器（`mcp__vm__browser_*` 工具）在虚拟机里，登录态长期保留。
+- agent 的浏览器（`mcp__dot-vm__browser_*` 工具）在虚拟机里，登录态长期保留。
 - 你随时可以打开实时画面观看或接手操作（扫码、验证码）。
 - 虚拟机的每个工具都有分类，审批信息附实时画面链接：只读工具（截图、取文本、看目录）不问；shell（dsh 的 `bash`、虚拟机的 `sandbox_execute_bash` / `sandbox_execute_code`）按命令文本判——`sudo`、`rm -rf`、`curl | sh`、`base64 -d | sh`、`python -c`、`eval`、`git push`、`crontab` 等问；文件工具（`sandbox_file_operations`、`sandbox_str_replace_editor`）删除/移动问，普通读写不问；浏览器动作按页面内容判（支付、登录、删除等问）；`browser_evaluate`（在登录态页面里跑任意 JS）和 `browser_gui_execute_action`（绕过浏览器工具的桌面级输入）**总是问**；任何工具的参数里出现受保护位置（`~/.ssh`、浏览器 profile/Cookies、`.aws`、`.env`、`/etc/shadow`、NapCat 配置等）**总是问**；镜像以后新增的、这里没见过的工具按浏览器动作对待并记一条审计。
 - 会话所在的工作区文件夹自动共享进虚拟机，路径不变。
@@ -114,7 +114,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 
 ### 网关密钥
 
-虚拟机镜像（AIO sandbox）的网关在本机的 `127.0.0.1:18080` 上同时提供 shell、文件、浏览器 CDP、MCP、noVNC 和网页终端；镜像默认不设密钥时这些全部开放给本机任何进程。插件在第一次启动时生成一把密钥，存在 `~/.dsh/dsh-computer.key`（仅属主可读），创建虚拟机和每次启动镜像服务时作为 `SANDBOX_API_KEY` 交给镜像；插件内部所有调用方（就绪探测、`mcp__vm__*` 的 MCP 客户端、实时画面中继、QQ 桥接）都带着这把钥匙，别的程序没有。已存在的虚拟机会在下次启动时自动补上密钥（microsandbox 重启镜像服务，Docker 重建容器、保留家目录卷）；如果重启后网关仍然不要密钥就放行，dot 面板会亮红色的「电脑网关 无密钥开放」，状态接口里 `gatewayOpen: true`，日志里有 error——那是镜像版本不认 `SANDBOX_API_KEY`，请升级镜像。
+虚拟机镜像（AIO sandbox）的网关在本机的 `127.0.0.1:18080` 上同时提供 shell、文件、浏览器 CDP、MCP、noVNC 和网页终端；镜像默认不设密钥时这些全部开放给本机任何进程。插件在第一次启动时生成一把密钥，存在 `~/.dsh/dsh-computer.key`（仅属主可读），创建虚拟机和每次启动镜像服务时作为 `SANDBOX_API_KEY` 交给镜像；插件内部所有调用方（就绪探测、`mcp__dot-vm__*` 的 MCP 客户端、实时画面中继、QQ 桥接）都带着这把钥匙，别的程序没有。已存在的虚拟机会在下次启动时自动补上密钥（microsandbox 重启镜像服务，Docker 重建容器、保留家目录卷）；如果重启后网关仍然不要密钥就放行，dot 面板会亮红色的「电脑网关 无密钥开放」，状态接口里 `gatewayOpen: true`，日志里有 error——那是镜像版本不认 `SANDBOX_API_KEY`，请升级镜像。
 
 想和别的工具共用一把钥匙，在设置文件里写 `apiKey`。
 
@@ -138,7 +138,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 | `memory` / `cpus` | `4G` / `2` | 虚拟机资源上限 |
 | `publicUrl` / `DSH_COMPUTER_PUBLIC_URL` | 空 | 你暴露出去的 **dsh 本身**的地址（见第四节），实时画面链接用它，用于审批消息和状态接口；不是虚拟机端口 |
 | `apiKey` | 自动生成 | 虚拟机网关密钥（`SANDBOX_API_KEY`）；空则用 `~/.dsh/dsh-computer.key` 里自动生成的那把 |
-| `mcp` | `true` | 由本组件挂载虚拟机的 `mcp__vm__*` 工具（MCP 客户端带网关密钥）；不要再在 `cordis.patch.yml` 里单独配 dsh-mcp-client 指向 `/mcp` |
+| `mcp` | `true` | 由本组件挂载虚拟机的 `mcp__dot-vm__*` 工具（MCP 客户端带网关密钥）；不要再在 `cordis.patch.yml` 里单独配 dsh-mcp-client 指向 `/mcp` |
 | `DSH_COMPUTER_PORT` | `18080` | 虚拟机网关在本机的端口（仅监听 127.0.0.1，需要密钥）；只能用环境变量设置 |
 | `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |

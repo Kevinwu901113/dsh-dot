@@ -1,6 +1,6 @@
 # dsh-dot: one plugin, five components. The character lives on her own devices.
 #   phone     — her phone: an Android emulator this plugin installs, boots and keeps alive;
-#               tools mcp__phone__* (mobile-mcp over adb). The emulator window is the live view.
+#               tools mcp__dot-phone__* (mobile-mcp over adb). The emulator window is the live view.
 #               DSH_DOT_PHONE=off turns it off.
 #   computer  — optional: a microVM (microsandbox, bundled; Docker as fallback) with shell, browser,
 #               desktop, live view, approval gates, audit log. The VM is the isolation boundary.
@@ -10,11 +10,13 @@
 #               DSH_DOT_QQ=off turns it off.
 #   dot       — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
 #               live view, working rules as a prompt section. Needs dsh-im and the official
-#               schedule bundle (see README).
+#               schedule bundle (see README). DSH_DOT_CONTACT=off turns it off.
+#   memory    — what she remembers (people, fragments, diary, owner/self banks). DSH_DOT_MEMORY=off.
 #   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a
 #               prompt section, and a life between conversations — script, continuity, intents,
 #               going to look at things on her phone / in her browser (read-only), optional
-#               proactive contact over dsh-im.
+#               proactive contact over dsh-im. DSH_DOT_INTERLUDE=off turns it off.
+# Every component tolerates a sibling being off (services are looked up with ctx.get(...)?.).
 
 # 1. Replace the host subprocess provider with the VM-backed one.
 - id: subprocess
@@ -54,7 +56,7 @@
       name: 'dsh-dot-life/gate'
       config:
         mode: !!js "process.env.DSH_COMPUTER_GATE ?? 'risky'"
-    # 3. Browser + desktop tools served from inside the VM (tool names: mcp__vm__*) are mounted by the
+    # 3. Browser + desktop tools served from inside the VM (tool names: mcp__dot-vm__*) are mounted by the
     #    computer component itself, so the MCP client carries the gateway key (see docs/computer.md).
     # 4. Desktop/Web UI: right-Sidebar "Computer" tab (live view) and a header toggle.
     - id: dot-ui
@@ -74,6 +76,7 @@
     # 6. The always-on glue (was the standalone dsh-dot plugin).
     - id: dot
       name: 'dsh-dot-life/dot'
+      disabled: !!js "process.env.DSH_DOT_CONTACT === 'off'"
       config:
         # dot's home: its working files live here and sessions started here are dot's.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
@@ -82,12 +85,16 @@
     #     handoffTokens (long before dsh's own compaction at 80% of the window). Files: <home>/memory/.
     - id: dot-memory
       name: 'dsh-dot-life/memory'
+      disabled: !!js "process.env.DSH_DOT_MEMORY === 'off'"
       config:
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
+        # Next to another memory plugin: auto (people-only when one is found) · full · people-only.
+        coexist: !!js "process.env.DSH_DOT_MEMORY_COEXIST ?? 'auto'"
         # handoffTokens: 150000
     # 7. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
       name: 'dsh-dot-life/interlude'
+      disabled: !!js "process.env.DSH_DOT_INTERLUDE === 'off'"
       config:
         home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
         # Going to look (HDSI browserIntent): auto = web first; a host listed below is always

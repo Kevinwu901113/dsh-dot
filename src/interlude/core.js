@@ -15,6 +15,7 @@
 // continuity snapshot (state.json), intents; slow change in who she is lives in dsh-dot/memory's self bank
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
+import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -112,7 +113,7 @@ export function playPrompt(p, pkg) {
   const verb = { like: '点个赞', comment: '评论一句', follow: '关注' }[p.action] ?? p.action;
   return [
     `[想玩会儿手机] 你刚才想：在${p.app}${pkg ? `（${pkg}）` : ''}给「${p.target}」${verb}${p.text ? `，想说的是：「${p.text}」` : ''}。${p.why ? `因为${p.why}。` : ''}`,
-    '去做吧，用你的手机（mcp__phone__*）。只做这一件，顺手看看就行；不发新帖、不私信陌生人、不花钱、不改资料。做不成就算了，别硬来。',
+    `去做吧，用你的手机（${PHONE_TOOL_PREFIX}*）。只做这一件，顺手看看就行；不发新帖、不私信陌生人、不花钱、不改资料。做不成就算了，别硬来。`,
     PLAY_RULES,
     '做完把手机放回桌面（HOME），只回一句你做了什么，或者 DOT_SILENT。',
   ].join('\n');
@@ -147,8 +148,8 @@ export function observationPrompt(b, device = 'vm', app = '') {
     ? (app ? `打开你手机上的 App（${app}）看看：${b.purpose || b.query || b.url}` : b.mode === 'visit' ? `用手机打开这个页面看看：${b.url}` : `在手机上搜一下：${b.query}`)
     : (b.mode === 'visit' ? `打开这个页面看看：${b.url}` : `在浏览器里搜一下：${b.query}`);
   const tools = device === 'phone'
-    ? '用你的手机（mcp__phone__*）只看不动：打开 App、滑动、点进去看、截图都可以；不要输入文字、不要登录、不要点赞/关注/评论/发帖/下单、不要装卸 App。'
-    : '用你电脑里的浏览器（mcp__vm__browser_*）只看不动：打开、滚动、读文字或截图都可以；不要登录、不要点赞/关注/评论/发帖/下单、不要填任何表单、不要下载。';
+    ? `用你的手机（${PHONE_TOOL_PREFIX}*）只看不动：打开 App、滑动、点进去看、截图都可以；不要输入文字、不要登录、不要点赞/关注/评论/发帖/下单、不要装卸 App。`
+    : `用你电脑里的浏览器（${VM_TOOL_PREFIX}browser_*）只看不动：打开、滚动、读文字或截图都可以；不要登录、不要点赞/关注/评论/发帖/下单、不要填任何表单、不要下载。`;
   return [
     '[幕间观察] 这不是一次对话，是你自己想去看一眼：' + (b.purpose ? `「${b.purpose}」` : ''),
     where,
@@ -670,8 +671,8 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
     if (!sessionId || !observing.has(sessionId)) return next();
-    const vmTool = exec.name.startsWith('mcp__vm__') ? exec.name.slice('mcp__vm__'.length) : '';
-    const phoneTool = exec.name.startsWith('mcp__phone__') ? exec.name.slice('mcp__phone__'.length) : '';
+    const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
+    const phoneTool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool))) return { kind: 'allow' };
     audit('observation-refused', { session: sessionId, tool: exec.name });
     return { kind: 'deny', reason: `dsh-interlude: this is an observation — looking only, nothing to approve. "${exec.name}" is not available here; look with ${cfg.vmObservationTools.slice(0, 2).join(', ')}, ${cfg.phoneObservationTools.slice(5, 7).join(', ')}… or write down what you saw.` };

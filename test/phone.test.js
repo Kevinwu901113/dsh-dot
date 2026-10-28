@@ -43,11 +43,11 @@ test('avdConfig and hostTarget', () => {
 
 test('phoneGate: installs and sensitive typing ask; looking does not', () => {
   const cfg = { askTools: ['mobile_install_app', 'mobile_uninstall_app'], sensitivePatterns: ['密码', 'pay'] };
-  assert.equal(phoneGate({ name: 'mcp__phone__mobile_take_screenshot' }, cfg), null);
-  assert.match(phoneGate({ name: 'mcp__phone__mobile_install_app', input: {} }, cfg), /mobile_install_app/);
-  assert.match(phoneGate({ name: 'mcp__phone__mobile_type_keys', input: { text: '我的密码是' } }, cfg), /sensitive/);
-  assert.equal(phoneGate({ name: 'mcp__phone__mobile_type_keys', input: { text: '你好' } }, cfg), null);
-  assert.equal(phoneGate({ name: 'mcp__vm__browser_click' }, cfg), null);
+  assert.equal(phoneGate({ name: 'mcp__dot-phone__mobile_take_screenshot' }, cfg), null);
+  assert.match(phoneGate({ name: 'mcp__dot-phone__mobile_install_app', input: {} }, cfg), /mobile_install_app/);
+  assert.match(phoneGate({ name: 'mcp__dot-phone__mobile_type_keys', input: { text: '我的密码是' } }, cfg), /sensitive/);
+  assert.equal(phoneGate({ name: 'mcp__dot-phone__mobile_type_keys', input: { text: '你好' } }, cfg), null);
+  assert.equal(phoneGate({ name: 'mcp__dot-vm__browser_click' }, cfg), null);
   assert.ok(OBSERVATION_TOOLS.includes('mobile_take_screenshot') && !OBSERVATION_TOOLS.includes('mobile_type_keys'));
 });
 
@@ -100,7 +100,7 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.deepEqual(h.spawned[0].args.slice(0, 4), ['-avd', 'dot', '-port', '5554']);
   assert.ok(h.execs.some((e) => e.some((a) => String(a).includes('stayon'))), 'screen kept on');
   assert.equal(h.plugins.length, 1);
-  assert.equal(h.plugins[0].c.serverName, 'phone');
+  assert.equal(h.plugins[0].c.serverName, 'dot-phone');
   assert.equal(h.plugins[0].c.transport, 'stdio');
   assert.match(h.plugins[0].c.args[0], /mobile-mcp/);
   assert.match(h.sections[0].text(), /emulator-5554/);
@@ -146,8 +146,8 @@ test('phone: nothing installed and no license → needs-license; /phone accept r
 
 test('phone gate asks through tools/pre-execute', async () => {
   const h = harness();
-  assert.equal((await h.gate('mcp__phone__mobile_install_app', {})).kind, 'ask');
-  assert.equal((await h.gate('mcp__phone__mobile_swipe_on_screen', {})).via, 'next');
+  assert.equal((await h.gate('mcp__dot-phone__mobile_install_app', {})).kind, 'ask');
+  assert.equal((await h.gate('mcp__dot-phone__mobile_swipe_on_screen', {})).via, 'next');
   h.stop();
 });
 

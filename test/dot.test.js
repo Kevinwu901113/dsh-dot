@@ -80,9 +80,9 @@ test('approval during a scheduled turn is announced with the live view link', as
   apply(h.ctx, h.config);
   h.emit(h.home, 'turn/start', { turn: 1 });
   h.emit(h.home, 'user/message', { source: { kind: 'schedule' } });
-  h.emit(h.home, 'approval/asked', { id: 'a1', toolName: 'mcp__vm__browser_click', reason: 'dsh-computer: sensitive browser action browser_click' });
+  h.emit(h.home, 'approval/asked', { id: 'a1', toolName: 'mcp__dot-vm__browser_click', reason: 'dsh-computer: sensitive browser action browser_click' });
   await wait(20);
-  assert.match(h.sent[0].text, /审批：mcp__vm__browser_click[\s\S]*sensitive browser action[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
+  assert.match(h.sent[0].text, /审批：mcp__dot-vm__browser_click[\s\S]*sensitive browser action[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
   // The gate already includes the link in its reason: not repeated.
   h.emit(h.home, 'approval/asked', { id: 'a2', toolName: 'bash', reason: 'risky\n实时画面 / live view: https://mac.ts.net/vnc' });
   await wait(20);

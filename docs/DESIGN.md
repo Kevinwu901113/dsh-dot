@@ -121,7 +121,7 @@ Kevin："把 computer 和 dot 合并为一个插件的不同组件"。做法：
 - dsh-computer 仓库的历史用 `git merge --allow-unrelated-histories` 并进来（提交记录保留），文件移到 `src/computer/`（vm / subprocess / gate / audit / backends / ui-host），原 dsh-dot 的 core 移到 `src/dot/core.js`。
 - `cordis.patch.yml` 合并：电脑那部分（关掉宿主 subprocess、沙箱策略、权限预设、`dot-computer` / `dot-subprocess` / `dot-gate` / `dot-mcp` / `dot-ui`）在前，`dot` 在后。组件名 `dsh-dot/computer`、`dsh-dot/subprocess`、`dsh-dot/gate`、`dsh-dot/dot`；`package.json` 的 `exports` 对应。
 - 客户端 bundle `lib/client.js` 的 `__ModuleLoader__` id 必须等于包名，改成 `dsh-dot`（CSS tag 同步）；标签页内部 id 不动。`ui/` 源码的 tsdown 配置同步。
-- **对外不变**：`mcp__vm__*` 工具、`dshComputer` 服务名、`~/.dsh/dsh-computer*` 文件、VM 名 `dsh-computer`、`DSH_COMPUTER_*` 环境变量都保留——已经跑着的虚拟机、快照、审计日志不用迁移。
+- **对外不变**（v0.9.2 前）：`mcp__vm__*` 工具（v0.9.2 起改为 `mcp__dot-vm__*`，避免和别的插件撞名）、`dshComputer` 服务名、`~/.dsh/dsh-computer*` 文件、VM 名 `dsh-computer`、`DSH_COMPUTER_*` 环境变量都保留——已经跑着的虚拟机、快照、审计日志不用迁移。
 - dsh-interlude 不并：它是 AGPL-3.0（移植自 HDS-Interlude），并进 MIT 包会把整个包拖成 AGPL；而且它不依赖 dot，独立装卸更干净。
 - 原 dsh-computer 仓库保留作为历史，README 指向这里。
 
