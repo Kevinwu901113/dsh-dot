@@ -293,7 +293,8 @@ export function apply(ctx, config = {}, deps = {}) {
       // `-T 1`: from now, not the buffer's history. Restarted if it dies while the phone is up.
       let proc = null, stopped = false;
       const open = () => {
-        if (stopped || !phone.isReady) return;
+        if (stopped) return;
+        if (!phone.isReady) { setTimeout(open, 5000).unref?.(); return; } // the phone is restarting: try again once it is up
         try { proc = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] }); } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
         proc.stdout?.on('data', (d) => { if (String(d).includes('[')) onEvent(); });
         proc.on('exit', () => { proc = null; if (!stopped) setTimeout(open, 5000).unref?.(); });
@@ -458,8 +459,19 @@ export function apply(ctx, config = {}, deps = {}) {
       }
     }
   }
+  /**
+   * Stop the emulator and start it again. An emulator dsh attached to (left from an earlier run) is
+   * not our child, so nothing would relaunch it on exit: wait until adb no longer lists it, then start.
+   */
   phone.restart = async () => {
-    try { await exec(paths.adb, ['-s', serial, 'emu', 'kill'], { env: env(), timeout: 10_000 }); } catch { child?.kill(); }
+    setState('booting');
+    const ours = child;
+    if (ours) ours.removeAllListeners('exit'); // its own relaunch-on-exit must not race this one
+    child = null;
+    try { await exec(paths.adb, ['-s', serial, 'emu', 'kill'], { env: env(), timeout: 10_000 }); } catch { ours?.kill(); }
+    for (let i = 0; i < 30 && (await alreadyRunning()); i++) await new Promise((r) => setTimeout(r, 1000));
+    try { ours?.kill('SIGKILL'); } catch {}
+    void start();
   };
 
   ctx.provide('dshPhone', phone);

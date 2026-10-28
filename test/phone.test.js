@@ -52,6 +52,7 @@ test('phoneGate: installs and sensitive typing ask; looking does not', () => {
 });
 
 function harness({ installed = true, license = true, bootAfter = 1, running = false } = {}) {
+  const state = { running };
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
   const home = join(dsh, 'phone');
@@ -63,7 +64,8 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   let polls = 0;
   const run = async (file, args) => {
     execs.push([file.split('/').slice(-1)[0], ...args]);
-    if (args[0] === 'devices') return { stdout: running ? 'List of devices attached\nemulator-5554\tdevice\n' : 'List of devices attached\n' };
+    if (args[0] === 'devices') return { stdout: state.running ? 'List of devices attached\nemulator-5554\tdevice\n' : 'List of devices attached\n' };
+    if (args.includes('emu') && args.includes('kill')) { state.running = false; return { stdout: '' }; }
     if (args.includes('sys.boot_completed')) return { stdout: ++polls >= bootAfter ? '1\n' : '\n' };
     return { stdout: '' };
   };
@@ -85,7 +87,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   const routes = [];
   apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
-  return { ctx, home, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, state, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const until = async (pred, ms = 1500) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
 
@@ -116,6 +118,16 @@ test('phone: an emulator left running from the last dsh run is attached, not lau
   const h = harness({ running: true });
   assert.ok(await until(() => h.ctx.dshPhone.isReady));
   assert.equal(h.spawned.length, 0);
+  h.stop();
+});
+
+test('phone: /phone restart on an attached emulator kills it and launches a new one', async () => {
+  const h = harness({ running: true });
+  assert.ok(await until(() => h.ctx.dshPhone.isReady));
+  assert.equal(h.spawned.length, 0, 'attached, not launched');
+  await h.cmd().handler({ rawInput: 'restart' });
+  assert.ok(await until(() => h.spawned.length === 1), 'launched after the kill');
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready again');
   h.stop();
 });
 
