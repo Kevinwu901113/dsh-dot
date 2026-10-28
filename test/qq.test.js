@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync } from 'node:fs';
+import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
@@ -41,7 +41,7 @@ function harness({ installed = true, running = false } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const shells = [], effects = [], tools = [], sections = [];
   let cmd, onReady;
-  const computer = { port: 18080, backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
+  const computer = { port: 18080, backend: { rootShell: async () => '', execArgv: ({ argv }) => ['msb', 'exec', '-u', 'root', 'vm', '--', ...argv] }, ready: new Promise((r) => { onReady = r; }) };
   const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
@@ -57,7 +57,7 @@ function harness({ installed = true, running = false } = {}) {
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
-test('qq: boots with the computer — configures, starts NapCat, connects through the gateway; messages wake listeners; qq_send answers; owner learned', async () => {
+test('qq: boots with the computer — configures, starts NapCat, connects through an exec tunnel; messages wake listeners; qq_send answers; owner learned', async () => {
   const h = harness();
   const got = [];
   h.ctx.dshQq.onMessage((m) => got.push(m));
@@ -65,8 +65,10 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.ok(h.shells.some((s) => s.includes('onebot11_10001.json')), 'OneBot config written for the account');
   assert.ok(h.shells.some((s) => s.includes('xvfb-run -a') && s.includes('-q 10001')), 'NapCat started for the account');
   const sock = FakeSocket.last;
-  assert.equal(sock.url, 'ws://127.0.0.1:18080/');
-  assert.equal(sock.opts.headers.Host, '3001-napcat', 'the gateway routes by Host to the VM port');
+  assert.equal(sock.url, 'ws://napcat/');
+  assert.equal(sock.opts.headers.Host, undefined, 'no gateway hop');
+  assert.equal(typeof sock.opts.createConnection, 'function', 'an exec tunnel into the VM carries the socket');
+  assert.equal(sock.opts.headers.Authorization, `Bearer ${JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-qq.json'), 'utf8')).token}`);
   assert.match(sock.opts.headers.Authorization, /^Bearer [0-9a-f]{48}$/);
   sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
   assert.equal(h.ctx.dshQq.connected, true);
@@ -111,11 +113,13 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   h.ctx.get = get0; delete h.ctx.dshPhone;
   // /qq qr pushes the QR to the phone album when the phone is up
   const pushed = [];
-  h.ctx.dshPhone = { isReady: true, adbExec: async (a) => { pushed.push(a); return { stdout: '' }; }, shell: async (c) => { pushed.push(c); return ''; } };
+  let shown = null;
+  h.ctx.dshPhone = { isReady: true, adbExec: async (a) => { pushed.push(a); return { stdout: '' }; }, shell: async (c) => { pushed.push(c); return ''; }, showToCamera: (png) => { shown = png; return '/avd/poster.png'; } };
   const orig = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : orig(n));
   const out = await h.cmd().handler({ rawInput: 'qr' });
   assert.match(out.text, /QR saved: .*qq-login-\d{6}\.png \(drawn 3s ago/);
-  assert.match(out.text, /扫一扫 → 相册/);
+  assert.match(out.text, /in front of her camera: .*扫一扫 \(camera view\)/);
+  assert.equal(String(shown), 'PNG', 'the login code is what her camera looks at');
   assert.ok(pushed.some((a) => Array.isArray(a) && a[0] === 'push' && /qq-login-\d{6}\.png$/.test(a[2])));
   // reconnect after close
   sock.close();
@@ -159,4 +163,34 @@ test('qq_send gate is wired: a tool call to a stranger becomes an ask, one to th
   assert.equal((await gate({ to: 'user:55555', text: 'x' })).kind, 'ask');
   assert.equal(await h.ctx.handlers['tools/pre-execute']({ name: 'bash', input: {} }, async () => 'ran'), 'ran');
   h.stop();
+});
+
+test('the exec tunnel really carries a WebSocket: a real ws server behind `bash -c` stdio', async () => {
+  const { WebSocketServer, WebSocket } = await import('ws');
+  const wss = new WebSocketServer({ host: '127.0.0.1', port: 0 });
+  await new Promise((r) => wss.on('listening', r));
+  const seen = [];
+  wss.on('connection', (s, req) => { seen.push(req.headers.authorization); s.send(JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 })); });
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const effects = [];
+  let onReady;
+  // execArgv hands the VM-side argv back unchanged, so `bash -c <tunnel script>` runs here against the test server.
+  const computer = { port: 1, backend: { rootShell: async () => '', execArgv: ({ argv }) => argv }, ready: new Promise((r) => { onReady = r; }) };
+  const rootShell = async (script) => (script.includes('test -x') ? 'yes\n' : script.includes('pgrep -f') ? 'yes\n' : '');
+  const ctx = {
+    logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), effect(fn) { effects.push(fn()); }, on() {}, provide(n, v) { ctx[n] = v; },
+    inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
+    get: (n) => ({ dshComputer: computer, tools: { register: () => () => {} }, systemPrompt: { section: () => () => {} }, commands: { register: () => () => {} } }[n]),
+  };
+  apply(ctx, { qq: '10001', wsPort: wss.address().port }, { WebSocket, rootShell });
+  onReady(true);
+  for (let i = 0; i < 100 && !ctx.dshQq.connected; i++) await tick(50);
+  try {
+    assert.equal(ctx.dshQq.connected, true, 'connected through the tunnel');
+    assert.match(seen[0], /^Bearer [0-9a-f]{48}$/, 'the OneBot token travelled in Authorization');
+  } finally {
+    effects.forEach((d) => typeof d === 'function' && d());
+    wss.clients.forEach((c) => c.terminate());
+    wss.close();
+  }
 });

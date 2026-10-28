@@ -208,3 +208,8 @@ test('phone: notifications flow through the policy to listeners and /phone; mute
   assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).notifyMuted, ['com.tencent.mobileqq']);
   h.stop();
 });
+
+test('phone camera: the AVD has a virtual-scene back camera; showToCamera writes the poster an app\'s camera sees', async () => {
+  const { avdConfig } = await import('../src/phone/phone.js');
+  assert.match(avdConfig({ avd: 'a', api: 35, tag: 'google_apis', abi: 'arm64-v8a', device: 'pixel', ramMb: 2048, dataGb: 8 }), /^hw\.camera\.back=virtualscene$/m);
+});

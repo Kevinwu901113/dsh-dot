@@ -68,7 +68,7 @@ Web 版：`dsh plugin --profile web add @kevinwu901113/dsh-dot`。从源码装�
 2. **装 App、登录**：在手机窗口里像用真手机一样操作：从官网下 APK 用 `adb install`（`~/.dsh/phone/platform-tools/adb`），或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸都由你在窗口里亲手过——她遇到会停下来叫你。**用小号。** 各平台的条款都不允许自动化，封了就封了。
 3. **人设**：`/interlude preset <分享码>` 从 [typ0.space](https://typ0.space) 导入一份 HDSI 预设，或者把 `examples/canon.minase-style.json` 放到 `~/dot/interlude/canon.json`。
 4. **她在手机上看什么**：profile 的 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }`——这些站她永远用手机上的 App 去看，只读、无审批、每天有上限。
-5. **她的 QQ**：`/qq install` → `/qq account <小号>` → `/qq start` → `/qq qr`，在「手机」标签页里用她手机上的 QQ 扫相册里的码确认电脑登录（详见 [docs/qq.md](docs/qq.md)）。之后你在 QQ 里给她发消息，1–2 秒叫醒她，她用 `qq_send` 回。不想用协议端的，按 dsh-im 的说明接一个官方机器人也行。
+5. **她的 QQ**：`/qq install` → `/qq account <小号>` → `/qq start` → `/qq qr`，在「手机」标签页里用她手机上的 QQ 扫一扫（码会出现在她的摄像头画面里）确认电脑登录（详见 [docs/qq.md](docs/qq.md)）。之后你在 QQ 里给她发消息，1–2 秒叫醒她，她用 `qq_send` 回。不想用协议端的，按 dsh-im 的说明接一个官方机器人也行。
 6. **电脑（可选）**：默认装上并启动；不想要就在环境里设 `DSH_DOT_COMPUTER=off`。要公网实时画面按 [docs/computer.md](docs/computer.md) 用 `tailscale serve`。
 
 ### 四、她一天是怎么过的

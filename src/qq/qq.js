@@ -2,10 +2,13 @@
 // the computer VM, logged into the same account as the QQ app on her phone — QQ allows a phone and a
 // computer at once, so this is her "电脑端 QQ": messages arrive as events the moment they are sent
 // (no notification shade, no background freezing), and she can answer in a second with `qq_send`.
-// The phone app stays for everything else. dsh reaches NapCat's WebSocket through the computer's
-// gateway (the AIO sandbox proxies `Host: <port>-x` to the VM's loopback port, WebSocket included),
-// so nothing is exposed outside 127.0.0.1 and no extra port is opened on the VM.
+// The phone app stays for everything else. dsh reaches NapCat's WebSocket over an exec tunnel into
+// the VM (the same channel the `bash` tool uses: `msb exec` / `docker exec` with a shell that joins
+// stdio to 127.0.0.1:<wsPort>), so NapCat listens on the VM's loopback only — not on the gateway's
+// port proxy, which does not ask for the gateway key — and no extra port is opened anywhere.
 import { randomBytes } from 'node:crypto';
+import { spawn } from 'node:child_process';
+import { Duplex } from 'node:stream';
 import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync, appendFileSync, statSync, rmSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
@@ -266,24 +269,45 @@ export function apply(ctx, config = {}, deps = {}) {
     } catch (err) { return `log unavailable: ${err.message}`; }
   };
 
-  // ---- the OneBot side: one WebSocket through the computer's gateway ----
-  let ws = null, closed = false, reconnectTimer = null, echo = 0;
+  // ---- the OneBot side: one WebSocket over an exec tunnel into the VM ----
+  /** A duplex to 127.0.0.1:<wsPort> inside the VM: a shell in the VM joins its stdio to that port. */
+  function tunnel(c) {
+    const script = `exec 3<>/dev/tcp/127.0.0.1/${cfg.wsPort} || exit 1; cat <&3 & cat >&3; kill $! 2>/dev/null`;
+    const argv = c.backend.execArgv({ user: 'root', cwd: '/', env: {}, argv: ['bash', '-c', script] });
+    const child = (deps.spawn ?? spawn)(argv[0], argv.slice(1), { stdio: ['pipe', 'pipe', 'ignore'] });
+    const d = Duplex.from({ readable: child.stdout, writable: child.stdin });
+    // What http.ClientRequest expects of a socket and a pipe has not got.
+    for (const m of ['setNoDelay', 'setKeepAlive', 'setTimeout', 'ref', 'unref']) d[m] = () => d;
+    child.on('exit', () => d.destroy());
+    child.on('error', (err) => d.destroy(err));
+    // Closing the duplex ends the shell: stdin EOF stops the writer `cat`, the script kills the reader;
+    // a shell stuck in the foreground `cat` ignores SIGTERM until then, so SIGKILL follows if needed.
+    d.on('close', () => { try { child.stdin.destroy(); } catch {} try { child.kill(); } catch {} setTimeout(() => { try { child.kill('SIGKILL'); } catch {} }, 1000).unref(); });
+    return d;
+  }
+  let ws = null, closed = false, reconnectTimer = null, echo = 0, failedConnects = 0;
   const pending = new Map(); // echo → { resolve, reject, timer }
-  function closeWs() { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; try { ws?.close(); } catch {} ws = null; qq.connected = false; }
+  function closeWs() { closed = true; if (reconnectTimer) clearTimeout(reconnectTimer); reconnectTimer = null; const s = ws; ws = null; qq.connected = false; try { s?.close(); } catch {} try { s?.tunnel?.()?.destroy(); } catch {} }
   function connect() { void connectAsync(); }
   async function connectAsync() {
     const c = computer();
-    if (!c?.port) return;
+    if (!c?.backend?.execArgv) return;
     if (!WebSocketImpl) { try { WebSocketImpl = (await import('ws')).default; } catch (err) { setState('error', `the ws package is missing: ${err.message}`); return; } }
     closed = false;
     if (ws) return;
-    const url = `ws://127.0.0.1:${c.port}/`;
-    // `Authorization` carries the OneBot token for NapCat; the gateway key travels in its own header.
-    const socket = new WebSocketImpl(url, { headers: { Host: `${cfg.wsPort}-napcat`, Authorization: `Bearer ${cfg.token}`, ...(c.authHeaders?.() ?? {}) } });
+    // NapCat never came up, or went down with the VM's services: every few failed attempts, look and restart it.
+    if (failedConnects && failedConnects % 6 === 0 && cfg.qq && !(await qq.running().catch(() => true))) {
+      logger.warn('NapCat is not running in the computer; starting it again');
+      audit({ kind: 'napcat-restart', after: failedConnects });
+      try { await qq.start(); return; } catch (err) { logger.warn(`restart failed: ${err.message}`); }
+    }
+    let opened = false, pipe = null;
+    const socket = new WebSocketImpl(`ws://napcat/`, { headers: { Authorization: `Bearer ${cfg.token}` }, createConnection: () => (pipe = tunnel(c)) });
     ws = socket;
-    socket.on('open', () => { logger.info('OneBot connected (NapCat in the computer)'); });
+    socket.tunnel = () => pipe;
+    socket.on('open', () => { opened = true; failedConnects = 0; logger.info('OneBot connected (NapCat in the computer)'); });
     socket.on('message', (data) => { try { onEvent(JSON.parse(String(data))); } catch (err) { logger.debug(`bad event: ${err.message}`); } });
-    socket.on('close', () => { if (ws !== socket) return; ws = null; qq.connected = false; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
+    socket.on('close', () => { try { pipe?.destroy(); } catch {} if (ws !== socket) return; ws = null; qq.connected = false; if (!opened) failedConnects++; if (qq.state === 'connected') setState('reconnecting'); if (!closed) reconnectTimer = setTimeout(connect, cfg.reconnectMs); });
     socket.on('error', (err) => { logger.debug(`OneBot socket: ${err.message}`); });
   }
   /** Conversations that wrote to her lately: "user:<n>" / "group:<n>" → last message time (sendGate). */
@@ -443,8 +467,11 @@ export function apply(ctx, config = {}, deps = {}) {
                   await phone.shell('rm -f /sdcard/Pictures/qq-login*.png; am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures');
                   await phone.adbExec(['push', file, `/sdcard/Pictures/qq-login-${stamp}.png`]);
                   await phone.shell(`am broadcast -a android.intent.action.MEDIA_SCANNER_SCAN_FILE -d file:///sdcard/Pictures/qq-login-${stamp}.png`);
-                  extra += `\nin her phone's album as qq-login-${stamp}.png — QQ → 扫一扫 → 相册 → that one → confirm on the phone. Be quick (≈1 min); /qq qr again for a fresh one.`;
+                  extra += `\nin her phone's album as qq-login-${stamp}.png`;
                 } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
+                // QQ's login codes refuse album imports; the camera is the way. The code becomes the poster the
+                // phone's virtual-scene camera looks at, so QQ → 扫一扫 (camera) sees it directly.
+                try { if (phone.showToCamera) { phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫 (camera view) → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the camera still shows a room, the phone was started before its camera existed — /phone restart once.`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
               }
             }
           }

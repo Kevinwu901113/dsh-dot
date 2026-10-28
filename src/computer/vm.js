@@ -149,6 +149,22 @@ export async function ensureServices(config, computer, logger) {
     await computer.backend.rootShell('for f in $(grep -rln "listen \\[::\\]" /opt/gem /etc/nginx 2>/dev/null); do sed -i "/listen \\[::\\]/d" $f; done; supervisorctl -c /opt/gem/supervisord.conf restart nginx').catch(() => {});
     if (!(await waitHealthy(60_000))) throw new Error(`dsh-computer: VM services did not become healthy on ${base}`);
   }
+  // The image's nginx has a second server on the same port, `Host: <port>-anything`, that relays to
+  // any loopback port in the VM (NapCat, the browser's CDP on 9222, …) and never asks for the key.
+  // Nothing in dsh-dot uses it (NapCat is reached over an exec tunnel): turn it into a 404. run.sh
+  // may rewrite the file from its template on every service start, so this runs after every start.
+  await computer.backend.rootShell([
+    'f=/opt/gem/nginx-server-port-proxy.conf',
+    'if [ -f "$f" ] && ! grep -q "dsh-dot" "$f"; then',
+    `  printf '%s\\n' '# dsh-dot: the per-port relay (Host: <port>-x) bypassed the gateway key; it is closed here.' 'server {' '    listen 0.0.0.0:8080;' '    server_name ~^(?<port>\\d+)-(.+)$;' '    return 404;' '}' > "$f"`,
+    '  nginx -t -c /opt/gem/nginx.conf >/dev/null 2>&1 && (nginx -s reload || supervisorctl -c /opt/gem/supervisord.conf restart nginx) || echo "nginx config test failed"',
+    'fi',
+  ].join('\n')).then((out) => { if (String(out).includes('failed')) logger.warn('could not close the gateway port relay: nginx rejected the patched config'); }, (err) => logger.warn(`could not close the gateway port relay: ${err.message}`));
+  if ((await probe(`${base}/v1/sandbox`, { host: '9222-x' })) !== 404) {
+    computer.portRelayOpen = (await probe(`${base}/`, { host: '9222-x' })) !== 404;
+    if (computer.portRelayOpen) logger.error('the gateway still relays Host: <port>-x to VM ports without the key');
+  } else computer.portRelayOpen = false;
+
   // The gateway must refuse callers without the key; an open gateway means the VM's services were
   // started without it (an older dsh-dot) — restart them with the key before anything else uses them.
   if ((await probe(`${base}/v1/sandbox`)) === 200) {
@@ -217,6 +233,7 @@ export function apply(ctx, config = {}) {
     liveViewUrl: computer.liveViewUrl,
     publicLiveViewUrl: computer.publicLiveViewUrl,
     gatewayOpen: computer.gatewayOpen,
+    portRelayOpen: computer.portRelayOpen,
     mounts: [...computer.mounts],
     error: (computer.error || computer.servicesError)?.message,
   });

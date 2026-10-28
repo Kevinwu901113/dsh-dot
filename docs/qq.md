@@ -18,10 +18,10 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 /qq install            # 在她的电脑里装 NapCat（apt 依赖 + linuxqq + NapCat.Shell，几分钟；日志在 VM 的 /root/napcat-install.log）
 /qq account 123456789  # 她的小号
 /qq start              # 写 OneBot 配置、启动 NapCat、开始连
-/qq qr                 # 把登录二维码存到 ~/.dsh/phone/qq-login.png，并推进她手机的相册
+/qq qr                 # 把登录二维码放到她手机的摄像头前（模拟器虚拟场景的海报），也存到 ~/.dsh/phone/ 和相册
 ```
 
-然后在「手机」标签页里：打开 QQ → 右上角 + → 扫一扫 → 相册 → `qq-login.png` → 在手机上确认"电脑登录"。这就是真实的 QQ 多端登录流程——她的手机授权她的电脑。登录态保存在 VM 里，以后 `/qq start` 用账号快速登录，不用再扫。
+然后在「手机」标签页里：打开 QQ → 右上角 + → 扫一扫，**摄像头画面里就是这张码**（QQ 的登录码不接受相册导入，只认摄像头；她手机的后置摄像头是模拟器的虚拟场景，`/qq qr` 把码贴在场景的墙上）→ 在手机上确认"电脑登录"。这就是真实的 QQ 多端登录流程——她的手机授权她的电脑。登录态保存在 VM 里，以后 `/qq start` 用账号快速登录，不用再扫。码约一分钟过期，过期就再 `/qq qr`。如果摄像头里只有房间没有码：这部手机是在摄像头加进来之前建的，`/phone restart` 一次即可（配置已自动改好）。
 
 `/qq` 看状态，`/qq log` 看 NapCat 日志，`/qq stop` 停，`/qq owner <号>` 指定"你"——必须手动指定，不会从谁先私聊自动学。
 
@@ -44,7 +44,7 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 |---|---|---|
 | `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
 | `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
-| `wsPort` | `3001` | VM 内的 OneBot WS 端口 |
+| `wsPort` | `3001` | VM 内的 OneBot WS 端口（只听回环；dsh 通过 `msb exec`/`docker exec` 的 stdio 隧道连它，不经网关） |
 | `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` |
 | `sendPolicy` | `reply` | `qq_send` 审批：`reply`（见上表）/ `always`（除了你，发谁都问）/ `off`（不问） |
 | `replyWindowMinutes` | `30` | `reply` 策略里"最近给她发过消息"的时间窗 |

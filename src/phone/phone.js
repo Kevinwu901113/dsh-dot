@@ -132,7 +132,9 @@ export function avdConfig({ avd, api, tag, abi, device, ramMb, dataGb }) {
     'hw.keyboard': 'yes', 'hw.mainKeys': 'no', 'hw.dPad': 'no', 'hw.trackBall': 'no',
     'hw.gpu.enabled': 'yes', 'hw.gpu.mode': 'auto', 'hw.initialOrientation': 'portrait',
     'hw.accelerometer': 'yes', 'hw.gyroscope': 'yes', 'hw.sensors.orientation': 'yes', 'hw.sensors.proximity': 'yes',
-    'hw.audioInput': 'no', 'hw.audioOutput': 'yes', 'hw.camera.back': 'none', 'hw.camera.front': 'none',
+    // The back camera is the emulator's virtual scene: a room with a poster on the wall. Whatever PNG
+    // dsh-dot puts on that poster (a login QR, say) is what an app's camera sees — a real scan, not an album import.
+    'hw.audioInput': 'no', 'hw.audioOutput': 'yes', 'hw.camera.back': 'virtualscene', 'hw.camera.front': 'none',
     'hw.gps': 'yes', 'hw.battery': 'yes', 'hw.sdCard': 'no', 'fastboot.forceColdBoot': 'no', 'showDeviceFrame': 'no',
   };
   return `${Object.entries(lines).map(([k, v]) => `${k}=${v}`).join('\n')}\n`;
@@ -262,6 +264,20 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
+  /**
+   * Put a PNG in front of her camera: it becomes the wall poster of the emulator's virtual scene, so
+   * the next time an app opens the back camera (QQ → 扫一扫) that image fills the view. Returns the
+   * poster path. The emulator reads the poster file when the camera opens; `clear()` restores none.
+   */
+  phone.showToCamera = (png) => {
+    const f = posterFiles();
+    mkdirSync(f.dir, { recursive: true });
+    writeFileSync(f.png, png);
+    // Format of the emulator's poster file: name, size (m), position (m, in front of the camera), rotation, image.
+    writeFileSync(f.posters, ['poster wall', 'size 1.5 1.5', 'position 0 0 -1.5', 'rotation 0 0 0', `default ${f.png}`, '', 'poster table', 'size 1 1', 'position 0 -0.5 -1.5', 'rotation 0 0 0', `default ${f.png}`, ''].join('\n'));
+    return f.png;
+  };
+  phone.clearCamera = () => { const f = posterFiles(); try { rmSync(f.posters, { force: true }); rmSync(f.png, { force: true }); } catch {} };
   // Notifications: what her phone shows her (see notifications.js). Listeners get posted and
   // updated ones once each; the policy decides which apps count.
   const notifyListeners = new Set();
@@ -328,9 +344,18 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'installed', emulator: dl.emulator.version, systemImage: dl.systemImage.path });
   }
 
+  /** The poster file of the virtual-scene camera (read when an app opens the camera) and the PNG it shows. */
+  const posterFiles = () => { const dir = join(paths.avdHome, `${cfg.avd}.avd`); return { dir, posters: join(dir, 'Toren1BD.posters'), png: join(dir, 'dsh-dot-poster.png') }; };
   function ensureAvd() {
     const dir = join(paths.avdHome, `${cfg.avd}.avd`);
-    if (existsSync(join(dir, 'config.ini'))) return;
+    if (existsSync(join(dir, 'config.ini'))) {
+      // An AVD created before the camera existed: give it one (takes effect at the emulator's next start).
+      try {
+        const ini = readFileSync(join(dir, 'config.ini'), 'utf8');
+        if (/^hw\.camera\.back=none$/m.test(ini)) { writeFileSync(join(dir, 'config.ini'), ini.replace(/^hw\.camera\.back=none$/m, 'hw.camera.back=virtualscene')); audit({ kind: 'avd-camera-enabled', avd: cfg.avd }); }
+      } catch (err) { logger.warn(`could not enable the camera on ${cfg.avd}: ${err.message}`); }
+      return;
+    }
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'config.ini'), avdConfig({ ...cfg, abi }));
     writeFileSync(join(paths.avdHome, `${cfg.avd}.ini`), `avd.ini.encoding=UTF-8\npath=${dir}\npath.rel=avd/${cfg.avd}.avd\ntarget=android-${cfg.api}\n`);
