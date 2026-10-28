@@ -30,6 +30,28 @@ export function vncPageUrl(origin, ticket) {
   return `${LIVE_VIEW_PATH}/vnc/index.html?${q}`;
 }
 
+/** A peer address as one string: IPv4-mapped IPv6 (::ffff:127.0.0.1) and plain IPv4 compare equal. */
+const peer = (addr) => String(addr ?? '').replace(/^::ffff:(?=\d+\.\d+\.\d+\.\d+$)/i, '');
+
+/**
+ * Socket tickets: single use, short life, and bound to the address that loaded the page — a ticket
+ * that leaks (it rides in the socket URL; noVNC can pass nothing else) is useless from elsewhere.
+ */
+export function createTicketStore({ ttlMs = TICKET_MS, max = TICKET_MAX, now = Date.now } = {}) {
+  const tickets = new Map(); // ticket → { exp, addr }
+  return {
+    mint(addr) {
+      const t0 = now();
+      for (const [t, v] of tickets) if (v.exp < t0) tickets.delete(t);
+      while (tickets.size >= max) tickets.delete(tickets.keys().next().value);
+      const t = randomBytes(24).toString('hex');
+      tickets.set(t, { exp: t0 + ttlMs, addr: peer(addr) });
+      return t;
+    },
+    redeem(t, addr) { const v = tickets.get(t); tickets.delete(t); return Boolean(v) && v.exp >= now() && v.addr === peer(addr); },
+  };
+}
+
 /** Only what the desktop view needs is relayed; the gateway's API, MCP, CDP and terminal are not. */
 const ALLOWED = [/^\/vnc\//, /^\/websockify$/];
 const HOP_BY_HOP = new Set(['connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization', 'te', 'trailer', 'transfer-encoding', 'upgrade', 'host', 'cookie', 'authorization', 'x-aio-api-key']);
@@ -50,16 +72,7 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
   const disposers = [];
   const sockets = new Set();
   // Socket tickets: minted only for a page request dsh already recognised as the owner's; one use, short life.
-  const tickets = new Map();
-  const mint = () => {
-    const now = Date.now();
-    for (const [t, exp] of tickets) if (exp < now) tickets.delete(t);
-    while (tickets.size >= TICKET_MAX) tickets.delete(tickets.keys().next().value);
-    const t = randomBytes(24).toString('hex');
-    tickets.set(t, now + TICKET_MS);
-    return t;
-  };
-  const redeem = (t) => { const exp = tickets.get(t); tickets.delete(t); return Boolean(exp) && exp >= Date.now(); };
+  const tickets = createTicketStore();
   const currentOrigin = () => { try { return origin?.() || webServer.getOrigin?.() || ''; } catch { return ''; } };
 
   const route = webServer.register({
@@ -71,9 +84,10 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
       const rest = url.pathname.slice(LIVE_VIEW_PATH.length) || '/';
       if (rest === '/' || rest === '') {
         // The owner (dsh said so): a page that sends the browser on to noVNC with a fresh ticket.
-        const next = vncPageUrl(currentOrigin(), mint());
-        const html = `<!doctype html><meta charset="utf-8"><title>computer</title><meta http-equiv="refresh" content="0;url=${next}"><script>location.replace(${JSON.stringify(next)})</script>`;
-        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+        // The ticket is in the URL: no caching, and no Referer carrying it anywhere.
+        const next = vncPageUrl(currentOrigin(), tickets.mint(req.socket?.remoteAddress));
+        const html = `<!doctype html><meta charset="utf-8"><meta name="referrer" content="no-referrer"><title>computer</title><meta http-equiv="refresh" content="0;url=${next}"><script>location.replace(${JSON.stringify(next)})</script>`;
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }).end(html);
         return;
       }
       if (rest === '/status') {
@@ -85,7 +99,7 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
         return;
       }
       const up = http.request({ host: gateway.host, port: gateway.port, method: req.method, path: `${rest}${url.search}`, headers: upstreamHeaders(req, key()) }, (r) => {
-        const headers = { ...r.headers, 'cache-control': 'no-store' };
+        const headers = { ...r.headers, 'cache-control': 'no-store', 'referrer-policy': 'no-referrer' }; // noVNC's page URL holds the ticket too
         delete headers['set-cookie'];
         res.writeHead(r.statusCode ?? 502, headers);
         r.pipe(res);
@@ -102,7 +116,7 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
       handler: (req, socket, head) => {
         // A valid ticket (from a page load dsh admitted) or dsh's own recognition of the caller.
         const ticket = new URL(req.url, 'http://x').searchParams.get('t');
-        const admitted = ticket ? redeem(ticket) : false;
+        const admitted = ticket ? tickets.redeem(ticket, req.socket?.remoteAddress) : false;
         const rejection = admitted ? undefined : (() => { try { return connection?.requestRejection?.(req) ?? (connection ? undefined : 503); } catch { return 403; } })();
         if (rejection !== undefined) { socket.end(`HTTP/1.1 ${rejection === 401 ? '401 Unauthorized' : '403 Forbidden'}\r\nconnection: close\r\n\r\n`); return; }
         const headers = upstreamHeaders(req, key(), { connection: 'Upgrade', upgrade: 'websocket' });

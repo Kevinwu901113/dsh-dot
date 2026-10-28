@@ -33,6 +33,7 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | 别人私聊她 / 群里 @ 她 | `[手机通知] QQ · 路人（123）：在吗` 叫醒她，和手机通知一条路（1 秒合并、忙时攒着、按对话分组、夜间静音）；这些不算人的直接输入，建不了目标 |
 | 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，`<sep/>` 分几条发。**审批**（`sendPolicy: reply`）：发给你永远不问；回最近 30 分钟内给她发过消息的人或群（文字、网图）不问；发给没找过她的人、沉默的群，或者发她手机/电脑上的文件（`phone:*`、`/sdcard/…`、电脑路径）——先弹审批 |
 | 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB |
+| 图片网址规则 | 只接受公网 `http`/`https`、端口 80/443、不带账号密码；回环、私网、链路本地（含 169.254.169.254）、组播、`localhost`/`*.local`/`*.internal`/单段主机名一律拒绝并报错（NapCat 在 VM 里下载，防止她让它访问 VM 内部服务）。公网域名解析到内网（DNS rebinding）这里拦不住 |
 | 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
 | dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
 | 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
@@ -45,6 +46,7 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | `qq` / `DSH_DOT_QQ_ACCOUNT` | 无 | 账号；`/qq account` 也写进 `dsh-qq.json` |
 | `owner` | 无 | 你的 QQ 号；`/qq owner <号>` 设置。只有它的私聊算你本人的话 |
 | `wsPort` | `3001` | VM 内的 OneBot WS 端口（只听回环）。dsh 经网关的**认证**路径连它：插件在 VM 的 `/opt/gem/nginx/dsh-dot-napcat.conf` 放一个 `location /dsh-dot/napcat/`，网关先验密钥再转进来 |
+| 校验 | 账号和 `owner` 必须是 5–12 位数字，`wsPort` 必须是 1–65535 的整数（它们会拼进 VM 里的 root shell 命令）；`/qq account`、`/qq owner` 输错直接报错，`dsh-qq.json` 里的非法值按未设置处理并警告 |
 | `groupPolicy` | `mention` | 群消息：`mention`（@她）/ `all` / `none` / `score`。`/qq group <值>` 可改。`score`：没 @ 她的群消息先用一次很短的模型调用打 0–10 分（和她相关、问到她、她明显有话说才高分），到 `scoreThreshold`（默认 7）才叫醒她，@ 永远算；每群每分钟最多 `scoreMaxPerMinute`（6）次打分；`scoreModel`（"provider/model"）可指定便宜模型，默认用当前模型。这就是"价值评分插话" |
 | `tidy` | `true` | 发出去的文字按她的聊天口吻整理：去掉行末句号、引号、破折号、冒号、星号、井号（网址和时间不动）。关掉就原样发 |
 | `sendPolicy` | `reply` | `qq_send` 审批：`reply`（见上表）/ `always`（除了你，发谁都问）/ `off`（不问） |

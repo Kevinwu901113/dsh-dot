@@ -5,7 +5,7 @@ import { mkdtempSync, readFileSync, statSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { computerApiKey, KEY_HEADER } from '../src/computer/key.js';
-import { mountComputerView, LIVE_VIEW_PATH, WEBSOCKIFY_PATH } from '../src/computer/live-view.js';
+import { mountComputerView, createTicketStore, LIVE_VIEW_PATH, WEBSOCKIFY_PATH } from '../src/computer/live-view.js';
 
 test('gateway key: generated once per machine, owner-only file, explicit value wins', () => {
   const dir = mkdtempSync(join(tmpdir(), 'dot-key-'));
@@ -186,4 +186,27 @@ test('ensureServices: an open gateway or an open relay is a failure, never "read
       assert.ok(computer.unsafe, 'marked unsafe');
     } finally { gw.server.closeAllConnections?.(); gw.server.close(); }
   }
+});
+
+test('live view tickets: single use, short life, bound to the address that loaded the page', async () => {
+  let t0 = 1000;
+  const store = createTicketStore({ ttlMs: 100, now: () => t0 });
+  const a = store.mint('127.0.0.1');
+  assert.equal(store.redeem(a, '10.0.0.9'), false, 'another address');
+  assert.equal(store.redeem(a, '127.0.0.1'), false, 'and the failed try spent it');
+  const b = store.mint('::ffff:127.0.0.1');
+  assert.equal(store.redeem(b, '127.0.0.1'), true, 'v4-mapped equals v4');
+  const c = store.mint('127.0.0.1'); t0 += 101;
+  assert.equal(store.redeem(c, '127.0.0.1'), false, 'expired');
+  // Over the wire: the entry page keeps its ticket out of caches and Referer headers.
+  const gw = await fakeGateway();
+  const dsh = await fakeDsh();
+  const view = mountComputerView({ webServer: dsh.webServer, connection: owner, gateway: { host: '127.0.0.1', port: gw.port }, key: () => 'secret', status: () => ({}), logger: {} });
+  try {
+    const page = await get(dsh.port, `${LIVE_VIEW_PATH}/`, { cookie: 'dsh=owner' });
+    assert.equal(page.headers['cache-control'], 'no-store');
+    assert.equal(page.headers['referrer-policy'], 'no-referrer');
+    assert.match(page.body, /<meta name="referrer" content="no-referrer">/);
+    assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/vnc/index.html`, { cookie: 'dsh=owner' })).headers['referrer-policy'], 'no-referrer');
+  } finally { view.close(); shut(dsh.server, gw.server); }
 });
