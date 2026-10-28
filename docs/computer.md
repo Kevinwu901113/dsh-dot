@@ -1,6 +1,6 @@
 # dsh-dot/computer（原 dsh-computer）
 
-> Since dsh-dot v0.3 the computer is a component of [dsh-dot](../README.md) rather than a separate plugin: install `@kevinwu901113/dsh-dot` (npm) or `github:Kevinwu901113/dsh-dot` (source). Everything below still applies; component names are `@kevinwu901113/dsh-dot/computer`, `/subprocess`, `/gate`.
+> Since dsh-dot v0.3 the computer is a component of [dsh-dot](../README.md) rather than a separate plugin: install `dsh-dot-life` (npm) or `github:Kevinwu901113/dsh-dot` (source). Everything below still applies; component names are `dsh-dot-life/computer`, `/subprocess`, `/gate`.
 
 **English** | [中文](#中文说明)
 
@@ -24,7 +24,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 ```bash
 osascript -e 'quit app "DeepSeek Harness"'
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add @kevinwu901113/dsh-dot
+  plugin --profile desktop add dsh-dot-life
 open -a "DeepSeek Harness"
 ```
 
@@ -69,7 +69,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 ```bash
 osascript -e 'quit app "DeepSeek Harness"'      # 先退出桌面版
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" \
-  plugin --profile desktop add @kevinwu901113/dsh-dot
+  plugin --profile desktop add dsh-dot-life
 open -a "DeepSeek Harness"
 ```
 
@@ -79,7 +79,7 @@ open -a "DeepSeek Harness"
 
 ```bash
 npm i -g @deepseek-ai/dsh@0.2.0-rc.2
-dsh plugin --profile web add @kevinwu901113/dsh-dot
+dsh plugin --profile web add dsh-dot-life
 cd ~/某个项目 && dsh web
 ```
 

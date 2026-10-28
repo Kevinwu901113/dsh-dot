@@ -15,7 +15,7 @@ One plugin, four components:
 | **`dsh-dot/computer`** (optional) | A bundled microVM (no Docker needed) with shell, browser, desktop, live view, approval gates and an audit log — the isolation boundary for work. `DSH_DOT_COMPUTER=off` turns it off. [Details](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox) (bundled) or Docker |
 
 ```bash
-dsh plugin --profile desktop add @kevinwu901113/dsh-dot @xmanrui/dsh-im   # npm; or github:Kevinwu901113/dsh-dot for the source
+dsh plugin --profile desktop add dsh-dot-life @xmanrui/dsh-im   # npm; or github:Kevinwu901113/dsh-dot for the source
 # then, in dsh:  /phone accept      (Android SDK license → the phone installs itself)
 #                /interlude preset 6QA0-1PD6   (a persona from the HDSI hub; pick your own on typ0.space)
 ```
@@ -41,7 +41,7 @@ dsh-dot 让 dsh 里住进一个**在自己手机上过日子的角色**。她有
 | **`dsh-dot/dot`** 联系人层 | 定时任务的结果推到 IM（回复只是 `DOT_SILENT` 就不发）、审批和设备状况的提醒、工作规则作为系统提示的一段 | IM 用 [dsh-im](https://github.com/xmanrui/dsh-im)；定时用 dsh 内置的定时服务 |
 | **`dsh-dot/computer`**（可选）她的电脑 | 自带 microVM（不需要 Docker），里面有 shell、浏览器、桌面；实时画面、审批闸门、审计日志。干活时的隔离边界。`DSH_DOT_COMPUTER=off` 关掉。详见 [docs/computer.md](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker |
 
-v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件，git 历史一起并了。对外没变：`mcp__vm__*`、`dshComputer`、`~/.dsh/dsh-computer*`、`~/dot/interlude/`、`/dot` `/interlude`。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。**v0.8 起包名改为 `@kevinwu901113/dsh-dot`**（npm 上 `dsh-dot` 已被他人占用）：之前按 `github:` 装过的，先 `dsh plugin --profile desktop remove dsh-dot` 再装；`~/dot`、`~/.dsh/phone`、虚拟机都不用动。
+v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插件；v0.3 / v0.4 起并进来做组件，git 历史一起并了。对外没变：`mcp__vm__*`、`dshComputer`、`~/.dsh/dsh-computer*`、`~/dot/interlude/`、`/dot` `/interlude`。已经装了它们的，先 `dsh plugin --profile desktop remove dsh-computer dsh-interlude` 再装新版 dsh-dot。**v0.9 起 npm 包名是 `dsh-dot-life`**（`dsh-dot` 在 npm 上被占位包占着；v0.8.x 曾叫 `@kevinwu901113/dsh-dot`，已标记 deprecated）：之前装过旧名的，先 `dsh plugin --profile desktop remove @kevinwu901113/dsh-dot`（或 `dsh-dot`）再装；`~/dot`、`~/.dsh/phone`、虚拟机都不用动。
 
 ### 二、安装
 
@@ -50,17 +50,17 @@ v0.2 之前"电脑"（dsh-computer）和"幕间"（dsh-interlude）是独立插�
 ```bash
 # macOS
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
-  @kevinwu901113/dsh-dot @xmanrui/dsh-im
+  dsh-dot-life @xmanrui/dsh-im
 open -a "DeepSeek Harness"
 ```
 
 ```powershell
 # Windows（PowerShell；需要开启 Windows 虚拟机监控程序平台 WHPX，手机才能跑）
 & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add `
-  @kevinwu901113/dsh-dot @xmanrui/dsh-im
+  dsh-dot-life @xmanrui/dsh-im
 ```
 
-Web 版：`dsh plugin --profile web add @kevinwu901113/dsh-dot`。从源码装：把包名换成 `github:Kevinwu901113/dsh-dot`。
+Web 版：`dsh plugin --profile web add dsh-dot-life`。从源码装：把包名换成 `github:Kevinwu901113/dsh-dot`。
 
 ### 三、第一次设置
 

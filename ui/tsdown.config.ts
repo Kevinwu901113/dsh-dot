@@ -1,3 +1,3 @@
 import { clientBundle } from '../tsdown.client.ts'
 
-export default clientBundle('@kevinwu901113/dsh-dot', ['lib/types/index.js'])
+export default clientBundle('dsh-dot-life', ['lib/types/index.js'])

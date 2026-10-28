@@ -1,6 +1,6 @@
 # dsh-dot/interlude · 幕间（原 dsh-interlude）
 
-> Since dsh-dot v0.4 the interlude is a component of [dsh-dot](../README.md), not a separate plugin: install `@kevinwu901113/dsh-dot`. Everything below still applies; the component name is `@kevinwu901113/dsh-dot/interlude`, its files stay under `~/dot/interlude/`, the command is still `/interlude`.
+> Since dsh-dot v0.4 the interlude is a component of [dsh-dot](../README.md), not a separate plugin: install `dsh-dot-life`. Everything below still applies; the component name is `dsh-dot-life/interlude`, its files stay under `~/dot/interlude/`, the command is still `/interlude`.
 
 **English** | [中文](#中文说明)
 
@@ -19,7 +19,7 @@ Three kinds of rounds, after HDSI's phases:
 Files, all plain text under `~/dot/interlude/`: `canon.json` (who the character is — HDSI `storyDefaults`, imported from the HDSI preset hub with `/interlude preset <share code>` or set in config; no `AGENTS.md` needed), `script.md` (the life script, append-only), `state.json` (continuity: current / recent / salient), `intents.json`, `calls.jsonl` (audit). The Canon is injected as a system-prompt section for sessions in the home directory.
 
 ```bash
-dsh plugin --profile desktop add @kevinwu901113/dsh-dot
+dsh plugin --profile desktop add dsh-dot-life
 ```
 
 No memory database, no retrieval, no tools inside the round; metered by dsh-budget like any other call. Works on its own; built to sit beside [dsh-dot](https://github.com/Kevinwu901113/dsh-dot).
@@ -72,7 +72,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 ### 四、安装
 
 ```bash
-"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add @kevinwu901113/dsh-dot
+"/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add dsh-dot-life
 ```
 
 和 dsh-dot 共用 `~/dot`。装好后在 dsh 里发 `/interlude preset 6QA0-1PD6`（示例：HDSI 作者的「水濑」），人设就有了；或者去 typ0.space 挑一个，复制分享码。

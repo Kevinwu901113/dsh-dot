@@ -36,7 +36,7 @@
 - insert:
     - id: dot-computer
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
-      name: '@kevinwu901113/dsh-dot/computer'
+      name: 'dsh-dot-life/computer'
       config:
         backend: !!js "process.env.DSH_COMPUTER_BACKEND ?? ''"
         port: !!js "Number(process.env.DSH_COMPUTER_PORT ?? 18080)"
@@ -48,10 +48,10 @@
         mounts: !!js "process.env.DSH_COMPUTER_MOUNTS ? process.env.DSH_COMPUTER_MOUNTS.split(process.platform === 'win32' ? ';' : ':').filter(Boolean) : []"
     - id: dot-subprocess
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
-      name: '@kevinwu901113/dsh-dot/subprocess'
+      name: 'dsh-dot-life/subprocess'
     - id: dot-gate
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
-      name: '@kevinwu901113/dsh-dot/gate'
+      name: 'dsh-dot-life/gate'
       config:
         mode: !!js "process.env.DSH_COMPUTER_GATE ?? 'risky'"
     # 3. Browser + desktop tools served from inside the VM (tool names: mcp__vm__*) are mounted by the
@@ -59,11 +59,11 @@
     # 4. Desktop/Web UI: right-Sidebar "Computer" tab (live view) and a header toggle.
     - id: dot-ui
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
-      name: '@kevinwu901113/dsh-dot'
+      name: 'dsh-dot-life'
     # 5. Her phone (see src/phone/phone.js). First start downloads ~2 GB from Google's repository once
     #    the SDK license is accepted (`/phone accept`, or acceptLicense: true here).
     - id: dot-phone
-      name: '@kevinwu901113/dsh-dot/phone'
+      name: 'dsh-dot-life/phone'
       disabled: !!js "process.env.DSH_DOT_PHONE === 'off'"
       config:
         window: !!js "process.env.DSH_DOT_PHONE_WINDOW !== 'off'"
@@ -73,7 +73,7 @@
         publicUrl: !!js "process.env.DSH_DOT_PUBLIC_URL ?? process.env.DSH_COMPUTER_PUBLIC_URL ?? ''"
     # 6. The always-on glue (was the standalone dsh-dot plugin).
     - id: dot
-      name: '@kevinwu901113/dsh-dot/dot'
+      name: 'dsh-dot-life/dot'
       config:
         # dot's home: its working files live here and sessions started here are dot's.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
@@ -81,13 +81,13 @@
     #     meets in her apps, what happened. Her conversation is handed over to a fresh session past
     #     handoffTokens (long before dsh's own compaction at 80% of the window). Files: <home>/memory/.
     - id: dot-memory
-      name: '@kevinwu901113/dsh-dot/memory'
+      name: 'dsh-dot-life/memory'
       config:
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
         # handoffTokens: 150000
     # 7. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
-      name: '@kevinwu901113/dsh-dot/interlude'
+      name: 'dsh-dot-life/interlude'
       config:
         home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
         # Going to look (HDSI browserIntent): auto = web first; a host listed below is always
@@ -104,7 +104,7 @@
         playApps: { 小黑盒: com.max.xiaoheihe, B站: tv.danmaku.bili }
     # 8. Her QQ on the computer (NapCat in the VM). /qq install once, /qq account <number>, /qq qr to log in.
     - id: dot-qq
-      name: '@kevinwu901113/dsh-dot/qq'
+      name: 'dsh-dot-life/qq'
       disabled: !!js "process.env.DSH_DOT_QQ === 'off' || process.env.DSH_DOT_COMPUTER === 'off'"
       config:
         qq: !!js "process.env.DSH_DOT_QQ_ACCOUNT ?? ''"
