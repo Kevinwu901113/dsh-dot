@@ -210,3 +210,10 @@ test('live view tickets: single use, short life, bound to the address that loade
     assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/vnc/index.html`, { cookie: 'dsh=owner' })).headers['referrer-policy'], 'no-referrer');
   } finally { view.close(); shut(dsh.server, gw.server); }
 });
+
+test('ticket store: a ticket minted with no peer address (desktop bridge) is not address-bound', async () => {
+  const { createTicketStore } = await import('../src/computer/live-view.js');
+  const store = createTicketStore();
+  assert.equal(store.redeem(store.mint(undefined), '127.0.0.1'), true);
+  assert.equal(store.redeem(store.mint('10.0.0.5'), '127.0.0.1'), false);
+});

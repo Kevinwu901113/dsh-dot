@@ -48,7 +48,9 @@ export function createTicketStore({ ttlMs = TICKET_MS, max = TICKET_MAX, now = D
       tickets.set(t, { exp: t0 + ttlMs, addr: peer(addr) });
       return t;
     },
-    redeem(t, addr) { const v = tickets.get(t); tickets.delete(t); return Boolean(v) && v.exp >= now() && v.addr === peer(addr); },
+    // A page served over the desktop app's bridge has no TCP peer (addr ''): such a ticket is not
+    // bound, since the socket it unlocks will arrive on a real loopback connection.
+    redeem(t, addr) { const v = tickets.get(t); tickets.delete(t); return Boolean(v) && v.exp >= now() && (v.addr === '' || v.addr === peer(addr)); },
   };
 }
 
