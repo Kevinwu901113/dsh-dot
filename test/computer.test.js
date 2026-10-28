@@ -92,8 +92,11 @@ test('computer live view: only the signed-in owner reaches the relay, and only t
     assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/v1/sandbox`, { cookie: 'dsh=owner' })).status, 404);
     assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/mcp`, { cookie: 'dsh=owner' })).status, 404);
     assert.equal(gw.seen.length, 1);
-    // The bare path redirects to the page.
-    assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/`, { cookie: 'dsh=owner' })).status, 302);
+    // The bare path is a page that sends the owner on to noVNC with dsh's real host/port and a socket ticket.
+    const entry = await get(dsh.port, `${LIVE_VIEW_PATH}/`, { cookie: 'dsh=owner' });
+    assert.equal(entry.status, 200);
+    assert.match(entry.body, new RegExp(`host=127\\.0\\.0\\.1&port=${dsh.port}&encrypt=false&path=dsh-dot%2Fcomputer%2Fwebsockify%3Ft%3D[0-9a-f]{48}`));
+    assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/`)).status, 401, 'no ticket without login');
   } finally { view.close(); shut(dsh.server, gw.server); }
 });
 
@@ -122,6 +125,14 @@ test('computer live view: the VNC socket is relayed for the owner with the key, 
     const echoed = await new Promise((r) => { ok.socket.once('data', (d) => r(String(d))); ok.socket.write('ping'); });
     assert.equal(echoed, 'ping');
     ok.socket.destroy();
+    // A ticket from an admitted page load opens the socket without a cookie (the desktop app's case) — once.
+    const page = await get(dsh.port, `${LIVE_VIEW_PATH}/`, { cookie: 'dsh=owner' });
+    const t = /%3Ft%3D([0-9a-f]{48})/.exec(page.body)[1];
+    const byTicket = await upgrade(dsh.port, `${WEBSOCKIFY_PATH}?t=${t}`);
+    assert.equal(byTicket.status, 101);
+    byTicket.socket.destroy();
+    assert.equal((await upgrade(dsh.port, `${WEBSOCKIFY_PATH}?t=${t}`)).status, 401, 'single use');
+    assert.equal((await upgrade(dsh.port, `${WEBSOCKIFY_PATH}?t=${'0'.repeat(48)}`)).status, 401, 'unknown ticket');
   } finally { view.close(); shut(dsh.server, gw.server); }
 });
 

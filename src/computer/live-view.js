@@ -4,14 +4,31 @@
 // what remains to the gateway with the key attached — static noVNC files over HTTP, the VNC stream
 // over one WebSocket upgrade. The client tab and approval messages point here, never at the port.
 import http from 'node:http';
+import { randomBytes } from 'node:crypto';
 import { rejectUnlessOwner } from '../web-auth.js';
 import { keyHeaders } from './key.js';
 
 export const LIVE_VIEW_PATH = '/dsh-dot/computer';
 /** Upgrade routes are exact-path: noVNC is told to open its socket here (`path=` in the page URL). */
 export const WEBSOCKIFY_PATH = `${LIVE_VIEW_PATH}/websockify`;
-/** The page a browser opens (relative to dsh's origin). */
-export const LIVE_VIEW_PAGE = `${LIVE_VIEW_PATH}/vnc/index.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000&path=${encodeURIComponent(WEBSOCKIFY_PATH.slice(1))}`;
+/** What a browser opens (relative to dsh's origin): a tiny page that sends it on to noVNC with a socket ticket. */
+export const LIVE_VIEW_PAGE = `${LIVE_VIEW_PATH}/`;
+/** How long a socket ticket lives, and how many may be outstanding (one per page load). */
+const TICKET_MS = 120_000;
+const TICKET_MAX = 32;
+
+/**
+ * The noVNC page URL for one visit. `origin` is dsh's HTTP origin: the desktop app shows its UI from
+ * its own scheme and carries HTTP over a bridge, which a WebSocket cannot ride, so noVNC is told the
+ * real host and port and given a single-use ticket (`?t=`) in place of the cookie it will not have.
+ */
+export function vncPageUrl(origin, ticket) {
+  let host = '127.0.0.1', port = '';
+  try { const u = new URL(origin); host = u.hostname; port = u.port || (u.protocol === 'https:' ? '443' : '80'); } catch {}
+  const path = `${WEBSOCKIFY_PATH.slice(1)}?t=${ticket}`;
+  const q = new URLSearchParams({ autoconnect: 'true', resize: 'scale', reconnect: 'true', reconnect_delay: '2000', host, port, encrypt: String(origin.startsWith('https:')), path });
+  return `${LIVE_VIEW_PATH}/vnc/index.html?${q}`;
+}
 
 /** Only what the desktop view needs is relayed; the gateway's API, MCP, CDP and terminal are not. */
 const ALLOWED = [/^\/vnc\//, /^\/websockify$/];
@@ -28,10 +45,22 @@ function upstreamHeaders(req, key, extra = {}) {
  * the current gateway key, `status()` the computer's status snapshot (served at /status for the tab).
  * Returns `{ close }`.
  */
-export function mountComputerView({ webServer, connection, gateway, key, status, logger = {} }) {
+export function mountComputerView({ webServer, connection, gateway, key, status, origin, logger = {} }) {
   const log = (level, msg) => logger[level]?.(msg);
   const disposers = [];
   const sockets = new Set();
+  // Socket tickets: minted only for a page request dsh already recognised as the owner's; one use, short life.
+  const tickets = new Map();
+  const mint = () => {
+    const now = Date.now();
+    for (const [t, exp] of tickets) if (exp < now) tickets.delete(t);
+    while (tickets.size >= TICKET_MAX) tickets.delete(tickets.keys().next().value);
+    const t = randomBytes(24).toString('hex');
+    tickets.set(t, now + TICKET_MS);
+    return t;
+  };
+  const redeem = (t) => { const exp = tickets.get(t); tickets.delete(t); return Boolean(exp) && exp >= Date.now(); };
+  const currentOrigin = () => { try { return origin?.() || webServer.getOrigin?.() || ''; } catch { return ''; } };
 
   const route = webServer.register({
     kind: 'prefix',
@@ -41,7 +70,10 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
       const url = new URL(req.url, 'http://x');
       const rest = url.pathname.slice(LIVE_VIEW_PATH.length) || '/';
       if (rest === '/' || rest === '') {
-        res.writeHead(302, { location: LIVE_VIEW_PAGE, 'cache-control': 'no-store' }).end();
+        // The owner (dsh said so): a page that sends the browser on to noVNC with a fresh ticket.
+        const next = vncPageUrl(currentOrigin(), mint());
+        const html = `<!doctype html><meta charset="utf-8"><title>computer</title><meta http-equiv="refresh" content="0;url=${next}"><script>location.replace(${JSON.stringify(next)})</script>`;
+        res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
         return;
       }
       if (rest === '/status') {
@@ -68,7 +100,10 @@ export function mountComputerView({ webServer, connection, gateway, key, status,
     disposers.push(webServer.registerUpgrade({
       path: WEBSOCKIFY_PATH,
       handler: (req, socket, head) => {
-        const rejection = (() => { try { return connection?.requestRejection?.(req) ?? (connection ? undefined : 503); } catch { return 403; } })();
+        // A valid ticket (from a page load dsh admitted) or dsh's own recognition of the caller.
+        const ticket = new URL(req.url, 'http://x').searchParams.get('t');
+        const admitted = ticket ? redeem(ticket) : false;
+        const rejection = admitted ? undefined : (() => { try { return connection?.requestRejection?.(req) ?? (connection ? undefined : 503); } catch { return 403; } })();
         if (rejection !== undefined) { socket.end(`HTTP/1.1 ${rejection === 401 ? '401 Unauthorized' : '403 Forbidden'}\r\nconnection: close\r\n\r\n`); return; }
         const headers = upstreamHeaders(req, key(), { connection: 'Upgrade', upgrade: 'websocket' });
         for (const [k, v] of Object.entries(req.headers)) if (k.startsWith('sec-websocket-')) headers[k] = v;

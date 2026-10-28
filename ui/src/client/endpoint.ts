@@ -5,14 +5,14 @@ export interface ComputerEndpoint {
 }
 
 /**
- * noVNC page relayed by dsh-dot/computer on dsh's own web server (same origin, behind dsh's
- * login); the VNC socket goes through the same relay. The gateway port is never addressed.
+ * entry page of the computer's live view, relayed by dsh-dot/computer on dsh's own web server
+ * (same origin, behind dsh's login); it sends the frame on to noVNC with a socket ticket. The gateway port is never addressed.
  * @param _endpoint - unused; the live view is same-origin.
  * @returns the live view URL.
  */
 export function liveViewUrl(_endpoint: ComputerEndpoint): string {
   const base = (() => { try { return window.location.origin } catch { return '' } })()
-  return `${base}/dsh-dot/computer/vnc/index.html?autoconnect=true&resize=scale&reconnect=true&reconnect_delay=2000&path=dsh-dot%2Fcomputer%2Fwebsockify`
+  return `${base}/dsh-dot/computer/`
 }
 
 /**

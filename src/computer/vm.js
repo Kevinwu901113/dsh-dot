@@ -268,7 +268,7 @@ export function apply(ctx, config = {}) {
 
   // The live view: dsh's web server + dsh's login in front, the gateway key behind.
   ctx.inject?.(['webServer', 'connection'], (c) => c.effect(() => {
-    const view = mountComputerView({ webServer: c.webServer, connection: c.connection, gateway: { host: '127.0.0.1', port: cfg.port }, key: () => apiKey, status: () => computer.status(), logger });
+    const view = mountComputerView({ webServer: c.webServer, connection: c.connection, gateway: { host: '127.0.0.1', port: cfg.port }, key: () => apiKey, status: () => computer.status(), origin: () => c.webServer.getOrigin(), logger });
     computer.liveViewUrl = localUrl(c.webServer, LIVE_VIEW_PAGE) || LIVE_VIEW_PAGE;
     changed();
     return () => { view.close(); computer.liveViewUrl = undefined; };

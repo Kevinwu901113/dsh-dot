@@ -102,7 +102,7 @@ computer ready — live view: http://127.0.0.1:<dsh 端口>/dsh-dot/computer/vnc
 
 **在 dsh 界面里**：会话顶部右侧有一个显示器按钮，点一下就在右侧栏打开"虚拟机"标签页，可以直接点击和输入；再点一下收起。也可以在右侧栏的"+"引导页里选"虚拟机"。虚拟机还没就绪时，标签页会显示等待状态并自动重试。
 
-**在浏览器里**：打开 dsh 的地址加 `/dsh-dot/computer/`（日志 `computer ready — live view:` 一行有完整链接）。它挂在 dsh 自己的 web server 上，每个请求和 VNC 的 WebSocket 都先过 dsh 的登录态（和手机实时画面、dot 面板同一道门），然后由插件带着网关密钥转给虚拟机。看到的就是 agent 的电脑桌面，可以直接点击、输入。
+**在浏览器里**：打开 dsh 的地址加 `/dsh-dot/computer/`（日志 `computer ready — live view:` 一行有完整链接）。它挂在 dsh 自己的 web server 上，每个请求先过 dsh 的登录态（和手机实时画面、dot 面板同一道门），然后由插件带着网关密钥转给虚拟机。VNC 的 WebSocket 也经同一中继：入口页在通过登录态后发一张 120 秒、一次性的连接票（桌面版的界面走的是 app 内部桥，WebSocket 带不上登录 cookie，所以用票），WebSocket 凭票或凭登录态进入。看到的就是 agent 的电脑桌面，可以直接点击、输入。
 
 **在手机上（不在电脑旁时）**：暴露 **dsh 本身**，而不是虚拟机端口。推荐用 [Tailscale](https://tailscale.com)：
 
