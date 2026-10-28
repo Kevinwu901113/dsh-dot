@@ -47,7 +47,11 @@ test('qqToolGate: docs and reads run; sends follow sendGate; secrets, account, p
   const now = Date.now();
   const opt = [{ owner: '20002' }, { recent: (k) => (k === 'group:7777777' ? now - 60_000 : 0), now }];
   const g = (tool, args) => qqToolGate(`${QQ_TOOL_PREFIX}${tool}`, args, ...opt);
-  for (const t of ['list_actions', 'search_actions', 'get_action', 'list_categories', 'get_runtime_info', 'query_action', 'query_action_schema']) assert.equal(g(t, {}), null, t);
+  for (const t of ['list_actions', 'search_actions', 'get_action', 'list_categories', 'get_runtime_info']) assert.equal(g(t, {}), null, t);
+  // query_action* is judged by the action it names, like invoke_action*.
+  assert.equal(g('query_action', { action: 'get_group_list' }), null);
+  assert.match(g('query_action', { action: 'set_group_kick' }), /set_group_kick/);
+  assert.match(g('query_action', {}), /without a readable action/);
   for (const a of ['get_friend_list', 'get_group_msg_history', 'fetch_custom_face', 'can_send_image', 'ocr_image', 'download_file', 'get_qzone_feeds']) assert.equal(g('invoke_action', { action: a, params: {} }), null, a);
   for (const a of ['send_packet', 'get_cookies', 'get_csrf_token', 'get_rkey', 'set_qq_avatar', 'delete_friend', 'set_group_kick', 'set_group_ban', 'set_restart', 'send_qzone_post', 'delete_qzone_feed', 'delete_msg', 'set_friend_add_request']) assert.match(g('invoke_action', { action: a, params: {} }), new RegExp(`QQ action ${a}`), a);
   assert.equal(g('invoke_action', { action: 'send_private_msg', params: { user_id: 20002, message: 'hi' } }), null, 'the owner');
@@ -117,7 +121,8 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   assert.match(script, /api\.github\.com\/repos\/SnowLuma\/SnowLuma\/releases\/latest/);
   assert.match(script, /SnowLuma-\$tag-linux-\$arch-lite\.tar\.gz/);
   assert.match(script, /"https:\/\/ghfast\.top\/\$asset"/, 'mirrors as with NapCat');
-  assert.match(script, /run \/qq install first/);
+  assert.match(script, /sha256sum -c -/);
+  assert.doesNotMatch(script, /Napcat\/opt\/QQ/, "never the NapCat-patched QQ");
   assert.match(script, /<<'DOT_RUN_EOF'/, 'the outer heredoc does not end at the config heredocs');
   assert.equal(h.ctx.dshQq.state, 'installed');
   await h.ctx.dshQq.installed('snowluma');

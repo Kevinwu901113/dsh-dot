@@ -71,6 +71,8 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) — a head
 | `send_packet`、`get_cookies`、`get_csrf_token`、`get_rkey`、改资料/头像、删好友、踢人/禁言/设管理/退群、`set_restart`、QQ 空间发/删 | 永远问 |
 | 其他所有 action、读不出 action 名的调用 | 问，理由里写 action 名 |
 
+**和官方部署的差异 / 前提**（对照 SnowLuma.Docker.Framework 的 host 安装脚本）：`/qq install snowluma` 会装一个**干净的系统版 Linux QQ**（`/opt/QQ`，钉在 SnowLuma 官方安装脚本同一版本 3.2.32_260812，sha256 校验不过就不装），不复用 NapCat 解压的那份（它的启动器被改成加载 NapCat，两个客户端会挤进同一个 QQ）。SnowLuma 从工作目录读 `config/`，我们在 `/root/snowluma` 里启动它。它的 MCP（`@snowluma/mcp`）在**宿主机**上用 `npx` 跑，要求宿主有 `npx` 且 Node ≥ 24.22；没有就只是 `mcp__dot-qq__*` 不出现，收发消息照常。
+
 ## 配置
 
 | 配置项 | 默认 | 作用 |

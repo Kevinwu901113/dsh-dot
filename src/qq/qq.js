@@ -74,8 +74,17 @@ const SL_DIR = `${VM_HOME}/snowluma`;
 const SL_LOG = `${VM_HOME}/snowluma.log`;
 const SL_QQ_LOG = `${VM_HOME}/snowluma-qq.log`;
 const SL_HTTP_PORT = 3000;
-// The GUI QQ: /opt/QQ/qq when a system linuxqq exists, else the one NapCat's installer unpacked.
-const SL_QQ = `QQ=/opt/QQ/qq; [ -x "$QQ" ] || QQ=${QQ_BIN}`;
+// The GUI QQ SnowLuma hooks is a clean system linuxqq at /opt/QQ — never NapCat's unpacked copy,
+// whose launcher is patched to load NapCat (two clients inside one QQ). The installer puts it there.
+const SL_QQ = 'QQ=/opt/QQ/qq';
+// The linuxqq build SnowLuma's own host installer pins (SnowLuma.Docker.Framework install.sh), with
+// its checksums: the hook tracks QQ's internals, so a known-good build rather than "latest".
+const SL_QQ_PIN = {
+  version: '3.2.32_260812',
+  base: 'https://qqdl.gtimg.cn/qqfile/QQNT/9.9.33/release/3f89efc5',
+  mirror: 'https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260813-1d08f1d4',
+  sha256: { amd64: 'd085dd89397225061eb9f194308f688129818ed445777e97a4a0a16e13d7b0e8', arm64: '8796ccfd66acc025ef18db37185532d40bc8c58921e17da6d28c295acbcf8f92' },
+};
 // The VM desktop's X display (tigervnc), as ":N".
 const SL_DISPLAY = 'D=$(ls /tmp/.X11-unix/ 2>/dev/null | sed -n \'s/^X//p\' | head -1); D=":${D:-1}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
@@ -291,8 +300,10 @@ const hasFileKey = (v, depth = 0) => depth < 6 && v && typeof v === 'object' && 
  */
 export function qqToolGate(name, args = {}, cfg = {}, helpers = {}) {
   const tool = String(name ?? '').startsWith(QQ_TOOL_PREFIX) ? String(name).slice(QQ_TOOL_PREFIX.length) : String(name ?? '');
-  if (QQ_DOC_TOOLS.has(tool) || tool.startsWith('query_action')) return null;
-  if (!tool.startsWith('invoke_action')) return `dsh-dot/qq: unknown QQ tool ${tool}`;
+  if (QQ_DOC_TOOLS.has(tool)) return null;
+  // query_action* is meant for read-only actions and SnowLuma checks that server-side, but the server
+  // runs in write mode for her: judge the named action here exactly as for invoke_action*.
+  if (!tool.startsWith('invoke_action') && !tool.startsWith('query_action')) return `dsh-dot/qq: unknown QQ tool ${tool}`;
   const action = typeof args?.action === 'string' ? args.action.trim() : '';
   if (!action) return `dsh-dot/qq: QQ action call without a readable action name (${tool})`;
   let params = args.params ?? args.input ?? args.args ?? args.arguments ?? {};
@@ -428,7 +439,9 @@ export function apply(ctx, config = {}, deps = {}) {
   /**
    * The SnowLuma installer script: the lite release for the VM's arch (needs the VM's node ≥ 22),
    * unpacked so index.mjs sits in SL_DIR, our config written before its first start, and QQ's hot
-   * update host blocked (an updated QQ may no longer match the hook). QQ itself is NapCat's.
+   * update host blocked (an updated QQ may no longer match the hook). QQ is a clean, pinned system
+   * linuxqq at /opt/QQ — separate from NapCat's patched copy. SnowLuma reads config/ from its working
+   * directory (its host units set WorkingDirectory to the data dir), so config lives in SL_DIR/config.
    */
   function snowlumaInstallScript() {
     const prefixes = cfg.githubProxy ? [cfg.githubProxy] : MIRRORS;
@@ -436,9 +449,12 @@ export function apply(ctx, config = {}, deps = {}) {
     const fetch = prefixes.map((pre) => `curl -fSL --connect-timeout 15 --max-time 600 -o snowluma.tgz "${pre}$asset"`).join(' || ');
     return [
       `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${SL_INSTALL_DONE} snowluma.tgz; rm -rf ${SL_DIR}.tmp`,
-      `${SL_QQ}; [ -x "$QQ" ] || ${fail(3, 'no Linux QQ in the computer (/opt/QQ/qq) — run /qq install first (NapCat + QQ), then /qq install snowluma')}`,
       `node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || ${fail(4, 'SnowLuma needs Node >= 22 in the computer')}`,
-      `case "$(uname -m)" in aarch64|arm64) arch=arm64;; x86_64|amd64) arch=x64;; *) ${fail(4, 'unsupported CPU for SnowLuma')};; esac`,
+      `case "$(uname -m)" in aarch64|arm64) arch=arm64; qarch=arm64; qsum=${SL_QQ_PIN.sha256.arm64};; x86_64|amd64) arch=x64; qarch=amd64; qsum=${SL_QQ_PIN.sha256.amd64};; *) ${fail(4, 'unsupported CPU for SnowLuma')};; esac`,
+      // A clean system linuxqq (the pinned build, checksum-verified) plus what QQ and the QR screenshot need.
+      `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq || true; apt-get install -y -qq libgbm1 libnss3 libgtk-3-0 libxshmfence1 libxdamage1 libdrm2 libxkbcommon0 fontconfig fonts-noto-cjk dbus-x11 imagemagick >/dev/null || apt-get install -y -qq libasound2t64 || apt-get install -y -qq libasound2 || true`,
+      `if [ ! -x /opt/QQ/qq ]; then q="QQ_${SL_QQ_PIN.version}_\${qarch}_01.deb"; { curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${SL_QQ_PIN.base}/$q" || curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${(cfg.githubProxy || '')}${SL_QQ_PIN.mirror}/$q"; } || ${fail(3, 'cannot download Linux QQ')}; echo "$qsum  /tmp/$q" | sha256sum -c - >/dev/null || ${fail(3, 'Linux QQ package checksum mismatch — not installing it')}; apt-get install -y -qq "/tmp/$q" >/dev/null || apt-get -f install -y -qq >/dev/null; rm -f "/tmp/$q"; fi`,
+      `[ -x /opt/QQ/qq ] || ${fail(3, 'Linux QQ did not install to /opt/QQ/qq')}`,
       `tag=${JSON.stringify(cfg.snowlumaVersion)}`,
       '[ -n "$tag" ] || tag=$(curl -fsSL --connect-timeout 15 --max-time 30 https://api.github.com/repos/SnowLuma/SnowLuma/releases/latest | sed -n \'s/.*"tag_name": *"\\([^"]*\\)".*/\\1/p\' | head -1)',
       `case "$tag" in ''|*[!A-Za-z0-9._-]*) ${fail(2, 'cannot resolve the latest SnowLuma release (set snowlumaVersion to pin one)')};; esac`,
