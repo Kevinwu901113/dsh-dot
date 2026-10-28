@@ -122,6 +122,8 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   assert.match(script, /SnowLuma-\$tag-linux-\$arch-lite\.tar\.gz/);
   assert.match(script, /"https:\/\/ghfast\.top\/\$asset"/, 'mirrors as with NapCat');
   assert.match(script, /sha256sum -c -/);
+  assert.match(script, /releases\/latest \| sed -n 's#\.\*\/releases\/tag\/##p'/, 'tag from the release redirect, not only the rate-limited API');
+  { const { execFileSync } = await import('node:child_process'); const body = script.slice(script.indexOf('\n') + 1, script.lastIndexOf('DOT_RUN_EOF')); execFileSync('bash', ['-n'], { input: body }); }
   assert.doesNotMatch(script, /Napcat\/opt\/QQ/, "never the NapCat-patched QQ");
   assert.match(script, /<<'DOT_RUN_EOF'/, 'the outer heredoc does not end at the config heredocs');
   assert.equal(h.ctx.dshQq.state, 'installed');

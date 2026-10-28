@@ -456,7 +456,10 @@ export function apply(ctx, config = {}, deps = {}) {
       `if [ ! -x /opt/QQ/qq ]; then q="QQ_${SL_QQ_PIN.version}_\${qarch}_01.deb"; { curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${SL_QQ_PIN.base}/$q" || curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${(cfg.githubProxy || '')}${SL_QQ_PIN.mirror}/$q"; } || ${fail(3, 'cannot download Linux QQ')}; echo "$qsum  /tmp/$q" | sha256sum -c - >/dev/null || ${fail(3, 'Linux QQ package checksum mismatch — not installing it')}; apt-get install -y -qq "/tmp/$q" >/dev/null || apt-get -f install -y -qq >/dev/null; rm -f "/tmp/$q"; fi`,
       `[ -x /opt/QQ/qq ] || ${fail(3, 'Linux QQ did not install to /opt/QQ/qq')}`,
       `tag=${JSON.stringify(cfg.snowlumaVersion)}`,
-      '[ -n "$tag" ] || tag=$(curl -fsSL --connect-timeout 15 --max-time 30 https://api.github.com/repos/SnowLuma/SnowLuma/releases/latest | sed -n \'s/.*"tag_name": *"\\([^"]*\\)".*/\\1/p\' | head -1)',
+      // The latest tag: the release page's redirect first (not rate-limited like the API, which
+      // answers 403 to busy shared IPs), then the API directly and through the mirrors.
+      '[ -n "$tag" ] || tag=$(curl -fsSIL -o /dev/null -w \'%{url_effective}\' --connect-timeout 15 --max-time 30 https://github.com/SnowLuma/SnowLuma/releases/latest | sed -n \'s#.*/releases/tag/##p\')',
+      `for pre in ${prefixes.map((p) => JSON.stringify(p)).join(' ')}; do [ -n "$tag" ] && break; tag=$(curl -fsSL --connect-timeout 15 --max-time 30 "\${pre}https://api.github.com/repos/SnowLuma/SnowLuma/releases/latest" | sed -n 's/.*"tag_name": *"\\([^"]*\\)".*/\\1/p' | head -1); done`,
       `case "$tag" in ''|*[!A-Za-z0-9._-]*) ${fail(2, 'cannot resolve the latest SnowLuma release (set snowlumaVersion to pin one)')};; esac`,
       'asset="https://github.com/SnowLuma/SnowLuma/releases/download/$tag/SnowLuma-$tag-linux-$arch-lite.tar.gz"; echo "SnowLuma $tag ($arch)"',
       `{ ${fetch}; } || ${fail(2, 'cannot download SnowLuma from GitHub (direct or mirrors)')}`,
