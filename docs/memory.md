@@ -60,7 +60,7 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [memory, hermesMemory, autoMemory]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 

@@ -124,7 +124,7 @@ dsh-dot 尽量不占公共名字，但有几处是全局的，装别的插件前
   | dot（联系人层） | `DSH_DOT_CONTACT=off` |
 
   组件之间只通过 `ctx.get(...)?.` 找彼此，缺了哪个其余的照常跑（比如关了 dot，记忆不再自动交班；关了 memory，通知里不带人物卡）。
-- **记忆共存模式**：`dot-memory` 的 `coexist`（环境变量 `DSH_DOT_MEMORY_COEXIST`），默认 `auto`——发现另一个记忆服务（`otherMemoryServices`，默认 `memory`、`hermesMemory`、`autoMemory`；cordis 没有公开的服务枚举，所以是名单）就打一行 info 日志，切到 `people-only`：人物卡、碎片、日记照旧，但**关于他 / 她自己记下的**两栏不再写进系统提示，整理时也不再改这两栏，免得两个插件一起"讲记忆"。`full` 强制全开，`people-only` 强制只留人物。
+- **记忆共存模式**：`dot-memory` 的 `coexist`（环境变量 `DSH_DOT_MEMORY_COEXIST`），默认 `auto`——发现另一个记忆服务（`otherMemoryServices`，默认 `hermesMemory`、`autoMemory`、`dshMemory`、`memoryBank`；不含过于通用的 `memory`，遇到别的名字自己加；cordis 没有公开的服务枚举，所以是名单）就打一行 info 日志，切到 `people-only`：人物卡、碎片、日记照旧，但**关于他 / 她自己记下的**两栏不再写进系统提示，整理时也不再改这两栏，免得两个插件一起"讲记忆"。`full` 强制全开，`people-only` 强制只留人物。
 - **一个 QQ 号只能有一个应答者**：她电脑上的 NapCat 已经用这个号收发消息，不要再在同一个号上跑 qq-bridge 或别的 OneBot 机器人，否则两边都会回。
 - **上下文压缩插件**：dsh-dot 注入会话的消息带固定的 `source`，压缩时请保留（或至少别把它们当成用户原话）：
   - `{ kind: 'dsh-dot', form: 'phone-notification' }` 手机通知叫醒她

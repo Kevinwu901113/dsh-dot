@@ -45,7 +45,9 @@ export const defaults = {
   // so two plugins do not both narrate what she knows about him. auto: people-only when one of
   // otherMemoryServices is provided (cordis has no public way to list services, so it is a list).
   coexist: 'auto',
-  otherMemoryServices: ['memory', 'hermesMemory', 'autoMemory'],
+  // Names other memory plugins provide. A bare 'memory' is deliberately not here: too generic a name
+  // to risk silencing her own banks because something unrelated provides it. Add names as you meet them.
+  otherMemoryServices: ['hermesMemory', 'autoMemory', 'dshMemory', 'memoryBank'],
 };
 
 export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });

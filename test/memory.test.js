@@ -293,7 +293,7 @@ test('coexist auto: another memory service present → owner/self banks neither 
 
 test('coexist full: banks on even next to another memory service', async () => {
   const h = harness({ llmReply: JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }] }) });
-  h.services.memory = {};
+  h.services.hermesMemory = {};
   apply(h.ctx, { home: h.home, coexist: 'full', handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
