@@ -448,3 +448,32 @@ test('panel: `/dsh-dot/` and `/dsh-dot/api/state` on dsh\'s web server; state ga
   assert.equal((await call('/dsh-dot/panel/nope')).status, 404);
   } finally { stop(h); }
 });
+
+test('his QQ message → her answer in the conversation is relayed to his QQ, unless she already qq_send it herself', async () => {
+  const { ownerSource } = await import('../src/dot/core.js');
+  const h = harness();
+  const sent = [];
+  const qq = { connected: true, owner: '20002', sentToOwnerAt: 0, onMessage: () => () => {}, send: async (to, text) => { sent.push({ to, text }); return { sent: 1 }; } };
+  h.ctx.get = ((orig) => (name) => (name === 'dshQq' ? qq : orig(name)))(h.ctx.get);
+  apply(h.ctx, h.config);
+  const turn = (n, { fromQq, text, herOwnSend }) => {
+    h.emit(h.home, 'turn/start', { turn: n });
+    h.emit(h.home, 'user/message', { source: fromQq ? ownerSource() : { kind: 'user' } });
+    if (herOwnSend) qq.sentToOwnerAt = Date.now() + 1;
+    h.emit(h.home, 'assistant/message', { message: { content: [{ type: 'text', text }] } });
+    h.emit(h.home, 'turn/end', { turn: n });
+  };
+  turn(1, { fromQq: false, text: '在 dsh 里打的字不转发' });
+  assert.equal(sent.length, 0);
+  turn(2, { fromQq: true, text: '跟之前比就是从 0 变成花了' });
+  await wait(20);
+  assert.deepEqual(sent, [{ to: 'owner', text: '跟之前比就是从 0 变成花了' }]);
+  turn(3, { fromQq: true, text: '（她自己已经用 qq_send 回过了）', herOwnSend: true });
+  await wait(20);
+  assert.equal(sent.length, 1, 'no double send');
+  turn(4, { fromQq: true, text: 'DOT_SILENT' });
+  await wait(20);
+  assert.equal(sent.length, 1, 'silence stays silent');
+  assert.ok(h.audit.some((e) => e.event === 'qq-relayed') && h.audit.some((e) => e.event === 'qq-answered-herself'));
+  stop(h);
+});

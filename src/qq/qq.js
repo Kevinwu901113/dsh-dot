@@ -190,7 +190,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const computer = () => ctx.get('dshComputer');
   let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
 
-  const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit };
+  const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit, sentToOwnerAt: 0 };
   const listeners = new Set();
   qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   qq.status = () => ({ state: qq.state, connected: qq.connected, qq: qq.qq, owner: qq.owner, selfId: qq.selfId, error: qq.error, wsPort: cfg.wsPort });
@@ -471,6 +471,7 @@ export function apply(ctx, config = {}, deps = {}) {
     for (const ref of [].concat(images ?? []).filter(Boolean)) ids.push((await call(action, { ...target, message: [await imageSegment(ref)] }))?.message_id);
     const n = ids.length;
     if (!n) throw new Error('nothing to send (text and images both empty)');
+    if (qq.owner && target.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
     audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: [].concat(images ?? []).map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))) });
     return { sent: n, messageIds: ids };
   };

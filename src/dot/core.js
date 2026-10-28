@@ -299,12 +299,14 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (event.type === 'turn/start') {
-      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '' });
+      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '', startedAt: Date.now() });
       return;
     }
     const t = turns.get(id);
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
+    // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
+    if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) { t.fromQq = true; return; }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
@@ -323,7 +325,7 @@ export function apply(ctx, config = {}) {
       }
       return;
     }
-    if (!t.scheduled) return;
+    if (!t.scheduled && !t.fromQq) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
       const text = contentText(event.data?.message?.content);
       if (text.trim()) t.text = text; // the last non-empty reply of the turn is its answer
@@ -344,6 +346,13 @@ export function apply(ctx, config = {}) {
     if (ended) {
       const text = t.text.trim();
       if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
+      if (t.fromQq && !t.scheduled) {
+        // She answered him in the conversation; if no qq_send to him happened during the turn, relay it.
+        const q = ctx.get('dshQq');
+        if (!q?.connected || (q.sentToOwnerAt ?? 0) >= t.startedAt) { audit('qq-answered-herself', { session: id }); return; }
+        q.send('owner', stripSilent(text)).then((r) => audit('qq-relayed', { session: id, sent: r.sent }), (err) => { logger.warn(`qq relay failed: ${err.message}`); audit('qq-relay-failed', { session: id, error: err.message }); });
+        return;
+      }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
     }
   });
