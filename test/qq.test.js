@@ -219,3 +219,27 @@ test('groupPolicy score: @-mentions pass straight through; other group messages 
   assert.equal(got.length, 2, 'an @ always wakes her, unscored'); assert.equal(got[1].score, undefined);
   effects.forEach((d) => typeof d === 'function' && d());
 });
+
+test('qq waits for the computer\'s web services (not the shell) and disconnects when the gateway turns out unprotected', async () => {
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const effects = [], listeners = new Set();
+  let state = 'shell-only';
+  const computer = { port: 18080, authHeaders: () => ({}), backend: { rootShell: async () => 'yes\n' }, ready: Promise.resolve(true), status: () => ({ state }), onStatus: (fn) => { listeners.add(fn); return () => listeners.delete(fn); } };
+  const ctx = {
+    logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), effect(fn) { effects.push(fn()); }, on() {}, provide(n, v) { ctx[n] = v; },
+    inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
+    get: (n) => ({ dshComputer: computer, tools: { register: () => () => {} }, systemPrompt: { section: () => () => {} }, commands: { register: () => () => {} } }[n]),
+  };
+  const before = FakeSocket.last;
+  apply(ctx, { qq: '10001' }, { WebSocket: FakeSocket, rootShell: async () => 'yes\n' });
+  await tick(30);
+  assert.equal(FakeSocket.last, before, 'shell-only: no socket opened');
+  state = 'ready'; for (const fn of listeners) fn({ state });
+  await tick(30);
+  assert.notEqual(FakeSocket.last, before, 'ready: connected');
+  assert.equal(ctx.dshQq.state, 'starting');
+  state = 'unsafe'; for (const fn of listeners) fn({ state, error: 'gateway open' });
+  await tick(10);
+  assert.equal(ctx.dshQq.state, 'blocked');
+  effects.forEach((d) => typeof d === 'function' && d());
+});

@@ -485,7 +485,20 @@ export function apply(ctx, config = {}, deps = {}) {
   // The computer may come up after us; start when it is ready.
   ctx.inject(['dshComputer'], (c) => {
     const boot = async () => { if (!cfg.autoStart || !cfg.qq) { setState(cfg.qq ? 'idle' : 'needs-account', cfg.qq ? undefined : 'set the QQ number: /qq account <number>'); return; } try { await qq.start(); } catch (err) { setState('error', err.message); logger.warn(`qq start failed: ${err.message}`); } };
-    c.effect(() => { let gone = false; c.dshComputer.ready?.then(() => { if (!gone) void boot(); }); return () => { gone = true; closeWs(); }; }, 'dsh-dot/qq: boot with the computer');
+    // Her QQ is reached through the gateway, so it waits for the computer's web services to be
+    // declared ready (which they are not while the gateway is unprotected), not merely for the shell.
+    c.effect(() => {
+      let gone = false, booted = false;
+      const onState = (snap) => {
+        if (gone) return;
+        if (snap.state === 'ready' && !booted) { booted = true; void boot(); }
+        else if (snap.state === 'unsafe' && booted) { booted = false; closeWs(); setState('blocked', `the computer's gateway is unprotected (${snap.error ?? ''}); not connecting through it`); }
+      };
+      const off = c.dshComputer.onStatus?.(onState);
+      const now = c.dshComputer.status?.();
+      if (now) onState(now); else c.dshComputer.ready?.then(() => { if (!gone) void boot(); }); // older computer service: no status()
+      return () => { gone = true; off?.(); closeWs(); };
+    }, 'dsh-dot/qq: boot with the computer');
   });
 
   // Approval in front of qq_send (see defaults.sendPolicy): the owner always; a conversation that is

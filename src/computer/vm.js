@@ -176,6 +176,13 @@ export async function ensureServices(config, computer, logger) {
       logger.error('VM gateway still open without the key — this image ignores SANDBOX_API_KEY; the port is reachable by every local process');
     } else computer.gatewayOpen = false;
   } else computer.gatewayOpen = false;
+  // No web service is declared ready while the gateway is unprotected: the browser tools, the live
+  // view and her QQ all stand behind it, and "ready" would mean exposing them to every local process.
+  if (computer.gatewayOpen || computer.portRelayOpen) {
+    computer.unsafe = computer.gatewayOpen ? 'the VM gateway accepts requests without the key' : 'the VM gateway still relays Host: <port>-x to VM ports without the key';
+    throw new Error(`dsh-computer: ${computer.unsafe} — web services stay off (shell only) until the image honours SANDBOX_API_KEY / the relay is closed; see docs/computer.md 网关密钥`);
+  }
+  computer.unsafe = undefined;
   // Two stale locks keep the browser down after a restart, because /tmp and the profile persist:
   // an X lock left by the previous boot stops the X server (tigervnc) and with it the desktop, and a
   // profile SingletonLock naming an earlier host stops Chrome. Clear both and start them once.
@@ -229,12 +236,13 @@ export function apply(ctx, config = {}) {
   // Status for other plugins (dot, IM bridges): one snapshot shape plus change notifications.
   const listeners = new Set();
   computer.status = () => ({
-    state: computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : 'shell-only',
+    state: computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : computer.unsafe ? 'unsafe' : 'shell-only',
     backend: backend.kind,
     liveViewUrl: computer.liveViewUrl,
     publicLiveViewUrl: computer.publicLiveViewUrl,
     gatewayOpen: computer.gatewayOpen,
     portRelayOpen: computer.portRelayOpen,
+    unsafe: computer.unsafe,
     mounts: [...computer.mounts],
     error: (computer.error || computer.servicesError)?.message,
   });
@@ -276,7 +284,10 @@ export function apply(ctx, config = {}) {
     ).finally(() => {
       try { rmSync(computer.lockFile, { force: true }); } catch {}
       computer.remounting = false; changed();
-      ensureServices(cfg, computer, logger).catch((e) => logger.warn(e.message));
+      ensureServices(cfg, computer, logger).then(
+        () => { computer.servicesReady = true; computer.servicesError = undefined; changed(); },
+        (e) => { computer.servicesReady = false; computer.servicesError = e; logger.warn(e.message); changed(); },
+      );
     });
     return pending;
   };

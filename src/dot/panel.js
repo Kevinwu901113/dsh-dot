@@ -78,9 +78,9 @@ function render(s){
   let b='';
   if(d.phone) b+=badge(d.phone.state==='ready'?'ok':d.phone.error?'bad':'warn','手机',d.phone.state==='ready'?'就绪':(d.phone.state||''));
   if(d.qq) b+=badge(d.qq.connected?'ok':d.qq.error?'bad':'warn','电脑 QQ',d.qq.connected?(d.qq.selfId||'在线'):(d.qq.state||'离线'));
-  const cstate={ready:'就绪',starting:'启动中',remounting:'换绑中','shell-only':'只有 shell',error:'出错'};
+  const cstate={ready:'就绪',starting:'启动中',remounting:'换绑中','shell-only':'只有 shell',unsafe:'网关未上锁 已停用',error:'出错'};
   if(d.computer) b+=badge(d.computer.state==='ready'?'ok':d.computer.state==='error'?'bad':'warn','电脑',cstate[d.computer.state]||d.computer.state||'');
-  if(d.computer&&d.computer.gatewayOpen) b+=badge('bad','电脑网关','无密钥开放');
+  if(d.computer&&(d.computer.gatewayOpen||d.computer.portRelayOpen)) b+=badge('bad','电脑网关',d.computer.gatewayOpen?'无密钥开放':'端口转发未关');
   if(m&&m.conversation) b+=badge(m.conversation.session?'ok':'warn','她的对话','第 '+m.gen+' 段 · '+fmt(m.conversation.tokens)+' / '+fmt(m.conversation.handoffAt)+' token');
   $('badges').innerHTML=b||'<span class="mute">没有组件在线</span>';
   if(it){

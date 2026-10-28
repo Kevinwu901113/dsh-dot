@@ -148,3 +148,42 @@ test('computer live view: close() releases routes and open sockets', async () =>
   assert.equal((await get(dsh.port, `${LIVE_VIEW_PATH}/status`, { cookie: 'dsh=owner' })).status, 404);
   shut(dsh.server, gw.server);
 });
+
+/** A gateway stand-in with switchable behaviour: keyed or open, relay closed or open. */
+function gatewayLike({ keyed, relayClosed }) {
+  const server = http.createServer((req, res) => {
+    const host = String(req.headers.host ?? '');
+    if (/^\d+-/.test(host)) { res.writeHead(relayClosed ? 404 : 502).end(); return; }
+    if (keyed && req.headers[KEY_HEADER.toLowerCase()] !== 'secret') { res.writeHead(401).end(); return; }
+    res.writeHead(200).end('ok');
+  });
+  return new Promise((r) => server.listen(0, '127.0.0.1', () => r({ server, port: server.address().port })));
+}
+
+async function fakeComputer(gw) {
+  const { ensureServices } = await import('../src/computer/vm.js');
+  const shells = [];
+  const computer = { baseUrl: `http://127.0.0.1:${gw.port}`, authHeaders: () => ({ [KEY_HEADER]: 'secret' }), backend: { rootShell: async (s) => { shells.push(s); return ''; }, restartServices: async () => {} } };
+  const logger = { info() {}, warn() {}, error() {}, debug() {} };
+  return { run: () => ensureServices({ readyTimeoutMs: 3000 }, computer, logger), computer, shells };
+}
+
+test('ensureServices: a keyed gateway with the relay closed becomes ready', async () => {
+  const gw = await gatewayLike({ keyed: true, relayClosed: true });
+  const { run, computer } = await fakeComputer(gw);
+  try {
+    await run();
+    assert.equal(computer.gatewayOpen, false); assert.equal(computer.portRelayOpen, false); assert.equal(computer.unsafe, undefined);
+  } finally { gw.server.closeAllConnections?.(); gw.server.close(); }
+});
+
+test('ensureServices: an open gateway or an open relay is a failure, never "ready"', async () => {
+  for (const [scenario, why] of [[{ keyed: false, relayClosed: true }, /accepts requests without the key/], [{ keyed: true, relayClosed: false }, /relays Host/]]) {
+    const gw = await gatewayLike(scenario);
+    const { run, computer } = await fakeComputer(gw);
+    try {
+      await assert.rejects(run, why);
+      assert.ok(computer.unsafe, 'marked unsafe');
+    } finally { gw.server.closeAllConnections?.(); gw.server.close(); }
+  }
+});
