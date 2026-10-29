@@ -491,7 +491,7 @@ export function apply(ctx, config = {}, deps = {}) {
       `case "$(uname -m)" in aarch64|arm64) arch=arm64; qarch=arm64; qsum=${SL_QQ_PIN.sha256.arm64};; x86_64|amd64) arch=x64; qarch=amd64; qsum=${SL_QQ_PIN.sha256.amd64};; *) ${fail(4, 'unsupported CPU for SnowLuma')};; esac`,
       ...snowlumaNodeScript(fail(4, 'cannot install Node 24 for SnowLuma (npmmirror and nodejs.org both failed)')),
       // A clean system linuxqq (the pinned build, checksum-verified) plus what QQ and the QR screenshot need.
-      `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq || true; apt-get install -y -qq libgbm1 libnss3 libgtk-3-0 libxshmfence1 libxdamage1 libdrm2 libxkbcommon0 fontconfig fonts-noto-cjk dbus-x11 imagemagick xz-utils >/dev/null || apt-get install -y -qq libasound2t64 || apt-get install -y -qq libasound2 || true`,
+      `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq || true; apt-get install -y -qq libgbm1 libnss3 libgtk-3-0 libxshmfence1 libxdamage1 libdrm2 libxkbcommon0 fontconfig fonts-noto-cjk dbus-x11 imagemagick xz-utils zbar-tools qrencode >/dev/null || apt-get install -y -qq libasound2t64 || apt-get install -y -qq libasound2 || true`,
       `if [ ! -x /opt/QQ/qq ]; then q="QQ_${SL_QQ_PIN.version}_\${qarch}_01.deb"; { curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${SL_QQ_PIN.base}/$q" || curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${(cfg.githubProxy || '')}${SL_QQ_PIN.mirror}/$q"; } || ${fail(3, 'cannot download Linux QQ')}; echo "$qsum  /tmp/$q" | sha256sum -c - >/dev/null || ${fail(3, 'Linux QQ package checksum mismatch — not installing it')}; apt-get install -y -qq "/tmp/$q" >/dev/null || apt-get -f install -y -qq >/dev/null; rm -f "/tmp/$q"; fi`,
       `[ -x /opt/QQ/qq ] || ${fail(3, 'Linux QQ did not install to /opt/QQ/qq')}`,
       `tag=${JSON.stringify(cfg.snowlumaVersion)}`,
@@ -599,16 +599,25 @@ export function apply(ctx, config = {}, deps = {}) {
     try {
       const out = String(await vmShell([
         `${SL_DISPLAY}`,
-        // Just the QQ window when it can be found (the code then fills her camera's poster), else the whole screen.
+        // Just the QQ window when it can be found, else the whole screen.
         `W=$(xwininfo -display $D -root -tree 2>/dev/null | awk '/ "QQ": / { print $1; exit }'); W=\${W:-root}`,
-        'if command -v import >/dev/null; then DISPLAY=$D import -window "$W" png:- | base64 -w0',
-        'elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D | convert xwd:- png:- | base64 -w0',
-        'elif command -v scrot >/dev/null; then f=/tmp/dot-screen.png; DISPLAY=$D scrot -o $f && base64 -w0 $f; rm -f $f',
-        'else echo no-screenshot-tool; fi',
+        'f=/tmp/dot-screen.png; q=/tmp/dot-qr.png; rm -f $f $q',
+        'if command -v import >/dev/null; then DISPLAY=$D import -window "$W" $f',
+        'elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D | convert xwd:- $f',
+        'elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f',
+        'fi',
+        '[ -s $f ] || { echo no-screenshot-tool; exit 0; }',
+        // The code itself, redrawn large and sharp: a small code inside a window, rendered through the
+        // phone camera's virtual room, is too soft for QQ's scanner. Decoded from the screen, re-encoded.
+        '{ command -v zbarimg >/dev/null && command -v qrencode >/dev/null; } || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq zbar-tools qrencode >/dev/null 2>&1',
+        't=$(zbarimg -q --raw $f 2>/dev/null | head -1)',
+        'if [ -n "$t" ] && qrencode -s 16 -m 4 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
+        'rm -f $f $q',
       ].join('\n'))).trim();
       if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
       const png = Buffer.from(out.split('\n').pop(), 'base64');
-      return png.length ? { png, ageS: 0 } : null;
+      if (!out.includes('redrawn')) logger.info('qr: could not read the code off the screen (zbarimg); showing the window as it is');
+      return png.length ? { png, ageS: 0, redrawn: out.includes('redrawn') } : null;
     } catch (err) { logger.warn(`qr: ${err.message}`); return null; }
   }
   /**
