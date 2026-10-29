@@ -109,7 +109,9 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
     const b = await h.ctx.dshPhone.showToCamera(Buffer.from('qr2'));
     assert.notEqual(a, b, 'a new path each time: the emulator keeps the old picture for a path it already shows');
     assert.equal(readFileSync(b, 'utf8'), 'qr2'); assert.ok(!existsSync(a), 'the previous picture is removed');
-    assert.ok(h.execs.some((e) => e.join(' ') === `adb -s emulator-5554 emu virtualscene-image wall ${b}`), 'swapped live through the emulator console'); }
+    const swap = h.execs.findIndex((e) => e.join(' ') === `adb -s emulator-5554 emu virtualscene-image wall ${b}`);
+    assert.ok(swap > 0, 'swapped live through the emulator console');
+    assert.equal(h.execs[swap - 1].join(' '), 'adb -s emulator-5554 emu virtualscene-image wall', 'the poster is cleared right before each new picture'); }
   assert.ok(h.execs.some((e) => e.some((a) => String(a).includes('stayon'))), 'screen kept on');
   assert.equal(h.plugins.length, 1);
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');

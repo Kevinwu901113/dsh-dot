@@ -277,9 +277,11 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.showToCamera = async (png) => {
     const f = posterFiles();
     mkdirSync(f.dir, { recursive: true });
-    // A new file name every time: given a path it already shows, the emulator keeps the old picture.
+    // A new file name every time too, so no cached picture is ever taken for the new one.
     const file = join(f.dir, `dsh-dot-poster-${Date.now()}.png`);
     writeFileSync(file, png);
+    // Clear first: after the first picture an emulator process takes a new one only from a cleared poster.
+    try { await phone.adbExec(['emu', 'virtualscene-image', 'wall']); } catch {}
     const out = String((await phone.adbExec(['emu', 'virtualscene-image', 'wall', file])).stdout ?? '');
     if (/\bKO\b/.test(out)) throw new Error(`the emulator refused the camera image: ${out.trim()}`);
     for (const n of readdirSync(f.dir)) if (/^dsh-dot-poster(-\d+)?\.png$/.test(n) && join(f.dir, n) !== file) { try { rmSync(join(f.dir, n), { force: true }); } catch {} }
