@@ -641,7 +641,9 @@ export function apply(ctx, config = {}, deps = {}) {
         'if [ -z "$t" ] && [ "$W" != root ]; then command -v xdotool >/dev/null || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq xdotool >/dev/null 2>&1; g=$(xwininfo -display $D -id $W | awk \'/Width:/ { w = $2 } /Height:/ { h = $2 } END { print w "x" h }\'); if [ "$g" = 680x440 ] && command -v xdotool >/dev/null; then DISPLAY=$D xdotool mousemove --window $W 540 182 click 1 2>/dev/null; sleep 3; shot; read_code; echo "note: the code had expired; clicked 刷新"; fi; fi',
         '[ -n "$t" ] && echo "code: $(printf %s "$t" | sha1sum | cut -c1-12)"',
         '[ -n "$t" ] || echo "note: no code read off the screen"',
-        'if [ -n "$t" ] && qrencode -s 16 -m 20 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
+        // Redrawn on a square twice its size, a quarter of its width right of centre: QQ's scanner shows
+        // the poster cropped tighter than the camera app and shifted, and cut off the left finder pattern.
+        'if [ -n "$t" ] && qrencode -s 16 -m 4 -o $q "$t" 2>/dev/null; then w=$(identify -format %w $q 2>/dev/null); [ -n "$w" ] && convert -size $((w*2))x$((w*2)) xc:white $q -gravity center -geometry +$((w/4))+0 -composite $q 2>/dev/null; echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
         'rm -f $f $q',
       ].join('\n'))).trim();
       if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
@@ -1012,7 +1014,7 @@ export function apply(ctx, config = {}, deps = {}) {
                   if (phone.showToCamera) {
                     await phone.showToCamera(got.png);
                     extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code fills the camera view → confirm. If QQ says the code expired, close 扫一扫, wait a few seconds and open it again. If the camera shows a room with a checkerboard TV and no code, /phone restart once (the code's frame moves in front of the camera at launch).`;
-                    if (sl()) { keepCameraFresh(phone, got.code); extra += `\nfor ${Math.round(QR_REFRESH_FOR_MS / 60000)} minutes (or until QQ connects) an expired code is renewed and put in front of her camera; the camera only shows a new code after 扫一扫 is closed and reopened`; }
+                    if (sl()) { keepCameraFresh(phone, got.code); extra += `\nfor ${Math.round(QR_REFRESH_FOR_MS / 60000)} minutes (or until QQ connects) an expired code is renewed and put in front of her camera; each new code sends her phone to the home screen (the camera only takes a new picture while closed), so she reopens 扫一扫`; }
                   }
                 } catch (err) { extra += `\n(camera: ${err.message})`; }
               }

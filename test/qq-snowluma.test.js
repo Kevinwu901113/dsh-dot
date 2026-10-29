@@ -143,7 +143,7 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   { const { execFileSync } = await import('node:child_process'); execFileSync('bash', ['-n'], { input: h.shells.at(-1) }); }
   assert.match(h.shells.at(-1), /grep -q break-system-packages && bsp=--break-system-packages/, 'old pip without the flag still installs');
   assert.match(h.shells.at(-1), /if \[ -z "\$t" \] && \[ "\$W" != root \];[^\n]*xdotool mousemove --window \$W 540 182 click 1/, 'only an unreadable (expired) code is clicked — a click on a live one replaces it');
-  assert.match(h.shells.at(-1), /t=\$\(dec \$f[\s\S]*qrencode -s 16 -m 20 -o \$q "\$t"/, 'the code is redrawn large from what the screen shows');
+  assert.match(h.shells.at(-1), /t=\$\(dec \$f[\s\S]*qrencode -s 16 -m 4 -o \$q "\$t"[^\n]*-geometry \+\$\(\(w\/4\)\)\+0 -composite/, 'the code is redrawn large from what the screen shows');
   h.stop();
 });
 

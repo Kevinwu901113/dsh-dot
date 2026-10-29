@@ -280,6 +280,9 @@ export function apply(ctx, config = {}, deps = {}) {
     // A new file name every time too, so no cached picture is ever taken for the new one.
     const file = join(f.dir, `dsh-dot-poster-${Date.now()}.png`);
     writeFileSync(file, png);
+    // The emulator ignores a poster change while an app has the camera open: go to the home screen
+    // first (the scanner releases the camera when paused); the next 扫一扫 then shows the new picture.
+    try { await phone.adbExec(['shell', 'input', 'keyevent', 'KEYCODE_HOME']); await new Promise((r) => setTimeout(r, 1500)); } catch {}
     // Clear first: after the first picture an emulator process takes a new one only from a cleared poster.
     try { await phone.adbExec(['emu', 'virtualscene-image', 'wall']); } catch {}
     const out = String((await phone.adbExec(['emu', 'virtualscene-image', 'wall', file])).stdout ?? '');
