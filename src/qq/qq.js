@@ -923,7 +923,7 @@ export function apply(ctx, config = {}, deps = {}) {
                 } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
                 // QQ's login codes refuse album imports; the camera is the way. The code becomes the poster the
                 // phone's virtual-scene camera looks at, so QQ → 扫一扫 (camera) sees it directly.
-                try { if (phone.showToCamera) { phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code is on the picture frame on the wall of the camera's room → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the frame shows a checkerboard, the phone was started by dsh-dot < 0.10.5 — /phone restart once.`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
+                try { if (phone.showToCamera) { phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code fills the camera view → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the camera shows only a room with a checkerboard TV, close and reopen 扫一扫.`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
               }
             }
           }
