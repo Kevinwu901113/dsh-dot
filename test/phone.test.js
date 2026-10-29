@@ -98,6 +98,11 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.match(readFileSync(join(h.home, 'avd', 'dot.ini'), 'utf8'), /target=android-35/);
   assert.equal(h.spawned.length, 1);
   assert.deepEqual(h.spawned[0].args.slice(0, 4), ['-avd', 'dot', '-port', '5554']);
+  const poster = h.spawned[0].args[h.spawned[0].args.indexOf('-virtualscene-poster') + 1];
+  assert.equal(poster, `wall=${join(h.home, 'avd', 'dot.avd', 'dsh-dot-poster.png')}`, 'the camera\'s wall poster is a file dsh-dot can change while the phone runs');
+  assert.ok(existsSync(poster.slice(5)), 'a blank poster exists before the first QR');
+  assert.equal(h.ctx.dshPhone.showToCamera(Buffer.from('qr')), poster.slice(5));
+  assert.equal(readFileSync(poster.slice(5), 'utf8'), 'qr');
   assert.ok(h.execs.some((e) => e.some((a) => String(a).includes('stayon'))), 'screen kept on');
   assert.equal(h.plugins.length, 1);
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');

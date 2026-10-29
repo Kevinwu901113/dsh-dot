@@ -116,7 +116,7 @@ test('napcat backend never mounts the MCP and stops SnowLuma before starting', a
 });
 
 test('/qq backend persists; /qq install snowluma runs the detached SnowLuma installer; installed() answers per backend; qr is a screen picture', async () => {
-  const h = harness({}, { installed: false, shell: (s) => (s.includes('snowluma-install.done 2>/dev/null') ? '0\n' : s.includes('import -window root') ? 'UE5H\n' : '') });
+  const h = harness({}, { installed: false, shell: (s) => (s.includes('snowluma-install.done 2>/dev/null') ? '0\n' : s.includes('import -window "$W"') ? 'UE5H\n' : '') });
   h.ready(); await tick(30);
   let out = await h.cmd().handler({ rawInput: 'backend snowluma' });
   assert.match(out.text, /backend: snowluma; \/qq start/);
@@ -139,5 +139,6 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   assert.match(h.shells.at(-1), /test -f \/root\/snowluma\/index\.mjs/);
   const qr = await h.ctx.dshQq.qr();
   assert.equal(String(qr.png), 'PNG'); assert.equal(qr.ageS, 0);
+  assert.match(h.shells.at(-1), /awk '\/ "QQ": \/ \{ print \$1/, 'just the QQ window when it can be found');
   h.stop();
 });

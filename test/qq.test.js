@@ -118,7 +118,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   const orig = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : orig(n));
   const out = await h.cmd().handler({ rawInput: 'qr' });
   assert.match(out.text, /QR saved: .*qq-login-\d{6}\.png \(drawn 3s ago/);
-  assert.match(out.text, /in front of her camera: .*扫一扫 \(camera view\)/);
+  assert.match(out.text, /in front of her camera: .*扫一扫: the code is on the picture frame/);
   assert.equal(String(shown), 'PNG', 'the login code is what her camera looks at');
   assert.ok(pushed.some((a) => Array.isArray(a) && a[0] === 'push' && /qq-login-\d{6}\.png$/.test(a[2])));
   // reconnect after close

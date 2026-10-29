@@ -18,6 +18,9 @@ import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 
+/** A 1×1 white PNG: the wall poster when nothing is being shown to her camera. */
+const BLANK_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8/5+hHgAHggJ/PchI7wAAAABJRU5ErkJggg==', 'base64');
+
 /** @deprecated name kept for callers; see notifications.js */
 export const parseNotifications = parseShade;
 
@@ -266,19 +269,18 @@ export function apply(ctx, config = {}, deps = {}) {
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
   /**
-   * Put a PNG in front of her camera: it becomes the wall poster of the emulator's virtual scene, so
-   * the next time an app opens the back camera (QQ → 扫一扫) that image fills the view. Returns the
-   * poster path. The emulator reads the poster file when the camera opens; `clear()` restores none.
+   * Put a PNG in front of her camera: the emulator is launched with `-virtualscene-poster wall=<png>`
+   * (the 2 m picture frame on the wall of its virtual room), and it reads that file each time an app
+   * opens the back camera — so after this, QQ → 扫一扫 sees the image. Returns the poster path. A phone
+   * started before this flag existed (dsh-dot < 0.10.5) needs one /phone restart.
    */
   phone.showToCamera = (png) => {
     const f = posterFiles();
     mkdirSync(f.dir, { recursive: true });
     writeFileSync(f.png, png);
-    // Format of the emulator's poster file: name, size (m), position (m, in front of the camera), rotation, image.
-    writeFileSync(f.posters, ['poster wall', 'size 1.5 1.5', 'position 0 0 -1.5', 'rotation 0 0 0', `default ${f.png}`, '', 'poster table', 'size 1 1', 'position 0 -0.5 -1.5', 'rotation 0 0 0', `default ${f.png}`, ''].join('\n'));
     return f.png;
   };
-  phone.clearCamera = () => { const f = posterFiles(); try { rmSync(f.posters, { force: true }); rmSync(f.png, { force: true }); } catch {} };
+  phone.clearCamera = () => { const f = posterFiles(); try { writeFileSync(f.png, BLANK_PNG); } catch {} };
   // Notifications: what her phone shows her (see notifications.js). Listeners get posted and
   // updated ones once each; the policy decides which apps count.
   const notifyListeners = new Set();
@@ -347,7 +349,7 @@ export function apply(ctx, config = {}, deps = {}) {
   }
 
   /** The poster file of the virtual-scene camera (read when an app opens the camera) and the PNG it shows. */
-  const posterFiles = () => { const dir = join(paths.avdHome, `${cfg.avd}.avd`); return { dir, posters: join(dir, 'Toren1BD.posters'), png: join(dir, 'dsh-dot-poster.png') }; };
+  const posterFiles = () => { const dir = join(paths.avdHome, `${cfg.avd}.avd`); return { dir, png: join(dir, 'dsh-dot-poster.png') }; };
   function ensureAvd() {
     const dir = join(paths.avdHome, `${cfg.avd}.avd`);
     if (existsSync(join(dir, 'config.ini'))) {
@@ -429,6 +431,9 @@ export function apply(ctx, config = {}, deps = {}) {
         logger.info(`${serial} is already running; attaching`);
       } else {
         const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
+        // Her camera's wall poster (see showToCamera): always this file, so it can change while the phone runs.
+        const poster = posterFiles();
+        try { mkdirSync(poster.dir, { recursive: true }); if (!existsSync(poster.png)) writeFileSync(poster.png, BLANK_PNG); args.push('-virtualscene-poster', `wall=${poster.png}`); } catch (err) { logger.warn(`camera poster: ${err.message}`); }
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
         // A piped, referenced child kept the Host alive after shutdown until the desktop updater

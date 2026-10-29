@@ -564,7 +564,9 @@ export function apply(ctx, config = {}, deps = {}) {
     try {
       const out = String(await vmShell([
         `${SL_DISPLAY}`,
-        'if command -v import >/dev/null; then DISPLAY=$D import -window root png:- | base64 -w0',
+        // Just the QQ window when it can be found (the code then fills her camera's poster), else the whole screen.
+        `W=$(xwininfo -display $D -root -tree 2>/dev/null | awk '/ "QQ": / { print $1; exit }'); W=\${W:-root}`,
+        'if command -v import >/dev/null; then DISPLAY=$D import -window "$W" png:- | base64 -w0',
         'elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D | convert xwd:- png:- | base64 -w0',
         'elif command -v scrot >/dev/null; then f=/tmp/dot-screen.png; DISPLAY=$D scrot -o $f && base64 -w0 $f; rm -f $f',
         'else echo no-screenshot-tool; fi',
@@ -921,7 +923,7 @@ export function apply(ctx, config = {}, deps = {}) {
                 } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
                 // QQ's login codes refuse album imports; the camera is the way. The code becomes the poster the
                 // phone's virtual-scene camera looks at, so QQ → 扫一扫 (camera) sees it directly.
-                try { if (phone.showToCamera) { phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫 (camera view) → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the camera still shows a room, the phone was started before its camera existed — /phone restart once.`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
+                try { if (phone.showToCamera) { phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code is on the picture frame on the wall of the camera's room → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the frame shows a checkerboard, the phone was started by dsh-dot < 0.10.5 — /phone restart once.`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
               }
             }
           }
