@@ -76,7 +76,8 @@ const SL_QQ_LOG = `${VM_HOME}/snowluma-qq.log`;
 const SL_HTTP_PORT = 3000;
 // The GUI QQ SnowLuma hooks is a clean system linuxqq at /opt/QQ — never NapCat's unpacked copy,
 // whose launcher is patched to load NapCat (two clients inside one QQ). The installer puts it there.
-const SL_QQ = 'QQ=/opt/QQ/qq';
+// Spelled with an empty quote so a shell that names it does not itself match pgrep/pkill "[o]pt/QQ/qq".
+const SL_QQ = 'QQ=/opt/Q""Q/qq';
 // The linuxqq build SnowLuma's own host installer pins (SnowLuma.Docker.Framework install.sh), with
 // its checksums: the hook tracks QQ's internals, so a known-good build rather than "latest".
 const SL_QQ_PIN = {
@@ -85,8 +86,11 @@ const SL_QQ_PIN = {
   mirror: 'https://github.com/Rodert/qq-versions/releases/download/qq-packages-20260813-1d08f1d4',
   sha256: { amd64: 'd085dd89397225061eb9f194308f688129818ed445777e97a4a0a16e13d7b0e8', arm64: '8796ccfd66acc025ef18db37185532d40bc8c58921e17da6d28c295acbcf8f92' },
 };
-// The VM desktop's X display (tigervnc), as ":N".
-const SL_DISPLAY = 'D=$(ls /tmp/.X11-unix/ 2>/dev/null | sed -n \'s/^X//p\' | head -1); D=":${D:-1}"';
+// The VM desktop's X display, as ":N": the one the VNC server shows (that is what the 虚拟机 tab and
+// the QR screenshot see), else any live X server, else :99. Not "first socket in /tmp/.X11-unix":
+// NapCat's xvfb-run leaves sockets of dead servers there (:101, :102), and QQ exits on one of those.
+const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc|x11vnc)$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+$/) { print $i; exit } }'); ` +
+  String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+$/) { print $i; exit } }'); ` + 'D="${D:-:99}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
 

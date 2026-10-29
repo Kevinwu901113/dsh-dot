@@ -77,6 +77,9 @@ test('snowluma backend: configures both config dirs (HTTP token = gateway key), 
   const kill = h.shells.findIndex((s) => s.includes('pkill -f "[s]nowluma/index.mjs"') && s.includes('pkill -f "[o]pt/QQ/qq"'));
   assert.ok(kill >= 0 && kill < h.shells.indexOf(start), 'NapCat (and any QQ) stopped first');
   assert.ok(!start.includes('pkill'), 'the start script does not kill (it names the QQ path: pkill -f would kill the script itself)');
+  assert.ok(!/opt\/QQ\/qq/.test(start), 'the start shell never matches "[o]pt/QQ/qq" itself (it would read as a running QQ)');
+  assert.match(start, /Xtigervnc\|x11vnc/, 'the display is the one VNC shows, not the first socket in /tmp/.X11-unix');
+  assert.ok(!start.includes('ls /tmp/.X11-unix'), 'stale sockets of dead Xvfb servers are not picked');
   assert.match(start, /export DISPLAY=\$D/); assert.match(start, /--disable-gpu-compositing/);
   assert.ok(!h.shells.some((s) => s.includes('xvfb-run -a')), 'NapCat not launched');
   const route = h.shells.find((s) => s.includes('dsh-dot-napcat.conf'));
