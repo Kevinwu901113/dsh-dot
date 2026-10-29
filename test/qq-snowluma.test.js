@@ -74,7 +74,9 @@ test('snowluma backend: configures both config dirs (HTTP token = gateway key), 
   const start = h.shells.find((s) => s.includes('node "$SL"/index.mjs'));
   assert.ok(start, 'SnowLuma started');
   assert.match(start, /ptrace_scope/); assert.match(start, /qqpatch\.gtimg\.cn/);
-  assert.match(start, /pkill -f "\[s\]nowluma\/index\.mjs"[^\n]*pkill -f "\[o\]pt\/QQ\/qq"/, 'NapCat (and any QQ) stopped first');
+  const kill = h.shells.findIndex((s) => s.includes('pkill -f "[s]nowluma/index.mjs"') && s.includes('pkill -f "[o]pt/QQ/qq"'));
+  assert.ok(kill >= 0 && kill < h.shells.indexOf(start), 'NapCat (and any QQ) stopped first');
+  assert.ok(!start.includes('pkill'), 'the start script does not kill (it names the QQ path: pkill -f would kill the script itself)');
   assert.match(start, /export DISPLAY=\$D/); assert.match(start, /--disable-gpu-compositing/);
   assert.ok(!h.shells.some((s) => s.includes('xvfb-run -a')), 'NapCat not launched');
   const route = h.shells.find((s) => s.includes('dsh-dot-napcat.conf'));
@@ -100,7 +102,10 @@ test('snowluma backend: configures both config dirs (HTTP token = gateway key), 
 test('napcat backend never mounts the MCP and stops SnowLuma before starting', async () => {
   const h = harness();
   h.ready(); await tick(30);
-  assert.ok(h.shells.some((s) => s.includes('pkill -f "[s]nowluma/index.mjs"') && s.includes('xvfb-run -a')));
+  const kill = h.shells.findIndex((s) => s.includes('pkill -f "[s]nowluma/index.mjs"'));
+  const launch = h.shells.findIndex((s) => s.includes('xvfb-run -a'));
+  assert.ok(kill >= 0 && kill < launch, 'SnowLuma stopped before NapCat starts');
+  assert.ok(!h.shells[launch].includes('pkill'), 'the launch script does not kill (it names the QQ path)');
   FakeSocket.last.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
   await tick(5);
   assert.equal(h.plugins.length, 0);

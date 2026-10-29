@@ -510,18 +510,19 @@ export function apply(ctx, config = {}, deps = {}) {
     try { return (await vmShell(probe)).trim() === 'yes'; } catch { return false; }
   };
   // One account, one desktop client: NapCat and SnowLuma's QQ are both "the computer"; never both.
+  // Always its own shell call: pkill -f matches whole command lines, and a start script names the QQ
+  // path it launches, so a script that kills and then starts would kill itself first.
   const KILL_ALL = `pkill -f "${SL_PGREP}" || true; pkill -f "[o]pt/QQ/qq" || true; sleep 1`;
   /** The GUI QQ on the VM desktop, then SnowLuma hooking it (as root: no setcap needed for ptrace). */
   const snowlumaStartScript = () => [
     `cd ${VM_HOME}; export HOME=${VM_HOME}`,
     'ps=$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo 0); [ "$ps" = 3 ] && { echo ptrace-blocked; exit 0; }',
     "grep -q 'qqpatch.gtimg.cn' /etc/hosts || echo '0.0.0.0 qqpatch.gtimg.cn' >> /etc/hosts",
-    KILL_ALL,
     `${SL_QQ}; ${SL_DISPLAY}; export DISPLAY=$D`,
     `setsid nohup "$QQ" --no-sandbox --disable-gpu --disable-software-rasterizer --disable-gpu-compositing > ${SL_QQ_LOG} 2>&1 < /dev/null & disown`,
     'sleep 5',
     // By absolute path, so pgrep -f sees "snowluma/index.mjs"; spelled through $SL so this shell's own
-    // command line does not match it (KILL_ALL above would otherwise kill the script running it).
+    // command line does not match it (a later KILL_ALL or running() probe sees only the real process).
     `SL=${SL_DIR}; cd "$SL" && setsid nohup node "$SL"/index.mjs >> ${SL_LOG} 2>&1 < /dev/null & disown`,
     'sleep 1; echo "started on $D"',
   ].join('\n');
@@ -532,12 +533,14 @@ export function apply(ctx, config = {}, deps = {}) {
     await qq.ensureRoute().catch((err) => logger.warn(`OneBot route: ${err.message}`));
     if (!(await qq.running())) {
       if (sl()) {
+        await vmShell(KILL_ALL);
         const out = String(await vmShell(snowlumaStartScript()));
         if (out.includes('ptrace-blocked')) { setState('error', 'the computer forbids ptrace (kernel.yama.ptrace_scope = 3); SnowLuma cannot hook QQ — use the napcat backend'); return false; }
         audit({ kind: 'snowluma-started' });
         logger.info('SnowLuma started (QQ on the computer desktop; log in by QR there)');
       } else {
-        await vmShell(`${KILL_ALL}; cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
+        await vmShell(KILL_ALL);
+        await vmShell(`cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${QR_FILE}; setsid nohup xvfb-run -a ${QQ_BIN} --no-sandbox -q ${cfg.qq} > ${LOG_FILE} 2>&1 < /dev/null & disown; sleep 1; echo started`);
         audit({ kind: 'napcat-started', qq: cfg.qq });
         logger.info(`NapCat started for ${cfg.qq}`);
       }
