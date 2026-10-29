@@ -93,6 +93,8 @@ const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
+// Reads the first barcode in an image (argv[1]) with zxing-cpp; exits non-zero when the module is missing.
+const ZXING_PY = 'import sys, zxingcpp; from PIL import Image; r = zxingcpp.read_barcodes(Image.open(sys.argv[1])); print(r[0].text if r else "")';
 // SnowLuma's own Node (its SQLite store needs Node >= 24; the image ships 22): a checksum-verified
 // latest-v24.x, or a symlink to the system node when that is already new enough.
 const SL_NODE_DIR = '/root/snowluma-node';
@@ -609,14 +611,17 @@ export function apply(ctx, config = {}, deps = {}) {
         '[ -s $f ] || { echo no-screenshot-tool; exit 0; }',
         // The code itself, redrawn large and sharp: a small code inside a window, rendered through the
         // phone camera's virtual room, is too soft for QQ's scanner. Decoded from the screen, re-encoded.
-        '{ command -v zbarimg >/dev/null && command -v qrencode >/dev/null; } || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq zbar-tools qrencode >/dev/null 2>&1',
-        't=$(zbarimg -q --raw $f 2>/dev/null | head -1)',
+        // QQ draws its code with round dots and round finders: zbar and OpenCV miss it, zxing-cpp reads it.
+        `dec() { python3 -I -c ${JSON.stringify(ZXING_PY)} "$1" 2>/dev/null; }`,
+        'dec $f >/dev/null || for idx in https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple; do timeout 180 python3 -m pip install -q --break-system-packages -i $idx zxing-cpp pillow >/dev/null 2>&1 && break; done',
+        'command -v qrencode >/dev/null || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq qrencode zbar-tools >/dev/null 2>&1',
+        't=$(dec $f | head -1); [ -n "$t" ] || t=$(zbarimg -q --raw $f 2>/dev/null | head -1)',
         'if [ -n "$t" ] && qrencode -s 16 -m 4 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
         'rm -f $f $q',
       ].join('\n'))).trim();
       if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
       const png = Buffer.from(out.split('\n').pop(), 'base64');
-      if (!out.includes('redrawn')) logger.info('qr: could not read the code off the screen (zbarimg); showing the window as it is');
+      if (!out.includes('redrawn')) logger.info('qr: could not read the code off the screen (zxing-cpp/zbar); showing the window as it is');
       return png.length ? { png, ageS: 0, redrawn: out.includes('redrawn') } : null;
     } catch (err) { logger.warn(`qr: ${err.message}`); return null; }
   }

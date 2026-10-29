@@ -140,7 +140,7 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   const qr = await h.ctx.dshQq.qr();
   assert.equal(String(qr.png), 'PNG'); assert.equal(qr.ageS, 0);
   assert.match(h.shells.at(-1), /awk '\/ "QQ": \/ \{ print \$1/, 'just the QQ window when it can be found');
-  assert.match(h.shells.at(-1), /zbarimg -q --raw \$f[\s\S]*qrencode -s 16 -m 4 -o \$q "\$t"/, 'the code is redrawn large from what the screen shows');
+  assert.match(h.shells.at(-1), /t=\$\(dec \$f[\s\S]*qrencode -s 16 -m 4 -o \$q "\$t"/, 'the code is redrawn large from what the screen shows');
   h.stop();
 });
 
