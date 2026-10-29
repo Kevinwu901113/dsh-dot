@@ -93,6 +93,9 @@ const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
+// How often /qq qr puts a fresh code in front of her camera, and for how long.
+const QR_REFRESH_MS = 40_000;
+const QR_REFRESH_FOR_MS = 4 * 60_000;
 // Reads the first barcode in an image (argv[1]) with zxing-cpp; exits non-zero when the module is missing.
 const ZXING_PY = 'import sys, zxingcpp; from PIL import Image; r = zxingcpp.read_barcodes(Image.open(sys.argv[1])); print(r[0].text if r else "")';
 // SnowLuma's own Node (its SQLite store needs Node >= 24; the image ships 22): a checksum-verified
@@ -595,8 +598,20 @@ export function apply(ctx, config = {}, deps = {}) {
     connect();
     return true;
   };
-  qq.stop = async () => { closeWs(); unmountMcp(); try { await vmShell(KILL_ALL); } catch {} setState('stopped'); audit({ kind: `${cfg.backend}-stopped` }); };
+  qq.stop = async () => { if (qrFreshTimer) { clearInterval(qrFreshTimer); qrFreshTimer = null; } closeWs(); unmountMcp(); try { await vmShell(KILL_ALL); } catch {} setState('stopped'); audit({ kind: `${cfg.backend}-stopped` }); };
   /** SnowLuma's login QR is drawn by the QQ GUI: a picture of the VM screen, with whichever tool exists. */
+  /** SnowLuma: keep a live code in front of her camera while she scans (QQ's codes last about a minute). */
+  let qrFreshTimer = null;
+  function keepCameraFresh(phone) {
+    if (qrFreshTimer) clearInterval(qrFreshTimer);
+    const until = Date.now() + QR_REFRESH_FOR_MS;
+    qrFreshTimer = setInterval(async () => {
+      if (qq.connected || Date.now() > until || !phone?.isReady) { clearInterval(qrFreshTimer); qrFreshTimer = null; return; }
+      const got = await screenQr();
+      if (got?.redrawn) { try { await phone.showToCamera(got.png); } catch (err) { logger.debug(`qr refresh: ${err.message}`); } }
+    }, QR_REFRESH_MS);
+    qrFreshTimer.unref?.();
+  }
   async function screenQr() {
     try {
       const out = String(await vmShell([
@@ -604,6 +619,11 @@ export function apply(ctx, config = {}, deps = {}) {
         // Just the QQ window when it can be found, else the whole screen.
         `W=$(xwininfo -display $D -root -tree 2>/dev/null | awk '/ "QQ": / { print $1; exit }'); W=\${W:-root}`,
         'f=/tmp/dot-screen.png; q=/tmp/dot-qr.png; rm -f $f $q',
+        // QQ's codes expire in about a minute and show 刷新 over the code: click the middle of the code
+        // first (a live code ignores it) so the picture is a fresh one. The login window is 680×440 with
+        // the code centred at (540, 182).
+        'command -v xdotool >/dev/null || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq xdotool >/dev/null 2>&1',
+        'if [ "$W" != root ] && command -v xdotool >/dev/null; then g=$(xwininfo -display $D -id $W | awk \'/Width:/ { w = $2 } /Height:/ { h = $2 } END { print w "x" h }\'); if [ "$g" = 680x440 ]; then DISPLAY=$D xdotool mousemove --window $W 540 182 click 1 2>/dev/null; sleep 3; echo "note: clicked 刷新"; fi; fi',
         'if command -v import >/dev/null; then DISPLAY=$D import -window "$W" $f',
         'elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D | convert xwd:- $f',
         'elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f',
@@ -613,16 +633,19 @@ export function apply(ctx, config = {}, deps = {}) {
         // phone camera's virtual room, is too soft for QQ's scanner. Decoded from the screen, re-encoded.
         // QQ draws its code with round dots and round finders: zbar and OpenCV miss it, zxing-cpp reads it.
         `dec() { python3 -I -c ${JSON.stringify(ZXING_PY)} "$1" 2>/dev/null; }`,
-        'dec $f >/dev/null || for idx in https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple; do timeout 180 python3 -m pip install -q --break-system-packages -i $idx zxing-cpp pillow >/dev/null 2>&1 && break; done',
+        // Older pip (Ubuntu 22.04's) has no --break-system-packages and refuses the whole command with it.
+        'if ! dec $f >/dev/null; then bsp=; python3 -m pip install --help 2>/dev/null | grep -q break-system-packages && bsp=--break-system-packages; for idx in https://pypi.tuna.tsinghua.edu.cn/simple https://pypi.org/simple; do timeout 180 python3 -m pip install -q $bsp -i $idx zxing-cpp pillow >/tmp/dot-pip.log 2>&1 && break; done; dec $f >/dev/null || echo "note: zxing-cpp unavailable: $(tail -1 /tmp/dot-pip.log 2>/dev/null)"; fi',
         'command -v qrencode >/dev/null || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq qrencode zbar-tools >/dev/null 2>&1',
         't=$(dec $f | head -1); [ -n "$t" ] || t=$(zbarimg -q --raw $f 2>/dev/null | head -1)',
+        '[ -n "$t" ] || echo "note: no code read off the screen"',
         'if [ -n "$t" ] && qrencode -s 16 -m 4 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
         'rm -f $f $q',
       ].join('\n'))).trim();
       if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
       const png = Buffer.from(out.split('\n').pop(), 'base64');
-      if (!out.includes('redrawn')) logger.info('qr: could not read the code off the screen (zxing-cpp/zbar); showing the window as it is');
-      return png.length ? { png, ageS: 0, redrawn: out.includes('redrawn') } : null;
+      const notes = out.split('\n').filter((l) => l.startsWith('note: ')).map((l) => l.slice(6));
+      if (!out.includes('redrawn')) logger.info(`qr: showing the window as it is (${notes.join('; ') || 'code not read'})`);
+      return png.length ? { png, ageS: 0, redrawn: out.includes('redrawn'), notes } : null;
     } catch (err) { logger.warn(`qr: ${err.message}`); return null; }
   }
   /**
@@ -970,7 +993,7 @@ export function apply(ctx, config = {}, deps = {}) {
               const file = join(dshHome(), 'phone', `qq-login-${stamp}.png`);
               mkdirSync(dirname(file), { recursive: true });
               writeFileSync(file, got.png);
-              extra = sl() ? `\nthe computer screen saved: ${file} (SnowLuma: the QR is in the QQ window; if it is not showing, open the 虚拟机 tab)` : `\nQR saved: ${file} (drawn ${got.ageS}s ago; valid about a minute)`;
+              extra = sl() ? `\n${got.redrawn ? 'login code read off the QQ window and redrawn large' : `the QQ window as it is — the code itself was not read (${(got.notes ?? []).join('; ') || 'unknown'})`}: ${file}` : `\nQR saved: ${file} (drawn ${got.ageS}s ago; valid about a minute)`;
               const phone = ctx.get('dshPhone');
               if (phone?.isReady) {
                 try {
@@ -981,7 +1004,13 @@ export function apply(ctx, config = {}, deps = {}) {
                 } catch (err) { extra += `\n(could not push to the phone: ${err.message})`; }
                 // QQ's login codes refuse album imports; the camera is the way. The code becomes the poster the
                 // phone's virtual-scene camera looks at, so QQ → 扫一扫 (camera) sees it directly.
-                try { if (phone.showToCamera) { await phone.showToCamera(got.png); extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code fills the camera view → confirm. Be quick (≈1 min); /qq qr again for a fresh one. If the camera shows a room with a checkerboard TV and no code, /phone restart once (the code's frame moves in front of the camera at launch).`; } } catch (err) { extra += `\n(camera: ${err.message})`; }
+                try {
+                  if (phone.showToCamera) {
+                    await phone.showToCamera(got.png);
+                    extra += `\nand in front of her camera: on the phone open QQ → 扫一扫: the code fills the camera view → confirm. If the camera shows a room with a checkerboard TV and no code, /phone restart once (the code's frame moves in front of the camera at launch).`;
+                    if (sl()) { keepCameraFresh(phone); extra += `\nthe code is refreshed in front of her camera every ${Math.round(QR_REFRESH_MS / 1000)}s for ${Math.round(QR_REFRESH_FOR_MS / 60000)} minutes, or until QQ connects`; }
+                  }
+                } catch (err) { extra += `\n(camera: ${err.message})`; }
               }
             }
           }
