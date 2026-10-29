@@ -89,8 +89,8 @@ const SL_QQ_PIN = {
 // The VM desktop's X display, as ":N": the one the VNC server shows (that is what the 虚拟机 tab and
 // the QR screenshot see), else any live X server, else :99. Not "first socket in /tmp/.X11-unix":
 // NapCat's xvfb-run leaves sockets of dead servers there (:101, :102), and QQ exits on one of those.
-const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc|x11vnc)$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+$/) { print $i; exit } }'); ` +
-  String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+$/) { print $i; exit } }'); ` + 'D="${D:-:99}"';
+const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc|x11vnc)$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` +
+  String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
 
@@ -516,7 +516,7 @@ export function apply(ctx, config = {}, deps = {}) {
   // One account, one desktop client: NapCat and SnowLuma's QQ are both "the computer"; never both.
   // Always its own shell call: pkill -f matches whole command lines, and a start script names the QQ
   // path it launches, so a script that kills and then starts would kill itself first.
-  const KILL_ALL = `pkill -f "${SL_PGREP}" || true; pkill -f "[o]pt/QQ/qq" || true; sleep 1`;
+  const KILL_ALL = `pkill -f "${SL_PGREP}" || true; pkill -f "[o]pt/QQ/qq" || true; pkill -f "^Xvfb .*xvfb-run" || true; sleep 1`;
   /** The GUI QQ on the VM desktop, then SnowLuma hooking it (as root: no setcap needed for ptrace). */
   const snowlumaStartScript = () => [
     `cd ${VM_HOME}; export HOME=${VM_HOME}`,
@@ -538,7 +538,12 @@ export function apply(ctx, config = {}, deps = {}) {
     if (!(await qq.running())) {
       if (sl()) {
         await vmShell(KILL_ALL);
-        const out = String(await vmShell(snowlumaStartScript()));
+        let out = '';
+        try { out = String(await vmShell(snowlumaStartScript())); } catch (err) {
+          // msb exec sometimes reports failure after both launches went off; trust the processes, not the exit.
+          if (!(await qq.running())) throw err;
+          logger.warn(`SnowLuma start shell: ${err.message.split('\n')[0]} (QQ and SnowLuma are running)`);
+        }
         if (out.includes('ptrace-blocked')) { setState('error', 'the computer forbids ptrace (kernel.yama.ptrace_scope = 3); SnowLuma cannot hook QQ — use the napcat backend'); return false; }
         audit({ kind: 'snowluma-started' });
         logger.info('SnowLuma started (QQ on the computer desktop; log in by QR there)');
