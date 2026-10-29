@@ -93,6 +93,11 @@ const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
+// SnowLuma's own Node (its SQLite store needs Node >= 24; the image ships 22): a checksum-verified
+// latest-v24.x, or a symlink to the system node when that is already new enough.
+const SL_NODE_DIR = '/root/snowluma-node';
+const SL_NODE = `${SL_NODE_DIR}/bin/node`;
+const SL_NODE_MIRRORS = ['https://npmmirror.com/mirrors/node', 'https://nodejs.org/dist'];
 
 /** OneBot 11 message segments → plain text the way a person would read them. */
 export function segmentsToText(message, selfId = '') {
@@ -271,6 +276,17 @@ export function onebotConfig({ port, token }) {
  * Bearer`, the gateway checks it and passes it through unchanged, and SnowLuma checks the same
  * header — so both sides must expect the same value. The WS keeps cfg.token (key in its own header).
  */
+/**
+ * Why the QQ that connected must not be used, or null. Her account is the configured one; your own
+ * number is never hers, even when no account is configured.
+ */
+export function wrongAccount(selfId, { qq, owner }) {
+  if (!selfId) return null;
+  if (owner && selfId === String(owner)) return `QQ in the computer is logged into the owner's account ${selfId}, not hers — disconnected so she cannot speak as you. Log out there (or /qq stop), log in ${qq || 'her account'}, then /qq start`;
+  if (qq && selfId !== String(qq)) return `QQ in the computer is logged into ${selfId}, not her account ${qq} — disconnected. Log in ${qq}, then /qq start`;
+  return null;
+}
+
 export function snowlumaConfig({ port, token, httpToken = token, httpPort = SL_HTTP_PORT }) {
   const common = { enabled: true, host: '127.0.0.1', path: '/', messageFormat: 'array', reportSelfMessage: false };
   return {
@@ -400,7 +416,7 @@ export function apply(ctx, config = {}, deps = {}) {
   /** Is the given backend (default: the configured one) installed in the computer? */
   qq.installed = async (which = cfg.backend) => {
     // SnowLuma needs both its own files and a Linux QQ to hook.
-    const probe = which === 'snowluma' ? `${SL_QQ}; test -x "$QQ" && test -f ${SL_DIR}/index.mjs && echo yes || echo no` : `test -x ${QQ_BIN} && echo yes || echo no`;
+    const probe = which === 'snowluma' ? `${SL_QQ}; test -x "$QQ" && test -f ${SL_DIR}/index.mjs && test -x ${SL_NODE} && echo yes || echo no` : `test -x ${QQ_BIN} && echo yes || echo no`;
     try { return (await vmShell(probe)).trim() === 'yes'; } catch { return false; }
   };
   const INSTALL_LOG = `${VM_HOME}/napcat-install.log`;
@@ -440,8 +456,27 @@ export function apply(ctx, config = {}, deps = {}) {
       `test -x ${QQ_BIN} && rc=0; echo $rc > ${INSTALL_DONE}`,
     ].join('\n');
   }
+  /** Shell lines that leave a Node >= 24 at SL_NODE (the system one if new enough, else latest-v24.x, sha256-checked). Needs $arch (x64|arm64). */
+  function snowlumaNodeScript(failure) {
+    return [
+      'nodeok() { [ -x "$1" ] && "$1" -e \'process.exit(+process.versions.node.split(".")[0] >= 24 ? 0 : 1)\' 2>/dev/null; }',
+      `if ! nodeok ${SL_NODE}; then`,
+      `  if nodeok "$(command -v node)"; then mkdir -p ${SL_NODE_DIR}/bin && ln -sf "$(command -v node)" ${SL_NODE};`,
+      '  else ok=;',
+      `    for base in ${SL_NODE_MIRRORS.join(' ')}; do`,
+      '      line=$(curl -fsSL --connect-timeout 15 --max-time 60 "$base/latest-v24.x/SHASUMS256.txt" | grep -E " node-v24\\.[0-9.]+-linux-$arch\\.tar\\.xz$" | head -1); [ -n "$line" ] || continue',
+      '      f=${line##* }; curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$f" "$base/latest-v24.x/$f" || continue',
+      '      ( cd /tmp && echo "$line" | sha256sum -c - >/dev/null ) || { rm -f "/tmp/$f"; continue; }',
+      `      rm -rf ${SL_NODE_DIR} && mkdir -p ${SL_NODE_DIR} && tar -xJf "/tmp/$f" -C ${SL_NODE_DIR} --strip-components=1 && rm -f "/tmp/$f" && ok=1 && break`,
+      '    done',
+      `    [ -n "$ok" ] || ${failure}`,
+      '  fi',
+      'fi',
+      `nodeok ${SL_NODE} || ${failure}; echo "SnowLuma node $(${SL_NODE} -v)"`,
+    ];
+  }
   /**
-   * The SnowLuma installer script: the lite release for the VM's arch (needs the VM's node ≥ 22),
+   * The SnowLuma installer script: the lite release for the VM's arch (run by its own Node ≥ 24, see snowlumaNodeScript),
    * unpacked so index.mjs sits in SL_DIR, our config written before its first start, and QQ's hot
    * update host blocked (an updated QQ may no longer match the hook). QQ is a clean, pinned system
    * linuxqq at /opt/QQ — separate from NapCat's patched copy. SnowLuma reads config/ from its working
@@ -453,10 +488,10 @@ export function apply(ctx, config = {}, deps = {}) {
     const fetch = prefixes.map((pre) => `curl -fSL --connect-timeout 15 --max-time 600 -o snowluma.tgz "${pre}$asset"`).join(' || ');
     return [
       `cd ${VM_HOME}; export HOME=${VM_HOME}; rm -f ${SL_INSTALL_DONE} snowluma.tgz; rm -rf ${SL_DIR}.tmp`,
-      `node -e 'process.exit(+process.versions.node.split(".")[0] >= 22 ? 0 : 1)' || ${fail(4, 'SnowLuma needs Node >= 22 in the computer')}`,
       `case "$(uname -m)" in aarch64|arm64) arch=arm64; qarch=arm64; qsum=${SL_QQ_PIN.sha256.arm64};; x86_64|amd64) arch=x64; qarch=amd64; qsum=${SL_QQ_PIN.sha256.amd64};; *) ${fail(4, 'unsupported CPU for SnowLuma')};; esac`,
+      ...snowlumaNodeScript(fail(4, 'cannot install Node 24 for SnowLuma (npmmirror and nodejs.org both failed)')),
       // A clean system linuxqq (the pinned build, checksum-verified) plus what QQ and the QR screenshot need.
-      `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq || true; apt-get install -y -qq libgbm1 libnss3 libgtk-3-0 libxshmfence1 libxdamage1 libdrm2 libxkbcommon0 fontconfig fonts-noto-cjk dbus-x11 imagemagick >/dev/null || apt-get install -y -qq libasound2t64 || apt-get install -y -qq libasound2 || true`,
+      `export DEBIAN_FRONTEND=noninteractive; apt-get update -qq || true; apt-get install -y -qq libgbm1 libnss3 libgtk-3-0 libxshmfence1 libxdamage1 libdrm2 libxkbcommon0 fontconfig fonts-noto-cjk dbus-x11 imagemagick xz-utils >/dev/null || apt-get install -y -qq libasound2t64 || apt-get install -y -qq libasound2 || true`,
       `if [ ! -x /opt/QQ/qq ]; then q="QQ_${SL_QQ_PIN.version}_\${qarch}_01.deb"; { curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${SL_QQ_PIN.base}/$q" || curl -fSL --connect-timeout 15 --max-time 900 -o "/tmp/$q" "${(cfg.githubProxy || '')}${SL_QQ_PIN.mirror}/$q"; } || ${fail(3, 'cannot download Linux QQ')}; echo "$qsum  /tmp/$q" | sha256sum -c - >/dev/null || ${fail(3, 'Linux QQ package checksum mismatch — not installing it')}; apt-get install -y -qq "/tmp/$q" >/dev/null || apt-get -f install -y -qq >/dev/null; rm -f "/tmp/$q"; fi`,
       `[ -x /opt/QQ/qq ] || ${fail(3, 'Linux QQ did not install to /opt/QQ/qq')}`,
       `tag=${JSON.stringify(cfg.snowlumaVersion)}`,
@@ -527,7 +562,7 @@ export function apply(ctx, config = {}, deps = {}) {
     'sleep 5',
     // By absolute path, so pgrep -f sees "snowluma/index.mjs"; spelled through $SL so this shell's own
     // command line does not match it (a later KILL_ALL or running() probe sees only the real process).
-    `SL=${SL_DIR}; cd "$SL" && setsid nohup node "$SL"/index.mjs >> ${SL_LOG} 2>&1 < /dev/null & disown`,
+    `SL=${SL_DIR}; cd "$SL" && setsid nohup ${SL_NODE} "$SL"/index.mjs >> ${SL_LOG} 2>&1 < /dev/null & disown`,
     'sleep 1; echo "started on $D"',
   ].join('\n');
   qq.start = async () => {
@@ -697,6 +732,15 @@ export function apply(ctx, config = {}, deps = {}) {
       const p = pending.get(ev.echo); pending.delete(ev.echo); clearTimeout(p.timer);
       if (ev.status === 'ok' || ev.retcode === 0) p.resolve(ev.data); else p.reject(new Error(ev.message || ev.wording || `retcode ${ev.retcode}`));
       return;
+    }
+    // Logged into some other account (a cached quick login can pick yours): she must never speak as
+    // it. Drop the socket, unmount her QQ tools, and say so; /qq start after logging in the right one.
+    if (ev.self_id !== undefined && ev.self_id !== null) {
+      const why = wrongAccount(String(ev.self_id), { qq: qq.qq, owner: qq.owner });
+      if (why) {
+        if (qq.state !== 'wrong-account') { closeWs(); unmountMcp(); setState('wrong-account', why); audit({ kind: 'wrong-account', selfId: String(ev.self_id) }); logger.warn(`qq: ${why}`); }
+        return;
+      }
     }
     if (ev.post_type === 'meta_event') {
       if (ev.meta_event_type === 'lifecycle' && ev.sub_type === 'connect') { qq.connected = true; qq.selfId = String(ev.self_id ?? ''); setState('connected'); audit({ kind: 'connected', selfId: qq.selfId }); }

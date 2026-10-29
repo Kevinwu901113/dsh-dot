@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, qqToolGate, snowlumaConfig } from '../src/qq/qq.js';
+import { apply, qqToolGate, snowlumaConfig, wrongAccount } from '../src/qq/qq.js';
 import { QQ_TOOL_PREFIX } from '../src/tool-prefixes.js';
 
 class FakeSocket extends EventEmitter {
@@ -71,7 +71,7 @@ test('snowluma backend: configures both config dirs (HTTP token = gateway key), 
   assert.match(conf, /"accessToken": "gw-key-1"/, 'HTTP adapter takes the gateway key');
   const token = JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-qq.json'), 'utf8')).token;
   assert.ok(conf.includes(`"accessToken": "${token}"`), 'WS adapter keeps the OneBot token');
-  const start = h.shells.find((s) => s.includes('node "$SL"/index.mjs'));
+  const start = h.shells.find((s) => s.includes('/root/snowluma-node/bin/node "$SL"/index.mjs'));
   assert.ok(start, 'SnowLuma started');
   assert.match(start, /ptrace_scope/); assert.match(start, /qqpatch\.gtimg\.cn/);
   const kill = h.shells.findIndex((s) => s.includes('pkill -f "[s]nowluma/index.mjs"') && s.includes('pkill -f "[o]pt/QQ/qq"'));
@@ -140,5 +140,24 @@ test('/qq backend persists; /qq install snowluma runs the detached SnowLuma inst
   const qr = await h.ctx.dshQq.qr();
   assert.equal(String(qr.png), 'PNG'); assert.equal(qr.ageS, 0);
   assert.match(h.shells.at(-1), /awk '\/ "QQ": \/ \{ print \$1/, 'just the QQ window when it can be found');
+  h.stop();
+});
+
+test('wrong account: the owner\'s (or any other) QQ in the computer is dropped — no MCP, no messages, state says why', async () => {
+  assert.match(wrongAccount('919231551', { qq: '2450548644', owner: '919231551' }), /owner's account 919231551/);
+  assert.match(wrongAccount('3333', { qq: '2450548644', owner: '919231551' }), /not her account 2450548644/);
+  assert.match(wrongAccount('919231551', { qq: '', owner: '919231551' }), /owner's account/, 'never the owner, even with no account set');
+  assert.equal(wrongAccount('2450548644', { qq: '2450548644', owner: '919231551' }), null);
+  const h = harness({ backend: 'snowluma', owner: '20002' });
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  const heard = []; h.ctx.dshQq.onMessage?.((m) => heard.push(m));
+  sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 20002 }));
+  sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', self_id: 20002, user_id: 5, message: 'hi' }));
+  await tick(5);
+  assert.equal(h.ctx.dshQq.state, 'wrong-account');
+  assert.equal(h.ctx.dshQq.connected, false);
+  assert.equal(h.plugins.length, 0, 'her QQ tools never mount on the wrong account');
+  assert.equal(heard.length, 0);
   h.stop();
 });
