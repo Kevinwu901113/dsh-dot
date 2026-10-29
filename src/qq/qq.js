@@ -641,7 +641,7 @@ export function apply(ctx, config = {}, deps = {}) {
         'if [ -z "$t" ] && [ "$W" != root ]; then command -v xdotool >/dev/null || DEBIAN_FRONTEND=noninteractive timeout 120 apt-get install -y -qq xdotool >/dev/null 2>&1; g=$(xwininfo -display $D -id $W | awk \'/Width:/ { w = $2 } /Height:/ { h = $2 } END { print w "x" h }\'); if [ "$g" = 680x440 ] && command -v xdotool >/dev/null; then DISPLAY=$D xdotool mousemove --window $W 540 182 click 1 2>/dev/null; sleep 3; shot; read_code; echo "note: the code had expired; clicked 刷新"; fi; fi',
         '[ -n "$t" ] && echo "code: $(printf %s "$t" | sha1sum | cut -c1-12)"',
         '[ -n "$t" ] || echo "note: no code read off the screen"',
-        'if [ -n "$t" ] && qrencode -s 16 -m 4 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
+        'if [ -n "$t" ] && qrencode -s 16 -m 20 -o $q "$t" 2>/dev/null; then echo redrawn; base64 -w0 $q; else base64 -w0 $f; fi',
         'rm -f $f $q',
       ].join('\n'))).trim();
       if (!out || out.includes('no-screenshot-tool')) { logger.warn('qr: no screenshot tool in the computer (ImageMagick import, xwd+convert or scrot); open the 虚拟机 tab instead'); return null; }
