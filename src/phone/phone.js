@@ -6,7 +6,7 @@
 // live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { PHONE_SERVER, PHONE_TOOL_PREFIX } from '../tool-prefixes.js';
 import { spawn, execFile } from 'node:child_process';
-import { chmodSync, closeSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
+import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
@@ -277,10 +277,13 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.showToCamera = async (png) => {
     const f = posterFiles();
     mkdirSync(f.dir, { recursive: true });
-    writeFileSync(f.png, png);
-    const out = String((await phone.adbExec(['emu', 'virtualscene-image', 'wall', f.png])).stdout ?? '');
+    // A new file name every time: given a path it already shows, the emulator keeps the old picture.
+    const file = join(f.dir, `dsh-dot-poster-${Date.now()}.png`);
+    writeFileSync(file, png);
+    const out = String((await phone.adbExec(['emu', 'virtualscene-image', 'wall', file])).stdout ?? '');
     if (/\bKO\b/.test(out)) throw new Error(`the emulator refused the camera image: ${out.trim()}`);
-    return f.png;
+    for (const n of readdirSync(f.dir)) if (/^dsh-dot-poster(-\d+)?\.png$/.test(n) && join(f.dir, n) !== file) { try { rmSync(join(f.dir, n), { force: true }); } catch {} }
+    return file;
   };
   phone.clearCamera = async () => { try { await phone.adbExec(['emu', 'virtualscene-image', 'wall']); } catch {} };
   // Notifications: what her phone shows her (see notifications.js). Listeners get posted and

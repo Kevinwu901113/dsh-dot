@@ -104,9 +104,12 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   { const res = join(h.home, 'emulator', 'resources');
     assert.equal(readFileSync(join(res, 'Toren1BD.posters'), 'utf8'), 'poster wall\nsize 1 1\nposition 0 0 -1.5\nrotation 0 0 0\ndefault poster.png\n\nposter table\nsize 1 1\nposition -2.205 -0.077 3.949\nrotation -90 0 120\n', 'before launch the wall poster moved in front of the camera; table kept');
     assert.match(readFileSync(join(res, 'Toren1BD.posters.orig'), 'utf8'), /position -0\.807 0\.320 5\.316/, 'stock list kept');
-    assert.equal(await h.ctx.dshPhone.showToCamera(Buffer.from('qr')), join(res, 'dsh-dot-poster.png'));
-    assert.equal(readFileSync(join(res, 'dsh-dot-poster.png'), 'utf8'), 'qr');
-    assert.ok(h.execs.some((e) => e.join(' ') === `adb -s emulator-5554 emu virtualscene-image wall ${join(res, 'dsh-dot-poster.png')}`), 'swapped live through the emulator console'); }
+    const a = await h.ctx.dshPhone.showToCamera(Buffer.from('qr'));
+    await new Promise((r) => setTimeout(r, 5));
+    const b = await h.ctx.dshPhone.showToCamera(Buffer.from('qr2'));
+    assert.notEqual(a, b, 'a new path each time: the emulator keeps the old picture for a path it already shows');
+    assert.equal(readFileSync(b, 'utf8'), 'qr2'); assert.ok(!existsSync(a), 'the previous picture is removed');
+    assert.ok(h.execs.some((e) => e.join(' ') === `adb -s emulator-5554 emu virtualscene-image wall ${b}`), 'swapped live through the emulator console'); }
   assert.ok(h.execs.some((e) => e.some((a) => String(a).includes('stayon'))), 'screen kept on');
   assert.equal(h.plugins.length, 1);
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');
