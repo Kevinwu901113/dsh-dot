@@ -58,6 +58,8 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   const home = join(dsh, 'phone');
   if (installed) {
     for (const f of ['emulator/emulator', 'platform-tools/adb', 'system-images/android-35/google_apis/arm64-v8a/system.img']) { mkdirSync(join(home, f, '..'), { recursive: true }); writeFileSync(join(home, f), ''); }
+    mkdirSync(join(home, 'emulator', 'resources'), { recursive: true });
+    writeFileSync(join(home, 'emulator', 'resources', 'Toren1BD.posters'), 'poster wall\nsize 2 2\nposition -0.807 0.320 5.316\nrotation 0 -150 0\ndefault poster.png\n\nposter table\nsize 1 1\nposition -2.205 -0.077 3.949\nrotation -90 0 120\n');
   }
   const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [], logcats = [];
   let cmd, child;
@@ -99,15 +101,12 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.equal(h.spawned.length, 1);
   assert.deepEqual(h.spawned[0].args.slice(0, 4), ['-avd', 'dot', '-port', '5554']);
   assert.ok(!h.spawned[0].args.includes('-virtualscene-poster'), 'no launch flag: the scene file decides where posters hang');
-  { const res = join(h.home, 'emulator', 'resources'); mkdirSync(res, { recursive: true });
-    writeFileSync(join(res, 'Toren1BD.posters'), 'poster wall\nsize 2 2\nposition -0.807 0.320 5.316\nrotation 0 -150 0\ndefault poster.png\n');
-    assert.equal(h.ctx.dshPhone.showToCamera(Buffer.from('qr')), join(res, 'dsh-dot-poster.png'));
-    h.ctx.dshPhone.showToCamera(Buffer.from('qr2'));
-    const list = readFileSync(join(res, 'Toren1BD.posters'), 'utf8');
-    assert.match(list, /^poster wall\n[\s\S]*\n\nposter dshdot\nsize 1 1\nposition 0 0 -1\.5\nrotation 0 0 0\ndefault dsh-dot-poster\.png\n$/, 'stock posters kept, ours added once, in front of the camera');
-    assert.equal(readFileSync(join(res, 'dsh-dot-poster.png'), 'utf8'), 'qr2');
-    h.ctx.dshPhone.clearCamera();
-    assert.equal(readFileSync(join(res, 'Toren1BD.posters'), 'utf8'), readFileSync(join(res, 'Toren1BD.posters.orig'), 'utf8'), 'clear restores the stock list'); }
+  { const res = join(h.home, 'emulator', 'resources');
+    assert.equal(readFileSync(join(res, 'Toren1BD.posters'), 'utf8'), 'poster wall\nsize 1 1\nposition 0 0 -1.5\nrotation 0 0 0\ndefault poster.png\n\nposter table\nsize 1 1\nposition -2.205 -0.077 3.949\nrotation -90 0 120\n', 'before launch the wall poster moved in front of the camera; table kept');
+    assert.match(readFileSync(join(res, 'Toren1BD.posters.orig'), 'utf8'), /position -0\.807 0\.320 5\.316/, 'stock list kept');
+    assert.equal(await h.ctx.dshPhone.showToCamera(Buffer.from('qr')), join(res, 'dsh-dot-poster.png'));
+    assert.equal(readFileSync(join(res, 'dsh-dot-poster.png'), 'utf8'), 'qr');
+    assert.ok(h.execs.some((e) => e.join(' ') === `adb -s emulator-5554 emu virtualscene-image wall ${join(res, 'dsh-dot-poster.png')}`), 'swapped live through the emulator console'); }
   assert.ok(h.execs.some((e) => e.some((a) => String(a).includes('stayon'))), 'screen kept on');
   assert.equal(h.plugins.length, 1);
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');

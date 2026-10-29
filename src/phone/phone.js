@@ -18,8 +18,8 @@ import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 
-/** dsh-dot's poster in the emulator's virtual scene: 1 m square, 1.5 m in front of the camera's start pose. */
-const POSTER_BLOCK = ['poster dshdot', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default dsh-dot-poster.png', ''].join('\n');
+/** The virtual scene's "wall" poster, moved to 1.5 m straight in front of the camera's start pose (1 m square). */
+const WALL_POSTER = ['poster wall', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default poster.png', ''].join('\n');
 
 /** @deprecated name kept for callers; see notifications.js */
 export const parseNotifications = parseShade;
@@ -269,22 +269,20 @@ export function apply(ctx, config = {}, deps = {}) {
   /** PNG of the screen right now. */
   phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
   /**
-   * Put a PNG in front of her camera. The emulator's virtual scene reads its poster list from its own
-   * resources/Toren1BD.posters each time an app opens the camera; dsh-dot installed this emulator, so
-   * it adds a poster 1.5 m straight in front of the camera's start pose (the stock "wall" and "table"
-   * posters sit outside the default view) and points it at resources/dsh-dot-poster.png. After this,
-   * QQ → 扫一扫 sees the image filling the view. Returns the image path.
+   * Put a PNG in front of her camera, live: the emulator console's `virtualscene-image wall <png>`
+   * swaps the "wall" poster's picture while the phone runs, and ensureCameraScene (before launch) has
+   * moved that poster to 1.5 m straight in front of the camera's start pose. After this, QQ → 扫一扫
+   * sees the image filling the view. Returns the image path.
    */
-  phone.showToCamera = (png) => {
+  phone.showToCamera = async (png) => {
     const f = posterFiles();
     mkdirSync(f.dir, { recursive: true });
-    if (existsSync(f.posters) && !existsSync(`${f.posters}.orig`)) writeFileSync(`${f.posters}.orig`, readFileSync(f.posters));
-    const stock = existsSync(`${f.posters}.orig`) ? readFileSync(`${f.posters}.orig`, 'utf8').trimEnd() : '';
     writeFileSync(f.png, png);
-    writeFileSync(f.posters, `${stock ? `${stock}\n\n` : ''}${POSTER_BLOCK}`);
+    const out = String((await phone.adbExec(['emu', 'virtualscene-image', 'wall', f.png])).stdout ?? '');
+    if (/\bKO\b/.test(out)) throw new Error(`the emulator refused the camera image: ${out.trim()}`);
     return f.png;
   };
-  phone.clearCamera = () => { const f = posterFiles(); try { if (existsSync(`${f.posters}.orig`)) writeFileSync(f.posters, readFileSync(`${f.posters}.orig`)); rmSync(f.png, { force: true }); } catch {} };
+  phone.clearCamera = async () => { try { await phone.adbExec(['emu', 'virtualscene-image', 'wall']); } catch {} };
   // Notifications: what her phone shows her (see notifications.js). Listeners get posted and
   // updated ones once each; the policy decides which apps count.
   const notifyListeners = new Set();
@@ -353,8 +351,20 @@ export function apply(ctx, config = {}, deps = {}) {
   }
 
   /** The poster file of the virtual-scene camera (read when an app opens the camera) and the PNG it shows. */
-  /** The emulator's scene poster list (resources/Toren1BD.posters, read whenever an app opens the camera) and the PNG dsh-dot adds to it. */
+  /** The emulator's scene poster list (resources/Toren1BD.posters, read at launch) and the image dsh-dot shows her camera. */
   const posterFiles = () => { const dir = join(dirname(paths.emulator), 'resources'); return { dir, posters: join(dir, 'Toren1BD.posters'), png: join(dir, 'dsh-dot-poster.png') }; };
+  /** Before launch: the stock "wall" poster (behind the camera's start pose) moves in front of it; "table" stays. The original is kept as .orig. */
+  function ensureCameraScene() {
+    try {
+      const f = posterFiles();
+      if (!existsSync(f.posters)) return;
+      if (!existsSync(`${f.posters}.orig`)) writeFileSync(`${f.posters}.orig`, readFileSync(f.posters));
+      const stock = readFileSync(`${f.posters}.orig`, 'utf8');
+      const table = /poster table[\s\S]*?(?=\n\s*\n|\n?$)/.exec(stock)?.[0];
+      const want = `${WALL_POSTER}${table ? `\n${table.trimEnd()}\n` : ''}`;
+      if (readFileSync(f.posters, 'utf8') !== want) writeFileSync(f.posters, want);
+    } catch (err) { logger.warn(`camera scene: ${err.message}`); }
+  }
   function ensureAvd() {
     const dir = join(paths.avdHome, `${cfg.avd}.avd`);
     if (existsSync(join(dir, 'config.ini'))) {
@@ -435,6 +445,7 @@ export function apply(ctx, config = {}, deps = {}) {
       if (await alreadyRunning()) {
         logger.info(`${serial} is already running; attaching`);
       } else {
+        ensureCameraScene();
         const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
