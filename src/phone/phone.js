@@ -233,7 +233,9 @@ export function apply(ctx, config = {}, deps = {}) {
     avdHome: join(home, 'avd'),
     downloads: join(home, 'downloads'),
   };
-  const serial = `emulator-${cfg.port}`;
+  // The console port is claimed at start (see claimPort): another emulator may already sit on cfg.port.
+  let port = cfg.port;
+  let serial = `emulator-${port}`;
   const audit = createAudit(auditFile());
 
   const phone = {
@@ -441,20 +443,41 @@ export function apply(ctx, config = {}, deps = {}) {
     });
     logger.info(`${PHONE_TOOL_PREFIX}* mounted (mobile-mcp over adb)`);
   }
-  /** Is this AVD already up (left from a previous dsh run)? Then attach instead of launching twice. */
-  async function alreadyRunning() {
-    try { const { stdout } = await exec(paths.adb, ['devices'], { env: env(), timeout: 10_000 }); return new RegExp(`^${serial}\\s+(device|offline)`, 'm').test(String(stdout)); } catch { return false; }
+  /** Console ports of every emulator adb lists. MuMu, LDPlayer, BlueStacks and other AVDs show up as emulator-<port> too. */
+  async function listedPorts() {
+    try { const { stdout } = await exec(paths.adb, ['devices'], { env: env(), timeout: 10_000 }); return [...String(stdout).matchAll(/^emulator-(\d+)\s+\S+/gm)].map((m) => Number(m[1])); } catch { return []; }
   }
+  /** The AVD behind emulator-<p>, from its console; '' for anything that is not an Android emulator console (MuMu and the like). */
+  async function avdNameAt(p) {
+    try { const { stdout } = await exec(paths.adb, ['-s', `emulator-${p}`, 'emu', 'avd', 'name'], { env: env(), timeout: 5_000 }); return String(stdout).split(/\r?\n/)[0].trim(); } catch { return ''; }
+  }
+  /**
+   * Her AVD if it is already up (left from a previous dsh run): attach. Otherwise the first console port
+   * from cfg.port that nothing listed is using. Never attach to an emulator just because it holds the port:
+   * that is the user's own emulator, and settle() would rewrite its settings.
+   */
+  async function claimPort() {
+    const listed = await listedPorts();
+    for (const p of listed) if ((await avdNameAt(p)) === cfg.avd) return { port: p, attach: true };
+    for (let p = cfg.port; p <= 5584; p += 2) if (!listed.includes(p)) return { port: p, attach: false };
+    throw new Error('no free emulator port: adb lists an emulator on every console port 5554–5584');
+  }
+  const setPort = (p) => { port = p; serial = `emulator-${p}`; phone.serial = serial; };
+  /** Is her emulator (on the claimed port) still listed by adb? */
+  async function alreadyRunning() { return (await listedPorts()).includes(port); }
   async function start() {
     try {
       await ensureSdk();
       ensureAvd();
       setState('booting');
-      if (await alreadyRunning()) {
-        logger.info(`${serial} is already running; attaching`);
+      const claim = child ? { port, attach: true } : await claimPort();
+      if (claim.port !== cfg.port && !claim.attach) logger.warn(`emulator-${cfg.port} belongs to another emulator; hers takes console port ${claim.port}`);
+      setPort(claim.port);
+      if (claim.attach) {
+        logger.info(`${serial} is already running (AVD ${cfg.avd}); attaching`);
       } else {
         ensureCameraScene();
-        const args = ['-avd', cfg.avd, '-port', String(cfg.port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
+        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
         // A piped, referenced child kept the Host alive after shutdown until the desktop updater

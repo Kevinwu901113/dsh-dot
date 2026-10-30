@@ -51,8 +51,8 @@ test('phoneGate: installs and sensitive typing ask; looking does not', () => {
   assert.ok(OBSERVATION_TOOLS.includes('mobile_take_screenshot') && !OBSERVATION_TOOLS.includes('mobile_type_keys'));
 });
 
-function harness({ installed = true, license = true, bootAfter = 1, running = false } = {}) {
-  const state = { running };
+function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false } = {}) {
+  const state = { running, foreign };
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
   const home = join(dsh, 'phone');
@@ -66,7 +66,8 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   let polls = 0;
   const run = async (file, args) => {
     execs.push([file.split('/').slice(-1)[0], ...args]);
-    if (args[0] === 'devices') return { stdout: state.running ? 'List of devices attached\nemulator-5554\tdevice\n' : 'List of devices attached\n' };
+    if (args[0] === 'devices') return { stdout: `List of devices attached\n${state.running || state.foreign ? 'emulator-5554\tdevice\n' : ''}` };
+    if (args.includes('emu') && args.includes('avd') && args.includes('name')) { if (state.running && args.includes('emulator-5554')) return { stdout: 'dot\r\nOK\r\n' }; throw new Error('connection refused'); }
     if (args.includes('emu') && args.includes('kill')) { state.running = false; return { stdout: '' }; }
     if (args.includes('sys.boot_completed')) return { stdout: ++polls >= bootAfter ? '1\n' : '\n' };
     return { stdout: '' };
@@ -132,6 +133,18 @@ test('phone: an emulator left running from the last dsh run is attached, not lau
   const h = harness({ running: true });
   assert.ok(await until(() => h.ctx.dshPhone.isReady));
   assert.equal(h.spawned.length, 0);
+  h.stop();
+});
+
+test('phone: another emulator on the port (MuMu and the like) is never attached; hers takes the next port', async () => {
+  const h = harness({ foreign: true });
+  assert.ok(await until(() => h.ctx.dshPhone.isReady));
+  assert.equal(h.spawned.length, 1, 'launched her own');
+  assert.deepEqual(h.spawned[0].args.slice(0, 4), ['-avd', 'dot', '-port', '5556']);
+  assert.equal(h.ctx.dshPhone.serial, 'emulator-5556');
+  assert.equal(h.ctx.dshPhone.status().serial, 'emulator-5556');
+  assert.ok(!h.execs.some((e) => e.includes('emulator-5554') && e.includes('shell')), 'nothing run on the other emulator');
+  assert.equal(h.plugins[0].c.env.ANDROID_SERIAL, 'emulator-5556');
   h.stop();
 });
 
