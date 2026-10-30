@@ -5,7 +5,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 ## 它做什么
 
 1. **安装**（第一次）：接受 [Android SDK 许可](https://developer.android.com/studio/terms)后（`/phone accept`，或配置 `acceptLicense: true`，或 `~/.dsh/dsh-phone.json` 里 `{"acceptLicense": true}`），从 `dl.google.com/android/repository` 读索引，下载 stable 通道的 emulator、platform-tools 和 `system-images;android-<api>;google_apis;<abi>`（约 1.7 GB），解压到 `~/.dsh/phone/`。`google_apis` 镜像没有 Play 商店——检测面最小，App 用 APK 装。
-2. **AVD**：`~/.dsh/phone/avd/dot.avd/config.ini` 由插件写（Pixel 6 尺寸、1080×2400、3 GB 内存、8 GB 数据分区、不带 Play）。想改尺寸或内存，改配置后删掉这个目录重建。
+2. **AVD**：`~/.dsh/phone/avd/dot.avd/config.ini` 由插件写（Pixel 6 尺寸、1080×2400、3 GB 内存、数据分区默认 16 GB、不带 Play）。数据分区大小在手机建好之前选：`/phone accept <GB>` 或 `/phone size <GB>`（8–256）；建好后模拟器不会扩大已有分区，`/phone size` 只显示当前大小。想改尺寸或内存，改配置后删掉这个目录重建（手机里的数据会没）。
 3. **开机**：`emulator -avd dot -port 5554 -no-boot-anim -gpu auto`，等 `sys.boot_completed`，然后常亮屏幕、关动画、解锁。上一次 dsh 留下的还在跑的模拟器会被直接接管，不会开两个。模拟器自己退出会在 `restartDelayMs` 后重开。
 4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
@@ -20,7 +20,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `home` | `~/.dsh/phone` | SDK 三件套和 AVD 所在 |
 | `api` / `tag` / `abi` | `35` / `google_apis` / 跟随宿主 CPU | 系统镜像；Apple silicon 用 `arm64-v8a`，x86 用 `x86_64` |
 | `avd` / `device` | `dot` / `pixel_6` | AVD 名和机型 |
-| `ramMb` / `dataGb` | `3072` / `8` | 内存、数据分区 |
+| `ramMb` / `dataGb` | `3072` / `16` | 内存、数据分区（`dataGb` 也可用 `/phone accept <GB>` / `/phone size <GB>` 在建手机前设） |
 | `port` | `5554` | 控制台端口；adb 序列号 `emulator-<port>` |
 | `window` / `DSH_DOT_PHONE_WINDOW=off` | `true` | 显示模拟器窗口 |
 | `liveView` | `true` | 在 dsh 的 web server 上挂实时画面页（`/dsh-dot/phone/`）；`false` 关闭 |

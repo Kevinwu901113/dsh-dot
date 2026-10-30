@@ -17,7 +17,7 @@ One plugin, six components (living next to other dsh plugins: see 「与其他�
 
 ```bash
 dsh plugin --profile desktop add dsh-dot-life @xmanrui/dsh-im   # npm; or github:Kevinwu901113/dsh-dot for the source
-# then, in dsh:  /phone accept      (Android SDK license → the phone installs itself)
+# then, in dsh:  /phone accept      (Android SDK license → the phone installs itself; /phone accept 32 for 32 GB of storage)
 #                /interlude preset 6QA0-1PD6   (a persona from the HDSI hub; pick your own on typ0.space)
 ```
 
@@ -65,7 +65,7 @@ Web 版：`dsh plugin --profile web add dsh-dot-life`。从源码装：把包名
 
 ### 三、第一次设置
 
-1. **手机**：在 dsh 里发 `/phone accept`——接受 [Android SDK 许可](https://developer.android.com/studio/terms)后插件开始下载（约 2 GB，进度在 `~/.dsh/dsh-phone.log`），装完自动开机，桌面上出现一个手机窗口。`/phone` 看状态。
+1. **手机**：在 dsh 里发 `/phone accept`（默认给手机 16 GB 存储；要别的大小发 `/phone accept 32` 这样，手机建好后不能再改）——接受 [Android SDK 许可](https://developer.android.com/studio/terms)后插件开始下载（约 2 GB，进度在 `~/.dsh/dsh-phone.log`），装完自动开机，桌面上出现一个手机窗口。`/phone` 看状态。
 2. **装 App、登录**：在手机窗口里像用真手机一样操作：从官网下 APK 用 `adb install`（`~/.dsh/phone/platform-tools/adb`），或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸都由你在窗口里亲手过——她遇到会停下来叫你。**用小号。** 各平台的条款都不允许自动化，封了就封了。
 3. **人设**：`/interlude preset <分享码>` 从 [typ0.space](https://typ0.space) 导入一份 HDSI 预设，或者把 `examples/canon.minase-style.json` 放到 `~/dot/interlude/canon.json`。
 4. **她在手机上看什么**：profile 的 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }`——这些站她永远用手机上的 App 去看，只读、无审批、每天有上限。

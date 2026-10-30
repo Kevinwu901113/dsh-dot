@@ -523,7 +523,7 @@ export function apply(ctx, config = {}) {
   phoneCheckNow = phoneCheck;
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
-    if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept。', 'plain');
+    if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept（默认 16 GB 存储，要别的大小发 /phone accept 32 这样，建好后不能改）。', 'plain');
   }) ?? (() => {}), 'dsh-dot: phone status'));
 
   // /dot

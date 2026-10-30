@@ -35,7 +35,7 @@ export const defaults = {
   avd: 'dot',               // AVD name; also the phone's name
   device: 'pixel_6',        // hw.device.name
   ramMb: 3072,
-  dataGb: 8,
+  dataGb: 16,               // her storage (/data), fixed when the phone is created: /phone accept <GB> or /phone size <GB> before that
   port: 5554,               // console port; the adb serial is emulator-<port>
   window: true,             // show the emulator window (the phone's live view); false = headless
   gpu: 'auto',
@@ -217,6 +217,8 @@ export function apply(ctx, config = {}, deps = {}) {
   const cfg = { ...defaults, ...settings, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
   // The license, once accepted (settings file), stays accepted whatever the patch's default says.
   cfg.acceptLicense = Boolean(cfg.acceptLicense || settings.acceptLicense);
+  // The storage size the owner chose (/phone size, /phone accept <GB>) wins over the patch's.
+  if (settings.dataGb) cfg.dataGb = settings.dataGb;
   const logger = withFileLog(ctx.logger('dsh-dot/phone'));
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const spawnImpl = deps.spawn ?? spawn;
@@ -327,6 +329,20 @@ export function apply(ctx, config = {}, deps = {}) {
     },
     logger,
   });
+  /** The size of her storage: what the existing phone was built with, or what a new one will get. */
+  phone.storage = () => {
+    const ini = join(paths.avdHome, `${cfg.avd}.avd`, 'config.ini');
+    const built = existsSync(ini) ? /^disk\.dataPartition\.size=(\d+)G$/m.exec(readFileSync(ini, 'utf8'))?.[1] : undefined;
+    return built ? { gb: Number(built), fixed: true } : { gb: cfg.dataGb, fixed: false };
+  };
+  /** Choose the storage size before the phone is created (8–256 GB). Throws once it exists. */
+  phone.setStorage = (gb) => {
+    const n = Number(gb);
+    if (!Number.isInteger(n) || n < 8 || n > 256) throw new Error('storage size: a whole number of GB from 8 to 256');
+    const st = phone.storage();
+    if (st.fixed) throw new Error(`her phone already exists with ${st.gb} GB; the size is fixed when a phone is created (an Android emulator does not grow an existing data partition)`);
+    cfg.dataGb = n; writeSettings({ dataGb: n }); audit({ kind: 'storage', gb: n });
+  };
   phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license' || phone.state === 'error') void start(); };
 
   const installed = () => existsSync(paths.emulator) && existsSync(paths.adb) && existsSync(join(paths.sysdir, 'system.img'));
@@ -334,7 +350,7 @@ export function apply(ctx, config = {}, deps = {}) {
   async function ensureSdk() {
     if (installed()) return;
     if (!cfg.acceptLicense) {
-      setState('needs-license', `the Android SDK license (${LICENSE_URL}) has not been accepted — reply /phone accept to install the phone`);
+      setState('needs-license', `the Android SDK license (${LICENSE_URL}) has not been accepted — reply /phone accept to install the phone (storage ${cfg.dataGb} GB; /phone accept <GB> to choose another size — it cannot grow later)`);
       throw new Error('license not accepted');
     }
     setState('downloading');
@@ -555,12 +571,20 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'phone',
-      description: 'the phone: status; "accept" accepts the Android SDK license and installs it; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
+      description: 'the phone: status; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
+      input: { hint: '[accept [GB] | size <GB> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
-        if (arg === 'accept') { phone.accept(); extra = '\nlicense accepted; installing/booting now (watch ~/.dsh/dsh-phone.log)'; }
+        const [verb0, arg1] = arg.split(/\s+/);
+        if (verb0 === 'accept') {
+          try { if (arg1) phone.setStorage(arg1); } catch (err) { return { kind: 'success', text: `phone: ${err.message}` }; }
+          phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage (watch ~/.dsh/dsh-phone.log)`;
+        }
+        else if (verb0 === 'size') {
+          if (!arg1) { const st = phone.storage(); extra = `\nstorage: ${st.gb} GB${st.fixed ? ' (fixed: the phone exists)' : ' (used when the phone is created)'}`; }
+          else { try { phone.setStorage(arg1); extra = `\nstorage set to ${arg1} GB for when the phone is created`; } catch (err) { extra = `\n${err.message}`; } }
+        }
         else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
@@ -572,7 +596,7 @@ export function apply(ctx, config = {}, deps = {}) {
           extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
         }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nlicense: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
+        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

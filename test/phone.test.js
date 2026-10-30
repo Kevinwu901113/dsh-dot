@@ -252,3 +252,17 @@ test('phone camera: the AVD has a virtual-scene back camera; showToCamera writes
   const { avdConfig } = await import('../src/phone/phone.js');
   assert.match(avdConfig({ avd: 'a', api: 35, tag: 'google_apis', abi: 'arm64-v8a', device: 'pixel', ramMb: 2048, dataGb: 8 }), /^hw\.camera\.back=virtualscene$/m);
 });
+
+test('phone storage: 16 GB by default, chosen before the phone exists, fixed after', async () => {
+  const { avdConfig } = await import('../src/phone/phone.js');
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready');
+  assert.match(readFileSync(join(h.home, 'avd', 'dot.avd', 'config.ini'), 'utf8'), /^disk\.dataPartition\.size=16G$/m, 'a new phone gets 16 GB');
+  assert.deepEqual(h.ctx.dshPhone.storage(), { gb: 16, fixed: true });
+  assert.throws(() => h.ctx.dshPhone.setStorage(32), /already exists with 16 GB/);
+  assert.throws(() => h.ctx.dshPhone.setStorage(4), /8 to 256/);
+  assert.match((await h.cmd().handler({ rawInput: 'size' })).text, /storage: 16 GB \(fixed: the phone exists\)/);
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /storage: 16 GB · license/);
+  assert.match(avdConfig({ avd: 'a', api: 35, tag: 'google_apis', abi: 'arm64-v8a', device: 'pixel', ramMb: 2048, dataGb: 48 }), /^disk\.dataPartition\.size=48G$/m);
+  h.stop();
+});
