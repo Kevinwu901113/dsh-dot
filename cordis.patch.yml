@@ -5,8 +5,9 @@
 #   computer  — optional: a microVM (microsandbox, bundled; Docker as fallback) with shell, browser,
 #               desktop, live view, approval gates, audit log. The VM is the isolation boundary.
 #               DSH_DOT_COMPUTER=off turns it off (the host subprocess/sandbox settings stay stock).
-#   qq        — her QQ on her computer: NapCat (OneBot 11) inside the VM, same account as the phone
-#               app. Messages wake her instantly; she answers with qq_send. Needs the computer.
+#   qq        — her QQ on her computer: NapCat or SnowLuma (OneBot 11, /qq backend) inside the VM,
+#               same account as the phone app; logged in by her phone scanning the code (/qq qr).
+#               Messages wake her instantly; she answers with qq_send. Needs the computer.
 #               DSH_DOT_QQ=off turns it off.
 #   dot       — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
 #               live view, working rules as a prompt section. Needs dsh-im and the official

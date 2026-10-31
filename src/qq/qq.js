@@ -516,7 +516,7 @@ export function apply(ctx, config = {}, deps = {}) {
       `echo "$tag" > ${SL_DIR}/.dot-version; echo 0 > ${SL_INSTALL_DONE}`,
     ].join('\n');
   }
-  /** Install a backend: 'napcat' (NapCat + linuxqq) or 'snowluma' (needs NapCat's QQ already there). */
+  /** Install a backend: 'napcat' (NapCat + its patched linuxqq) or 'snowluma' (its own pinned linuxqq, Node 24, SnowLuma). */
   qq.install = (which = 'napcat') => (installing ??= (async () => {
     const snow = which === 'snowluma';
     setState('installing');
@@ -571,7 +571,7 @@ export function apply(ctx, config = {}, deps = {}) {
     'sleep 1; echo "started on $D"',
   ].join('\n');
   qq.start = async () => {
-    if (!(await qq.installed())) { setState('not-installed', sl() ? 'SnowLuma is not installed in the computer — /qq install (QQ), then /qq install snowluma' : 'NapCat is not installed in the computer — /qq install'); return false; }
+    if (!(await qq.installed())) { setState('not-installed', sl() ? 'SnowLuma is not installed in the computer (it needs /opt/QQ, /root/snowluma and its Node 24) — /qq install snowluma' : 'NapCat is not installed in the computer — /qq install'); return false; }
     if (!sl() && !cfg.qq) { setState('needs-account', 'set the QQ number: /qq account <number>'); return false; }
     await qq.configure();
     await qq.ensureRoute().catch((err) => logger.warn(`OneBot route: ${err.message}`));

@@ -172,8 +172,8 @@ Kevin："0123 全做。"
 
 ## v0.6（续）：P3 `dsh-dot/qq`
 
-- **部署在她的电脑里，不开新端口**：AIO sandbox 的 nginx 有一条按 `Host: <port>-x` 转发到 VM loopback 端口的规则（`nginx-server-port-proxy.conf.template`），支持 WebSocket upgrade。在云端容器里验证过：`curl -H "Host: 3001-dot" http://127.0.0.1:18080/` 打到 VM 内 3001。所以 OneBot WS 走已有的 18080，外面没有新面。
-- **登录流程**：NapCat 的二维码存成 PNG → `adb push` 进她手机相册 → 她手机上的 QQ 扫一扫选相册 → 手机确认电脑登录。这就是 QQ 自己的多端登录，她的手机给她的电脑授权。
+- **部署在她的电脑里，不开新端口**：AIO sandbox 的 nginx 有一条按 `Host: <port>-x` 转发到 VM loopback 端口的规则（`nginx-server-port-proxy.conf.template`），支持 WebSocket upgrade。在云端容器里验证过：`curl -H "Host: 3001-dot" http://127.0.0.1:18080/` 打到 VM 内 3001。所以 OneBot WS 走已有的 18080，外面没有新面。**（v0.8.4 起作废：这条转发不验网关密钥，已被封成 404；现在走网关验过密钥后的 `location /dsh-dot/napcat/`，见文末。）**
+- **登录流程**：NapCat 的二维码存成 PNG → `adb push` 进她手机相册 → 她手机上的 QQ 扫一扫选相册 → 手机确认电脑登录。这就是 QQ 自己的多端登录，她的手机给她的电脑授权。**（实测不行：QQ 的电脑登录码不接受相册导入，只认摄像头。v0.8.x 起改为放到她手机虚拟摄像头前，见文末。）**
 - **一条路**：QQ 消息和手机通知走同一条 wake 管道（合并、忙时攒、分组、静音），只是 `pkg: 'qq'`、提示换成"用 qq_send 回"。连上后手机的 QQ 通知自动忽略，避免双叫。
 - **能力边界**：只有 `qq_send` 发文字。加好友、进群、撤回、发文件、改资料没有工具。
 - dsh-im 官方机器人降为后备：dot 的通知器和幕间的主动联系先看 `dshQq.connected && owner`。
@@ -189,3 +189,23 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **B**：dot 的工作规则加一条长任务规则，措辞照 dsh 的 `create_goal` 描述（"即使他没说'目标'"）：先回收到、分段汇报、确认做完才标记完成、一轮能做完的不建。
 - **C**：目标进行中，dot 的"拿起手机"、幕间的"去看""去玩"都不插进来（`goals.get(agent).phase === 'active'`）；你的新消息照常在两轮之间送到。
 - **D**（换 pro）不做：goal 每轮的提示要求"标记完成前收集证据确认整个目标达成"，先看 flash 在这个约束下的表现。
+
+## v0.8.4–v0.10.18（2026-10-28 — 10-30）：安全加固、SnowLuma、摄像头扫码
+
+**安全**（起因：插件市场的审核意见，之后按同一思路自查）
+- 电脑网关（AIO sandbox 8080 → 本机 18080）启动 VM 时带 `SANDBOX_API_KEY`，密钥存 `$DSH_HOME/dsh-computer.key`（0600），所有进程内调用带 `X-AIO-API-Key`。网关的 `Host: <port>-x` 端口转发不验密钥，启动时改成 404；网关没加上密钥或转发没封住时电脑状态是 `unsafe`，不报告就绪，QQ 不连（`blocked`）。
+- 实时画面挂在 dsh 自己的 web server 上（`/dsh-dot/computer/`），先过 dsh 的身份校验；noVNC 的 WebSocket 用 120 秒、一次性、绑定来源 IP 的票据（桌面版 App 走桥接没有 TCP 对端时不绑定）。
+- 电脑工具的审批按工具分类（只读 / shell / 文件 / 浏览器动作 / 总是问），没见过的工具按动作处理并记审计；受保护路径（密钥、浏览器配置、凭据）出现在任何参数里都问。
+- QQ：图片网址只收公网 http(s)（防 SSRF）；拼进 VM root shell 的账号、端口、token、网址先校验；群消息打分的提示词把消息隔离；手机通知里"昵称像你"不等于你（标未验证）；连上的不是她的号就断开（`wrong-account`）。
+
+**SnowLuma 后端**（Kevin："我想搭配 snowluma"）
+- 用 ptrace 钩住 Linux QQ 图形界面。装一个钉版本、校验 sha256 的干净 linuxqq（不用 NapCat 改过启动器的那份），SnowLuma 用自己的 Node 24（SQLite 存储要求，镜像自带 22），WS/HTTP 都只在 VM 回环、经网关认证路径进来；HTTP 给 SnowLuma 官方 MCP（`mcp__dot-qq__*`，219 个 action，`qqToolGate` 分级审批）。
+- 真机踩到并修掉的：启动脚本里 `pkill -f` 匹配到自己的命令行而自杀；按 `/tmp/.X11-unix` 第一个 socket 选显示，选到 NapCat 留下的死 Xvfb；Xvnc 的显示写作 `:99.0`；GitHub API 限流拿不到 tag。
+
+**摄像头扫码**（QQ 电脑登录码只认摄像头）
+- AVD 后置摄像头设为 `virtualscene`。模拟器只在开机时读场景文件、海报图片每个进程只认第一次设置，实测得出的做法：开机前把 `wall` 海报挪到镜头正前方；换图时先回桌面（摄像头开着换不了）、清空海报、再设一个新文件名（`adb emu virtualscene-image`）。
+- QQ 的码是圆点风格，zbar/OpenCV 读不出，用 zxing-cpp 读出内容，qrencode 重画成方块码，放在方形画布右侧（QQ 扫一扫的取景比相机近、偏左）。只在码读不出（过期）时点「刷新」——点有效的码会让 QQ 换码，作废她镜头里那张。
+- 10-30 真机：她用手机 QQ 摄像头扫码，确认登录，SnowLuma `connected`。这几轮里关键的观察多是她自己说出来的（"格子动都没动""左边半张在画面外""那个框压住半个码"）。
+
+**手机存储**：她 8 GB 数据分区满了；改 `disk.dataPartition.size` 不会扩大已有分区（实测）。新手机默认 16 GB，建之前可选（`/phone accept <GB>`、`/phone size <GB>`）。
+

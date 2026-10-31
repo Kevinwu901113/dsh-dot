@@ -6,12 +6,15 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 
 1. **安装**（第一次）：接受 [Android SDK 许可](https://developer.android.com/studio/terms)后（`/phone accept`，或配置 `acceptLicense: true`，或 `~/.dsh/dsh-phone.json` 里 `{"acceptLicense": true}`），从 `dl.google.com/android/repository` 读索引，下载 stable 通道的 emulator、platform-tools 和 `system-images;android-<api>;google_apis;<abi>`（约 1.7 GB），解压到 `~/.dsh/phone/`。`google_apis` 镜像没有 Play 商店——检测面最小，App 用 APK 装。
 2. **AVD**：`~/.dsh/phone/avd/dot.avd/config.ini` 由插件写（Pixel 6 尺寸、1080×2400、3 GB 内存、数据分区默认 16 GB、不带 Play）。数据分区大小在手机建好之前选：`/phone accept <GB>` 或 `/phone size <GB>`（8–256）；建好后模拟器不会扩大已有分区，`/phone size` 只显示当前大小。想改尺寸或内存，改配置后删掉这个目录重建（手机里的数据会没）。
-3. **开机**：`emulator -avd dot -port 5554 -no-boot-anim -gpu auto`，等 `sys.boot_completed`，然后常亮屏幕、关动画、解锁。上一次 dsh 留下的还在跑的模拟器会被直接接管，不会开两个。模拟器自己退出会在 `restartDelayMs` 后重开。
-4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL=emulator-5554`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
+3. **开机**：`emulator -avd dot -port <端口> -no-boot-anim -gpu auto`，等 `sys.boot_completed`，然后常亮屏幕、关动画、解锁。上一次 dsh 留下的还在跑的模拟器会被直接接管，不会开两个——但只接管控制台报告 AVD 名是 `dot` 的那台（`adb emu avd name`）：MuMu、雷电、BlueStacks 等也会以 `emulator-5554` 出现在 adb 里，占着端口不等于是她的手机。端口从 `port`（5554）起找第一个 adb 没列出的（到 5584 为止）。模拟器自己退出会在 `restartDelayMs` 后重开。手机在 dsh 退出后继续运行。
+4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL` 是上一步占到的 `emulator-<端口>`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
-6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
+6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批（目前审批框只显示工具名，不显示是哪个 App）；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
 7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[手机通知] QQ · 宽：……`，她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；dot 的 `notifyHours` 可以设一个静音时段（默认不设）。`/phone notifications` 看最近 20 条。
 8. **实时画面**：两种。一是模拟器窗口本身（`window: true`）；二是插件的网页，挂在 **dsh 自己的 web server** 上：`<dsh 地址>/dsh-dot/phone/`——dsh 右侧栏的「手机」标签页就是它：屏幕每秒刷新几次（PNG 流），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。**它不单独监听端口**：页面、画面流和每一次点击都先过 dsh 的 `connection` 服务（dsh 自己的登录态 + Host/Origin 围栏，转发头一概不认），只有登录了这个 dsh 的人能看能点。想在别的设备上看，把 dsh 本身暴露出去（如 `tailscale serve` dsh 的端口，或 dsh 的远程访问），再把那个地址写进 `publicUrl`，审批提醒里的链接就是 `<publicUrl>/dsh-dot/phone/`。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
+9. **摄像头**：后置摄像头是模拟器的虚拟场景（`hw.camera.back=virtualscene`，前置没有）——一个有电视和书架的 3D 房间。场景里的 `wall` 海报每次开机前被挪到镜头正前方 1.5 米、1 米见方（插件改写模拟器的 `resources/Toren1BD.posters`，原文件存成 `.orig`，`table` 海报不动），所以往海报上放一张图，她打开相机或扫一扫看到的就是它。`dshPhone.showToCamera(png)` 负责放：先按 HOME 回桌面（有 App 开着摄像头时换图不生效），`adb emu virtualscene-image wall` 清空海报，再设成新写的 `resources/dsh-dot-poster-<毫秒>.png`（同一路径或不先清空，模拟器会一直显示这个进程里放的第一张），旧文件删掉。QQ 扫码登录电脑端就靠它（见 [qq.md](qq.md)）。0.10.8 之前开起来的手机要 `/phone restart` 一次海报才会挪过去；更早建的、没有摄像头的 AVD 会被自动补上 `virtualscene`，同样下次开机生效。
+
+`/phone` 看状态（含存储大小），子命令：`accept [GB]`、`size <GB>`、`retry`、`restart`、`screenshot`、`notifications`、`notify [mute|wake <包名>]`。
 
 ## 配置
 
@@ -21,7 +24,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `api` / `tag` / `abi` | `35` / `google_apis` / 跟随宿主 CPU | 系统镜像；Apple silicon 用 `arm64-v8a`，x86 用 `x86_64` |
 | `avd` / `device` | `dot` / `pixel_6` | AVD 名和机型 |
 | `ramMb` / `dataGb` | `3072` / `16` | 内存、数据分区（`dataGb` 也可用 `/phone accept <GB>` / `/phone size <GB>` 在建手机前设） |
-| `port` | `5554` | 控制台端口；adb 序列号 `emulator-<port>` |
+| `port` | `5554` | 控制台端口的起点：被别的模拟器占着就往后找（+2，到 5584）；adb 序列号 `emulator-<端口>` |
 | `window` / `DSH_DOT_PHONE_WINDOW=off` | `true` | 显示模拟器窗口 |
 | `liveView` | `true` | 在 dsh 的 web server 上挂实时画面页（`/dsh-dot/phone/`）；`false` 关闭 |
 | `publicUrl` | 无 | 这个 dsh 对外的地址（你自己的暴露方式）；实时画面链接 = `<publicUrl>/dsh-dot/phone/`，写进审批提醒 |
@@ -66,3 +69,4 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 - 模拟器检测：部分 App 会限制功能或拒绝登录。退路是一台真安卓机接 adb——`ANDROID_SERIAL` 换成真机序列号即可，组件其余不变（待做：`serial` 配置项）。
 - mobile-mcp 的工具每次调用都要带 `device`，模型偶尔会忘；提示段里给了设备号。
 - 多台手机未做。
+- 数据分区建好后不能扩大（改 `config.ini` 的 `disk.dataPartition.size` 不生效，实测）；满了只能清 App 数据、卸 App，或清空重建。
