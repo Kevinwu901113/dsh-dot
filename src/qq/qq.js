@@ -17,7 +17,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
 import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
-import { createStickers, isSticker } from './stickers.js';
+import { createStickers, isSticker, STICKER_MAX_BYTES } from './stickers.js';
 
 export const name = 'dot-qq';
 export const inject = [];
@@ -389,7 +389,7 @@ export function apply(ctx, config = {}, deps = {}) {
   sanitise('snowlumaVersion', (v) => { if (!/^[A-Za-z0-9._-]{1,40}$/.test(String(v))) throw new Error('bad release tag'); return String(v); }, '');
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
-  const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'));
+  const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'), { fetch: deps.fetch ?? globalThis.fetch });
   const computer = () => ctx.get('dshComputer');
   let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
 
@@ -818,11 +818,11 @@ export function apply(ctx, config = {}, deps = {}) {
     if (wanted === 'score') { void scoreAndDeliver(msg); return; }
     deliver(msg);
   }
-  /** A sticker someone sent: into her collection (downloaded to the computer, once) and named in the text she reads. */
+  /** A sticker someone sent: into her collection (downloaded once, in the background) and named in the text she reads. */
   function keepSticker(d, who) {
     const got = urlRefusal(d.url) ? null : stickers.note({ file: d.file, url: d.url, from: who });
     if (!got) return { type: 'text', data: { text: '[表情包]' } };
-    if (got.isNew) vmShell(stickers.fetchScript(got.id)).then((out) => { if (String(out).includes('ok')) { stickers.markSaved(got.id); audit({ kind: 'sticker-kept', id: got.id, from: who }); } }, (err) => logger.debug(`sticker ${got.id}: ${err.message}`));
+    if (got.isNew) stickers.fetch(got.id).then((ok) => { if (ok) audit({ kind: 'sticker-kept', id: got.id, from: who }); }, (err) => logger.debug(`sticker ${got.id}: ${err.message}`));
     return { type: 'text', data: { text: `[表情包 sticker:${got.id}]` } };
   }
   function deliver(msg) {
@@ -866,10 +866,25 @@ export function apply(ctx, config = {}, deps = {}) {
   }
   /** Send text to "user:123" | "group:456" | "owner" | a number. Several bubbles: split on <sep/>. */
   const MAX_IMAGE_BYTES = 10 * 1024 * 1024;
+  /** The bytes of an image on her phone (phone:screen | phone:latest | a path there). */
+  async function phoneBytes(src) {
+    const phone = ctx.get('dshPhone');
+    if (!phone?.isReady) throw new Error('her phone is not ready');
+    if (src.kind === 'phone-screen') return phone.screenshot();
+    let path = src.ref;
+    if (src.kind === 'phone-latest') {
+      path = (await phone.shell('ls -t /sdcard/DCIM/Camera/* /sdcard/Pictures/Screenshots/* /sdcard/DCIM/Screenshots/* /sdcard/Pictures/* /sdcard/Download/* 2>/dev/null | grep -iE "\\.(jpe?g|png|webp|gif|heic)$" | head -1')).trim();
+      if (!path) throw new Error('no photos on her phone yet');
+    }
+    const buf = Buffer.from((await phone.adbExec(['exec-out', 'cat', path], { encoding: 'buffer', maxBuffer: MAX_IMAGE_BYTES * 2 })).stdout);
+    if (!buf.length) throw new Error(`empty or missing on the phone: ${path}`);
+    if (buf.length > MAX_IMAGE_BYTES) throw new Error(`image too large (${Math.round(buf.length / 1048576)} MB > 10 MB)`);
+    return buf;
+  }
   /** One OneBot image segment for an image she refers to (see imageSource). */
   async function imageSegment(ref) {
     const src = imageSource(ref);
-    if (!src) throw new Error(`can't find image "${ref}" (http(s) URL | phone:screen | phone:latest | /sdcard/… | a path on your computer)`);
+    if (!src) throw new Error(`can't find image "${ref}" (sticker:<id> | face:<n> | http(s) URL | phone:screen | phone:latest | /sdcard/… | a path on your computer)`);
     if (src.kind === 'url') {
       const why = urlRefusal(src.ref);
       if (why) throw new Error(`refusing image URL "${src.ref.slice(0, 80)}": ${why} — only public http/https addresses on ports 80/443`);
@@ -878,25 +893,30 @@ export function apply(ctx, config = {}, deps = {}) {
     if (src.kind === 'computer') return { type: 'image', data: { file: `file://${src.ref}` } };
     if (src.kind === 'face') return { type: 'face', data: { id: src.ref } };
     if (src.kind === 'sticker') {
-      if (!stickers.get(src.ref)?.saved) throw new Error(`no sticker ${src.ref} in her collection (ids come from [表情包 sticker:…] in messages she received)`);
-      return { type: 'image', data: { file: `file://${stickers.path(src.ref)}`, sub_type: 1 } };
+      const buf = stickers.read(src.ref);
+      if (!buf) throw new Error(`no sticker ${src.ref} in her collection (ids come from [表情包 sticker:…] in messages, or qq_sticker_keep)`);
+      return { type: 'image', data: { file: `base64://${buf.toString('base64')}`, sub_type: 1 } };
     }
-    const phone = ctx.get('dshPhone');
-    if (!phone?.isReady) throw new Error('her phone is not ready');
-    let buf;
-    if (src.kind === 'phone-screen') buf = await phone.screenshot();
-    else {
-      let path = src.ref;
-      if (src.kind === 'phone-latest') {
-        path = (await phone.shell('ls -t /sdcard/DCIM/Camera/* /sdcard/Pictures/Screenshots/* /sdcard/DCIM/Screenshots/* /sdcard/Pictures/* /sdcard/Download/* 2>/dev/null | grep -iE "\\.(jpe?g|png|webp|gif|heic)$" | head -1')).trim();
-        if (!path) throw new Error('no photos on her phone yet');
-      }
-      buf = Buffer.from((await phone.adbExec(['exec-out', 'cat', path], { encoding: 'buffer', maxBuffer: MAX_IMAGE_BYTES * 2 })).stdout);
-      if (!buf.length) throw new Error(`empty or missing on the phone: ${path}`);
-    }
-    if (buf.length > MAX_IMAGE_BYTES) throw new Error(`image too large (${Math.round(buf.length / 1048576)} MB > 10 MB)`);
-    return { type: 'image', data: { file: `base64://${buf.toString('base64')}` } };
+    return { type: 'image', data: { file: `base64://${(await phoneBytes(src)).toString('base64')}` } };
   }
+  /** Keep an image as one of her stickers: from her phone (phone:latest | /sdcard/…) or a public web image. */
+  qq.keepSticker = async (ref, note = '') => {
+    const src = imageSource(ref);
+    let buf;
+    if (src?.kind === 'url') {
+      const why = urlRefusal(src.ref);
+      if (why) throw new Error(`refusing image URL: ${why}`);
+      const res = await (deps.fetch ?? globalThis.fetch)(publicHttpUrl(src.ref), { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      buf = Buffer.from(await res.arrayBuffer());
+    } else if (src && ['phone-latest', 'phone'].includes(src.kind)) buf = await phoneBytes(src);
+    else throw new Error(`keep a sticker from "phone:latest", a path on your phone (/sdcard/…) or a web image URL — not "${ref}"`);
+    if (buf.length > STICKER_MAX_BYTES) throw new Error(`too big for a sticker (${Math.round(buf.length / 1048576)} MB > ${STICKER_MAX_BYTES / 1048576} MB)`);
+    const got = stickers.keep(buf, { from: '自己存的', note });
+    audit({ kind: 'sticker-kept', id: got.id, from: 'self', note: String(note).slice(0, 40), isNew: got.isNew });
+    return got;
+  };
+  qq.stickerCount = () => stickers.count();
   /** Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order. */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
@@ -973,6 +993,13 @@ export function apply(ctx, config = {}, deps = {}) {
         return { sent: r.sent };
       },
     }), 'dsh-dot/qq: qq_send tool');
+    scope.effect(() => scope.tools.register({
+      name: 'qq_sticker_keep',
+      description: '把一张图存成你自己的表情包，以后用 qq_send 的 images: ["sticker:<id>"] 发。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。',
+      parameters: { type: 'object', properties: { image: { type: 'string' }, note: { type: 'string' } }, required: ['image'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { id: { type: 'string' }, isNew: { type: 'boolean' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sticker:${v?.id}${v?.isNew ? '' : ' (already kept)'}` }] },
+      async execute(args) { return qq.keepSticker(args.image, args.note ?? ''); },
+    }), 'dsh-dot/qq: qq_sticker_keep tool');
   });
 
   ctx.inject(['systemPrompt'], (scope) => {
@@ -981,7 +1008,7 @@ export function apply(ctx, config = {}, deps = {}) {
       order: 61,
       text: () => (qq.connected
         ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。${cfg.groupPolicy === 'score' ? '群消息先过了一道筛，叫醒你的都是和你相关或你明显有话说的；插话就只聊天，一两句，回 to 用 group:<群号>，没话说就不回。' : ''}要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。
-聊天的样子：一句话一行，每行就是一条消息，短的几条比一大段好；想用表情就在 images 里发：${stickers.prompt() || '别人发给你的表情包会自动存下来，之后用 sticker:<id> 发'}；QQ 小黄脸 face:<编号>，常用的 14 微笑 4 得意 5 流泪 13 呲牙 20 偷笑 32 疑问 34 晕 66 爱心 97 擦汗 101 坏笑 105 委屈 111 可怜 174 无奈 178 斜眼笑 179 doge 182 笑哭 212 托腮 277 汪汪 285 摸鱼 299 牛啊 319 比心 326 生气。可以只发一个表情不说话。`
+聊天的样子：一句话一行，每行就是一条消息，短的几条比一大段好；想用表情就在 images 里发：${stickers.prompt() || '你还没有表情包；别人发给你的会自动存下来，手机 App 里看到喜欢的长按保存再 qq_sticker_keep 也能存'}；QQ 小黄脸 face:<编号>，常用的 14 微笑 4 得意 5 流泪 13 呲牙 20 偷笑 32 疑问 34 晕 66 爱心 97 擦汗 101 坏笑 105 委屈 111 可怜 174 无奈 178 斜眼笑 179 doge 182 笑哭 212 托腮 277 汪汪 285 摸鱼 299 牛啊 319 比心 326 生气。可以只发一个表情不说话。`
         : ''),
     }), 'dsh-dot/qq: channel section');
   });

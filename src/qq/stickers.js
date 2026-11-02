@@ -1,45 +1,76 @@
-// Her sticker collection: the images people send her that QQ marks as stickers (image sub_type 1).
-// The list lives in $DSH_HOME/dsh-qq-stickers.json; each file is downloaded into her computer
-// (STICKER_DIR) because QQ's image URLs expire, and sent again from there as "sticker:<id>".
+// Her sticker collection: images people send her that QQ marks as stickers (image sub_type 1), and
+// ones she keeps herself (qq_sticker_keep: saved on her phone, or a web image). Files live in
+// $DSH_HOME/stickers/<id>.img (QQ's URLs expire), the list in $DSH_HOME/dsh-qq-stickers.json.
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { dirname, join } from 'node:path';
 
-export const STICKER_DIR = '/root/dot-stickers';
 const MAX = 300;
+export const STICKER_MAX_BYTES = 4 * 1024 * 1024;
 
 /** An image segment's data → is it a sticker? (NapCat and SnowLuma both set sub_type 1 on 表情包.) */
 export const isSticker = (d) => String(d?.sub_type ?? '') === '1' || /表情/.test(String(d?.summary ?? ''));
 
-export function createStickers(file) {
+export function createStickers(file, { fetch = globalThis.fetch } = {}) {
+  const dir = join(dirname(file), 'stickers');
   let list = [];
   try { list = JSON.parse(readFileSync(file, 'utf8')); } catch {}
-  const save = () => { try { writeFileSync(file, JSON.stringify(list)); } catch {} };
+  const save = () => { try { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(list)); } catch {} };
+  const path = (id) => join(dir, `${id}.img`);
+  const add = (entry) => {
+    list.push(entry);
+    while (list.length > MAX) { const old = list.shift(); try { rmSync(path(old.id), { force: true }); } catch {} }
+    save();
+  };
   const stickers = {
     list: () => list,
+    count: () => list.filter((s) => s.saved).length,
     get: (id) => list.find((s) => s.id === id),
-    path: (id) => `${STICKER_DIR}/${id}.img`,
-    /** Note a sticker seen in a message; returns { id, isNew }. The same file (by md5-ish name) is one entry. */
+    path,
+    /** Bytes of a kept sticker, or null. */
+    read: (id) => { const s = stickers.get(id); if (!s?.saved) return null; try { return readFileSync(path(id)); } catch { return null; } },
+    /**
+     * A sticker seen in a message: noted by its QQ file name (one entry per picture), downloaded
+     * once in the background. Returns { id, isNew }.
+     */
     note({ file: name, url, from }) {
       const key = String(name || url || '').replace(/[?#].*$/, '');
       if (!key || !url) return null;
       const id = createHash('sha1').update(key).digest('hex').slice(0, 10);
       let s = stickers.get(id);
-      if (s) { s.seen = (s.seen ?? 1) + 1; s.url = url; save(); return { id, isNew: false }; }
+      if (s) { s.seen = (s.seen ?? 1) + 1; if (!s.saved) s.url = url; save(); return { id, isNew: false }; }
       s = { id, url, from: String(from ?? ''), at: new Date().toISOString().slice(0, 10), seen: 1, saved: false };
-      list.push(s); while (list.length > MAX) list.shift(); save();
+      add(s);
       return { id, isNew: true };
     },
-    markSaved(id) { const s = stickers.get(id); if (s) { s.saved = true; delete s.url; save(); } },
-    /** Shell that downloads one sticker into the computer (the URL single-quoted; a quote in it refuses). */
-    fetchScript(id) {
+    /** Download a noted sticker (its QQ URL) into the collection; true when it is there. */
+    async fetch(id) {
       const s = stickers.get(id);
-      if (!s?.url || /['\n\r]/.test(s.url)) return '';
-      return `mkdir -p ${STICKER_DIR}; [ -s ${stickers.path(id)} ] || curl -fsSL --max-time 60 -o ${stickers.path(id)} '${s.url}'; [ -s ${stickers.path(id)} ] && echo ok`;
+      if (!s) return false;
+      if (s.saved && existsSync(path(id))) return true;
+      if (!s.url) return false;
+      const res = await fetch(s.url, { signal: AbortSignal.timeout(30_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const buf = Buffer.from(await res.arrayBuffer());
+      if (!buf.length || buf.length > STICKER_MAX_BYTES) throw new Error(`${buf.length} bytes`);
+      mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
+      s.saved = true; delete s.url; save();
+      return true;
+    },
+    /** Keep an image she chose herself (bytes): one entry per picture (by content). Returns { id, isNew }. */
+    keep(buf, { from = '自己存的', note = '' } = {}) {
+      if (!buf?.length || buf.length > STICKER_MAX_BYTES) throw new Error(`sticker must be 1 byte – ${STICKER_MAX_BYTES / 1048576} MB`);
+      const id = createHash('sha1').update(buf).digest('hex').slice(0, 10);
+      const s = stickers.get(id);
+      if (s) { if (note) s.note = String(note).slice(0, 40); save(); return { id, isNew: false }; }
+      mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
+      add({ id, from: String(from), note: String(note).slice(0, 40), at: new Date().toISOString().slice(0, 10), seen: 1, saved: true });
+      return { id, isNew: true };
     },
     /** One line for her prompt: the newest ones, newest last. */
     prompt(n = 12) {
       const got = list.filter((s) => s.saved).slice(-n);
-      return got.length ? `你存的表情包（images 里写 sticker:<id> 就能发）：${got.map((s) => `${s.id}（${s.from} 发的${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、')}` : '';
+      return got.length ? `你存的表情包（images 里写 sticker:<id> 就能发）：${got.map((s) => `${s.id}（${s.note || `${s.from} 发的`}${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、')}` : '';
     },
   };
   return stickers;

@@ -76,7 +76,7 @@ export const defaults = {
   // rulebook (heartbeat.md / rules.md), translated — not written here. On by default: only in apps
   // she installed herself (playApps is narrowed to what is on her phone), and only these actions.
   play: true,
-  playActions: ['like', 'comment', 'follow'],
+  playActions: ['like', 'comment', 'follow', 'collect'], // collect = save stickers she likes (qq_sticker_keep)
   maxPlaysPerDay: 0,          // 0 = no cap: how often she plays is her own habit (her self notes); a round yields at most one play, so ≤ maxRoundsPerDay
   playApps: KNOWN_APPS.labels, // app label → package she may act in; {} = none
   speak: false,               // allow proactive contact over dsh-im
@@ -117,6 +117,12 @@ export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' }
 
 /** The message that asks her to go and do the small thing she wanted to do on her phone. */
 export function playPrompt(p, pkg) {
+  if (p.action === 'collect') return [
+    `[想玩会儿手机] 你刚才想：去${p.app}${pkg ? `（${pkg}）` : ''}逛逛${p.target && p.target !== '表情包' ? `「${p.target}」` : ''}，攒几张表情包。${p.why ? `因为${p.why}。` : ''}`,
+    `去吧，用你的手机（${PHONE_TOOL_PREFIX}*）。评论区、帖子里看到合你口味的表情包就长按保存到手机，然后 qq_sticker_keep（image: "phone:latest"，note 写一两个词）存成你的。挑你真会用的，三五张就够，不要见一张存一张；不发帖、不私信、不花钱。`,
+    PLAY_RULES,
+    '做完把手机放回桌面（HOME），只回一句你存了什么，或者 DOT_SILENT。',
+  ].join('\n');
   const verb = { like: '点个赞', comment: '评论一句', follow: '关注' }[p.action] ?? p.action;
   return [
     `[想玩会儿手机] 你刚才想：在${p.app}${pkg ? `（${pkg}）` : ''}给「${p.target}」${verb}${p.text ? `，想说的是：「${p.text}」` : ''}。${p.why ? `因为${p.why}。` : ''}`,
@@ -266,7 +272,7 @@ export function lengthBlockFor(model = '') {
 }
 
 /** The round's prompt: HDSI's lite-tier assembly. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], memories = [], herLife = [] }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [] }) {
   const isDeepseek = /deepseek/i.test(String(model));
   const isGlm = /glm/i.test(String(model));
   const phaseText = phase === 'follow-up' ? HDSI.PHASE_FOLLOW_UP : phase === 'intent' ? HDSI.PHASE_INTENT_DUE : HDSI.PHASE_ADVANCE;
@@ -286,7 +292,7 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     browser === 'disabled' ? HDSI.BROWSING_DISABLED : HDSI.BROWSING_DEFERRED,
     HDSI.WEB_CONTEXT,
     speak && phase !== 'follow-up' ? HDSI.AGENCY_SEPARATION : '',
-    play && playApps.length ? `${PLAY_RULES}\n她手机上有这些 App 可以玩：${playApps.join('、')}。一个 playIntent 是她此刻真想做的一件小事，不是任务。玩多少、什么时候玩，按她自己的习惯来（herLife 里她自己记下的）；没有习惯就是还没养成，随她。` : '',
+    play && playApps.length ? `${PLAY_RULES}\n她手机上有这些 App 可以玩：${playApps.join('、')}。一个 playIntent 是她此刻真想做的一件小事，不是任务。玩多少、什么时候玩，按她自己的习惯来（herLife 里她自己记下的）；没有习惯就是还没养成，随她。${playActions.includes('collect') && stickers >= 0 && stickers < 5 ? `她的 QQ 表情包只有 ${stickers} 张，聊天时没得发；action "collect" 是去某个 App 逛逛顺手攒几张（target 写 "表情包"）。` : ''}` : '',
     isGlm ? HDSI.EXTRA_GLM : '',
     'MAIN NARRATIVE PROMPT (user-configurable):',
     HDSI.MAIN_PROMPT_DEFAULT,
@@ -721,7 +727,7 @@ export function apply(ctx, config = {}) {
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
-        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions,
+        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
         memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [],
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,

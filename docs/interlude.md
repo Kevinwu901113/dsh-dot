@@ -112,7 +112,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
 | `play` | `true` | 允许她在手机 App 上做小动作（点赞 / 评论 / 关注）；只在她装了的 App 里 |
 | `playApps` | 内置常见社区 App（`KNOWN_APPS.labels`） | 可以玩的 App：`{ 小黑盒: com.max.xiaoheihe }`（标签 → 包名），再按手机上装了什么收窄 |
-| `playActions` | `like, comment, follow` | 允许的动作；`post` / `dm` 永远不执行 |
+| `playActions` | `like, comment, follow, collect` | 允许的动作；`collect` = 去 App 逛逛攒表情包（`qq_sticker_keep`），表情包少于 5 张时幕间会被提醒；`post` / `dm` 永远不执行 |
 | `maxPlaysPerDay` | `3` | 每天最多几次 |
 | `speak` | `false` | 允许主动联系 |
 | `maxContactsPerDay` | `2` | 每天最多主动几次 |

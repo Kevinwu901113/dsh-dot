@@ -42,7 +42,9 @@ function harness({ installed = true, running = false } = {}) {
   const shells = [], effects = [], tools = [], sections = [];
   let cmd, onReady;
   const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), keyHeader: 'X-AIO-API-Key', backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
-  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; if (script.includes('dot-stickers')) return 'ok\n'; return ''; };
+  const fetched = [];
+  const fetch = async (url) => { fetched.push(url); return { ok: true, arrayBuffer: async () => Buffer.from('GIF89a') }; };
+  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     effect(fn) { effects.push(fn()); },
@@ -52,8 +54,8 @@ function harness({ installed = true, running = false } = {}) {
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
     get: (n) => ({ dshComputer: computer, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
-  apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell });
-  return { ctx, shells, tools, sections, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell, fetch });
+  return { ctx, shells, fetched, tools, sections, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
@@ -100,7 +102,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 2 }, echo: sock.sent[1].echo }));
   assert.deepEqual(await p, { sent: 2 });
   // images: a URL goes as-is, a phone screenshot as base64, each its own message
-  h.ctx.dshPhone = { isReady: true, screenshot: async () => Buffer.from('PNGDATA'), shell: async () => '', adbExec: async () => ({ stdout: Buffer.from('JPG') }) };
+  h.ctx.dshPhone = { isReady: true, screenshot: async () => Buffer.from('PNGDATA'), shell: async () => '/sdcard/Pictures/a.jpg\n', adbExec: async () => ({ stdout: Buffer.from('JPG') }) };
   const get0 = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : get0(n));
   const pi = tool.execute({ to: 'owner', images: ['https://example.com/cat.jpg', 'phone:screen'] });
   await tick(5);
@@ -110,22 +112,30 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.deepEqual(sock.sent[3].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('PNGDATA').toString('base64')}` } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 4 }, echo: sock.sent[3].echo }));
   assert.deepEqual(await pi, { sent: 2 });
-  // a sticker she receives is kept (downloaded into the computer) and can be sent back as sticker:<id>; a face by number
-  h.shells.length = 0;
+  // a sticker she receives is kept (downloaded here) and can be sent back as sticker:<id>; a face by number
+  h.fetched.length = 0;
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'image', data: { file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x', sub_type: 1 } }], sender: { nickname: '宽' } }));
   await tick(5);
   const id = /\[表情包 sticker:([0-9a-f]{10})\]/.exec(got.at(-1).text)?.[1];
   assert.ok(id, 'the sticker is named in the text she reads');
-  assert.ok(h.shells.some((x) => x.includes(`/root/dot-stickers/${id}.img`) && x.includes("'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x'")), 'downloaded into her computer');
+  assert.deepEqual(h.fetched, ['https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x'], 'downloaded once');
+  assert.equal(readFileSync(join(process.env.DSH_HOME, 'stickers', `${id}.img`)).toString(), 'GIF89a', 'kept on disk');
   assert.match(h.sections[0].text(), new RegExp(`sticker:<id>.*${id}`), 'listed in her prompt');
   const ps = tool.execute({ to: 'owner', images: [`sticker:${id}`, 'face:179'] });
   await tick(5);
-  assert.deepEqual(sock.sent[4].params.message, [{ type: 'image', data: { file: `file:///root/dot-stickers/${id}.img`, sub_type: 1 } }]);
+  assert.deepEqual(sock.sent[4].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('GIF89a').toString('base64')}`, sub_type: 1 } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 5 }, echo: sock.sent[4].echo }));
   await tick(5);
   assert.deepEqual(sock.sent[5].params.message, [{ type: 'face', data: { id: '179' } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 6 }, echo: sock.sent[5].echo }));
   assert.deepEqual(await ps, { sent: 2 });
+  // she keeps one herself from her phone, with a note; the same picture twice is one sticker
+  const keep = h.tools.find((t) => t.name === 'qq_sticker_keep');
+  const k1 = await keep.execute({ image: 'phone:latest', note: '无语' });
+  assert.equal(k1.isNew, true);
+  assert.equal((await keep.execute({ image: '/sdcard/Pictures/x.jpg' })).id, k1.id);
+  assert.match(h.sections[0].text(), new RegExp(`${k1.id}（无语）`));
+  assert.equal(h.ctx.dshQq.stickerCount(), 2);
   h.ctx.get = get0; delete h.ctx.dshPhone;
   // /qq qr pushes the QR to the phone album when the phone is up
   const pushed = [];

@@ -474,7 +474,7 @@ test('play: on by default but only in apps on her phone (none → disabled); a p
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
   assert.ok(h.calls[0].system.includes(PLAY_RULES), 'the rulebook is in the prompt');
-  assert.match(h.calls[0].system, /playIntents: \[\{"app":"one of 小黑盒","action":"like\|comment\|follow"/);
+  assert.match(h.calls[0].system, /playIntents: \[\{"app":"one of 小黑盒","action":"like\|comment\|follow\|collect"/);
   assert.equal(h.followups.length, 1);
   assert.deepEqual(h.followups[0].m.source, PLAY_SOURCE);
   assert.match(h.followups[0].m.content[0].text, /^\[想玩会儿手机\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）给「那篇讲黑猴更新的帖子」点个赞。因为写得认真。/);
