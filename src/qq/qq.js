@@ -107,6 +107,11 @@ const ZXING_PY = 'import sys, zxingcpp; from PIL import Image; r = zxingcpp.read
 const SL_NODE_DIR = '/root/snowluma-node';
 const SL_NODE = `${SL_NODE_DIR}/bin/node`;
 const SL_NODE_MIRRORS = ['https://npmmirror.com/mirrors/node', 'https://nodejs.org/dist'];
+// The computer's disk is small (msb's default root layer is ~4 GB, the image takes ~3): a line in
+// /qq log, a check before an install, and `/qq clean` for what the installers leave behind.
+const DISK_LINE = 'echo "== disk: $(df -h / | awk \'NR==2 { print $3 " used of " $2 ", " $4 " free" }\')"';
+const MIN_INSTALL_FREE_MB = 1500;
+const CLEAN_SCRIPT = `rm -f ${VM_HOME}/QQ.deb.* ${VM_HOME}/snowluma.tgz ${VM_HOME}/napcat-install.sh ${VM_HOME}/.config/QQ/versions/*.zip /tmp/node-v24* /tmp/*.tar.xz; apt-get clean 2>/dev/null; for f in ${LOG_FILE} ${SL_LOG} ${SL_QQ_LOG}; do [ -f $f ] && tail -c 200000 $f > $f.tmp && mv $f.tmp $f; done; true`;
 
 /** OneBot 11 message segments → plain text the way a person would read them. */
 export function segmentsToText(message, selfId = '') {
@@ -474,7 +479,9 @@ export function apply(ctx, config = {}, deps = {}) {
     return [
       'nodeok() { [ -x "$1" ] && "$1" -e \'process.exit(+process.versions.node.split(".")[0] >= 24 ? 0 : 1)\' 2>/dev/null; }',
       `if ! nodeok ${SL_NODE}; then`,
-      `  if nodeok "$(command -v node)"; then mkdir -p ${SL_NODE_DIR}/bin && ln -sf "$(command -v node)" ${SL_NODE};`,
+      // The image's fnm may already hold a Node 24 (121 MB saved on a 4 GB disk); else the system node; else download.
+      `  f24=$(ls -d /opt/fnm/node-versions/v24.*/installation/bin/node 2>/dev/null | sort -V | tail -1); if nodeok "$f24"; then mkdir -p ${SL_NODE_DIR}/bin && ln -sf "$f24" ${SL_NODE};`,
+      `  elif nodeok "$(command -v node)"; then mkdir -p ${SL_NODE_DIR}/bin && ln -sf "$(command -v node)" ${SL_NODE};`,
       '  else ok=;',
       `    for base in ${SL_NODE_MIRRORS.join(' ')}; do`,
       '      line=$(curl -fsSL --connect-timeout 15 --max-time 60 "$base/latest-v24.x/SHASUMS256.txt" | grep -E " node-v24\\.[0-9.]+-linux-$arch\\.tar\\.xz$" | head -1); [ -n "$line" ] || continue',
@@ -527,6 +534,8 @@ export function apply(ctx, config = {}, deps = {}) {
   /** Install a backend: 'napcat' (NapCat + its patched linuxqq) or 'snowluma' (its own pinned linuxqq, Node 24, SnowLuma). */
   qq.install = (which = 'napcat') => (installing ??= (async () => {
     const snow = which === 'snowluma';
+    const free = Number((await vmShell("df -Pm / | awk 'NR==2 { print $4 }'").catch(() => '0')).trim());
+    if (free && free < MIN_INSTALL_FREE_MB) { setState('error', `only ${free} MB free on the computer's disk; an install needs ~${MIN_INSTALL_FREE_MB} MB — /qq clean, or /qq clean napcat (removes NapCat), or a new computer with a bigger rootDisk`); logger.warn(qq.error); installing = null; return false; }
     setState('installing');
     logger.info(snow ? 'installing SnowLuma in the computer (lite release); /qq log follows it' : 'installing NapCat in the computer (apt deps, linuxqq, NapCat.Shell) — several minutes; /qq log follows it');
     try {
@@ -697,6 +706,7 @@ export function apply(ctx, config = {}, deps = {}) {
         `echo "== processes =="; pgrep -af "[o]pt/QQ/qq|${SL_PGREP}" || echo "(none)"`,
         `echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":${cfg.wsPort}|:${SL_HTTP_PORT}|:5099" || echo "(nothing on ${cfg.wsPort}/${SL_HTTP_PORT}/5099)"`,
         `echo "== ptrace_scope: $(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo n/a) · version: $(cat ${SL_DIR}/.dot-version 2>/dev/null || echo ?)"`,
+        DISK_LINE,
       ].join('\n'));
       return await vmShell([
         `if [ -f ${INSTALL_LOG} ] && [ ! -f ${INSTALL_DONE} ]; then echo "== installing =="; tail -n ${lines} ${INSTALL_LOG}; exit 0; fi`,
@@ -704,6 +714,7 @@ export function apply(ctx, config = {}, deps = {}) {
         'echo "== processes =="; pgrep -af "[o]pt/QQ/qq|[X]vfb" || echo "(none)"',
         'echo "== listening =="; (ss -ltnp 2>/dev/null || netstat -ltnp 2>/dev/null) | grep -E ":3001|:6099" || echo "(nothing on 3001/6099)"',
         `echo "== files =="; ls -la ${QQ_BIN} ${CONFIG_DIR} 2>&1 | head -12; which xvfb-run Xvfb || echo "(no xvfb-run)"`,
+        DISK_LINE,
       ].join('\n'));
     } catch (err) { return `log unavailable: ${err.message}`; }
   };
@@ -1016,8 +1027,8 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'qq',
-      description: 'her QQ on the computer (NapCat or SnowLuma): status; "install" (NapCat + QQ), "install snowluma", "backend <napcat|snowluma>", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
-      input: { hint: '[install [snowluma] | backend <napcat|snowluma> | account <n> | start | stop | qr | log | owner <n> | group <mention|all|none|score>]' },
+      description: 'her QQ on the computer (NapCat or SnowLuma): status; "install" (NapCat + QQ), "install snowluma", "backend <napcat|snowluma>", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "clean [napcat]" (free disk: installer leftovers, caches; with napcat also NapCat itself), "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
+      input: { hint: '[install [snowluma] | backend <napcat|snowluma> | account <n> | start | stop | qr | log | clean [napcat] | owner <n> | group <mention|all|none|score>]' },
       handler: async ({ rawInput }) => {
         const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
         let extra = '';
@@ -1035,6 +1046,12 @@ export function apply(ctx, config = {}, deps = {}) {
           else if (verb === 'group') {
             if (['mention', 'all', 'none', 'score'].includes(arg)) { cfg.groupPolicy = arg; writeSettings({ groupPolicy: arg }); audit({ kind: 'group-policy', policy: arg }); extra = `\ngroup policy: ${arg}`; }
             else extra = `\ngroup policy: ${cfg.groupPolicy} (mention | all | none | score — score rates each message with a short model call, threshold ${cfg.scoreThreshold})`;
+          }
+          else if (verb === 'clean') {
+            // Installer leftovers, QQ's hot-update downloads, apt's cache, logs trimmed; `clean napcat` also removes NapCat's install.
+            const out = await vmShell(`${arg === 'napcat' ? `${KILL_ALL}; rm -rf ${NAPCAT} ${VM_HOME}/NapCat ${INSTALL_DONE}; ` : ''}${CLEAN_SCRIPT}; ${DISK_LINE}`, 300_000);
+            audit({ kind: 'cleaned', napcat: arg === 'napcat' });
+            extra = `\ncleaned${arg === 'napcat' ? ' (NapCat removed; /qq install to put it back)' : ''} · ${String(out).trim()}`;
           }
           else if (verb === 'start') { extra = (await qq.start()) ? '\nstarting; if this account is new here, /qq qr to log in' : `\n${qq.error}`; }
           else if (verb === 'stop') { await qq.stop(); extra = '\nstopped'; }

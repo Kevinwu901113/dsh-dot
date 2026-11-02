@@ -24,6 +24,10 @@ export const defaults = {
   user: 'gem',
   memory: '4G',
   cpus: 2,
+  // Her disk (the writable root layer), fixed when the computer is created: msb's default is ~4 GB, of
+  // which the image itself takes ~3 — NapCat or SnowLuma with a Linux QQ filled the rest ("no space
+  // left on device" in /qq log). Only a new computer gets it; an existing one keeps its size.
+  rootDisk: '16G',
   mounts: [],
   readyTimeoutMs: 240_000,
   // Public origin of *dsh itself* (your own exposure, e.g. `tailscale serve` → https://my-mac.tailnet.ts.net):

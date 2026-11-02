@@ -136,6 +136,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 |---|---|---|
 | `mounts` / `DSH_COMPUTER_MOUNTS` | 自动（见第三节） | 固定共享的文件夹；环境变量用 `:` 分隔（Windows 用 `;`） |
 | `memory` / `cpus` | `4G` / `2` | 虚拟机资源上限 |
+| `rootDisk` | `16G` | 她的磁盘（可写根层）。msb 默认约 4 GB，镜像自己占 3 GB，装了 QQ 就满（`/qq log` 里 `no space left on device`）。**只在新建虚拟机时生效**：已有的虚拟机不能扩，要换大盘得删掉重建（装过的东西和 QQ 登录会丢；0.11.3 之前建的都是 4 GB） |
 | `publicUrl` / `DSH_COMPUTER_PUBLIC_URL` | 空 | 你暴露出去的 **dsh 本身**的地址（见第四节），实时画面链接用它，用于审批消息和状态接口；不是虚拟机端口 |
 | `apiKey` | 自动生成 | 虚拟机网关密钥（`SANDBOX_API_KEY`）；空则用 `~/.dsh/dsh-computer.key` 里自动生成的那把 |
 | `mcp` | `true` | 由本组件挂载虚拟机的 `mcp__dot-vm__*` 工具（MCP 客户端带网关密钥）；不要再在 `cordis.patch.yml` 里单独配 dsh-mcp-client 指向 `/mcp` |

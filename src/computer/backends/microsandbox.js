@@ -187,6 +187,7 @@ export function createMicrosandboxBackend(config, logger) {
         const args = [
           'create', '--name', name, '--hostname', config.name,
           '-m', config.memory, '-c', String(config.cpus),
+          ...(config.rootDisk ? ['--root-disk', String(config.rootDisk)] : []),
           '-p', `127.0.0.1:${port}:8080`,
           '--label', 'dsh-computer=1',
           '--label', `dsh-computer.mounts=${JSON.stringify(mounts)}`,
