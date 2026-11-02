@@ -686,9 +686,11 @@ export function apply(ctx, config = {}) {
     const text = items.map((i) => `[${i.ts.slice(5, 16).replace('T', ' ')}${i.origin === 'schedule' ? ' 定时任务' : ' 用户'}]${i.approvals ? `（有 ${i.approvals} 次审批）` : ''}\n用户/任务：${i.user || '（无）'}\n我：${i.assistant || '（无回复）'}`).join('\n\n');
     return { items, text: text.length > cfg.digestChars ? `…${text.slice(-cfg.digestChars)}` : text };
   }
-  let busy = false;
+  let busy = false, fails = 0, pausedUntil = 0;
   async function round(phase, intent = null) {
     if (busy) return { skipped: 'busy' };
+    // After a failed round (model down, balance empty) the next one waits 5, 10, 20 … up to 60 minutes.
+    if (Date.now() < pausedUntil) return { skipped: 'paused after failures' };
     rollDay();
     if (meta.dayRounds >= cfg.maxRoundsPerDay) return { skipped: 'daily cap' };
     const { items, text } = digest();
@@ -784,8 +786,10 @@ export function apply(ctx, config = {}) {
       for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
       audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, contact: Boolean(parsed?.contact), said });
       logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
+      fails = 0;
       return { ok: true, script, contact: parsed?.contact ?? null, said };
     } catch (error) {
+      pausedUntil = Date.now() + Math.min(60, 5 * 2 ** fails++) * 60_000;
       logger.warn(`interlude ${phase} failed: ${error.message}`);
       audit('round-failed', { phase, error: clip(error.message, 200) });
       return { error: error.message };

@@ -377,8 +377,8 @@ export function apply(ctx, config = {}, deps = {}) {
   }
 
   /** The poster file of the virtual-scene camera (read when an app opens the camera) and the PNG it shows. */
-  /** The emulator's scene poster list (resources/Toren1BD.posters, read at launch) and the image dsh-dot shows her camera. */
-  const posterFiles = () => { const dir = join(dirname(paths.emulator), 'resources'); return { dir, posters: join(dir, 'Toren1BD.posters'), png: join(dir, 'dsh-dot-poster.png') }; };
+  /** The emulator's scene poster list (resources/Toren1BD.posters, read at launch) and the folder her camera images go in. */
+  const posterFiles = () => { const dir = join(dirname(paths.emulator), 'resources'); return { dir, posters: join(dir, 'Toren1BD.posters') }; };
   /** Before launch: the stock "wall" poster (behind the camera's start pose) moves in front of it; "table" stays. The original is kept as .orig. */
   function ensureCameraScene() {
     try {

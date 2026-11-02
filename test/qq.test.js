@@ -42,7 +42,7 @@ function harness({ installed = true, running = false } = {}) {
   const shells = [], effects = [], tools = [], sections = [];
   let cmd, onReady;
   const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), keyHeader: 'X-AIO-API-Key', backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
-  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
+  const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; if (script.includes('dot-stickers')) return 'ok\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
     effect(fn) { effects.push(fn()); },
@@ -52,7 +52,7 @@ function harness({ installed = true, running = false } = {}) {
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
     get: (n) => ({ dshComputer: computer, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
-  apply(ctx, { qq: '10001' }, { WebSocket: FakeSocket, rootShell });
+  apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell });
   return { ctx, shells, tools, sections, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -89,7 +89,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.deepEqual([got[1].kind, got[1].groupId, got[1].text], ['group', '777', '@我 来看这个']);
   // sending: the tool → OneBot action with echo; bubbles split
   const tool = h.tools.find((t) => t.name === 'qq_send');
-  const p = tool.execute({ to: 'owner', text: '在<sep/>刚看到' });
+  const p = tool.execute({ to: 'owner', text: '在\n刚看到' });
   await tick(5);
   assert.equal(sock.sent.length, 1);
   assert.equal(sock.sent[0].action, 'send_private_msg');
@@ -110,6 +110,22 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.deepEqual(sock.sent[3].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('PNGDATA').toString('base64')}` } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 4 }, echo: sock.sent[3].echo }));
   assert.deepEqual(await pi, { sent: 2 });
+  // a sticker she receives is kept (downloaded into the computer) and can be sent back as sticker:<id>; a face by number
+  h.shells.length = 0;
+  sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'image', data: { file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x', sub_type: 1 } }], sender: { nickname: '宽' } }));
+  await tick(5);
+  const id = /\[表情包 sticker:([0-9a-f]{10})\]/.exec(got.at(-1).text)?.[1];
+  assert.ok(id, 'the sticker is named in the text she reads');
+  assert.ok(h.shells.some((x) => x.includes(`/root/dot-stickers/${id}.img`) && x.includes("'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x'")), 'downloaded into her computer');
+  assert.match(h.sections[0].text(), new RegExp(`sticker:<id>.*${id}`), 'listed in her prompt');
+  const ps = tool.execute({ to: 'owner', images: [`sticker:${id}`, 'face:179'] });
+  await tick(5);
+  assert.deepEqual(sock.sent[4].params.message, [{ type: 'image', data: { file: `file:///root/dot-stickers/${id}.img`, sub_type: 1 } }]);
+  sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 5 }, echo: sock.sent[4].echo }));
+  await tick(5);
+  assert.deepEqual(sock.sent[5].params.message, [{ type: 'face', data: { id: '179' } }]);
+  sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 6 }, echo: sock.sent[5].echo }));
+  assert.deepEqual(await ps, { sent: 2 });
   h.ctx.get = get0; delete h.ctx.dshPhone;
   // /qq qr pushes the QR to the phone album when the phone is up
   const pushed = [];
@@ -150,6 +166,7 @@ test('qq_send gate: owner free; replies to live conversations free; new contacts
   assert.match(sendGate({ to: 'user:40004', text: '在' }, opt), /not written to her recently/);
   assert.match(sendGate({ to: 'user:99999', text: '你好' }, opt), /not written to her recently/);
   assert.match(sendGate({ to: 'user:30003', images: ['phone:screen'] }, opt), /file\(s\) from her devices/);
+  assert.equal(sendGate({ to: 'group:7777777', images: ['sticker:0123456789', 'face:14'] }, opt), null, 'her stickers and faces are not device files');
   assert.match(sendGate({ to: 'group:7777777', images: ['/home/gem/notes.png'] }, opt), /file\(s\) from her devices/);
   assert.match(sendGate({ to: 'user:30003', text: '在' }, { ...opt, policy: 'always' }), /message to user:30003/);
   assert.equal(sendGate({ to: 'user:99999', images: ['phone:latest'] }, { ...opt, policy: 'off' }), null);

@@ -17,6 +17,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
 import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
+import { createStickers, isSticker } from './stickers.js';
 
 export const name = 'dot-qq';
 export const inject = [];
@@ -43,6 +44,9 @@ export const defaults = {
   // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
   // hashes (times and URLs keep theirs). Off = send exactly what the model wrote.
   tidy: true,
+  // Each line of qq_send's text is its own bubble, sent after a pause that grows with its length
+  // (ms per character, capped at 2.5 s) — the way a person types. 0 = all at once.
+  typingMsPerChar: 60,
   // qq_send approval: 'reply' (default) lets her write to the owner, and answer with text or web
   // images whoever wrote to her within replyWindowMinutes (a conversation, group or private); anything
   // else asks — a new contact, a group nobody spoke in, or files from her phone or computer (those
@@ -128,16 +132,19 @@ export function segmentsToText(message, selfId = '') {
 /**
  * Where an image she wants to send lives, as a OneBot image segment `file`:
  *   http(s)://…            → the URL (NapCat downloads it)
+ *   sticker:<id>           → a sticker from her collection (stickers.js); face:<n> → a QQ system face
  *   phone:screen           → a screenshot of her phone right now
  *   phone:latest           → the newest photo/screenshot/download on her phone
  *   /sdcard/… or phone:/…  → that file on her phone
  *   any other absolute path → that file on her computer (NapCat runs there)
- * @returns {{kind: 'url'|'phone-screen'|'phone-latest'|'phone'|'computer', ref: string}|null}
+ * @returns {{kind: 'url'|'sticker'|'face'|'phone-screen'|'phone-latest'|'phone'|'computer', ref: string}|null}
  */
 export function imageSource(ref) {
   const s = String(ref ?? '').trim();
   if (/^https?:\/\//i.test(s)) return { kind: 'url', ref: s }; // imageSegment still checks publicHttpUrl
   if (/^[a-z][a-z0-9+.-]*:\/\//i.test(s)) return null; // file://, ftp://, gopher:// … never handed on
+  const own = /^(sticker|face):\s*([0-9a-z]{1,10})$/i.exec(s);
+  if (own) return { kind: own[1].toLowerCase(), ref: own[2].toLowerCase() };
   if (/^phone:screen(shot)?$/i.test(s)) return { kind: 'phone-screen', ref: s };
   if (/^phone:latest$/i.test(s)) return { kind: 'phone-latest', ref: s };
   const phonePath = /^phone:(\/.+)$/i.exec(s)?.[1] ?? (/^\/(sdcard|storage)\//.test(s) ? s : '');
@@ -210,7 +217,7 @@ export function sendGate({ to, text = '', images = [] }, { owner, policy = 'repl
   const target = parseTarget(to, owner);
   if (!target) return null; // qq.send rejects it with a clear error
   if (owner && target.user_id === Number(owner)) return null;
-  const local = [].concat(images ?? []).filter((r) => r && !/^https?:\/\//i.test(String(r)));
+  const local = [].concat(images ?? []).filter((r) => r && !/^(https?:\/\/|sticker:|face:)/i.test(String(r)));
   const who = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
   if (local.length) return `dsh-dot/qq: sending ${local.length} file(s) from her devices to ${who} (${local.map((r) => String(r).slice(0, 40)).join(', ')})`;
   if (policy === 'always') return `dsh-dot/qq: message to ${who}: ${String(text).slice(0, 80)}`;
@@ -382,6 +389,7 @@ export function apply(ctx, config = {}, deps = {}) {
   sanitise('snowlumaVersion', (v) => { if (!/^[A-Za-z0-9._-]{1,40}$/.test(String(v))) throw new Error('bad release tag'); return String(v); }, '');
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
+  const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'));
   const computer = () => ctx.get('dshComputer');
   let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
 
@@ -599,7 +607,6 @@ export function apply(ctx, config = {}, deps = {}) {
     return true;
   };
   qq.stop = async () => { if (qrFreshTimer) { clearInterval(qrFreshTimer); qrFreshTimer = null; } closeWs(); unmountMcp(); try { await vmShell(KILL_ALL); } catch {} setState('stopped'); audit({ kind: `${cfg.backend}-stopped` }); };
-  /** SnowLuma's login QR is drawn by the QQ GUI: a picture of the VM screen, with whichever tool exists. */
   /** SnowLuma: keep a live code in front of her camera while she scans (QQ's codes last about a minute). */
   let qrFreshTimer = null;
   function keepCameraFresh(phone, firstCode) {
@@ -741,9 +748,9 @@ export function apply(ctx, config = {}, deps = {}) {
     closed = false;
     if (ws) return;
     // NapCat never came up, or went down with the VM's services: every few failed attempts, look and restart it.
-    if (failedConnects && failedConnects % 6 === 0 && cfg.qq && !(await qq.running().catch(() => true))) {
-      logger.warn('NapCat is not running in the computer; starting it again');
-      audit({ kind: 'napcat-restart', after: failedConnects });
+    if (failedConnects && failedConnects % 6 === 0 && (sl() || cfg.qq) && !(await qq.running().catch(() => true))) {
+      logger.warn(`${cfg.backend} is not running in the computer; starting it again`);
+      audit({ kind: `${cfg.backend}-restart`, after: failedConnects });
       try { await qq.start(); return; } catch (err) { logger.warn(`restart failed: ${err.message}`); }
     }
     let opened = false;
@@ -755,7 +762,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const headers = { ...(c.authHeaders?.() ?? {}), ...(authMode === 'header' ? { Authorization: `Bearer ${cfg.token}` } : authMode === 'query' ? { Authorization: `Bearer ${key}` } : {}) };
     const socket = new WebSocketImpl(url, { headers });
     ws = socket;
-    socket.on('open', () => { opened = true; failedConnects = 0; logger.info(`OneBot connected (NapCat in the computer, via the gateway${authMode === 'query' ? ', token in query' : ''})`); });
+    socket.on('open', () => { opened = true; failedConnects = 0; logger.info(`OneBot connected (${cfg.backend} in the computer, via the gateway${authMode === 'query' ? ', token in query' : ''})`); });
     socket.on('unexpected-response', (_req, res) => {
       // nginx's 401 page (not NapCat's JSON 1403 over an open socket): the gateway wants the key in Authorization.
       if (res?.statusCode === 401 && authMode === 'header') { authMode = 'query'; logger.info('gateway rejected the header combination; switching the OneBot token to the query string'); }
@@ -793,10 +800,10 @@ export function apply(ctx, config = {}, deps = {}) {
     if (ev.post_type !== 'message') return;
     const selfId = String(ev.self_id ?? qq.selfId);
     if (String(ev.user_id) === selfId) return;
-    const text = segmentsToText(ev.message, selfId);
-    if (!text) return;
     const isGroup = ev.message_type === 'group';
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
+    const text = segmentsToText(Array.isArray(ev.message) ? ev.message.map((s) => (s?.type === 'image' && isSticker(s.data) ? keepSticker(s.data, who) : s)) : ev.message, selfId);
+    if (!text) return;
     const wanted = isGroup ? groupWanted(ev, cfg.groupPolicy, selfId) : true;
     if (isGroup) {
       // The last lines of each group, for the scorer's context (kept whether or not she is woken).
@@ -810,6 +817,13 @@ export function apply(ctx, config = {}, deps = {}) {
     if (recent.size > 500) recent.delete(recent.keys().next().value);
     if (wanted === 'score') { void scoreAndDeliver(msg); return; }
     deliver(msg);
+  }
+  /** A sticker someone sent: into her collection (downloaded to the computer, once) and named in the text she reads. */
+  function keepSticker(d, who) {
+    const got = urlRefusal(d.url) ? null : stickers.note({ file: d.file, url: d.url, from: who });
+    if (!got) return { type: 'text', data: { text: '[表情包]' } };
+    if (got.isNew) vmShell(stickers.fetchScript(got.id)).then((out) => { if (String(out).includes('ok')) { stickers.markSaved(got.id); audit({ kind: 'sticker-kept', id: got.id, from: who }); } }, (err) => logger.debug(`sticker ${got.id}: ${err.message}`));
+    return { type: 'text', data: { text: `[表情包 sticker:${got.id}]` } };
   }
   function deliver(msg) {
     audit({ kind: 'message', ...msg, text: msg.text.slice(0, 200) });
@@ -862,6 +876,11 @@ export function apply(ctx, config = {}, deps = {}) {
       return { type: 'image', data: { file: publicHttpUrl(src.ref) } };
     }
     if (src.kind === 'computer') return { type: 'image', data: { file: `file://${src.ref}` } };
+    if (src.kind === 'face') return { type: 'face', data: { id: src.ref } };
+    if (src.kind === 'sticker') {
+      if (!stickers.get(src.ref)?.saved) throw new Error(`no sticker ${src.ref} in her collection (ids come from [表情包 sticker:…] in messages she received)`);
+      return { type: 'image', data: { file: `file://${stickers.path(src.ref)}`, sub_type: 1 } };
+    }
     const phone = ctx.get('dshPhone');
     if (!phone?.isReady) throw new Error('her phone is not ready');
     let buf;
@@ -878,14 +897,17 @@ export function apply(ctx, config = {}, deps = {}) {
     if (buf.length > MAX_IMAGE_BYTES) throw new Error(`image too large (${Math.round(buf.length / 1048576)} MB > 10 MB)`);
     return { type: 'image', data: { file: `base64://${buf.toString('base64')}` } };
   }
-  /** Send to "user:123" | "group:456" | "owner" | a number: text (bubbles split on <sep/>) and/or images, in that order. */
+  /** Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order. */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
     if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
-    const parts = String(text ?? '').split(/<sep\s*\/>/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
+    const parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
     const ids = [];
-    for (const part of parts) ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
+    for (const [i, part] of parts.entries()) {
+      if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
+      ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
+    }
     for (const ref of [].concat(images ?? []).filter(Boolean)) ids.push((await call(action, { ...target, message: [await imageSegment(ref)] }))?.message_id);
     const n = ids.length;
     if (!n) throw new Error('nothing to send (text and images both empty)');
@@ -943,7 +965,7 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'qq_send',
-      description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。几句话用 <sep/> 分开会作为几条发出。images 是要发的图片，每张直接作为图片发出去（不是链接）：图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
+      description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
       parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sent ${v?.sent ?? 0} message(s)` }] },
       async execute(args) {
@@ -958,7 +980,8 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq:channel',
       order: 61,
       text: () => (qq.connected
-        ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。${cfg.groupPolicy === 'score' ? '群消息先过了一道筛，叫醒你的都是和你相关或你明显有话说的；插话就只聊天，一两句，回 to 用 group:<群号>，没话说就不回。' : ''}要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。`
+        ? `你的 QQ（${qq.qq}）在你电脑上也登着。${qq.owner ? `QQ ${qq.owner} 是你的人：他私聊你的话会原样出现在对话里，就是他本人对你说的，回他用 qq_send（to: "owner"）。` : ''}其他人发来的消息会以「[QQ] 谁：内容」叫醒你，回复用 qq_send（立刻送达，to 用 user:<QQ号> 或 owner）。${cfg.groupPolicy === 'score' ? '群消息先过了一道筛，叫醒你的都是和你相关或你明显有话说的；插话就只聊天，一两句，回 to 用 group:<群号>，没话说就不回。' : ''}要给人看图就用 qq_send 的 images 直接发图片——网上的图给网址，手机屏幕给 "phone:screen"，手机里刚存的给 "phone:latest"——别发链接让人自己点。别人发来的图片会带一个网址，想看就打开。手机上的 QQ 照常可以看空间、看群。
+聊天的样子：一句话一行，每行就是一条消息，短的几条比一大段好；想用表情就在 images 里发：${stickers.prompt() || '别人发给你的表情包会自动存下来，之后用 sticker:<id> 发'}；QQ 小黄脸 face:<编号>，常用的 14 微笑 4 得意 5 流泪 13 呲牙 20 偷笑 32 疑问 34 晕 66 爱心 97 擦汗 101 坏笑 105 委屈 111 可怜 174 无奈 178 斜眼笑 179 doge 182 笑哭 212 托腮 277 汪汪 285 摸鱼 299 牛啊 319 比心 326 生气。可以只发一个表情不说话。`
         : ''),
     }), 'dsh-dot/qq: channel section');
   });
