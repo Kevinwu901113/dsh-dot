@@ -24,6 +24,12 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
 
+/** Social apps she might install, by site and by name — nothing is installed for her; only what is on her phone counts. */
+export const KNOWN_APPS = {
+  sites: { 'xiaoheihe.cn': 'com.max.xiaoheihe', 'bilibili.com': 'tv.danmaku.bili', 'weibo.com': 'com.sina.weibo', 'weibo.cn': 'com.sina.weibo', 'xiaohongshu.com': 'com.xingin.xhs', 'zhihu.com': 'com.zhihu.android', 'douyin.com': 'com.ss.android.ugc.aweme', 'coolapk.com': 'com.coolapk.market', 'tieba.baidu.com': 'com.baidu.tieba', 'douban.com': 'com.douban.frodo', 'qzone.qq.com': 'com.tencent.mobileqq' },
+  labels: { 小黑盒: 'com.max.xiaoheihe', B站: 'tv.danmaku.bili', 微博: 'com.sina.weibo', 小红书: 'com.xingin.xhs', 知乎: 'com.zhihu.android', 抖音: 'com.ss.android.ugc.aweme', 酷安: 'com.coolapk.market', 贴吧: 'com.baidu.tieba', 豆瓣: 'com.douban.frodo', QQ空间: 'com.tencent.mobileqq' },
+};
+
 export const defaults = {
   home: '',                   // default ~/dot; the interlude files live in <home>/interlude
   scope: 'home+im',           // which sessions are acts: 'home' (cwd inside home), 'im' (opened from an IM bot), 'home+im', 'all'
@@ -48,7 +54,7 @@ export const defaults = {
   // Her phone (dsh-dot/phone): hosts whose app she opens instead of the website, as { host: package }.
   // e.g. { 'xiaoheihe.cn': 'com.max.xiaoheihe', 'bilibili.com': 'tv.danmaku.bili' }. Same rules as
   // vmSites: never read anonymously, read-only, no approvals; phone and VM share `vmDailyCap`.
-  phoneApps: {},
+  phoneApps: KNOWN_APPS.sites,
   phonePreferred: true,       // when both phone and VM could take a thin/blocked web result, the phone goes first
   vmTimeoutMinutes: 5,        // give up waiting for an observation turn after this long
   vmSession: '',              // session id to observe in; default: the character's most recent act
@@ -67,11 +73,12 @@ export const defaults = {
   // 玩: small social actions on her own accounts, on her phone — like, comment, follow (post/DM/pay
   // never, by construction). Off by default. Executed as a normal turn (approvals apply), gated like
   // contact: active hours, willingness, daily cap. The behaviour rules are Moltbook's agent-social
-  // rulebook (heartbeat.md / rules.md), translated — not written here.
-  play: false,
+  // rulebook (heartbeat.md / rules.md), translated — not written here. On by default: only in apps
+  // she installed herself (playApps is narrowed to what is on her phone), and only these actions.
+  play: true,
   playActions: ['like', 'comment', 'follow'],
   maxPlaysPerDay: 0,          // 0 = no cap: how often she plays is her own habit (her self notes); a round yields at most one play, so ≤ maxRoundsPerDay
-  playApps: {},               // app label → package she may act in ({ 小黑盒: 'com.max.xiaoheihe' }); {} = none
+  playApps: KNOWN_APPS.labels, // app label → package she may act in; {} = none
   speak: false,               // allow proactive contact over dsh-im
   maxContactsPerDay: 2,
   willingnessThreshold: 0.6,
@@ -709,7 +716,7 @@ export function apply(ctx, config = {}) {
       const mem = ctx.get('dotMemory');
       // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
       const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
-      const playApps = Object.keys(cfg.playApps).filter((label) => !onPhone.length || onPhone.includes(cfg.playApps[label]));
+      const playApps = Object.keys(cfg.playApps).filter((label) => onPhone.includes(cfg.playApps[label]));
       const { system, user, tools } = buildPrompt({
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
@@ -808,7 +815,9 @@ export function apply(ctx, config = {}) {
     if (p.willingness < cfg.willingnessThreshold) return held('willingness');
     rollDay();
     if (cfg.maxPlaysPerDay > 0 && meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
-    if (!ctx.get('dshPhone')?.isReady) return held('phone not ready');
+    const phone = ctx.get('dshPhone');
+    if (!phone?.isReady) return held('phone not ready');
+    if (!(await phone.apps?.().catch(() => []) ?? []).includes(pkg)) return held(`${p.app} is not on her phone`);
     // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
     const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
     const controller = ctx.get('sessionController');

@@ -456,20 +456,21 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   w.stop();
 });
 
-test('play: off by default; on, a playIntent becomes one normal turn on her phone, gated by actions, apps, willingness and daily cap', async () => {
+test('play: on by default but only in apps on her phone (none → disabled); a playIntent becomes one normal turn on her phone, gated by actions, apps, willingness and daily cap', async () => {
   const { PLAY_SOURCE, PLAY_RULES } = await import('../src/interlude/core.js');
   const withPlay = GOOD.replace('"contact":null', '"contact":null,"playIntents":[{"app":"小黑盒","action":"like","target":"那篇讲黑猴更新的帖子","why":"写得认真","willingness":0.8}]');
-  // off: prompt says disabled, nothing executed
+  // nothing of the known apps on her phone: prompt says disabled, nothing executed
   const off = harness({ reply: withPlay, vm: {} });
-  off.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(off.ctx.get);
+  off.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.android.chrome'] } : orig(n))(off.ctx.get);
   off.act('s1', 'hi', 'hello');
   await off.cmd().handler({ rawInput: 'now' });
   assert.match(off.calls[0].system, /playIntents: \[\] \(playing on her apps is disabled/);
   assert.equal(off.followups.length, 0);
   off.stop();
   // on
-  const h = harness({ reply: withPlay, vm: {}, config: { play: true, playApps: { 小黑盒: 'com.max.xiaoheihe' }, maxPlaysPerDay: 1 } });
-  h.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(h.ctx.get);
+  // 小黑盒 installed (by her): the default table narrows to it
+  const h = harness({ reply: withPlay, vm: {}, config: { maxPlaysPerDay: 1 } });
+  h.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe', 'com.android.chrome'] } : orig(n))(h.ctx.get);
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
   assert.ok(h.calls[0].system.includes(PLAY_RULES), 'the rulebook is in the prompt');
@@ -492,8 +493,8 @@ test('play: off by default; on, a playIntent becomes one normal turn on her phon
   assert.equal(h.followups.length, 1);
   h.stop();
   // a post is never carried out, nor an app she has no package for
-  const post = harness({ reply: withPlay.replace('"action":"like"', '"action":"post"'), vm: {}, config: { play: true, playApps: { 小黑盒: 'com.max.xiaoheihe' } } });
-  post.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true } : orig(n))(post.ctx.get);
+  const post = harness({ reply: withPlay.replace('"action":"like"', '"action":"post"'), vm: {}, config: { playApps: { 小黑盒: 'com.max.xiaoheihe' } } });
+  post.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe'] } : orig(n))(post.ctx.get);
   post.act('s1', 'hi', 'hello');
   await post.cmd().handler({ rawInput: 'now' });
   assert.equal(post.followups.length, 0);
