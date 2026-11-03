@@ -26,6 +26,7 @@ import {
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 import { createRecall } from './recall.js';
+import { sectionOf, setValues } from '../settings.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -222,9 +223,11 @@ export function renderHandoff(h, tail, gen) {
 }
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...defaults, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
-  cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}) };
   const logger = ctx.logger('dsh-dot/memory');
+  const user = sectionOf('memory', (m) => logger.warn(m));
+  const cfg = { ...defaults, ...setValues(config), ...user };
+  cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
+  if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'memory');
   const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md') };

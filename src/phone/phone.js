@@ -17,6 +17,7 @@ import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
+import { sectionOf, setValues } from '../settings.js';
 
 /** The virtual scene's "wall" poster, moved to 1.5 m straight in front of the camera's start pose (1 m square). */
 const WALL_POSTER = ['poster wall', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default poster.png', ''].join('\n');
@@ -213,13 +214,15 @@ async function unzip(zip, into) {
 }
 
 export function apply(ctx, config = {}, deps = {}) {
+  const logger = withFileLog(ctx.logger('dsh-dot/phone'));
   const settings = readSettingsFile();
-  const cfg = { ...defaults, ...settings, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
+  const user = sectionOf('phone', (m) => logger.warn(m));
+  const cfg = { ...defaults, ...settings, ...setValues(config, { dropEmptyArrays: true }), ...user };
+  if (cfg.enabled === false) { logger.info('off (dsh-dot.json: phone.enabled = false)'); return; }
   // The license, once accepted (settings file), stays accepted whatever the patch's default says.
   cfg.acceptLicense = Boolean(cfg.acceptLicense || settings.acceptLicense);
-  // The storage size the owner chose (/phone size, /phone accept <GB>) wins over the patch's.
+  // The storage size the owner chose (/phone size, /phone accept <GB>) wins over any file.
   if (settings.dataGb) cfg.dataGb = settings.dataGb;
-  const logger = withFileLog(ctx.logger('dsh-dot/phone'));
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const spawnImpl = deps.spawn ?? spawn;
   const exec = deps.run ?? run;

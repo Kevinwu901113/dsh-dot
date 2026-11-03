@@ -15,7 +15,7 @@
 
 **简体中文** · [English](README.en.md)
 
-[快速开始](#-快速开始) · [她能做什么](#-她能做什么) · [架构](#-架构) · [命令](#-命令与文件) · [共存](#-与其他插件共存) · [路线图](docs/ROADMAP.md)
+[快速开始](#-快速开始) · [她能做什么](#-她能做什么) · [设置](#%EF%B8%8F-设置) · [架构](#-架构) · [命令](#%EF%B8%8F-命令与文件) · [共存](#-与其他插件共存) · [路线图](docs/ROADMAP.md)
 
 <img src="docs/demo.gif" alt="dsh-dot demo" width="820">
 
@@ -124,6 +124,23 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 6. **电脑（可选）**：默认装上并启动；不要就设 `DSH_DOT_COMPUTER=off`。公网看实时画面见 [docs/computer.md](docs/computer.md)。
 
 </details>
+
+## ⚙️ 设置
+
+所有个人设置都在**一个文件**：`~/.dsh/dsh-dot.json`（Windows：`%USERPROFILE%\.dsh\dsh-dot.json`），按组件分段，升级插件不会覆盖，改完重启 dsh。
+
+```json
+{
+  "phone":     { "dataGb": 32 },
+  "computer":  { "rootDisk": "32G", "memory": "6G" },
+  "interlude": { "activeHours": "09:00-01:00", "speak": true }
+}
+```
+
+存储、作息、主动联系、群聊规则、省 token、网络镜像……每一项怎么改、哪些只在新建手机 / 虚拟机时生效，都在 **[docs/SETTINGS.md](docs/SETTINGS.md)**。
+
+> [!TIP]
+> 懒得自己改？直接对 dsh 说「按 docs/SETTINGS.md 把 dsh-dot 的手机存储改成 32 GB」。文档里有写给 agent 的规则，dsh 或其他 agent 照着就能改对。
 
 ## 🧩 架构
 

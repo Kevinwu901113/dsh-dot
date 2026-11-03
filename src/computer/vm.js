@@ -13,6 +13,7 @@ import { createAudit } from './audit.js';
 import { computerApiKey, keyHeaders, KEY_HEADER } from './key.js';
 import { mountComputerView, LIVE_VIEW_PAGE } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
+import { sectionOf, setValues } from '../settings.js';
 
 export const name = 'dot-computer';
 
@@ -203,8 +204,10 @@ export async function ensureServices(config, computer, logger) {
 }
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...defaults, ...readSettingsFile(), ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '' && !(Array.isArray(v) && !v.length))) };
   const logger = withFileLog(ctx.logger('dsh-computer'));
+  // The gateway port is fixed by the patch (DSH_COMPUTER_PORT): the UI relay and the gate read the same value.
+  const { port: _port, ...user } = sectionOf('computer', (m) => logger.warn(m));
+  const cfg = { ...defaults, ...readSettingsFile(), ...setValues(config, { dropEmptyArrays: true }), ...user };
   const apiKey = computerApiKey(cfg.apiKey);
   const backend = pickBackend({ ...cfg, apiKey }, logger);
   const base = `http://127.0.0.1:${cfg.port}`;

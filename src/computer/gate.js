@@ -10,6 +10,7 @@
 
 import { VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { clip } from './audit.js';
+import { sectionOf } from '../settings.js';
 
 export const name = 'dot-gate';
 export const inject = ['tools', 'dshComputer'];
@@ -84,7 +85,7 @@ export function decide(call, cfg, compiled = compile(cfg)) {
 }
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...defaults, ...config };
+  const cfg = { ...defaults, ...config, ...sectionOf('gate', (m) => ctx.logger?.('dsh-dot/gate')?.warn?.(m)) };
   const vm = ctx.dshComputer;
   const audit = (entry) => vm.audit?.(entry);
   const sessionOf = (exec) => exec.agent?.session?.id;

@@ -20,6 +20,7 @@ import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { sectionOf, setValues } from '../settings.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -500,8 +501,9 @@ export async function fetchPreset(hub, code, fetchImpl = globalThis.fetch) {
 }
 
 export function apply(ctx, config = {}) {
-  const cfg = { ...defaults, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
   const logger = ctx.logger('dsh-interlude');
+  const cfg = { ...defaults, ...setValues(config), ...sectionOf('interlude', (m) => logger.warn(m)) };
+  if (cfg.enabled === false) { logger.info('off (dsh-dot.json: interlude.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const files = {

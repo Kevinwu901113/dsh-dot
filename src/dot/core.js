@@ -18,6 +18,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
+import { sectionOf, setValues } from '../settings.js';
 
 export const name = 'dsh-dot';
 // Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
@@ -207,8 +208,9 @@ export function createNotifier(getIm, cfg, logger, getQq = () => undefined) {
 
 export function apply(ctx, config = {}) {
   // An empty string means "not set", except for notifyHours, where '' is documented as "always".
-  const cfg = { ...defaults, ...Object.fromEntries(Object.entries(config).filter(([k, v]) => v !== undefined && (v !== '' || k === 'notifyHours'))) };
   const logger = ctx.logger('dsh-dot');
+  const cfg = { ...defaults, ...setValues(config, { keepEmpty: ['notifyHours'] }), ...sectionOf('dot', (m) => logger.warn(m)) };
+  if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
   const phone = () => ctx.get('dshPhone');
   const audit = (event, data = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data });

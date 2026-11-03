@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
 import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { createStickers, isSticker, STICKER_MAX_BYTES } from './stickers.js';
+import { sectionOf, setValues } from '../settings.js';
 
 export const name = 'dot-qq';
 export const inject = [];
@@ -379,9 +380,10 @@ function withFileLog(logger) {
 }
 
 export function apply(ctx, config = {}, deps = {}) {
-  const settings = readSettingsFile();
-  const cfg = { ...defaults, ...settings, ...Object.fromEntries(Object.entries(config).filter(([, v]) => v !== undefined && v !== '')) };
   const logger = withFileLog(ctx.logger('dsh-dot/qq'));
+  const settings = readSettingsFile();
+  const cfg = { ...defaults, ...settings, ...setValues(config), ...sectionOf('qq', (m) => logger.warn(m)) };
+  if (cfg.enabled === false) { logger.info('off (dsh-dot.json: qq.enabled = false)'); return; }
   // Everything below may reach a root shell in the VM: what does not pass is treated as unset.
   const sanitise = (key, check, fallback) => { if (cfg[key] === '' || cfg[key] === undefined) return; try { cfg[key] = check(cfg[key]); } catch (err) { logger.warn(`${key} ignored: ${err.message}`); cfg[key] = fallback; } };
   sanitise('qq', (v) => assertSafeQQ(v), '');

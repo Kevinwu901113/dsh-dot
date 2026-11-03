@@ -15,7 +15,7 @@ Between your conversations, she keeps living.
 
 [简体中文](README.md) · **English**
 
-[Quick start](#-quick-start) · [Features](#-features) · [Architecture](#-architecture) · [Commands](#-commands) · [Coexistence](#-coexisting-with-other-plugins)
+[Quick start](#-quick-start) · [Features](#-features) · [Settings](#%EF%B8%8F-settings) · [Architecture](#-architecture) · [Commands](#%EF%B8%8F-commands) · [Coexistence](#-coexisting-with-other-plugins)
 
 <img src="docs/demo.gif" alt="dsh-dot demo" width="820">
 
@@ -62,6 +62,20 @@ Then, in dsh:
 ```
 
 **Use alt accounts.** No platform's terms allow automation.
+
+## ⚙️ Settings
+
+Every personal setting lives in **one file**: `~/.dsh/dsh-dot.json` (Windows: `%USERPROFILE%\.dsh\dsh-dot.json`), one section per component. Upgrades never overwrite it; restart dsh after editing.
+
+```json
+{
+  "phone":     { "dataGb": 32 },
+  "computer":  { "rootDisk": "32G", "memory": "6G" },
+  "interlude": { "activeHours": "09:00-01:00", "speak": true }
+}
+```
+
+Every key, which ones only apply to a newly created phone / VM, and rules for agents editing the file: **[docs/SETTINGS.md](docs/SETTINGS.md)** (Chinese). Or just ask dsh: "follow docs/SETTINGS.md and set dsh-dot's phone storage to 32 GB".
 
 ## 🧩 Architecture
 
