@@ -4,7 +4,8 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, OBSERVATION_TOOLS } from '../src/phone/phone.js';
+import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, OBSERVATION_TOOLS, blankPng, screencapRetry } from '../src/phone/phone.js';
+import { deflateSync } from 'node:zlib';
 
 const REPO_XML = `
 <remotePackage path="emulator"><revision><major>37</major><minor>3</minor><micro>5</micro></revision><channelRef ref="channel-2"/>
@@ -15,6 +16,47 @@ const REPO_XML = `
 const SYS_XML = `
 <remotePackage path="system-images;android-35;google_apis;arm64-v8a"><channelRef ref="channel-0"/><archives><archive><size>1778384896</size><url>arm64-v8a-35_r09.zip</url></archive></archives></remotePackage>
 <remotePackage path="system-images;android-35;google_apis;x86_64"><channelRef ref="channel-0"/><archives><archive><size>1000000000</size><url>x86_64-35_r09.zip</url></archive></archives></remotePackage>`;
+
+/** A tiny RGBA PNG (CRCs left zero; blankPng does not check them); each row filtered with `filter`. */
+function png(w, h, pixel, filter = 0) {
+  const rows = [];
+  for (let y = 0; y < h; y++) {
+    const raw = Buffer.alloc(w * 4), prev = y ? Buffer.alloc(w * 4) : null;
+    for (let x = 0; x < w; x++) Buffer.from(pixel(x, y)).copy(raw, x * 4);
+    if (prev) for (let x = 0; x < w; x++) Buffer.from(pixel(x, y - 1)).copy(prev, x * 4);
+    const out = Buffer.alloc(w * 4);
+    for (let i = 0; i < raw.length; i++) out[i] = filter === 1 ? (raw[i] - (i >= 4 ? raw[i - 4] : 0)) & 0xff : filter === 2 ? (raw[i] - (prev ? prev[i] : 0)) & 0xff : raw[i];
+    rows.push(Buffer.from([filter]), out);
+  }
+  const chunk = (type, data) => { const len = Buffer.alloc(4); len.writeUInt32BE(data.length); return Buffer.concat([len, Buffer.from(type, 'latin1'), data, Buffer.alloc(4)]); };
+  const ihdr = Buffer.alloc(13); ihdr.writeUInt32BE(w, 0); ihdr.writeUInt32BE(h, 4); ihdr[8] = 8; ihdr[9] = 6;
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(Buffer.concat(rows))), chunk('IEND', Buffer.alloc(0))]);
+}
+
+test('blankPng: all white or all black (any filter) is blank; one other pixel, a grey screen or not-a-PNG is not', () => {
+  for (const f of [0, 1, 2]) {
+    assert.equal(blankPng(png(8, 6, () => [255, 255, 255, 255], f)), true, `white, filter ${f}`);
+    assert.equal(blankPng(png(8, 6, () => [0, 0, 0, 255], f)), true, `black, filter ${f}`);
+    assert.equal(blankPng(png(8, 6, (x, y) => (x === 5 && y === 4 ? [10, 200, 30, 255] : [255, 255, 255, 255]), f)), false, `one green pixel, filter ${f}`);
+  }
+  assert.equal(blankPng(png(8, 6, () => [128, 128, 128, 255])), false, 'grey is a real screen');
+  assert.equal(blankPng(png(8, 6, (x) => (x < 4 ? [0, 0, 0, 255] : [255, 255, 255, 255]))), false, 'half black, half white');
+  assert.equal(blankPng(Buffer.from('PNGDATA')), false);
+});
+
+test('screencapRetry: a blank screenshot is taken once more after 400 ms; a real one is not', async () => {
+  const white = png(4, 4, () => [255, 255, 255, 255]), real = png(4, 4, (x) => [x * 40, 10, 10, 255]);
+  const waits = [];
+  const wait = async (ms) => { waits.push(ms); };
+  let shots = [white, real];
+  assert.equal(await screencapRetry(async () => shots.shift(), { wait }), real);
+  assert.deepEqual(waits, [400]);
+  shots = [real, white];
+  assert.equal(await screencapRetry(async () => shots.shift(), { wait }), real);
+  assert.deepEqual(waits, [400], 'no second shot for a real one');
+  shots = [white, white];
+  assert.equal(await screencapRetry(async () => shots.shift(), { wait }), white, 'still blank: returned as it is, only one retry');
+});
 
 test('resolveDownloads picks the stable emulator for the host, platform-tools and the system image', () => {
   const d = resolveDownloads({ repoXml: REPO_XML, sysImgXml: SYS_XML, osTag: 'darwin', abi: 'arm64-v8a', api: 35 });

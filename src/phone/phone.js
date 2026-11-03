@@ -12,6 +12,7 @@ import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
+import { inflateSync } from 'node:zlib';
 import { createAudit } from '../computer/audit.js';
 import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
@@ -217,6 +218,50 @@ async function unzip(zip, into) {
   return run('tar', ['-xf', zip, '-C', into]);
 }
 
+/**
+ * Is this PNG one flat colour, all white or all black? (`screencap` gives that mid-transition or with
+ * the screen off.) Decodes 8-bit RGB/RGBA, the screencap formats; anything else counts as not blank.
+ */
+export function blankPng(buf) {
+  try {
+    if (!Buffer.isBuffer(buf) || buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return false;
+    const width = buf.readUInt32BE(16), height = buf.readUInt32BE(20), depth = buf[24], color = buf[25], interlace = buf[28];
+    const bpp = color === 6 ? 4 : color === 2 ? 3 : 0;
+    if (!bpp || depth !== 8 || interlace || !width || !height) return false;
+    const idat = [];
+    for (let o = 8; o + 8 <= buf.length;) { const len = buf.readUInt32BE(o), type = buf.toString('latin1', o + 4, o + 8); if (type === 'IDAT') idat.push(buf.subarray(o + 8, o + 8 + len)); if (type === 'IEND') break; o += 12 + len; }
+    const raw = inflateSync(Buffer.concat(idat));
+    const stride = width * bpp;
+    if (raw.length < (stride + 1) * height) return false;
+    let prev = Buffer.alloc(stride), first = -1;
+    for (let y = 0; y < height; y++) {
+      const f = raw[y * (stride + 1)], line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
+      for (let i = 0; i < stride; i++) {
+        if (!f) break;
+        const a = i >= bpp ? line[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
+        let add = f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : 0;
+        if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
+        line[i] = (line[i] + add) & 0xff;
+      }
+      for (let x = 0; x < stride; x += bpp) {
+        const r = line[x], g = line[x + 1], bl = line[x + 2];
+        if (r !== g || g !== bl || (r !== 0 && r !== 255)) return false;
+        if (first < 0) first = r; else if (r !== first) return false;
+      }
+      prev = line;
+    }
+    return true;
+  } catch { return false; }
+}
+
+/** One screenshot; a blank one (all white/black) is taken once more after `waitMs`. */
+export async function screencapRetry(grab, { waitMs = 400, wait = sleep } = {}) {
+  const png = await grab();
+  if (!blankPng(png)) return png;
+  await wait(waitMs);
+  return grab();
+}
+
 /** Her system-prompt section about the phone (only while it is ready): the device, her number, accounts, how each app adds her stickers. */
 export const deviceText = (serial, number = '') => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, number: number ? prompt('phone.device.number', { number }) : '', stickers: prompt('phone.stickers') });
 
@@ -291,8 +336,8 @@ export function apply(ctx, config = {}, deps = {}) {
     try { appsCache = { at: Date.now(), pkgs: (await phone.shell('pm list packages -3')).split('\n').map((l) => l.replace(/^package:/, '').trim()).filter(Boolean) }; } catch (error) { void error; }
     return appsCache.pkgs;
   };
-  /** PNG of the screen right now. */
-  phone.screenshot = async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
+  /** PNG of the screen right now (a blank frame — mid-transition, screen waking — is retaken once). */
+  phone.screenshot = () => screencapRetry(async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout));
   /**
    * Put a PNG in front of her camera, live: the emulator console's `virtualscene-image wall <png>`
    * swaps the "wall" poster's picture while the phone runs, and ensureCameraScene (before launch) has

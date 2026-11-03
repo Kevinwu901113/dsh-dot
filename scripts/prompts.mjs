@@ -70,7 +70,7 @@ const context = () => I.renderContext({ state: STATE, entries: ['11-03 14:00：�
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
 export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消息'], ['call', '独立模型调用']];
 export const entries = [
-  { id: 'rules', group: 'system', name: '工作方式', note: '定时任务、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
+  { id: 'rules', group: 'system', name: '工作方式', note: '定时任务（先看已有的）、问一次就放下、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
     render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
   { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；设了手机号（/phone number）才有那一句；最后是各 App 怎么加表情包', files: ['phone.device', 'phone.device.number', 'phone.stickers'],
     render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')]]) },

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, sendReport } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -39,14 +39,14 @@ class FakeSocket extends EventEmitter {
 
 function harness({ installed = true, running = false } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
-  const shells = [], effects = [], tools = [], sections = [];
+  const shells = [], effects = [], tools = [], sections = [], warns = [];
   let cmd, onReady;
   const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), keyHeader: 'X-AIO-API-Key', backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
   const fetched = [];
   const fetch = async (url) => { fetched.push(url); return { ok: true, arrayBuffer: async () => Buffer.from('GIF89a') }; };
   const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
-    logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
+    logger: () => ({ debug() {}, info() {}, warn(m) { warns.push(String(m)); }, error() {} }),
     effect(fn) { effects.push(fn()); },
     on(name, fn) { ctx.handlers[name] = fn; },
     handlers: {},
@@ -55,7 +55,7 @@ function harness({ installed = true, running = false } = {}) {
     get: (n) => ({ dshComputer: computer, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
   apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell, fetch });
-  return { ctx, shells, fetched, tools, sections, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, shells, fetched, tools, sections, warns, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
 
@@ -220,6 +220,56 @@ test('tidyVoice: chat punctuation goes, URLs, clock times and line structure sta
   assert.equal(tidyVoice('**重点**：#1 算了。'), '重点 1 算了');
   assert.equal(tidyVoice('哈哈\n草 别逗我笑了。\n你觉得可能吗？'), '哈哈\n草 别逗我笑了\n你觉得可能吗？');
   assert.equal(tidyVoice('28到34度，晴天。'), '28到34度，晴天');
+});
+
+test('qq_send: images resolve before anything goes out; an image QQ refuses after the text is a partial result, not an error', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  // OneBot answers by itself: images to a URL ending in /bad.png fail, everything else is ok
+  let mid = 0;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); const bad = JSON.stringify(m.params.message).includes('/bad.png'); setTimeout(() => sock.emit('message', JSON.stringify(bad ? { status: 'failed', retcode: 1200, message: 'upload failed', echo: m.echo } : { status: 'ok', retcode: 0, data: { message_id: ++mid }, echo: m.echo })), 0); };
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  // a phone screenshot while the phone is down: the call fails and not one bubble went out
+  await assert.rejects(tool.execute({ to: 'owner', text: '你看\n这个', images: ['phone:screen'] }), /phone is not ready/);
+  await assert.rejects(tool.execute({ to: 'owner', text: '你看', images: ['https://127.0.0.1/x.png'] }), /refusing image URL/);
+  assert.equal(sock.sent.length, 0, 'nothing sent before the images were ready');
+  // the text goes, the image upload fails: no throw, the failure is reported, the text is not resent
+  const r = await tool.execute({ to: 'owner', text: '你看\n这个', images: ['https://example.com/bad.png'] });
+  assert.equal(r.sent, 2);
+  assert.deepEqual(r.failed, [{ image: 'https://example.com/bad.png', error: 'upload failed' }]);
+  assert.match(sendReport(r), /^sent 2 message\(s\)\n文字已发出；图片 https:\/\/example\.com\/bad\.png 没发成：upload failed/);
+  assert.match(r.note, /文字已发出/);
+  assert.equal(sock.sent.filter((m) => m.params.message[0].type === 'text').length, 2, 'each bubble once');
+  const audited = readFileSync(join(process.env.DSH_HOME, 'dsh-qq-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'sent');
+  assert.deepEqual(audited.at(-1).failed, r.failed, 'the audit notes the failure');
+  // the first image failing with nothing sent before it is still an ordinary error
+  await assert.rejects(tool.execute({ to: 'owner', images: ['https://example.com/bad.png'] }), /upload failed/);
+  // all ok: the plain result
+  assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2 });
+  h.stop();
+});
+
+test('dropLatinLeaks: an English-prose bubble (her reasoning) is dropped and logged; short English and Chinese pass', async () => {
+  assert.equal(latinLeak("hmm, actually don't over-explain. Let's just be brief"), true);
+  assert.equal(latinLeak('ok'), false);
+  assert.equal(latinLeak('GG'), false);
+  assert.equal(latinLeak('lol that is so true haha'), false, 'under 30 characters');
+  assert.equal(latinLeak('看这个 https://example.com/a/very/long/path/that/is/ascii?x=1'), false, 'URLs do not count');
+  assert.equal(latinLeak('今天去了 Costco 买了好多东西，累死了 but worth it 真的'), false);
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  const r = await tool.execute({ to: 'owner', text: 'hmm, actually don\'t over-explain. Let\'s just be brief: "知道啦"\n知道啦\nok' });
+  assert.deepEqual(sock.sent.map((m) => m.params.message[0].data.text), ['知道啦', 'ok']);
+  assert.equal(r.sent, 2); assert.equal(r.dropped, 1);
+  assert.ok(h.warns.some((w) => /dropped an English-prose bubble.*hmm, actually don't over-explain\. Let's just be/.test(w)), 'logged with its start');
+  await assert.rejects(tool.execute({ to: 'owner', text: 'Okay so the user wants a short answer here, keep it light' }), /English prose/);
+  h.stop();
 });
 
 test('groupPolicy score: @-mentions pass straight through; other group messages wake her only when the model rates them high', async () => {

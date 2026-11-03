@@ -47,6 +47,10 @@ export const defaults = {
   // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
   // hashes (times and URLs keep theirs). Off = send exactly what the model wrote.
   tidy: true,
+  // With tidy: a bubble of 30+ characters that is essentially English prose (≥ 80% ASCII letters,
+  // punctuation, spaces; URLs not counted) is her reasoning leaking into the reply — dropped, with a
+  // warning in the log. Short English ("ok", "lol", "GG") passes.
+  dropLatinLeaks: true,
   // Each line of qq_send's text is its own bubble, sent after a pause that grows with its length
   // (ms per character, capped at 2.5 s) — the way a person types. 0 = all at once.
   typingMsPerChar: 60,
@@ -247,6 +251,26 @@ export function tidyVoice(text) {
     t = t.replace(/[ \t]{2,}/g, ' ').trim();
     return t.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
+}
+
+/**
+ * A bubble that is English prose, not chat: 30+ characters (URLs aside) of which ≥ 80% are ASCII
+ * letters, punctuation or spaces. That is the model thinking aloud ("hmm, actually don't over-explain…").
+ */
+export function latinLeak(text) {
+  const t = String(text ?? '').replace(/https?:\/\/\S+/g, '');
+  if (t.length < 30) return false;
+  const latin = t.match(/[A-Za-z\s!-/:-@[-`{-~]/g)?.length ?? 0;
+  return latin / t.length >= 0.8;
+}
+
+/** What qq_send tells her: the count, and — when images failed after the text went out — that the text is already there. */
+export function sendReport(v) {
+  const lines = [`sent ${v?.sent ?? 0} message(s)`];
+  if (v?.dropped) lines.push(`${v.dropped} 行是英文的自言自语，没发`);
+  const before = v?.textSent === 0 ? '前面的图已发出' : '文字已发出';
+  for (const f of v?.failed ?? []) lines.push(`${before}；图片 ${f.image} 没发成：${f.error}（已发出的别再发一遍）`);
+  return lines.join('\n');
 }
 
 /**
@@ -947,23 +971,40 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   qq.stickerCount = () => stickers.count();
   qq.stickerSync = stickerSync;
-  /** Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order. */
+  /**
+   * Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order.
+   * Every image is resolved before anything goes out, so a bad one fails the call with nothing sent. If
+   * QQ then refuses an image after something was already delivered, the call does not throw (she would
+   * resend the text): it returns `failed: [{ image, error }]` next to what was sent.
+   */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
     if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
-    const parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
-    const ids = [];
+    let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
+    let dropped = 0;
+    if (cfg.tidy && cfg.dropLatinLeaks !== false) {
+      parts = parts.filter((p) => { if (!latinLeak(p)) return true; dropped++; logger.warn(`dropped an English-prose bubble (reasoning leak?): ${p.slice(0, 60)}`); return false; });
+    }
+    const refs = [].concat(images ?? []).filter(Boolean);
+    const segments = [];
+    for (const ref of refs) segments.push(await imageSegment(ref));
+    if (!parts.length && !segments.length) throw new Error(dropped ? `nothing to send: ${dropped} line(s) were English prose, not chat, and were dropped — write what you mean to say to them` : 'nothing to send (text and images both empty)');
+    const ids = [], failed = [];
     for (const [i, part] of parts.entries()) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
       ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
     }
-    for (const ref of [].concat(images ?? []).filter(Boolean)) ids.push((await call(action, { ...target, message: [await imageSegment(ref)] }))?.message_id);
+    for (const [i, seg] of segments.entries()) {
+      try { ids.push((await call(action, { ...target, message: [seg] }))?.message_id); } catch (err) {
+        if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
+        failed.push({ image: String(refs[i]).slice(0, 80), error: err.message });
+      }
+    }
     const n = ids.length;
-    if (!n) throw new Error('nothing to send (text and images both empty)');
     if (qq.owner && target.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
-    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: [].concat(images ?? []).map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))) });
-    return { sent: n, messageIds: ids };
+    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}) });
+    return { sent: n, messageIds: ids, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
   qq.friends = async () => ((await call('get_friend_list', {})) ?? []).map((f) => ({ uid: String(f.user_id ?? ''), nickname: String(f.nickname ?? ''), remark: String(f.remark ?? '') })).filter((f) => f.uid);
@@ -1017,10 +1058,11 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq_send',
       description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
       parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sent ${v?.sent ?? 0} message(s)` }] },
+      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }] },
       async execute(args) {
         const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
-        return { sent: r.sent };
+        const out = { sent: r.sent, ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}) };
+        return r.failed || r.dropped ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({
