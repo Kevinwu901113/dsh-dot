@@ -105,6 +105,7 @@ function render(s){
     h+='<span>她自己</span><span>'+m.self.entries.length+' 条 · '+m.self.chars+'/'+m.self.limit+' 字'+bar(m.self.chars,m.self.limit)+'</span>';
     h+='<span>认识的人</span><span>'+m.people+(m.contacts?' <span class="mute">(+'+m.contacts+' 好友没说过话)</span>':'')+(m.pending?' · 待核实 '+m.pending:'')+(m.merges?' · 待确认合并 '+m.merges:'')+'</span>';
     h+='<span>碎片</span><span>'+m.fragments+' · 距下次整理还有 '+m.sinceCursor+' 条 · 整理过 '+m.consolidations+' 次</span>';
+    if(m.recall){const r=m.recall;h+='<span>自动召回</span><span>'+esc(r.backend)+(r.model?' · '+esc(r.model):'')+(r.rerank&&r.rerank!=='none'?' + '+esc(r.rerank):'')+' · <span class="'+(r.ready||r.backend==='off'?'':'mute')+'">'+esc(r.state)+'</span> · 索引 '+fmt(r.turns)+' 轮'+(r.lastQuery?' · 上次 '+r.lastQuery.ms+' ms / '+r.lastQuery.hits+' 条':'')+'</span>';}
     h+='</div>';
     if(m.self.entries.length) h+='<details><summary>她自己记下的</summary><ul>'+m.self.entries.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul></details>';
     $('memory').innerHTML=h;

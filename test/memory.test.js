@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -81,6 +81,8 @@ test('extraction: banks, people (new seen ones from apps), fragments; loose JSON
 
 function harness({ llmReply = '{}' } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  // Automatic recall has its own tests (recall.test.js); here it must not install anything.
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: 'off' } }));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], contexts = [], tools = {}, effects = [], injected = [], archived = [], audit = [];
   let session = 's1'; let tokens = 1000; let frozen = 0, released = 0;

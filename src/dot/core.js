@@ -539,7 +539,7 @@ export function apply(ctx, config = {}) {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
       description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers',
-      input: { hint: '[test | check | memory [now|handoff] | people [approve|drop <id> | forget <name>]]' },
+      input: { hint: '[test | check | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         // /dot memory … and /dot people … belong to dsh-dot/memory.

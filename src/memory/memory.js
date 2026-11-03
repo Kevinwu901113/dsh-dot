@@ -9,6 +9,8 @@
 //   consolidate one model call over the transcript since the last one: bank edits, people,
 //               fragments. Every `consolidateEveryLines` lines, or after `consolidateIdleMinutes`
 //               of quiet, or at a handoff.
+//   recall      before each turn, the old turns most like the message that woke her (RAG over the
+//               transcript, recall.js): local bge-small-zh by default, cloud or off by one command.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and inject a handoff note (what she is doing,
 //               what she promised, the last lines verbatim). Deliveries wait meanwhile.
@@ -23,6 +25,7 @@ import {
   observeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
+import { createRecall } from './recall.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -51,7 +54,27 @@ export const defaults = {
   // Most memory plugins provide no service at all (dsh-auto-memory and friends), so the packages
   // installed next to this one are looked at too: any whose name says "memory" counts.
   otherMemoryServices: ['hermesMemory', 'autoMemory', 'dshMemory', 'memoryBank'],
+  // Automatic recall (recall.js). Everything here can also be changed at runtime with
+  // /dot memory recall … (saved to $DSH_HOME/dsh-memory.json, which wins over this config).
+  recallBackend: 'local',       // local (bge-small-zh on this machine, no key) | siliconflow | dashscope | off
+  recallModel: '',              // embedding model; '' = the backend's own (local Xenova/bge-small-zh-v1.5 · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding)
+  recallRerankModel: '',        // cloud only; '' = BAAI/bge-reranker-v2-m3 · qwen3.7-text-rerank; 'none' = cosine only
+  recallMirror: '',             // where local models download from; '' = $HF_ENDPOINT, else https://hf-mirror.com
+  recallInstall: true,          // install @huggingface/transformers into $DSH_HOME/dsh-dot-recall on first use (300–480 MB; not a package dependency)
+  recallTransformersVersion: '4.3.2',
+  recallTopK: 8,                // turns injected per wake
+  recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
+  recallMinScore: 0,            // drop hits below this similarity / rerank score (0 = keep the top-k)
+  recallCandidates: 40,         // cosine candidates handed to a reranker
+  recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
+  recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
+  recallWaitMs: 3000,           // prompt assembly waits this long for a query still running, then goes on without it
+  recallSiliconflowUrl: 'https://api.siliconflow.cn/v1',
+  recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
 };
+
+// Messages that wake her and are worth remembering against: his, QQ / phone notifications, schedules.
+const RECALL_WAKES = (src) => src.kind === 'user' || src.kind === 'schedule' || (src.kind === 'dsh-dot' && src.form === 'phone-notification');
 
 export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
 
@@ -266,6 +289,9 @@ export function apply(ctx, config = {}) {
     try { appendFileSync(files.transcript, `${JSON.stringify(line)}\n`); } catch (err) { logger.warn(`transcript write failed: ${err.message}`); }
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
+  const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
+  // Catch the index up with what happened while dsh was down (the local backend installs on first use).
+  ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
   // First run: memory starts after a conversation may already be long. Read that conversation's log
   // once so the first consolidation (and the first handoff) has it.
@@ -323,6 +349,8 @@ export function apply(ctx, config = {}) {
         else if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
+        // What woke her is the query; the result is in front of her before the model is called.
+        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) void recall.prepare(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;
       }
       case 'tool/call': {
@@ -344,6 +372,7 @@ export function apply(ctx, config = {}) {
         turns.delete(id);
         // Her final words count as said only when they were not a QQ turn (desktop / IM bot replies).
         if (!t.sentViaQq && t.last && !isSilent(t.last)) record({ who: 'her', session: id, text: t.last });
+        recall.clear(id); recall.turnEnded();
         void afterTurn(id);
         return;
       }
@@ -510,7 +539,30 @@ export function apply(ctx, config = {}) {
         return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens, banks: !peopleOnly() });
       },
     });
+    // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
+    // cached prefix holds. Her conversation only — errands are not her remembering.
+    scope.systemPrompt.context({
+      name: 'dot:recall',
+      order: 905,
+      text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
+    });
   });
+  // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited for
+  // here, bounded by recallWaitMs, and its text put into the assembly. Without this hook it shows up
+  // from the next step on.
+  try {
+    ctx.on?.('system-prompt/assemble', async (assembly, c, next) => {
+      const id = c?.agent?.session?.id;
+      const p = id && recall.pending(id);
+      if (p && Array.isArray(assembly?.contexts)) {
+        await Promise.race([p, new Promise((r) => { setTimeout(r, cfg.recallWaitMs).unref?.(); })]);
+        const entry = assembly.contexts.find((x) => x.name === 'dot:recall');
+        const text = recall.textFor(id);
+        if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:recall', text });
+      }
+      return next();
+    });
+  } catch (err) { logger.warn(`recall: no prompt-assembly hook (${err.message}); results show from the next step`); }
 
   // ── her own hands on it ──
   ctx.inject(['tools'], (scope) => {
@@ -572,6 +624,7 @@ export function apply(ctx, config = {}) {
     forInterlude() { return [...memory.owner.map((e) => `关于他：${e}`), ...[...memory.fragments].sort(compareFragments).slice(0, 12).map((f) => f.text)]; },
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
+    recall,
     consolidate, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, people: Object.keys(memory.people).length, pending: memory.pending.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length }),
     /** For the panel: banks with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
@@ -588,6 +641,7 @@ export function apply(ctx, config = {}) {
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
         conversation: { session: id || '', tokens: id ? await measure(id) : 0, handoffAt: cfg.handoffTokens },
         diary, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
+        recall: recall.status(),
       };
     },
     /** `/dot memory …` and `/dot people …` */
@@ -602,6 +656,7 @@ export function apply(ctx, config = {}) {
         const people = all.filter((p) => p.tier !== 'contact').sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
         return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · pending: ${memory.pending.length} · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : []), ...(memory.pending.length ? ['pending (/dot people approve <id> | drop <id>):', ...memory.pending.slice(-20).map((x) => `  ${x.id} · ${x.person}：${x.text}`)] : [])].join('\n');
       }
+      if (sub === 'recall') return recall.command(rest);
       if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'diary') { const r = await consolidate({ reason: 'manual-diary', withDiary: true }); return r.ok ? `consolidated: ${JSON.stringify(r.report)} → ${files.diary}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
@@ -611,7 +666,8 @@ export function apply(ctx, config = {}) {
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
       return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · people ${s.people} (+${s.pending} pending) · fragments ${s.fragments} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines}, or ${cfg.consolidateIdleMinutes} min quiet)`,
-        `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
+        (await recall.command([])).split('\n').slice(0, 2).join('\n'),
+        `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
     },
   };
   // Her QQ (dsh-dot/qq): the owner's number makes his card the owner's, and the friend list — the

@@ -52,15 +52,57 @@
 
 dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发生，而且摘要模板是给编程助手写的；交班让这件事不会发生在她身上。dsh-im 机器人开的会话不交班（绑定在 dsh-im 手里）。
 
+## 自动召回（0.12 起）
+
+画像和碎片是"整理过的"记忆；问到"三周前他到底怎么说的"，整理时没写下来的细节就没了。自动召回补这一块：她每次被叫醒（你的消息、QQ 消息、手机通知、定时任务）之前，用叫醒她的那句话去她自己的 `transcript.jsonl` 里找最像的旧对话，按时间顺序作为「你记得的相关原话」放在她面前，每条带日期。画像 / 碎片 / 日记 / 交班照旧，`recall` 工具也还在（她自己按关键词翻）。
+
+- **一轮一块**：叫醒她的话 + 她回的话 + 日期。每轮结束增量建索引，向量存 `~/dot/memory/recall/<后端>-<模型>/`（`vectors.f32` + `meta.jsonl`，不用向量库）。每个后端 + 模型各存一份，来回切换不互相覆盖、不重算。
+- **不重复**：她当前会话里的轮次本来就在上下文里，不再取（`recallWindowTurns`）；取 top 8（`recallTopK`），最多 1500 token（`recallMaxTokens`，超了先丢最不像的）。
+- **只给她的对话**：作为动态 context 注入（dsh 放在历史之后，不破坏前缀缓存）；跑腿会话看不到。
+- **密码 / key 不进**：和碎片同一个过滤，含密码、API key 的那行不入索引、不发给云端、不注入；问话本身像密钥时不查。
+- **后端**：
+
+| 后端 | 模型 | 要什么 | 说明 |
+|---|---|---|---|
+| `local`（默认） | `BAAI/bge-small-zh-v1.5`（ONNX q8，即 `Xenova/bge-small-zh-v1.5`），不重排 | 不要 key | transformers.js 在 CPU 上跑；模型 23 MB，常驻约 0.15 GB 内存，一次查询毫秒级。推理库 `@huggingface/transformers` 有 300–480 MB，不打进插件包：第一次用时装到 `$DSH_HOME/dsh-dot-recall/`（像 QQ / 手机按需 `npx` 拉 MCP 一样），模型从 `https://hf-mirror.com` 下（`recallMirror`，也认 `HF_ENDPOINT`），缓存也在那里。装好、下好之前按关键词找，状态里写着 |
+| `siliconflow` | `BAAI/bge-m3` + `BAAI/bge-reranker-v2-m3` 重排 | key（免费档够用） | `SILICONFLOW_API_KEY` 或 `/dot memory recall key siliconflow <key>` |
+| `dashscope` | `qwen3.7-text-embedding` + `qwen3.7-text-rerank` 重排 | key | `DASHSCOPE_API_KEY` 或 `/dot memory recall key dashscope <key>`；工作空间域名填 `recallDashscopeUrl` |
+| `off` | — | — | 不自动召回 |
+
+- **命令**（不用改文件、不用重启；写进 `$DSH_HOME/dsh-memory.json`，权限 0600，优先于插件配置）：
+  - `/dot memory recall`：后端、模型、是否就绪、索引了几轮、上次查询耗时和条数、镜像、key 来源（打码）
+  - `/dot memory recall backend <local|siliconflow|dashscope|off>`
+  - `/dot memory recall key <siliconflow|dashscope> <key>`（`-` 删掉）
+  - `/dot memory recall model <名字|default>`、`/dot memory recall rerank <名字|none|default>`（云端）
+  - `/dot memory recall mirror <url|default>`
+  - `/dot memory recall rebuild`：清掉当前后端的索引重建
+  - `/dot memory recall test <一句话>`：看这句话会翻出什么（带分数）
+- 右侧 dot 面板「记忆」卡片里有一行「自动召回」。
+
+**数据**（[Ornn8/memory-system-benchmark](https://github.com/Ornn8/memory-system-benchmark) 公开示例 PUB01，108 题；答题和判分都是 deepseek-flash、关思考，判分是适配器自己的 LLM 判卷，不是基准作者的打分；适配器在 dsh-dot 仓库外）：
+
+| 配置 | 通过 |
+|---|---|
+| 0.11 现状（画像 + 碎片 + 交班 + `recall` 工具） | 74 / 108 |
+| 纯检索：本机 bge-small-zh，不重排 | 85 / 108 |
+| 纯检索：云端 bge-m3 + bge-reranker-v2-m3（SiliconFlow） | 90 / 108 |
+| 纯检索：云端 qwen3.7 embedding + rerank（DashScope） | 89 / 108 |
+| **0.12：现状 + 自动召回（本机 bge-small-zh，真实代码路径）** | **93 / 108** |
+
+现状赢在"约定、改口、生日"这类题（整理过的事实），检索赢在原话细节；所以是加一层，不是换掉。
+
 ## 文件和命令
 
 - `~/dot/memory/memory.md`：给你看的版本；`diary.md`：她的日记；`memory.json`：数据；`handoffs.jsonl`：每次交班；`calls.jsonl`：每次整理的原始回复和 token 用量。
 - `/dot memory`：状态（第几段、当前 token、今天整理花了多少 token、距离下次整理还有几条、上次日记）；`/dot memory now`：立刻整理；`/dot memory diary`：立刻整理并写日记；`/dot memory handoff`：立刻交班。
+- `/dot memory recall …`：自动召回，见上一节。
 - `/dot people`：认识的人、待核实、待确认的合并；`approve <p…|m…>` / `drop <p…>`：处理待核实和合并；`merge <a> <b>`：手动合并两张卡；`forget <名字>`：删掉一个人。
 
 ## 配置（`dot-memory`）
 
 `handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+
+自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinScore` 0 · `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 
