@@ -3,7 +3,7 @@
 // <home>/prompts/ (or to src/prompts/ with --src), put the built-in one back, preview it rendered
 // through the real code with sample inputs, or see her whole system prompt. A developer tool.
 import { createServer } from 'node:http';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -111,13 +111,25 @@ export const entries = [
 ];
 const entryOf = (id) => entries.find((e) => e.files.includes(id));
 
+// ── her Canon (<home>/interlude/canon.json): not a prompt file, but the first thing she reads ──
+const CANON_FIELDS = [['characterName', '名字'], ['characterProfile', '角色设定'], ['perspective', '视角'], ['relationship', '和用户的关系'], ['userProfile', '用户'], ['supportingCast', '配角'], ['world', '世界'], ['location', '主要地点'], ['replyRules', '回复规则'], ['style', '叙事文风（只给幕间）'], ['blacklist', '不要这样说（一行一条）'], ['examples', '对话范例']];
+const HOME = P.promptHome(); // before --src moves the prompt home to a temp dir
+const canonPath = () => join(HOME, 'interlude', 'canon.json');
+const readCanon = () => { try { return JSON.parse(readFileSync(canonPath(), 'utf8')); } catch { return null; } };
+const canonField = (c, k) => (k === 'blacklist' ? (Array.isArray(c?.blacklist) ? c.blacklist.join('\n') : String(c?.blacklist ?? '')) : k === 'examples' ? String(c?.examples ?? '') : String(c?.storyDefaults?.[k] ?? ''));
+const withCanonField = (c, k, v) => { const n = structuredClone(c ?? { storyDefaults: {} }); n.storyDefaults ??= {}; if (k === 'blacklist') n.blacklist = v.split('\n').map((l) => l.trim()).filter(Boolean); else if (k === 'examples') n.examples = v; else n.storyDefaults[k] = v; return n; };
+const isCanon = (id) => id?.startsWith('canon.') && CANON_FIELDS.some(([k]) => id === `canon.${k}`);
+entries.unshift({ id: 'canon', group: 'system', name: '人设（Canon）', note: '她是谁、怎么说话。存在 ' + canonPath() + '，改了她下一轮就用；每天第一次保存前自动备份一份', files: CANON_FIELDS.map(([k]) => `canon.${k}`),
+  render: () => I.renderCanon(readCanon() ?? CANON, { withStyle: true }) });
+const canonLabel = (id) => CANON_FIELDS.find(([k]) => id === `canon.${k}`)?.[1] ?? id;
+
 export async function renderEntry(e) {
   try { return String(await e.render()); } catch (err) { return `（没拼出来：${err.stack}）`; }
 }
 /** Her conversation's system prompt from top to bottom (dsh's own sections left out). */
 export async function full() {
   const parts = [
-    ['人设（Canon，来自幕间的预设）', I.renderCanon(CANON)],
+    ['人设（Canon）', I.renderCanon(readCanon() ?? CANON)],
     ['工作方式', D.workingRules({ computer: true, phone: true })],
     ['手机', deviceText('emulator-5554', '13800138000')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
@@ -133,12 +145,21 @@ export async function full() {
 const placeholders = (t) => [...new Set([...t.matchAll(/\{([A-Za-z]\w*)\}/g)].map((m) => m[1]))];
 const isTable = (t) => t.split('\n').every((l) => /^[\w-]+=/.test(l));
 function fileInfo(id, src) {
+  if (isCanon(id)) { const c = readCanon(); return { id, title: `人设 · ${canonLabel(id)}`, text: canonField(c, id.slice(6)), path: canonPath() + (c ? '' : '（还没有：/interlude preset <分享码>，或从 examples/ 复制一份）'), placeholders: [], table: false, canon: true }; }
   P.raw(id); // unknown id → throws
   const builtin = readFileSync(P.builtinPath(id), 'utf8').replace(/\n$/, '');
   const over = P.list().find((x) => x.id === id)?.override;
   return { id, text: src ? builtin : P.raw(id), overridden: !src && Boolean(over), path: src || !over ? P.builtinPath(id) : over, placeholders: placeholders(builtin), table: isTable(builtin) };
 }
 function save(id, text, src) {
+  if (isCanon(id)) {
+    const path = canonPath(), c = readCanon();
+    const bak = `${path}.bak-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+    if (c && !existsSync(bak)) copyFileSync(path, bak);
+    mkdirSync(dirname(path), { recursive: true });
+    writeFileSync(path, `${JSON.stringify(withCanonField(c, id.slice(6), String(text).replace(/\r\n/g, '\n').replace(/\n+$/, '')), null, 2)}\n`);
+    return { text: `已保存：${path}` };
+  }
   P.raw(id); // unknown id → throws
   const body = `${String(text).replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
   const path = src ? P.builtinPath(id) : P.overridePath(id);
@@ -194,7 +215,7 @@ async function nav() {
     n.append($('h2', {}, g.title));
     for (const e of g.entries) {
       n.append($('h3', {}, e.name, $('small', {}, e.note)));
-      for (const f of e.files) n.append($('a', { 'data-id': f.id, onclick: () => go(() => show(f.id)) }, $('span', {}, f.id), $('span', { class: 'tag' + (f.overridden ? ' over' : '') }, f.overridden ? '已改过' : '内置')));
+      for (const f of e.files) n.append($('a', { 'data-id': f.id, onclick: () => go(() => show(f.id)) }, $('span', {}, f.label ?? f.id), f.tag === '' ? null : $('span', { class: 'tag' + (f.overridden ? ' over' : '') }, f.overridden ? '已改过' : '内置')));
     }
   }
   mark();
@@ -220,11 +241,11 @@ async function show(id) {
   if (f.placeholders.length) hints.push($('p', { class: 'hint' }, '花括号里的 ', ...f.placeholders.flatMap((k, i) => [i ? ' ' : '', $('code', {}, '{' + k + '}')]), ' 会换成实际内容，别删。某一行如果只有一个 {…}，而它刚好是空的，这一行会整行省掉。'));
   const preview = async () => { out.replaceChildren($('p', { class: 'mute' }, '正在拼…')); const r = await api('/api/preview', { id, text: ta.value }).catch((e) => ({ text: e.message })); out.replaceChildren($('h4', {}, dirty() ? '预览（按你还没保存的改动）' : '预览'), $('pre', {}, r.text || '（空）')); };
   document.getElementById('main').replaceChildren(
-    $('h2', { class: 't' }, id + '.txt'), $('div', { class: 'path' }, (f.overridden ? '你改过的版本：' : state.src ? '仓库里的文件：' : '内置版本：') + f.path),
+    $('h2', { class: 't' }, f.title ?? id + '.txt'), $('div', { class: 'path' }, (f.canon ? '' : f.overridden ? '你改过的版本：' : state.src ? '仓库里的文件：' : '内置版本：') + f.path),
     ...hints, ta,
     $('div', { class: 'bar' },
       $('button', { onclick: async () => { try { const r = await api('/api/save', { id, text: ta.value }); saved = ta.value; flag.textContent = ''; say(r.warn ? r.text + '\\n' + r.warn : r.text, Boolean(r.warn)); await nav(); } catch (e) { say(e.message, true); } } }, '保存'),
-      state.src ? null : $('button', { class: 'ghost', ...(f.overridden ? {} : { disabled: '' }), onclick: async () => { if (!confirm('删掉你改过的版本，换回内置的？')) return; try { say((await api('/api/reset', { id })).text); await nav(); await show(id); } catch (e) { say(e.message, true); } } }, '恢复内置'),
+      state.src || f.canon ? null : $('button', { class: 'ghost', ...(f.overridden ? {} : { disabled: '' }), onclick: async () => { if (!confirm('删掉你改过的版本，换回内置的？')) return; try { say((await api('/api/reset', { id })).text); await nav(); await show(id); } catch (e) { say(e.message, true); } } }, '恢复内置'),
       $('button', { class: 'ghost', onclick: preview }, '预览'), flag),
     out);
 }
@@ -243,7 +264,7 @@ export function serve(port = Number(process.env.PORT) || 7870, { src = process.a
       if (req.method === 'GET' && url.pathname === '/') return send(200, PAGE, 'text/html; charset=utf-8');
       if (req.method === 'GET' && url.pathname === '/api/list') {
         const over = new Map(P.list().map((x) => [x.id, x.override]));
-        return send(200, { src, dir: P.overrideDir(), groups: GROUPS.map(([g, title]) => ({ title, entries: entries.filter((e) => e.group === g).map((e) => ({ name: e.name, note: e.note, files: e.files.map((id) => ({ id, overridden: !src && Boolean(over.get(id)) })) })) })) });
+        return send(200, { src, dir: P.overrideDir(), groups: GROUPS.map(([g, title]) => ({ title, entries: entries.filter((e) => e.group === g).map((e) => ({ name: e.name, note: e.note, files: e.files.map((id) => (isCanon(id) ? { id, label: canonLabel(id), tag: '' } : { id, overridden: !src && Boolean(over.get(id)) })) })) })) });
       }
       if (req.method === 'GET' && url.pathname === '/api/file') return send(200, fileInfo(url.searchParams.get('id'), src));
       if (req.method === 'GET' && url.pathname === '/api/full') return send(200, { text: await full() });
@@ -253,6 +274,7 @@ export function serve(port = Number(process.env.PORT) || 7870, { src = process.a
         const { id, text } = JSON.parse(body || '{}');
         if (url.pathname === '/api/save') return send(200, save(id, text, src));
         if (url.pathname === '/api/reset' && !src) return send(200, reset(id));
+        if (url.pathname === '/api/preview' && isCanon(id)) return send(200, { text: I.renderCanon(withCanonField(readCanon() ?? CANON, id.slice(6), text ?? ''), { withStyle: true }) });
         if (url.pathname === '/api/preview') { const e = entryOf(id); if (!e) throw new Error('这个文件不在清单里'); return send(200, { text: await P.withDraft(id, text ?? P.raw(id), () => renderEntry(e)) }); }
       }
       send(404, { error: 'not found' });

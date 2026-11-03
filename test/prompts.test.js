@@ -23,7 +23,7 @@ test('prompts: every file in src/prompts is used by the code, and every id the c
 test('prompts page: lists every file exactly once, and every entry renders', async () => {
   const { entries, renderEntry, full } = await import('../scripts/prompts.mjs');
   configure({ home: HOME });
-  assert.deepEqual(entries.flatMap((e) => e.files).sort(), files);
+  assert.deepEqual(entries.flatMap((e) => e.files).filter((id) => !id.startsWith('canon.')).sort(), files);
   for (const e of entries) {
     const r = await renderEntry(e);
     assert.ok(r && !r.startsWith('（没拼出来'), `${e.id}: ${r.slice(0, 200)}`);
