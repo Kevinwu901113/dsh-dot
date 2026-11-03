@@ -1,17 +1,35 @@
 // dsh-dot/dot panel: one read-only page about her — devices, where her life stands, today's
-// numbers, what she remembers, her diary, the last two passages of her script — served on dsh's
+// numbers, the last N scenes of her life (activity.js), what she remembers, her diary, the last two
+// passages of her script — served on dsh's
 // own web server (`/dsh-dot/panel/`), so the "dot" sidebar tab is an iframe of the same origin and
 // nothing new listens on a port. The page is one file with no dependencies, like the phone's live
 // view; it polls `/dsh-dot/panel/api/state` every 3 s while visible. The layout follows what the
 // companion consoles around dsh show (NimuQDock's overview row, qq-bridge's number tiles,
 // companion-core's diary list); nothing here can change her — actions stay in /dot, /interlude.
 
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import { rejectUnlessOwner } from '../web-auth.js';
+import { createActivity, DEFAULT_SCENES } from './activity.js';
 
 export const PANEL_PATH = '/dsh-dot/panel'; // the phone's live view is /dsh-dot/phone; prefixes must not nest
 
-/** Everything the page shows, gathered from the services that exist right now. */
-export async function collectState(ctx) {
+// One reader per (DSH_HOME, home): it caches each file's parsed tail until the file changes.
+const readers = new Map();
+function activityOf(dot, opts = {}) {
+  const dshHome = process.env.DSH_HOME || join(homedir(), '.dsh');
+  const home = dot?.home || join(homedir(), 'dot');
+  const key = `${dshHome}\0${home}`;
+  if (!readers.has(key)) readers.set(key, createActivity({ dshHome, home }));
+  return readers.get(key).scenes({
+    limit: Math.max(1, Math.min(100, Number(opts.scenes) || DEFAULT_SCENES)),
+    busy: (id) => Boolean(dot?.busy?.(id)),
+    isErrand: (id) => Boolean(dot?.isErrand?.(id)),
+  });
+}
+
+/** Everything the page shows, gathered from the services that exist right now. `opts.scenes`: how many scenes (default 30). */
+export async function collectState(ctx, opts = {}) {
   const get = (n) => { try { return ctx.get(n); } catch (error) { void error; return undefined; } };
   const dot = get('dshDot');
   const phone = get('dshPhone');
@@ -30,6 +48,8 @@ export async function collectState(ctx) {
     dot: dot ? { session: dot.session?.() || '', errand: dot.errandId?.() || '', today: dot.stats?.() ?? null } : null,
     interlude: interlude ? await safe(() => interlude.status()) : null,
     memory: memory ? await safe(() => memory.panel()) : null,
+    // The last N scenes (one wake until its turn ended), read back from the records that exist.
+    activity: await safe(() => ({ scenes: activityOf(dot, opts) })),
   };
 }
 
@@ -55,10 +75,23 @@ h2{font-size:12px;font-weight:600;color:var(--mute);margin:0 0 6px;letter-spacin
 ul{margin:4px 0;padding-left:18px}li{margin:2px 0}
 details summary{cursor:pointer;color:var(--mute)}
 #err{color:var(--bad)}
+.scenes{display:grid;gap:4px}
+.scene{border-top:1px solid var(--line);padding-top:4px}.scene:first-child{border-top:0;padding-top:0}
+.scene>summary{list-style:none;display:grid;grid-template-columns:minmax(96px,34%) 1fr;gap:8px;align-items:baseline;color:var(--fg)}
+.scene>summary::-webkit-details-marker{display:none}
+.smeta{display:flex;flex-wrap:wrap;gap:4px;align-items:baseline;min-width:0}.smeta b{font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%}
+.sprev{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.st{font-size:11px;padding:0 6px;border-radius:999px;border:1px solid var(--line);color:var(--mute)}.st.run{color:var(--ok);border-color:var(--ok)}.st.fail{color:var(--bad);border-color:var(--bad)}
+.tag{display:inline-block;font-size:11px;padding:0 5px;margin-right:4px;border-radius:4px;background:var(--line);color:var(--fg);white-space:nowrap}
+.sbody{margin:4px 0 6px;padding-left:8px;border-left:2px solid var(--line)}
+.acts{list-style:none;padding:0;margin:2px 0}.acts li{margin:3px 0;word-break:break-word}
+.sfoot{font-size:11px;color:var(--mute)}
+h2 select{float:right;font:inherit;font-size:11px;background:var(--card);color:var(--mute);border:1px solid var(--line);border-radius:4px}
 </style></head><body><main>
 <div class="row" id="badges"></div>
 <div class="card"><h2>她现在</h2><div id="now"></div></div>
 <div class="card"><h2>今天</h2><div class="tiles" id="today"></div></div>
+<div class="card"><h2><span id="actTitle">最近 30 场</span><select id="actN" aria-label="scenes"><option>10</option><option selected>30</option><option>60</option><option>100</option></select></h2><div class="scenes" id="activity"></div></div>
 <div class="card"><h2>记忆</h2><div id="memory"></div></div>
 <div class="card"><h2>日记</h2><div id="diary"></div></div>
 <div class="card"><h2>剧本</h2><div id="script"></div></div>
@@ -73,6 +106,44 @@ const at=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'nume
 const badge=(cls,label,text)=>'<span class="badge '+cls+'"><i class="dotc"></i>'+esc(label)+(text?' <span class="mute">'+esc(text)+'</span>':'')+'</span>';
 const tile=(n,label)=>'<div class="tile"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>';
 const bar=(v,max)=>'<div class="bar"><i style="width:'+Math.min(100,Math.round(100*(v||0)/(max||1)))+'%"></i></div>';
+const ZH=/^zh/i.test(navigator.language||'zh');
+const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
+  src:{owner:'你',qq:'QQ',phone:'手机',check:'拿手机',interlude:'幕间',schedule:'定时',play:'玩'},
+  phase:{advance:'推进','follow-up':'跟进',intent:'打算到点',seed:'开场',diary:'日记'},
+  act:{qq:'回 QQ',reply:'回你',image:'发图',sticker:'存表情',saw:'看了',like:'点赞',comment:'评论',follow:'关注',play:'玩',install:'装 App',diary:'写日记',interlude:'幕间',contact:'主动联系',approval:'审批',look:'去看'},
+  via:{web:'web',phone:'手机',computer:'电脑'}}
+ :{title:(n)=>'Last '+n+' scenes',none:'Nothing yet (scenes appear once she is woken, has an interlude round, or plays)',run:'running',done:'done',fail:'failed',quiet:'stayed quiet',tools:'tools',model:'model',times:'×',tin:'tokens in',tout:'out',
+  src:{owner:'You',qq:'QQ',phone:'Phone',check:'Picked up phone',interlude:'Interlude',schedule:'Scheduled',play:'Play'},
+  phase:{advance:'advance','follow-up':'follow-up',intent:'intent',seed:'seed',diary:'diary'},
+  act:{qq:'QQ reply',reply:'Replied',image:'Image',sticker:'Kept sticker',saw:'Saw',like:'Like',comment:'Comment',follow:'Follow',play:'Play',install:'Install app',diary:'Diary',interlude:'Interlude',contact:'Reached out',approval:'Approval',look:'Looked'},
+  via:{web:'web',phone:'phone',computer:'computer'}};
+let sceneN=30;try{sceneN=+localStorage.getItem('dot.scenes')||30}catch(e){}
+const openScenes=new Set();
+const srcLabel=(src)=>{const k=T.src[src.kind]||src.kind||'';if(!src.name)return k;if(src.kind==='phone')return k+'·'+src.name;if(src.kind==='interlude'||src.kind==='schedule')return k+' · '+(T.phase[src.name]||src.name);if(src.kind==='play')return k+' · '+src.name;return k+' '+src.name;};
+const actLabel=(a)=>(T.act[a.k]||a.k)+(a.k==='look'&&a.via?'（'+(T.via[a.via]||a.via)+'）':'');
+function renderActivity(act){
+  $('actTitle').textContent=T.title(sceneN);
+  const list=act&&act.scenes;
+  if(act&&act.error){$('activity').innerHTML='<span class="mute">'+esc(act.error)+'</span>';return}
+  if(!list||!list.length){$('activity').innerHTML='<span class="mute">'+esc(T.none)+'</span>';return}
+  $('activity').innerHTML=list.map((sc)=>{
+    const id=sc.at+'|'+sc.session+'|'+sc.source.kind;
+    const st=sc.status==='running'?'<span class="st run">'+T.run+'</span>':sc.status==='failed'?'<span class="st fail">'+T.fail+'</span>':'<span class="st">'+T.done+'</span>';
+    const first=sc.actions[0];
+    const prev=first?'<span class="tag">'+esc(actLabel(first))+'</span>'+esc(first.text)+(sc.actions.length>1?' <span class="mute">+'+(sc.actions.length-1)+'</span>':''):'<span class="mute">'+esc(sc.quiet?T.quiet:(sc.trigger||''))+'</span>';
+    const f=sc.stats||{},foot=[];
+    if(f.tools)foot.push(T.tools+' '+f.tools+T.times);
+    if(f.model)foot.push(T.model+' '+f.model+T.times);
+    if(f.in||f.out)foot.push(T.tin+' '+fmt(f.in)+' / '+T.tout+' '+fmt(f.out));
+    let body='';
+    if(sc.trigger)body+='<div class="mute">「'+esc(sc.trigger)+'」'+(sc.count>1?' ×'+sc.count:'')+'</div>';
+    if(sc.actions.length)body+='<ul class="acts">'+sc.actions.map((a)=>'<li><span class="tag">'+esc(actLabel(a))+'</span>'+esc(a.text)+'</li>').join('')+'</ul>';
+    else if(sc.quiet)body+='<div class="mute">'+esc(T.quiet)+'</div>';
+    if(foot.length)body+='<div class="sfoot">'+esc(foot.join(' · '))+'</div>';
+    return '<details class="scene" data-id="'+esc(id)+'"'+(openScenes.has(id)?' open':'')+'><summary><span class="smeta"><span class="mute">'+esc(at(sc.at))+'</span>'+st+'<b>'+esc(srcLabel(sc.source))+'</b></span><span class="sprev">'+prev+'</span></summary><div class="sbody">'+(body||'<span class="mute">—</span>')+'</div></details>';
+  }).join('');
+}
+document.addEventListener('toggle',(e)=>{const d=e.target;if(!d.classList||!d.classList.contains('scene'))return;if(d.open)openScenes.add(d.dataset.id);else openScenes.delete(d.dataset.id);},true);
 function render(s){
   const d=s.devices||{}, it=s.interlude, m=s.memory, dot=s.dot;
   let b='';
@@ -119,13 +190,15 @@ function render(s){
   if(it&&it.script&&it.script.length){
     $('script').innerHTML=it.script.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.head)+'</b><div class="pre">'+esc(e.text)+'</div></div>').join('');
   } else $('script').innerHTML='<span class="mute">还没有剧本</span>';
+  renderActivity(s.activity);
   $('foot').textContent='更新于 '+new Date(s.at).toLocaleTimeString('zh-CN');
 }
 async function tick(){
   if(document.hidden) return;
-  try{const r=await fetch('api/state',{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);render(await r.json());$('err').textContent='';}
+  try{const r=await fetch('api/state?scenes='+sceneN,{cache:'no-store'});if(!r.ok)throw new Error('HTTP '+r.status);render(await r.json());$('err').textContent='';}
   catch(e){$('err').textContent='读取状态失败：'+e.message}
 }
+$('actN').value=String(sceneN);$('actN').addEventListener('change',(e)=>{sceneN=+e.target.value||30;try{localStorage.setItem('dot.scenes',String(sceneN))}catch(err){}tick()});
 tick();setInterval(tick,3000);document.addEventListener('visibilitychange',()=>{if(!document.hidden)tick()});
 </script></body></html>`;
 }
@@ -144,7 +217,7 @@ export function mountPanel(ctx, webServer, logger, connection = ctx.get?.('conne
       if (req.method !== 'GET') { res.writeHead(405).end(); return; }
       if (sub === '' || sub === '/') { res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html); return; }
       if (sub === '/api/state') {
-        try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(await collectState(ctx))); }
+        try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(await collectState(ctx, { scenes: url.searchParams.get('scenes') }))); }
         catch (err) { logger?.warn?.(`panel state failed: ${err.message}`); res.writeHead(500, { 'content-type': 'application/json' }).end(JSON.stringify({ error: err.message })); }
         return;
       }

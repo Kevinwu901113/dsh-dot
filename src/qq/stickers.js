@@ -8,8 +8,15 @@ import { dirname, join } from 'node:path';
 const MAX = 300;
 export const STICKER_MAX_BYTES = 4 * 1024 * 1024;
 
-/** An image segment's data → is it a sticker? (NapCat and SnowLuma both set sub_type 1 on 表情包.) */
-export const isSticker = (d) => String(d?.sub_type ?? '') === '1' || /表情/.test(String(d?.summary ?? ''));
+/**
+ * An image segment's data → is it a sticker? NapCat and SnowLuma both set sub_type 1 on 表情包; QQ's
+ * own big stickers (mface) come as images whose summary is a short bracketed name — `[？]`, `[doge]`
+ * — without the word 表情. A plain picture's `[图片]` is not one.
+ */
+export const isSticker = (d) => {
+  const summary = String(d?.summary ?? '').trim();
+  return String(d?.sub_type ?? '') === '1' || /表情/.test(summary) || (/^\[.{1,8}\]$/u.test(summary) && !/^\[(图片|image|picture|photo)\]$/i.test(summary));
+};
 
 export function createStickers(file, { fetch = globalThis.fetch } = {}) {
   const dir = join(dirname(file), 'stickers');

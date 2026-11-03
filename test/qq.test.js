@@ -357,3 +357,12 @@ test('groupPolicy score: an obeyed injection still only wakes her; a garbage rep
   assert.equal(got[0].score, 10);
   effects.forEach((d) => typeof d === 'function' && d());
 });
+
+test('isSticker: sub_type 1, a 表情 summary, and QQ\'s own big stickers (mface: "[？]", "[doge]"); not a plain picture', async () => {
+  const { isSticker } = await import('../src/qq/stickers.js');
+  assert.ok(isSticker({ sub_type: 1 }));
+  assert.ok(isSticker({ sub_type: '0', summary: '[动画表情]' }));
+  for (const summary of ['[？]', '[doge]', '[哈哈哈]', '[贴贴]', ' [狗头] ']) assert.ok(isSticker({ sub_type: 0, summary }), summary);
+  for (const summary of ['', '[图片]', '[image]', '[这是一个很长很长的名字啊]', 'doge', '[a] b']) assert.ok(!isSticker({ sub_type: 0, summary }), summary);
+  assert.ok(!isSticker(undefined));
+});

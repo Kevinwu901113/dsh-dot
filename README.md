@@ -93,7 +93,7 @@ Web 版：`dsh plugin --profile web add dsh-dot-life`。从源码装：把包名
 | `~/.dsh/phone/` | 模拟器、platform-tools、系统镜像、AVD（`avd/dot.avd/`）；`~/.dsh/dsh-phone.log` 日志、`dsh-phone-audit.jsonl` 审计、`dsh-phone.json` 设置 |
 | `~/.dsh/dsh-computer*` | 电脑的日志、审计、状态 |
 | `/phone [accept\|restart\|screenshot]` · `/interlude [now\|advance\|seed\|preset <code>\|canon]` · `/dot [test\|check]` · `/dot memory [now\|diary\|handoff\|recall …]` · `/dot people [approve <id>\|drop <id>\|forget <名字>]` | 各组件的状态和操作 |
-| 右侧栏 **dot** 标签页（会话顶部 ◎ 按钮） | 一页看全：手机 / 电脑 QQ / 电脑 状态、她的对话交班进度、她此刻在做什么和打算、今天的轮数 / 玩 / 去看 / 叫醒 / token、记忆用量、日记、最近两段剧本。只读，3 秒刷新；页面由 `dsh-dot/dot` 挂在 dsh 自己的 web server 上（`/dsh-dot/panel/`），不开新端口 |
+| 右侧栏 **dot** 标签页（会话顶部 ◎ 按钮） | 一页看全：手机 / 电脑 QQ / 电脑 状态、她的对话交班进度、她此刻在做什么和打算、今天的轮数 / 玩 / 去看 / 叫醒 / token、**最近 30 场**（每次被叫醒到那轮结束是一场：时间 · 进行中/完成 · 来源〔你 / QQ 某人 / 手机·某 App / 拿手机 / 幕间 / 定时 / 玩〕，展开是这一场做的事——回 QQ、发图、存表情、看了、点赞、写日记、去看、主动联系、审批……每条带她的原话，底部是工具 / 模型次数和 token；全部从已有的审计、记录尾部读出，不另写文件）、记忆用量、日记、最近两段剧本。只读，3 秒刷新；页面由 `dsh-dot/dot` 挂在 dsh 自己的 web server 上（`/dsh-dot/panel/`），不开新端口 |
 | 安全边界 | 手机实时画面与控制（`/dsh-dot/phone/`）和 dot 面板都挂在 dsh 的 web server 上，每个请求先过 dsh 的 `connection` 服务（dsh 登录态 + Host/Origin 围栏，不信任任何转发头）——插件不自带鉴权、不开自己的端口。电脑的实时桌面同样挂在 dsh 的 web server 上（`/dsh-dot/computer/`，含 VNC 的 WebSocket），由插件带密钥中继给虚拟机网关；网关端口（`127.0.0.1:18080`）只绑本机回环且要求密钥（`SANDBOX_API_KEY`，每台机器自动生成在 `~/.dsh/dsh-computer.key`），只有插件内部持有。若要从外面看，请暴露 dsh 本身而不是这个端口 |
 
 dot 的通知相关：`notifyBatchMs`（1 秒内的通知合成一次叫醒）、`notifyHours`（可选的静音时段，默认不设：任何时候来通知都叫醒她）；她正在跑一轮时来的通知会攒到那轮结束，同一个对话的多条按顺序列出，一次叫醒。每个组件的配置项见各自的文档：[phone](docs/phone.md)、[interlude](docs/interlude.md)、[computer](docs/computer.md)；dot 自己只有 `home`、`scope`、`imBot` / `imTarget`、`autoUnblockDaily`。

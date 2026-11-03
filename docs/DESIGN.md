@@ -209,3 +209,9 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 **手机存储**：她 8 GB 数据分区满了；改 `disk.dataPartition.size` 不会扩大已有分区（实测）。新手机默认 16 GB，建之前可选（`/phone accept <GB>`、`/phone size <GB>`）。
 
+
+## v0.12.3（2026-11-03）：面板「最近 30 场」、启动自检、mface 表情
+
+- **最近 N 场**（`src/dot/activity.js`，参照别家养鱼面板的"按场列表"）：一场 = 一次叫醒到那轮结束（他的话、QQ / 手机通知、拿手机、幕间一轮、定时任务、玩、每天的日记），按会话 + 时间窗把已有记录拼起来——dot / interlude / memory 审计、QQ 审计（`private`/`group`、`sent`、`sticker-kept`）、memory 的 transcript / calls / diary、幕间的 calls / script。不新增任何写入；每个文件只读尾部（最近 3 天、至多 1 MB，审计含 `.1`），按 size+mtime 缓存，面板 3 秒一轮也只做几次 `stat`。每场：时间 · 进行中/完成/出错 · 来源，展开是动作（短标签 + 她的原话，截 80 字）和工具 / 模型次数 / token（只有幕间和日记的 token 有记录）。
+- **启动自检**：`lastSession` 指向跑腿（在 pastErrands、或标题含"跑腿"）或已归档（`workspaceRegistry.archivedSessionIds`）就清空并记 `last-session-cleared`；查不到的跳过。起因：11-03 旧状态文件指向已归档的跑腿，他的 QQ 消息投进去没人回。
+- **mface**：QQ 自带大表情的 summary 是 `[？]`、`[doge]`，没有"表情"二字，原来没被当表情包存；短方括号（1–8 字，`[图片]` 除外）也算。

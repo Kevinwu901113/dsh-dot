@@ -506,3 +506,25 @@ test('his QQ message → her answer in the conversation is relayed to his QQ, un
   assert.ok(h.audit.some((e) => e.event === 'qq-relayed') && h.audit.some((e) => e.event === 'qq-answered-herself'));
   stop(h);
 });
+
+test('startup self-check: a remembered conversation that is an errand or archived is cleared and audited; a live one stays', async () => {
+  const boot = (state, extra = {}) => {
+    const h = harness({ state });
+    const provided = {};
+    h.ctx.provide = (n, v) => { provided[n] = v; };
+    h.ctx.get = ((get) => (n) => extra[n] ?? get(n))(h.ctx.get);
+    apply(h.ctx, h.config);
+    stop(h);
+    return { session: provided.dshDot.session(), audit: h.audit.filter((e) => e.event === 'last-session-cleared') };
+  };
+  let r = boot({ lastSession: 'old-errand', pastErrands: ['old-errand'] });
+  assert.equal(r.session, ''); assert.deepEqual(r.audit.map((e) => [e.session, e.why]), [['old-errand', 'errand']]);
+  r = boot({ lastSession: 'gone' }, { workspaceRegistry: { archivedSessionIds: ['x', 'gone'] } });
+  assert.equal(r.session, ''); assert.equal(r.audit[0].why, 'archived');
+  r = boot({ lastSession: 'e9' }, { agents: { get: (id) => (id === 'e9' ? { session: { header: { title: 'dot · 跑腿' } } } : undefined) } });
+  assert.equal(r.session, ''); assert.equal(r.audit[0].why, 'errand title');
+  r = boot({ lastSession: 'live' }, { workspaceRegistry: { archivedSessionIds: ['x'] } });
+  assert.equal(r.session, 'live'); assert.equal(r.audit.length, 0);
+  r = boot({ lastSession: 'live' }, { workspaceRegistry: { get archivedSessionIds() { throw new Error('not ready'); } } });
+  assert.equal(r.session, 'live', 'what dsh cannot tell is skipped');
+});

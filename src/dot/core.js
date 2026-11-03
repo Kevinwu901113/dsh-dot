@@ -239,7 +239,26 @@ export function apply(ctx, config = {}) {
   // "latest session" (his QQ message then goes into an archived errand and he never gets an answer).
   const pastErrands = new Set(store.get('pastErrands') ?? []);
   const isErrand = (id) => Boolean(id) && (id === errandId || pastErrands.has(id));
-  if (isErrand(lastSession)) { lastSession = ''; store.set('lastSession', ''); }
+  // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
+  // can point at an errand or at a session archived since (11-03: his QQ messages went into an
+  // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
+  const staleWhy = (id) => {
+    if (!id) return '';
+    if (isErrand(id)) return 'errand';
+    try { if (/跑腿/.test(String(ctx.get('agents')?.get?.(id)?.session?.header?.title ?? ''))) return 'errand title'; } catch (error) { void error; }
+    try { const ids = ctx.get('workspaceRegistry')?.archivedSessionIds; if ((Array.isArray(ids) || ids instanceof Set) && [...ids].includes(id)) return 'archived'; } catch (error) { void error; }
+    return '';
+  };
+  const selfCheck = () => {
+    const why = staleWhy(lastSession);
+    if (!why) return;
+    audit('last-session-cleared', { session: lastSession, why });
+    logger.warn(`her remembered conversation ${lastSession} is ${why === 'archived' ? 'archived' : 'an errand'}: cleared (the next message to her picks a new one)`);
+    lastSession = ''; store.set('lastSession', '');
+  };
+  selfCheck();
+  // The registry can come up after dot: look again once it is there.
+  ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
   async function ensureErrand() {
     if (!cfg.errands) return '';
     if (errandId) return errandId;
