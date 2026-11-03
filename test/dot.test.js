@@ -250,6 +250,10 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   const { ownerSource, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
   assert.equal(ownerSource().kind, 'user');
   assert.match(ownerSource().rpcId, /^qq-/);
+  // his relayed QQ words must not turn her conversation into an "IM bot session" (that blocks the memory handoff)
+  const { isImMessage } = await import('../src/dot/core.js');
+  assert.equal(isImMessage({ source: ownerSource() }), false);
+  assert.equal(isImMessage({ source: { kind: 'user', rpcId: 'qq-3f1c…' } }), true, 'a dsh-im bot relay still counts');
   const h = harness();
   const followups = [];
   let onMessage, goal = null;

@@ -35,7 +35,7 @@ export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 
  * treats them as direct human input — which is what lets a QQ message start a long task (goal).
  * Nobody else's messages get this.
  */
-export const ownerSource = () => ({ kind: 'user', rpcId: `qq-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}` });
+export const ownerSource = () => ({ kind: 'user', rpcId: `qq-dot-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}` });
 /** Source of the periodic "pick up your phone" turn; not pushed to IM either. */
 export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-check' });
 /** The periodic turn: she picks up her phone the way people do between things. */
@@ -131,7 +131,10 @@ export function errandNote(origin, text) {
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 /** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
 export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
-export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));
+// "qq-dot-…" is our own tag (ownerSource): his QQ words relayed by dot, not a dsh-im bot session —
+// counting those made her conversation an "IM bot session", which the memory handoff leaves alone
+// (11-03: 456k tokens, no handoff since 10-29).
+export const isImMessage = (m) => { const r = String(m?.source?.rpcId ?? ''); return IM_RPC.test(r) && !r.startsWith('qq-dot-'); };
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 /** 'HH:MM-HH:MM' (may wrap midnight) → is `date` inside it? Empty spec = always. */
 export function inHours(spec, date = new Date()) {
