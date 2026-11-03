@@ -10,6 +10,22 @@ import { tmpdir } from 'node:os';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+// dsh's own packages are peer dependencies: present where the plugin runs, usually absent in a bare
+// source checkout. The prompts never need them, so a missing one is replaced by a stub.
+{
+  const { register } = await import('node:module');
+  const stubs = {
+    '@deepseek-ai/dsh-llm': 'export const createUserMessage = (m) => m;',
+    '@deepseek-ai/dsh-subprocess': 'export class SubprocessExecutableNotFoundError extends Error {}',
+    '@deepseek-ai/dsh-subprocess-local': 'export class LocalSubprocessRuntime {}',
+    '@deepseek-ai/dsh-mcp-client': '',
+  };
+  const missing = Object.fromEntries(Object.entries(stubs).filter(([n]) => { try { import.meta.resolve(n); return false; } catch { return true; } }));
+  if (Object.keys(missing).length) {
+    const hook = `export const resolve = (s, c, next) => (STUBS[s] ? { url: 'data:text/javascript,' + encodeURIComponent(STUBS[s]), shortCircuit: true } : next(s, c));`;
+    register(`data:text/javascript,${encodeURIComponent(`const STUBS=${JSON.stringify(missing)};${hook}`)}`);
+  }
+}
 const read = (f) => readFileSync(join(ROOT, f), 'utf8');
 // Fresh module per file version, so a saved edit shows on the next render.
 const mod = (f) => import(`${pathToFileURL(join(ROOT, f)).href}?v=${statSync(join(ROOT, f)).mtimeMs}`);
