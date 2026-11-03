@@ -235,7 +235,11 @@ export function apply(ctx, config = {}) {
   // restarts, archived and replaced once it grows past errandMaxTokens.
   let errandId = cfg.errands ? (store.get('errandSession') || '') : '';
   let errandCreating = null;
-  const isErrand = (id) => Boolean(id) && id === errandId;
+  // Errands that were rotated away stay errands: their last turn/end must not make one of them her
+  // "latest session" (his QQ message then goes into an archived errand and he never gets an answer).
+  const pastErrands = new Set(store.get('pastErrands') ?? []);
+  const isErrand = (id) => Boolean(id) && (id === errandId || pastErrands.has(id));
+  if (isErrand(lastSession)) { lastSession = ''; store.set('lastSession', ''); }
   async function ensureErrand() {
     if (!cfg.errands) return '';
     if (errandId) return errandId;
@@ -261,6 +265,8 @@ export function apply(ctx, config = {}) {
     try { tokens = Number(meter.measure(agent.session)?.totalTokens ?? 0); } catch (error) { void error; return; }
     if (tokens < cfg.errandMaxTokens) return;
     if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
+    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
+    if (lastSession === id) { lastSession = ''; store.set('lastSession', ''); }
     try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.warn(`errand archive failed: ${err.message}`); }
     audit('errand-rotated', { session: id, tokens });
   }
@@ -456,7 +462,8 @@ export function apply(ctx, config = {}) {
     send(lastSession, items.filter(isConversation));
     send(e, errands);
   };
-  const releaseHeld = (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
+  // Items held for an errand that was rotated meanwhile go to the current errand, not the archived one.
+  const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, pastErrands.has(id) ? (await ensureErrand()) || lastSession : id); };
   const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat' };
   const wake = (n) => {
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.

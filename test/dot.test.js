@@ -340,6 +340,35 @@ test('errands: app notifications and phone checks run in her errand session; onl
   stop(h);
 });
 
+test('a rotated errand never becomes her conversation: its last turn/end is ignored, held items go to the new errand', async () => {
+  const h = harness();
+  const followups = [];
+  let onNotification, n = 0;
+  const controller = { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }), inject: () => {} } }) };
+  const agents = { get: () => ({ session: {} }) };
+  const meter = { measure: () => ({ totalTokens: 999_999 }) }; // every errand turn is "too large": rotated at its end
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : name === 'agents' ? agents : name === 'tokenMeter' ? meter : name === 'workspaceRegistry' ? { archiveSession: async () => {} } : orig(name))(h.ctx.get);
+  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 30 });
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' }); // her conversation: s1
+  onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'a' });
+  await wait(40);
+  assert.deepEqual(followups.map((f) => f.id), ['errand-1']);
+  // errand-1 runs a turn; another app notification arrives meanwhile (held); the turn ends too large → rotated
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'b' });
+  await wait(40);
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  await wait(80);
+  assert.deepEqual(followups.map((f) => f.id), ['errand-1', 'errand-2'], 'the held notification goes to the new errand');
+  // a late turn in the archived errand-1 must not make it her latest session
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 2 }); h.emitAs('errand-1', h.home, 'turn/end', { turn: 2, reason: 'completed' });
+  await wait(20);
+  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
+  await wait(40);
+  assert.equal(followups.at(-1).id, 's1', 'his message wakes her conversation, not the archived errand');
+  stop(h);
+});
+
 test('phone check goes to the errand session', async () => {
   const h = harness();
   const followups = [];
