@@ -118,7 +118,8 @@ test('transcript: what he said, what she really sent over QQ, phone and errand n
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
-  h.emit('s1', 'tool/call', { name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬去哪<sep/>要帮忙吗' }) });
+  h.emit('s1', 'tool/call', { callId: 'c1', name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬去哪<sep/>要帮忙吗' }) });
+  h.emit('s1', 'tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'sent 2 message(s)' }] }, meta: { sent: 2, said: ['搬去哪', '要帮忙吗'], imagesSent: 0 } });
   h.emit('s1', 'assistant/message', msg('回了'));
   h.emit('s1', 'turn/end', {});
   h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'errand-note' }, content: [{ type: 'text', text: '[刚才拿起手机看了一眼] 小黑盒有人回复我\n（这是你自己刚做过的事…）' }] }, { surfaceOp: 'append' });
@@ -210,7 +211,8 @@ test('backfill: the conversation from before memory was installed is read once f
   const { transcriptFromEvents } = await import('../src/memory/memory.js');
   const events = [
     { type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '我下周搬家' }] } },
-    { type: 'tool/call', time: 2, data: { name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬哪' }) } },
+    { type: 'tool/call', time: 2, data: { callId: 'c1', name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬哪' }) } },
+    { type: 'tool/result', time: 3, data: { message: { toolCallId: 'c1', content: [{ type: 'text', text: 'sent 1 message(s)' }] } } },
     { type: 'assistant/message', time: 3, data: { message: { content: [{ type: 'text', text: 'DOT_SILENT' }] } } },
     { type: 'user/message', time: 4, data: { source: { kind: 'dsh-dot', form: 'phone-check' }, content: [{ type: 'text', text: '[拿起手机]' }] } },
   ];
@@ -340,4 +342,58 @@ test('stamps: wake messages are stamped, the transcript is not stamped twice; la
   assert.equal(mem.lastSaidAt(lines[0].at), 0, 'only lines before the moment');
   const { transcriptFromEvents } = await import('../src/memory/memory.js');
   assert.deepEqual(transcriptFromEvents([{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '[11-04 04:51] 我下周搬家' }] } }], 's1').map((l) => l.text), ['我下周搬家']);
+});
+
+test('his words steered into a running turn are recorded without the line dot adds', async () => {
+  const { ownerSaid, transcriptFromEvents } = await import('../src/memory/memory.js');
+  const { ownerWords } = await import('../src/dot/core.js');
+  const { unstamp } = await import('../src/clock.js');
+  const busy = unstamp(ownerWords([{ text: '先别弄了' }, { text: '（括号也是他打的）' }], Date.now(), { whileBusy: true }));
+  assert.equal(ownerSaid(busy), '先别弄了\n（括号也是他打的）');
+  assert.equal(ownerSaid('就这一句'), '就这一句');
+  const ev = { type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: ownerWords([{ text: '在吗' }], Date.now(), { whileBusy: true }) }] } };
+  assert.equal(transcriptFromEvents([ev], 's')[0].text, '在吗');
+});
+
+test('qq_send in the transcript is what went out: a denied send nothing, an interrupted one its sent bubbles, a failed image only the text; at the call\'s time', async () => {
+  const { qqSentText, transcriptFromEvents } = await import('../src/memory/memory.js');
+  const args = { to: 'owner', text: '那家店我去过\n还挺好吃的\n下次带你去', images: ['face:14'] };
+  const result = (meta, text = `sent ${meta?.sent ?? 0} message(s)`, isError = false) => ({ message: { toolCallId: 'c', isError, content: [{ type: 'text', text }] }, ...(meta ? { meta } : {}) });
+  const denied = result(null, '他刚又发了消息，这条没发出去。', true);
+  const cut = result({ sent: 1, said: ['那家店我去过'], imagesSent: 0, interrupted: true });
+  const imageFailed = result({ sent: 3, said: ['那家店我去过', '还挺好吃的', '下次带你去'], imagesSent: 0 });
+  assert.equal(qqSentText(args, denied), '');
+  assert.equal(qqSentText(args, cut), '那家店我去过');
+  assert.equal(qqSentText(args, imageFailed), '那家店我去过 / 还挺好吃的 / 下次带你去');
+  assert.equal(qqSentText(args, result({ sent: 4, said: ['a', 'b', 'c'], imagesSent: 1 })), 'a / b / c [图片×1]');
+  // no meta (an older qq_send): the first `sent` lines
+  assert.equal(qqSentText(args, result(null, 'sent 2 message(s)\n发了 2 条，他插了话…')), '那家店我去过 / 还挺好吃的');
+  assert.equal(qqSentText(args, result(null, 'sent 4 message(s)')), '那家店我去过 / 还挺好吃的 / 下次带你去 [图片×1]');
+  // backfill from the session log
+  const ev = (type, time, data) => ({ type, time, data });
+  const call = (id, time) => ev('tool/call', time, { callId: id, name: 'qq_send', arguments: JSON.stringify(args) });
+  const res = (id, time, r) => ev('tool/result', time, { ...r, message: { ...r.message, toolCallId: id } });
+  const said = transcriptFromEvents([call('a', 1), res('a', 2, denied), call('b', 3), ev('user/message', 5, { source: { kind: 'user' }, content: [{ type: 'text', text: '等下' }] }), res('b', 6, cut), call('c', 7), res('c', 8, imageFailed)], 's');
+  assert.deepEqual(said.map((l) => [l.at, l.who, l.text]), [[3, 'her', '那家店我去过'], [5, 'owner', '等下'], [7, 'her', '那家店我去过 / 还挺好吃的 / 下次带你去']]);
+  // live: recorded at the result, placed at the call's time; the handoff tail and recall read the same lines
+  const h = harness();
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'tool/call', { callId: 'a', name: 'qq_send', arguments: JSON.stringify(args) });
+  h.emit('s1', 'tool/result', denied.message ? { ...denied, message: { ...denied.message, toolCallId: 'a' } } : denied);
+  h.emit('s1', 'tool/call', { callId: 'b', name: 'qq_send', arguments: JSON.stringify(args) });
+  await wait(5);
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '等下' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'tool/result', { ...cut, message: { ...cut.message, toolCallId: 'b' } });
+  h.emit('s1', 'tool/call', { callId: 'c', name: 'qq_send', arguments: JSON.stringify(args) });
+  h.emit('s1', 'tool/result', { ...imageFailed, message: { ...imageFailed.message, toolCallId: 'c' } });
+  h.emit('s1', 'turn/end', {});
+  await wait(10);
+  const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.filter((l) => l.who === 'her').map((l) => l.text), ['那家店我去过', '那家店我去过 / 还挺好吃的 / 下次带你去']);
+  assert.ok(!lines.some((l) => l.text.includes('[图片')), 'the face never went out');
+  assert.deepEqual(lines.sort((a, b) => a.at - b.at).map((l) => [l.who, l.text]), [['her', '那家店我去过'], ['owner', '等下'], ['her', '那家店我去过 / 还挺好吃的 / 下次带你去']], 'in time order: the cut send came before his interruption');
+  const found = await h.tools.recall.execute({ query: '好吃' });
+  assert.match(found.found, /我：那家店我去过 \/ 还挺好吃的 \/ 下次带你去/);
+  for (const d of h.effects) if (typeof d === 'function') d();
 });

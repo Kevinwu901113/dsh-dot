@@ -183,27 +183,58 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
  * Transcript lines from a session's raw event log (sessionQuery.readSession): used once, to give
  * memory the conversation that happened before memory was installed.
  */
+/** His words as he typed them: without the line dot adds when they were steered into a running turn. */
+export const ownerSaid = (text) => { const busy = `\n${prompt('dot.owner-words.busy')}`; return text.endsWith(busy) ? text.slice(0, -busy.length) : text; };
+
+/**
+ * What one qq_send really put on QQ, as a transcript line's text ('' = nothing went out), from its
+ * `tool/result`: denied or failed → nothing; otherwise the bubbles qq_send reports as sent
+ * (`meta.said`, `meta.imagesSent` — an interrupted send, a dropped leak line and an image QQ refused
+ * are not in them). A result without that meta (older plugin version, a nested call): the first
+ * `sent N` lines of the call's text, then images.
+ */
+export function qqSentText(args, result) {
+  if (!result || result.isError || result.message?.isError) return '';
+  const meta = result.meta && typeof result.meta === 'object' ? result.meta : null;
+  let said, images;
+  if (Array.isArray(meta?.said)) { said = meta.said.map(String); images = Number(meta.imagesSent) || 0; }
+  else {
+    const parts = String(args?.text ?? '').split(/<sep\s*\/>|\n/i).map((x) => x.trim()).filter(Boolean);
+    const refs = [].concat(args?.images ?? []).filter(Boolean).length;
+    const m = /^sent (\d+) message/.exec(contentText(result.message?.content ?? result.content));
+    const n = m ? Number(m[1]) : parts.length + refs;
+    said = parts.slice(0, n); images = Math.min(refs, Math.max(0, n - parts.length));
+  }
+  const text = said.join(' / ');
+  return `${text}${images ? `${text ? ' ' : ''}[图片×${images}]` : ''}`;
+}
+const parseArgs = (s) => { try { return JSON.parse(s ?? '{}') ?? {}; } catch { return {}; } };
+/** Lines kept in time order: a qq_send is recorded at its result, with the time of its call. */
+const byTime = (a, b) => (a.at ?? 0) - (b.at ?? 0);
+
 export function transcriptFromEvents(events, session) {
   const out = [];
+  const calls = new Map(); // callId → { at, args }
   const qqTurns = new Set((events ?? []).filter((e) => e?.type === 'tool/call' && e.data?.name === 'qq_send').map((e) => e.data?.turn));
   for (const e of events ?? []) {
     const at = Number(e?.time) || 0;
     if (e?.type === 'user/message') {
       const src = e.data?.source ?? {};
       const text = unstamp(contentText(e.data?.content));
-      if (src.kind === 'user') out.push({ at, session, who: 'owner', text });
+      if (src.kind === 'user') out.push({ at, session, who: 'owner', text: ownerSaid(text) });
       else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') out.push({ at, session, who: 'phone', text: text.split('\n（')[0] });
     } else if (e?.type === 'tool/call' && e.data?.name === 'qq_send') {
-      let args = {};
-      try { args = JSON.parse(e.data.arguments ?? '{}'); } catch (error) { void error; }
-      const text = String(args.text ?? '').replace(/<sep\s*\/>/gi, ' / ');
-      if (text) out.push({ at, session, who: 'her', to: String(args.to ?? ''), text });
+      calls.set(e.data.callId, { at, args: parseArgs(e.data.arguments) });
+    } else if (e?.type === 'tool/result' && calls.has(e.data?.message?.toolCallId)) {
+      const c = calls.get(e.data.message.toolCallId); calls.delete(e.data.message.toolCallId);
+      const text = qqSentText(c.args, e.data);
+      if (text) out.push({ at: c.at, session, who: 'her', to: String(c.args.to ?? ''), text });
     } else if (e?.type === 'assistant/message' && !e.data?.interrupted && !qqTurns.has(e.data?.turn)) {
       const text = contentText(e.data?.message?.content);
       if (text.trim() && !isSilent(text) && text.length <= 600) out.push({ at, session, who: 'her', text });
     }
   }
-  return out.filter((l) => String(l.text ?? '').trim()).map((l) => ({ ...l, text: clip(String(l.text).trim(), 2000) }));
+  return out.sort(byTime).filter((l) => String(l.text ?? '').trim()).map((l) => ({ ...l, text: clip(String(l.text).trim(), 2000) }));
 }
 
 /** The note a new session opens with after a handoff. */
@@ -283,12 +314,15 @@ export function apply(ctx, config = {}) {
 
   // ── transcript ──
   let lines = [];
-  try { lines = readFileSync(files.transcript, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch (error) { void error; }
+  try { lines = readFileSync(files.transcript, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).sort(byTime); } catch (error) { void error; }
   let lastLineAt = lines.at(-1)?.at ?? 0;
   const record = (l) => {
     const line = { at: Date.now(), ...l, text: clip(String(l.text ?? '').trim(), 2000) };
     if (!line.text) return;
-    lines.push(line); lastLineAt = line.at;
+    // A qq_send line carries its call's time and arrives at its result: it goes back to its place.
+    let i = lines.length;
+    while (i > 0 && (lines[i - 1].at ?? 0) > line.at) i--;
+    lines.splice(i, 0, line); lastLineAt = Math.max(lastLineAt, line.at);
     if (lines.length > 5000) lines = lines.slice(-4000);
     try { appendFileSync(files.transcript, `${JSON.stringify(line)}\n`); } catch (err) { logger.warn(`transcript write failed: ${err.message}`); }
   };
@@ -339,6 +373,7 @@ export function apply(ctx, config = {}) {
     return (cwd && inside(home, cwd)) || id === d?.session?.();
   };
   const turns = new Map(); // session → { sentViaQq, last }
+  const qqCalls = new Map(); // qq_send callId → { at, args }, until its tool/result
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     if (!id || !event || !isConversation(id, session?.header?.cwd)) return;
@@ -349,7 +384,8 @@ export function apply(ctx, config = {}) {
         if (event.surfaceOp && event.surfaceOp !== 'append') return;
         const src = event.data?.source ?? {};
         // Wake messages carry a stamp ([11-04 04:51] …); a transcript line has its own time.
-        const text = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
+        const said = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
+        const text = src.kind === 'user' ? ownerSaid(said) : said;
         if (src.kind === 'user') record({ who: 'owner', session: id, text });
         else if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
@@ -360,13 +396,21 @@ export function apply(ctx, config = {}) {
       }
       case 'tool/call': {
         // Only qq_send's text is her words; no tool's result is ever recorded (the `account` tool's passwords included).
+        // It is recorded when its result says what went out (a denied or cut-off send is not what he got).
         if (event.data?.name !== 'qq_send') return;
-        let args = {};
-        try { args = JSON.parse(event.data.arguments ?? '{}'); } catch (error) { void error; }
-        const text = String(args.text ?? '').replace(/<sep\s*\/>/gi, ' / ');
-        const images = [].concat(args.images ?? []).length;
-        record({ who: 'her', session: id, to: String(args.to ?? ''), text: `${text}${images ? `${text ? ' ' : ''}[图片×${images}]` : ''}` });
+        qqCalls.set(event.data.callId, { at: Date.now(), args: parseArgs(event.data.arguments) });
+        if (qqCalls.size > 50) qqCalls.delete(qqCalls.keys().next().value);
         t.sentViaQq = true; turns.set(id, t);
+        return;
+      }
+      case 'tool/result': {
+        const call = qqCalls.get(event.data?.message?.toolCallId);
+        if (!call) return;
+        qqCalls.delete(event.data.message.toolCallId);
+        const { args } = call;
+        const text = qqSentText(args, event.data);
+        if (!text) return;
+        record({ at: call.at, who: 'her', session: id, to: String(args.to ?? ''), text });
         const m = /^user:(\d+)$/.exec(String(args.to ?? ''));
         const owner = ctx.get('dshQq')?.owner;
         const target = m ? `qq:${m[1]}` : args.to === 'owner' ? (owner ? `qq:${owner}` : ownerOf(memory.people)?.handles[0]) : '';

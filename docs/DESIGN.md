@@ -165,7 +165,7 @@ Kevin："你有点补丁式修复的味道了。整体看看。"确实：三次�
 
 Kevin："0123 全做。"
 
-- **P0 忙时攒消息**：dot 看得到她每轮的起止，她在跑时来的通知攒到那轮 `turn/end` 一次送达，按通知 key 分组、同一对话的文字按序列出，标题里 QQ 的 `(N条新消息)` 去掉。顺手修了一个旧漏洞：`turns` 只在定时轮删条目，用户轮一直留着（以前无害，现在它是"她忙不忙"的依据）。`notifyHours` 默认 08:00–23:00。
+- **P0 忙时攒消息**（v0.17.0 起只对别人的通知；他的话见文末「先读再说」）：dot 看得到她每轮的起止，她在跑时来的通知攒到那轮 `turn/end` 一次送达，按通知 key 分组、同一对话的文字按序列出，标题里 QQ 的 `(N条新消息)` 去掉。顺手修了一个旧漏洞：`turns` 只在定时轮删条目，用户轮一直留着（以前无害，现在它是"她忙不忙"的依据）。`notifyHours` 默认 08:00–23:00。
 - **P1 拿起手机**：`phoneCheckEveryMinutes`（30）在 `notifyHours` 内、她不忙、最近没被叫醒时，来一轮 `[拿起手机]`——正常轮次，能回能点。`/dot check` 立刻来一次。幕间的 intent 轮只结算不新建（以前每天 7 轮 intent 自己滚自己）。
 - **P2 玩**：提示词来源定为 **Moltbook 的 heartbeat.md / rules.md**——那是一份给"住在社交网络上的 agent"写的行为守则（优先级：回回复 > 点赞 > 评论 > 关注 > 发帖；不为凑数发；参与 > 创造；真诚；做客心态），和我们要的"玩"完全同构，节译进 `src/prompts/interlude.play-rules.txt`，去掉了它的 API 细节。机制：幕间 JSON 多一个 `playIntents`（≤1，大多为空），`playOut()` 过门控（开关、动作白名单、App 白名单、活跃时段、意愿、每日上限、手机就绪）后以 `PLAY_SOURCE` followup 一条 `[想玩会儿手机]` 进她的会话，正常轮次执行，手机闸门照常。`post` / `dm` 不在 `playActions` 里，提示词里也写不进去。
 - 真机：P0/P1 代码已装，等重启；P2 默认关，`play: true` + `playApps` 由 Kevin 打开。
@@ -215,3 +215,15 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **最近 N 场**（`src/dot/activity.js`，参照别家养鱼面板的"按场列表"）：一场 = 一次叫醒到那轮结束（他的话、QQ / 手机通知、拿手机、幕间一轮、定时任务、玩、每天的日记），按会话 + 时间窗把已有记录拼起来——dot / interlude / memory 审计、QQ 审计（`private`/`group`、`sent`、`sticker-kept`）、memory 的 transcript / calls / diary、幕间的 calls / script。不新增任何写入；每个文件只读尾部（最近 3 天、至多 1 MB，审计含 `.1`），按 size+mtime 缓存，面板 3 秒一轮也只做几次 `stat`。每场：时间 · 进行中/完成/出错 · 来源，展开是动作（短标签 + 她的原话，截 80 字）和工具 / 模型次数 / token（只有幕间和日记的 token 有记录）。
 - **启动自检**：`lastSession` 指向跑腿（在 pastErrands、或标题含"跑腿"）或已归档（`workspaceRegistry.archivedSessionIds`）就清空并记 `last-session-cleared`；查不到的跳过。起因：11-03 旧状态文件指向已归档的跑腿，他的 QQ 消息投进去没人回。
 - **mface**：QQ 自带大表情的 summary 是 `[？]`、`[doge]`，没有"表情"二字，原来没被当表情包存；短方括号（1–8 字，`[图片]` 除外）也算。
+
+## v0.17.0（2026-11-03）：先读再说——他连发一串消息时
+
+调研见 dsh-dot-research/multi-message.md 的方案 A。以前他的话和通知一起走 1 秒固定窗口，她这轮没做完就攒到 `turn/end`，再 followup 开新一轮：她弄手机的 20–60 秒里看不到他新说的，还可能先对旧话题发了 `qq_send`，回复顺序就乱了。
+
+- **单独的缓冲**：他的话不进 `batch`，进 `ownerBatch`：静默 `ownerQuietMs`（1.5 s，每条重置），上限 `ownerMaxWaitMs`（6 s，从第一条起）；NapCat 的 `notice` / `input_status`（「对方正在输入」，只认他的私聊）把上限放宽到 `ownerTypingMaxMs`（15 s），他停止输入后回到静默计时。SnowLuma 不推这个事件就当没有。
+- **忙时 steer**：她空闲 → 和以前一样 `followup` 开一轮；她这轮进行中 → `agent.steer(...)`，下一个 step 边界就读到（一个正在跑的工具不会被打断；轮次快结束时进来的由 dsh 的 `agent/turn-stopping` 再跑一步）。这时文本多一行 `dot.owner-words.busy`；记忆记录他的原话时把这一行去掉。agent 上没有 `steer` 时退回 `followup`。别人的通知还是攒到 `turn/end`。
+- **发出前拦截**：`tools/pre-execute` 里，发给他的 `qq_send` 遇到他还有没读的话——缓冲里有，或 `exec.agent.inbox.nextStep` 里还有 `qq-dot-` 来源的消息（steer 了、模型还没读）——就 `deny`，理由是 `dot.owner-interrupt`，并且立刻把缓冲 steer 进去（同步，用 `exec.agent`）。每轮最多 `ownerDenyMax`（2）次，之后放行（`owner-gate-passed`），免得他一直打字时她永远发不出去。
+- **气泡可中断**：`qq.send` 发给他时，每个气泡（第 2 条起）发之前看 `qq.ownerSaidSince(开始时刻)`；他说了话就停，返回 `{ sent, interrupted: true, unsent }`，她看到 `qq.send-interrupted`。
+- **规则**：`dot.rules` 加一条：他连着发几条时等他说完、按最后一条的意思回、不逐条回；回到一半他又说话，先看。
+- **记忆只记发出去的**：`qq_send` 不再在 `tool/call` 时按参数记，而是等同一 `callId` 的 `tool/result`：出错或被拦（`isError`）→ 不记；否则记 `meta.said` / `meta.imagesSent`（`qq_send` 的 `output.presentationMeta`，落在持久的 `tool/result` 上：打断后没发的、丢掉的英文行、上传失败的图都不在里面）。没有 meta 的旧结果按 `sent N` 取前 N 行。时间用调用的时刻，按时间插回 `lines`（handoff 尾巴、recall 都读它），重放会话日志（`transcriptFromEvents`）走同一个 `qqSentText`。
+

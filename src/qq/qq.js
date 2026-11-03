@@ -267,6 +267,7 @@ export function latinLeak(text) {
 /** What qq_send tells her: the count, and — when images failed after the text went out — that the text is already there. */
 export function sendReport(v) {
   const lines = [`sent ${v?.sent ?? 0} message(s)`];
+  if (v?.interrupted) lines.push(prompt('qq.send-interrupted', { sent: v.sent ?? 0, unsent: (v.unsent ?? []).join(' / ') }));
   if (v?.dropped) lines.push(`${v.dropped} 行是英文的自言自语，没发`);
   const before = v?.textSent === 0 ? '前面的图已发出' : '文字已发出';
   for (const f of v?.failed ?? []) lines.push(`${before}；图片 ${f.image} 没发成：${f.error}（已发出的别再发一遍）`);
@@ -393,6 +394,20 @@ export function qqToolGate(name, args = {}, cfg = {}, helpers = {}) {
   return `dsh-dot/qq: QQ action ${action}`;
 }
 
+/**
+ * A "he is typing" notice from the QQ backend, for his private chat only: `{ typing }`, or null when the
+ * event is anything else. NapCat sends `{ post_type: 'notice', notice_type: 'notify', sub_type:
+ * 'input_status', user_id, status_text: '对方正在输入...', event_type }` (an empty status_text when he
+ * stops); SnowLuma may send nothing like it, and then nothing changes.
+ */
+export function inputStatus(ev, owner) {
+  if (ev?.post_type !== 'notice' || ev.sub_type !== 'input_status') return null;
+  if (ev.notice_type !== undefined && ev.notice_type !== 'notify') return null;
+  if (!owner || String(ev.user_id ?? '') !== String(owner) || (ev.group_id && Number(ev.group_id) !== 0)) return null;
+  const text = String(ev.status_text ?? '');
+  return { typing: text ? /正在输入|typing/i.test(text) : Number(ev.event_type) === 1 };
+}
+
 /** Parse a `to` the model or dot gives: "user:123", "group:456", "owner", or a bare number (user). */
 export function parseTarget(to, owner) {
   const s = String(to ?? '').trim();
@@ -443,6 +458,12 @@ export function apply(ctx, config = {}, deps = {}) {
   const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit, sentToOwnerAt: 0 };
   const listeners = new Set();
   qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  // "He is typing" (NapCat input_status notices, his private chat only): { userId, fromOwner, typing }.
+  const typingListeners = new Set();
+  qq.onTyping = (fn) => { typingListeners.add(fn); return () => typingListeners.delete(fn); };
+  // When he last said something: a send to him stops between bubbles once he has spoken since it began.
+  let lastOwnerAt = 0;
+  qq.ownerSaidSince = (ts) => lastOwnerAt > ts;
   qq.status = () => ({ state: qq.state, connected: qq.connected, qq: qq.qq, owner: qq.owner, selfId: qq.selfId, error: qq.error, wsPort: cfg.wsPort, backend: cfg.backend });
   const setState = (state, error) => { if (qq.state !== state || qq.error !== error) { qq.state = state; qq.error = error; audit({ kind: 'status', state, error }); } if (state === 'connected') void mountMcp(); };
   // ---- SnowLuma's MCP server (backend snowluma): her 219 OneBot actions as mcp__dot-qq__* ----
@@ -850,6 +871,11 @@ export function apply(ctx, config = {}, deps = {}) {
       if (ev.meta_event_type === 'heartbeat') { qq.connected = true; qq.selfId ||= String(ev.self_id ?? ''); if (qq.state !== 'connected') setState('connected'); }
       return;
     }
+    if (ev.post_type === 'notice') {
+      const st = inputStatus(ev, qq.owner);
+      if (st) for (const fn of typingListeners) { try { fn({ userId: String(ev.user_id), fromOwner: true, ...st }); } catch (err) { logger.warn(`qq typing listener: ${err.message}`); } }
+      return;
+    }
     if (ev.post_type !== 'message') return;
     const selfId = String(ev.self_id ?? qq.selfId);
     if (String(ev.user_id) === selfId) return;
@@ -866,6 +892,7 @@ export function apply(ctx, config = {}, deps = {}) {
     if (!wanted) return;
     const fromOwner = !isGroup && Boolean(qq.owner) && String(ev.user_id) === String(qq.owner);
     const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
+    if (fromOwner) lastOwnerAt = Date.now();
     recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
     if (recent.size > 500) recent.delete(recent.keys().next().value);
     if (wanted === 'score') { void scoreAndDeliver(msg); return; }
@@ -976,6 +1003,8 @@ export function apply(ctx, config = {}, deps = {}) {
    * Every image is resolved before anything goes out, so a bad one fails the call with nothing sent. If
    * QQ then refuses an image after something was already delivered, the call does not throw (she would
    * resend the text): it returns `failed: [{ image, error }]` next to what was sent.
+   * To him: if he says something while the bubbles are going out, the rest is not sent — `{ sent,
+   * interrupted: true, unsent: [lines…] }` (images not yet sent are listed as `[图片 <ref>]`).
    */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
@@ -991,9 +1020,19 @@ export function apply(ctx, config = {}, deps = {}) {
     for (const ref of refs) segments.push(await imageSegment(ref));
     if (!parts.length && !segments.length) throw new Error(dropped ? `nothing to send: ${dropped} line(s) were English prose, not chat, and were dropped — write what you mean to say to them` : 'nothing to send (text and images both empty)');
     const ids = [], failed = [];
+    const started = Date.now();
+    const toOwner = Boolean(qq.owner) && target.user_id === Number(qq.owner);
+    let unsent = null;
     for (const [i, part] of parts.entries()) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
+      // He spoke while she was typing these out: stop, she reads him first.
+      if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => `[图片 ${String(r).slice(0, 80)}]`)]; break; }
       ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
+    }
+    if (unsent) {
+      qq.sentToOwnerAt = Date.now();
+      audit({ kind: 'sent', to: target, text: parts.slice(0, ids.length).join(' / ').slice(0, 200), interrupted: true, unsent: unsent.length });
+      return { sent: ids.length, messageIds: ids, interrupted: true, unsent, said: parts.slice(0, ids.length), imagesSent: 0 };
     }
     for (const [i, seg] of segments.entries()) {
       try { ids.push((await call(action, { ...target, message: [seg] }))?.message_id); } catch (err) {
@@ -1004,7 +1043,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const n = ids.length;
     if (qq.owner && target.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
     audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}) });
-    return { sent: n, messageIds: ids, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
+    return { sent: n, messageIds: ids, said: parts, imagesSent: segments.length - failed.length, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
   qq.friends = async () => ((await call('get_friend_list', {})) ?? []).map((f) => ({ uid: String(f.user_id ?? ''), nickname: String(f.nickname ?? ''), remark: String(f.remark ?? '') })).filter((f) => f.uid);
@@ -1058,11 +1097,12 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'qq_send',
       description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
       parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }] },
+      // presentationMeta lands on the durable tool/result: what really went out, for her memory's transcript.
+      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, ...(v?.interrupted ? { interrupted: true } : {}) }) },
       async execute(args) {
         const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
-        const out = { sent: r.sent, ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}) };
-        return r.failed || r.dropped ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
+        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent } : {}) };
+        return r.failed || r.dropped || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({

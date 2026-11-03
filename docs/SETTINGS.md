@@ -187,7 +187,11 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
 | `notifyHours` | `""` | 只在这个时段内通知叫醒她；空 = 一直 |
-| `notifyBatchMs` | `1000` | 多少毫秒内的通知合并成一次叫醒 |
+| `notifyBatchMs` | `1000` | 多少毫秒内的通知合并成一次叫醒（别人的；你的话见下面四项） |
+| `ownerQuietMs` | `1500` | 你的 QQ 消息：你停下多少毫秒没新消息才送给她，每来一条重新计时 |
+| `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |
+| `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
+| `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
 | `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 

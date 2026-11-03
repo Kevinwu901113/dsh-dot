@@ -44,8 +44,24 @@ export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-
 export const phoneCheckText = (now = Date.now()) => prompt('dot.phone-check', { stamp: stamp(now, now), silent: SILENT });
 /** When a wake happened: the first item's arrival (held items keep theirs), else now. */
 const firstAt = (items, now) => { const t = Date.parse(items?.[0]?.at ?? ''); return Number.isFinite(t) ? Math.min(t, now) : now; };
-/** His QQ words as she gets them: one stamp per batch, then exactly what he typed, one message per line. */
-export const ownerWords = (items, now = Date.now()) => prompt('dot.owner-words', { stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n') });
+/**
+ * His QQ words as she gets them: one stamp per batch, then exactly what he typed, one message per line;
+ * `whileBusy` (steered into the turn she is in the middle of) adds one line saying so.
+ */
+export const ownerWords = (items, now = Date.now(), { whileBusy = false } = {}) => prompt('dot.owner-words', { stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n'), busy: whileBusy ? prompt('dot.owner-words.busy') : '' });
+/** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
+export const ownerInterruptText = () => prompt('dot.owner-interrupt');
+/** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
+export function isOwnerTarget(to, owner) {
+  const s = String(to ?? '').trim();
+  if (s === 'owner') return true;
+  const m = /^(?:user|private|好友)?[:：]?\s*(\d{5,})$/i.exec(s);
+  return Boolean(owner && m && m[1] === String(owner));
+}
+/** His words already handed to this agent for its next step, not yet read by the model (dsh `agent.inbox.nextStep`). */
+export function ownerUnread(agent) {
+  try { return (agent?.inbox?.nextStep ?? []).some((m) => String(m?.source?.rpcId ?? '').startsWith('qq-dot-')); } catch { return false; }
+}
 /** The one line that tells her what time it is, and how long since the last thing said in her conversation. */
 export function nowText(now = Date.now(), lastAt = 0) {
   const t = table('dot.now');
@@ -116,6 +132,13 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
+  // His messages have their own buffer: delivered once he has been quiet this long (every message
+  // restarts it), but never later than ownerMaxWaitMs after the first; while QQ says he is typing
+  // (NapCat input_status), up to ownerTypingMaxMs. Mid-turn they are steered into her running turn.
+  ownerQuietMs: 1500,
+  ownerMaxWaitMs: 6000,
+  ownerTypingMaxMs: 15000,
+  ownerDenyMax: 2,      // per turn: how often a qq_send to him is held back because he said something she has not read
   phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
   notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
   // Her errand session: phone checks, app notifications, interlude observations and plays run here,
@@ -321,6 +344,7 @@ export function apply(ctx, config = {}) {
 
   // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text }
+  const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
@@ -337,6 +361,7 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (event.type === 'turn/start') {
+      ownerDenies.delete(id);
       turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '', startedAt: Date.now() });
       return;
     }
@@ -473,11 +498,7 @@ export function apply(ctx, config = {}) {
       const found = await controller.resolveAgent(id);
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
       // The owner's words, exactly as typed (several messages → several lines), as human input.
-      if (fromOwner.length) {
-        // His words reached her on the phone while her computer QQ is not up: she answers in the phone app.
-        found.agent.followup(createUserMessage({ content: [{ type: 'text', text: ownerWords(fromOwner) }], source: ownerSource() }));
-        audit('owner-message', { session: id, count: fromOwner.length, whileBusy }); bump('owner', fromOwner.length);
-      }
+      if (fromOwner.length) toOwnerAgent(found.agent, id, fromOwner);
       if (!items.length) return;
       // The people in these messages, as she remembers them (dsh-dot/memory).
       const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
@@ -486,11 +507,23 @@ export function apply(ctx, config = {}) {
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
+  /**
+   * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
+   * steered into it, so she reads them at her next step instead of after the turn (an agent without
+   * `steer` gets the followup).
+   */
+  const toOwnerAgent = (agent, id, items) => {
+    const steer = turns.has(id) && typeof agent.steer === 'function';
+    const message = createUserMessage({ content: [{ type: 'text', text: ownerWords(items, Date.now(), { whileBusy: steer }) }], source: ownerSource() });
+    if (steer) agent.steer(message); else agent.followup(message);
+    audit('owner-message', { session: id, count: items.length, whileBusy: turns.has(id), via: steer ? 'steer' : 'followup' }); bump('owner', items.length);
+  };
   let frozen = 0; let frozenQueue = []; // while her conversation is being handed over (dsh-dot/memory)
   const send = (id, items) => {
     if (!items.length) return;
     if (frozen && id === lastSession) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
     // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
+    // (His own words never come this way: they have their own buffer and are steered in, see flushOwner.)
     if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items]); audit('notification-held', { count: items.length, why: 'turn running', errand: isErrand(id) }); return; }
     deliverTracked(items, false, id);
   };
@@ -506,6 +539,36 @@ export function apply(ctx, config = {}) {
   };
   // Items held for an errand that was rotated meanwhile go to the current errand, not the archived one.
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, pastErrands.has(id) ? (await ensureErrand()) || lastSession : id); };
+  // His messages wait for him to stop typing (see defaults.ownerQuietMs): their own buffer and timer,
+  // separate from everyone else's notifications.
+  let ownerBatch = [], ownerFirstAt = 0, ownerTimer = null, ownerTyping = false, ownerTypingSeen = false;
+  const ownerDue = (now = Date.now()) => {
+    const cap = ownerFirstAt + (ownerTypingSeen ? cfg.ownerTypingMaxMs : cfg.ownerMaxWaitMs);
+    return ownerTyping ? cap : Math.min(now + cfg.ownerQuietMs, cap);
+  };
+  const armOwner = () => {
+    clearTimeout(ownerTimer);
+    const now = Date.now();
+    ownerTimer = setTimeout(() => flushOwner(), Math.max(0, ownerDue(now) - now)); ownerTimer.unref?.();
+  };
+  /** Deliver his buffered words now. With `agent` (the qq_send gate's caller, her conversation): steered into it synchronously. */
+  const flushOwner = (agent) => {
+    clearTimeout(ownerTimer); ownerTimer = null;
+    const items = ownerBatch; ownerBatch = []; ownerTyping = ownerTypingSeen = false;
+    if (!items.length) return 0;
+    const id = lastSession;
+    if (frozen) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return items.length; }
+    if (agent && id && agent.session?.id === id) { lastWakeAt = Date.now(); toOwnerAgent(agent, id, items); return items.length; }
+    deliverTracked(items, false, id);
+    return items.length;
+  };
+  /** QQ says he is typing / stopped typing: while a batch of his waits, typing holds it up to ownerTypingMaxMs. */
+  const ownerTypingNow = (s) => {
+    if (!s?.fromOwner || !ownerBatch.length) return;
+    ownerTyping = Boolean(s.typing);
+    if (ownerTyping) ownerTypingSeen = true;
+    armOwner();
+  };
   const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat' };
   const wake = (n) => {
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
@@ -530,7 +593,13 @@ export function apply(ctx, config = {}) {
         mem?.touch?.({ handles: n.handles, platform: n.platform, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
       }
     }
-    if (!n.fromOwner && cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
+    if (n.fromOwner) {
+      if (!ownerBatch.length) ownerFirstAt = Date.now();
+      ownerBatch.push(n); ownerTyping = false; // he pressed send
+      armOwner();
+      return;
+    }
+    if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
@@ -540,6 +609,24 @@ export function apply(ctx, config = {}) {
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
     handles: [`qq:${m.userId}`], platform: 'qq', name: m.who, kind: m.kind,
   })) ?? (() => {}), 'dsh-dot: qq messages'));
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
+  // Read before you speak: a qq_send to him while he has said something she has not read yet (still in
+  // the buffer, or steered but not reached by the model) is held back once or twice per turn; the
+  // buffer goes in right away, so her next step has it.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.name !== 'qq_send') return next();
+    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
+    if (!isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
+    const id = exec.agent?.session?.id;
+    const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
+    if (!buffered && !ownerUnread(exec.agent)) return next();
+    const n = ownerDenies.get(id) ?? 0;
+    if (n >= cfg.ownerDenyMax) { audit('owner-gate-passed', { session: id, denies: n }); return next(); }
+    ownerDenies.set(id, n + 1);
+    const flushed = buffered ? flushOwner(exec.agent) : 0;
+    audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
+    return { kind: 'deny', reason: ownerInterruptText() };
+  });
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
   let lastWakeAt = 0;
@@ -601,6 +688,7 @@ export function apply(ctx, config = {}) {
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           // Where his next message goes: when she "does not answer", look here first.
           `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'} · errand: ${errandId || '(none)'}`,
+          `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · qq_send to him held ≤${cfg.ownerDenyMax}×/turn while unread${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];
@@ -619,6 +707,9 @@ export function apply(ctx, config = {}) {
     stats,
     isErrand,
     busy: (id) => turns.has(id),
+    /** His messages waiting in the buffer; flushOwner() delivers them now. */
+    ownerPending: () => ownerBatch.length,
+    flushOwner: () => flushOwner(),
     isIm: (id) => imSessions.has(id),
     /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */
     freeze() {

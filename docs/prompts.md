@@ -24,7 +24,8 @@
 | | 现在几点（每一轮，在对话历史之后） | `dot.now` |
 | | 定时任务那一轮 | `dot.scheduled` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
-| 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words` |
+| 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`） |
+| | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
 | | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what` |
 | | 交接 | `memory.handoff` |

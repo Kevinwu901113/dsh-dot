@@ -1,4 +1,4 @@
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -34,7 +34,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, notifyHours: '' } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -584,4 +584,140 @@ test('dot:now: one line after the history, on her conversation and errands; "sin
   const rules = h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
   assert.match(rules, /- 几点以「现在」那行为准，不从对话里推；说"刚才""昨晚""待会"、约时间、定提醒之前先看一眼它。/);
   stop(h);
+});
+
+// ── his messages: wait for him to finish, steer mid-turn, read before sending (0.17.0) ──
+// A fake clock (setTimeout + Date mocked; setImmediate is real, so promise chains can settle).
+const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
+function ownerHarness(cfg = {}) {
+  const h = harness();
+  const hooks = {};
+  const on0 = h.ctx.on;
+  h.ctx.on = (name, fn) => { hooks[name] = fn; on0(name, fn); };
+  const calls = [];
+  const agent = {
+    session: { id: 's1' }, inbox: { nextStep: [], nextTurn: [] },
+    followup: (m) => { calls.push({ via: 'followup', text: m.content[0].text, m }); agent.inbox.nextTurn.push(m); },
+    steer: (m) => { calls.push({ via: 'steer', text: m.content[0].text, m }); agent.inbox.nextStep.push(m); },
+  };
+  let onMessage, onTyping;
+  const services = {
+    sessionController: { resolveAgent: async () => ({ agent }) },
+    dshQq: { connected: true, owner: '20002', onMessage: (fn) => { onMessage = fn; return () => {}; }, onTyping: (fn) => { onTyping = fn; return () => {}; } },
+  };
+  h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
+  h.ctx.provide = (n, v) => { services[n] = v; };
+  apply(h.ctx, { ...h.config, ownerQuietMs: 1500, ownerMaxWaitMs: 6000, ownerTypingMaxMs: 15000, ...cfg });
+  const say = (text) => onMessage({ kind: 'private', userId: '20002', who: '宽', text, fromOwner: true, at: new Date().toISOString() });
+  const turn = { start: (n = 1) => h.emit(h.home, 'turn/start', { turn: n }), end: (n = 1) => h.emit(h.home, 'turn/end', { turn: n }) };
+  const gate = (to = 'owner') => hooks['tools/pre-execute']({ name: 'qq_send', arguments: { to, text: '好' }, agent }, async () => 'ran');
+  return { h, agent, calls, say, typing: (t) => onTyping({ userId: '20002', fromOwner: true, typing: t }), turn, gate, services };
+}
+const lines = (c) => unstamp(c.text).split('\n');
+
+test('his messages: a quiet period that every message restarts; never later than ownerMaxWaitMs after the first; one stamp per batch', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(2026, 10, 3, 22, 1).getTime() });
+  try {
+    const o = ownerHarness();
+    o.turn.start(); o.turn.end(); // she has a conversation, and is idle
+    mock.timers.tick(100); await settle();
+    o.say('在吗'); mock.timers.tick(1000); o.say('问你个事'); mock.timers.tick(1000); o.say('算了');
+    mock.timers.tick(1499); await settle();
+    assert.equal(o.calls.length, 0, 'he is still talking');
+    mock.timers.tick(1); await settle();
+    assert.equal(o.calls.length, 1);
+    assert.equal(o.calls[0].via, 'followup', 'idle: a followup starts her turn');
+    assert.match(o.calls[0].text, /^\[11-03 22:01\] 在吗\n/);
+    assert.deepEqual(lines(o.calls[0]), ['在吗', '问你个事', '算了'], 'exactly what he typed, no busy line');
+    // he never pauses for 1.5 s: delivered 6 s after the first anyway
+    for (let i = 0; i < 6; i++) { o.say(`第${i}条`); mock.timers.tick(1000); await settle(); }
+    assert.equal(o.calls.length, 2);
+    assert.deepEqual(lines(o.calls[1]), ['第0条', '第1条', '第2条', '第3条', '第4条', '第5条']);
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-message' && e.count === 6 && e.via === 'followup'));
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('his messages: while QQ says he is typing, the batch waits up to ownerTypingMaxMs; when he stops, the quiet period again', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = ownerHarness();
+    o.turn.start(); o.turn.end();
+    o.typing(true); // typing with nothing waiting holds nothing
+    o.say('我跟你说');
+    o.typing(true);
+    mock.timers.tick(14_999); await settle();
+    assert.equal(o.calls.length, 0, 'still typing');
+    mock.timers.tick(1); await settle();
+    assert.equal(o.calls.length, 1, 'typing does not hold it past ownerTypingMaxMs');
+    o.say('一件事'); o.typing(true);
+    mock.timers.tick(8000); o.typing(false);
+    mock.timers.tick(1499); await settle();
+    assert.equal(o.calls.length, 1);
+    mock.timers.tick(1); await settle();
+    assert.equal(o.calls.length, 2, 'stopped typing: delivered after the quiet period');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('his messages mid-turn are steered into the running turn, with the busy line; idle → followup; no steer → followup', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = ownerHarness();
+    o.turn.start(1); o.turn.end(1);
+    o.turn.start(2); // she is in the middle of a turn (on her phone, say)
+    o.say('先别弄了'); mock.timers.tick(1500); await settle();
+    assert.equal(o.calls.length, 1);
+    assert.equal(o.calls[0].via, 'steer', 'not held until the turn ends');
+    assert.equal(o.calls[0].m.source.kind, 'user');
+    assert.match(o.calls[0].m.source.rpcId, /^qq-dot-/);
+    assert.deepEqual(lines(o.calls[0]), ['先别弄了', '（这是你这轮进行中他发来的。）']);
+    o.turn.end(2); mock.timers.tick(100); await settle();
+    assert.equal(o.calls.length, 1, 'nothing re-delivered at turn end');
+    o.say('好了吗'); mock.timers.tick(1500); await settle();
+    assert.equal(o.calls[1].via, 'followup');
+    assert.deepEqual(lines(o.calls[1]), ['好了吗']);
+    // an agent without steer: the followup, as before
+    delete o.agent.steer;
+    o.turn.start(3); o.say('在吗'); mock.timers.tick(1500); await settle();
+    assert.equal(o.calls[2].via, 'followup');
+    assert.deepEqual(lines(o.calls[2]), ['在吗'], 'not "this turn" when it will be read next turn');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('read before send: qq_send to him is denied while he has words she has not read; the buffer goes in at once; at most ownerDenyMax per turn', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const { prompt } = await import('../src/prompts.js');
+    const o = ownerHarness();
+    o.turn.start(1); o.turn.end(1);
+    o.turn.start(2);
+    assert.equal(await o.gate(), 'ran', 'nothing unread: she sends');
+    o.say('等下'); o.say('我换个问题');
+    assert.equal(o.services.dshDot.ownerPending(), 2);
+    const d1 = await o.gate();
+    assert.deepEqual(d1, { kind: 'deny', reason: prompt('dot.owner-interrupt') });
+    assert.equal(d1.reason, '他刚又发了消息，这条没发出去。先看完他说的再回；不用提这条没发。');
+    assert.equal(o.calls.length, 1, 'flushed right away');
+    assert.equal(o.calls[0].via, 'steer');
+    assert.deepEqual(lines(o.calls[0]), ['等下', '我换个问题', '（这是你这轮进行中他发来的。）']);
+    assert.equal(o.services.dshDot.ownerPending(), 0);
+    // steered but not yet read by the model (still in inbox.nextStep): held back again
+    assert.equal((await o.gate()).kind, 'deny');
+    // the cap: the third one goes through, even though it is still unread
+    assert.equal(await o.gate(), 'ran');
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-gate-passed' && e.denies === 2));
+    assert.equal(await o.gate('user:30003'), 'ran', 'to someone else: never held');
+    // the model has read it (claimed from the inbox): sends go
+    o.agent.inbox.nextStep.length = 0;
+    o.turn.end(2); o.turn.start(3);
+    assert.equal(await o.gate('user:20002'), 'ran');
+    // a new turn has its own count
+    o.say('还有'); assert.equal((await o.gate('20002')).kind, 'deny');
+    mock.timers.tick(5000); await settle();
+    assert.equal(o.calls.length, 2, 'the timer of a flushed batch does not deliver it twice');
+    assert.equal(o.h.audit.filter((e) => e.event === 'owner-gate-denied').length, 3);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
 });

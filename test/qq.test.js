@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, sendReport } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, sendReport, inputStatus } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -100,7 +100,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.equal(sock.sent.length, 2);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 2 }, echo: sock.sent[1].echo }));
-  assert.deepEqual(await p, { sent: 2 });
+  assert.deepEqual(await p, { sent: 2, said: ['在', '刚看到'], imagesSent: 0 });
   // images: a URL goes as-is, a phone screenshot as base64, each its own message
   h.ctx.dshPhone = { isReady: true, screenshot: async () => Buffer.from('PNGDATA'), shell: async () => '/sdcard/Pictures/a.jpg\n', adbExec: async () => ({ stdout: Buffer.from('JPG') }) };
   const get0 = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : get0(n));
@@ -111,7 +111,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.deepEqual(sock.sent[3].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('PNGDATA').toString('base64')}` } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 4 }, echo: sock.sent[3].echo }));
-  assert.deepEqual(await pi, { sent: 2 });
+  assert.deepEqual(await pi, { sent: 2, said: [], imagesSent: 2 });
   // a sticker she receives is kept (downloaded here) and can be sent back as sticker:<id>; a face by number
   h.fetched.length = 0;
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'image', data: { file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x', sub_type: 1 } }], sender: { nickname: '宽' } }));
@@ -128,7 +128,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.deepEqual(sock.sent[5].params.message, [{ type: 'face', data: { id: '179' } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 6 }, echo: sock.sent[5].echo }));
-  assert.deepEqual(await ps, { sent: 2 });
+  assert.deepEqual(await ps, { sent: 2, said: [], imagesSent: 2 });
   // she keeps one herself from her phone, with a note; the same picture twice is one sticker
   const keep = h.tools.find((t) => t.name === 'qq_sticker_keep');
   const k1 = await keep.execute({ image: 'phone:latest', note: '无语' });
@@ -241,13 +241,14 @@ test('qq_send: images resolve before anything goes out; an image QQ refuses afte
   assert.deepEqual(r.failed, [{ image: 'https://example.com/bad.png', error: 'upload failed' }]);
   assert.match(sendReport(r), /^sent 2 message\(s\)\n文字已发出；图片 https:\/\/example\.com\/bad\.png 没发成：upload failed/);
   assert.match(r.note, /文字已发出/);
+  assert.deepEqual([r.said, r.imagesSent], [['你看', '这个'], 0], 'the text went out, the image did not');
   assert.equal(sock.sent.filter((m) => m.params.message[0].type === 'text').length, 2, 'each bubble once');
   const audited = readFileSync(join(process.env.DSH_HOME, 'dsh-qq-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'sent');
   assert.deepEqual(audited.at(-1).failed, r.failed, 'the audit notes the failure');
   // the first image failing with nothing sent before it is still an ordinary error
   await assert.rejects(tool.execute({ to: 'owner', images: ['https://example.com/bad.png'] }), /upload failed/);
   // all ok: the plain result
-  assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2 });
+  assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2, said: ['好'], imagesSent: 1 });
   h.stop();
 });
 
@@ -488,4 +489,59 @@ test('/qq stickers: the status line, and `sync` pushes now; a kept sticker is sy
   assert.ok(pushes.includes(`/sdcard/Pictures/dot-stickers/${k.id}.gif`));
   assert.match((await h.cmd().handler({ rawInput: 'stickers' })).text, /stickers: \d+ saved · phone: (\d+)\/\1 synced$/m);
   h.ctx.get = get0; delete h.ctx.dshPhone;
+});
+
+test('qq_send to him stops between bubbles once he speaks: the rest is not sent and comes back as unsent', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  const heard = [];
+  h.ctx.dshQq.onMessage((m) => heard.push(m.text));
+  let mid = 0, interject = true;
+  // after her first bubble lands, he types something; QQ answers that bubble a moment later
+  sock.send = (s) => {
+    const m = JSON.parse(s); sock.sent.push(m);
+    if (interject) { interject = false; setTimeout(() => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text: '等下 我换个问题' } }], sender: { nickname: '宽' } })), 2); }
+    setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: ++mid }, echo: m.echo })), 8);
+  };
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  const r = await tool.execute({ to: 'owner', text: '那家店我去过\n还挺好吃的\n下次带你去', images: ['face:14'] });
+  assert.deepEqual(heard, ['等下 我换个问题']);
+  assert.equal(sock.sent.length, 1, 'only the first bubble went out');
+  assert.equal(r.sent, 1);
+  assert.equal(r.interrupted, true);
+  assert.deepEqual(r.unsent, ['还挺好吃的', '下次带你去', '[图片 face:14]']);
+  assert.equal(sendReport(r), 'sent 1 message(s)\n发了 1 条，他插了话，剩下的没发：还挺好吃的 / 下次带你去 / [图片 face:14]（先看他说的，再决定还要不要说）');
+  assert.match(r.note, /他插了话/);
+  assert.deepEqual(tool.output.presentationMeta({}, r), { sent: 1, said: ['那家店我去过'], imagesSent: 0, interrupted: true }, 'what went out, on the durable tool/result');
+  // to someone else, or with him quiet: everything goes
+  sock.sent.length = 0;
+  assert.deepEqual(await tool.execute({ to: 'owner', text: '好\n那就这样' }), { sent: 2, said: ['好', '那就这样'], imagesSent: 0 });
+  assert.equal(sock.sent.length, 2);
+  h.stop();
+});
+
+test('input_status: NapCat\'s "正在输入" notice for his private chat reaches onTyping; anything else is ignored', async () => {
+  const ev = (o) => ({ post_type: 'notice', notice_type: 'notify', sub_type: 'input_status', user_id: 20002, ...o });
+  assert.deepEqual(inputStatus(ev({ status_text: '对方正在输入...', event_type: 1 }), '20002'), { typing: true });
+  assert.deepEqual(inputStatus(ev({ status_text: '', event_type: 2 }), '20002'), { typing: false });
+  assert.deepEqual(inputStatus(ev({ event_type: 1 }), '20002'), { typing: true });
+  assert.equal(inputStatus(ev({ status_text: '对方正在输入...' }), '30003'), null, 'someone else');
+  assert.equal(inputStatus(ev({ status_text: '对方正在输入...', group_id: 9 }), '20002'), null, 'a group');
+  assert.equal(inputStatus(ev({ sub_type: 'poke' }), '20002'), null);
+  assert.equal(inputStatus({ post_type: 'message', sub_type: 'input_status', user_id: 20002 }, '20002'), null);
+  assert.equal(inputStatus(ev({ status_text: '对方正在输入...' }), ''), null, 'no owner set');
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const seen = [], heard = [];
+  h.ctx.dshQq.onTyping((t) => seen.push(t));
+  h.ctx.dshQq.onMessage((m) => heard.push(m));
+  FakeSocket.last.emit('message', JSON.stringify(ev({ self_id: 10001, status_text: '对方正在输入...', event_type: 1 })));
+  FakeSocket.last.emit('message', JSON.stringify(ev({ self_id: 10001, user_id: 30003, status_text: '对方正在输入...' })));
+  FakeSocket.last.emit('message', JSON.stringify(ev({ self_id: 10001, status_text: '' , event_type: 2 })));
+  assert.deepEqual(seen, [{ userId: '20002', fromOwner: true, typing: true }, { userId: '20002', fromOwner: true, typing: false }]);
+  assert.equal(heard.length, 0, 'a notice is not a message');
+  h.stop();
 });
