@@ -64,7 +64,10 @@ export const defaults = {
   recallTransformersVersion: '4.3.2',
   recallTopK: 8,                // turns injected per wake
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
-  recallMinScore: 0,            // drop hits below this similarity / rerank score (0 = keep the top-k)
+  // Drop hits below this similarity (local: cosine; cloud: rerank score). bge-small-zh on the public
+  // sample: real questions score 0.60–0.75 at the top, small talk (在吗 / 好的 / 哈哈) stays under 0.45,
+  // so 0.45 keeps the answers and stops greetings from pulling in 8 turns. 95/108 vs 93 at 0.
+  recallMinScore: 0.45,
   recallCandidates: 40,         // cosine candidates handed to a reranker
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
@@ -546,12 +549,11 @@ export function apply(ctx, config = {}) {
       order: 905,
       text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
     });
-  });
-  // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited for
-  // here, bounded by recallWaitMs, and its text put into the assembly. Without this hook it shows up
-  // from the next step on.
-  try {
-    ctx.on?.('system-prompt/assemble', async (assembly, c, next) => {
+    // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited
+    // for here, bounded by recallWaitMs, and its text put into the assembly. Registered on the
+    // systemPrompt scope like the interlude's prompt trim (proven on a real dsh); without it the
+    // result shows up from the next step on.
+    scope.effect(() => scope.on('system-prompt/assemble', async (assembly, c, next) => {
       const id = c?.agent?.session?.id;
       const p = id && recall.pending(id);
       if (p && Array.isArray(assembly?.contexts)) {
@@ -561,8 +563,8 @@ export function apply(ctx, config = {}) {
         if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:recall', text });
       }
       return next();
-    });
-  } catch (err) { logger.warn(`recall: no prompt-assembly hook (${err.message}); results show from the next step`); }
+    }), 'dsh-dot/memory: recall waits for its query');
+  });
 
   // ── her own hands on it ──
   ctx.inject(['tools'], (scope) => {

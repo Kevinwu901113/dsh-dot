@@ -87,7 +87,7 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 | 纯检索：本机 bge-small-zh，不重排 | 85 / 108 |
 | 纯检索：云端 bge-m3 + bge-reranker-v2-m3（SiliconFlow） | 90 / 108 |
 | 纯检索：云端 qwen3.7 embedding + rerank（DashScope） | 89 / 108 |
-| **0.12：现状 + 自动召回（本机 bge-small-zh，真实代码路径）** | **93 / 108** |
+| **0.12：现状 + 自动召回（本机 bge-small-zh，真实代码路径）** | **93 / 108**（`recallMinScore` 0）· **95 / 108**（0.45，默认） |
 
 现状赢在"约定、改口、生日"这类题（整理过的事实），检索赢在原话细节；所以是加一层，不是换掉。
 
@@ -102,7 +102,7 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 
 `handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
-自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinScore` 0 · `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
+自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinScore` 0.45（本机余弦 / 云端重排分；寒暄不触发注入）· `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 

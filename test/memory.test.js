@@ -104,7 +104,7 @@ function harness({ llmReply = '{}' } = {}) {
     effect(fn) { effects.push(fn()); },
     get: (n) => services[n],
     provide(n, v) { services[n] = v; },
-    inject(deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: (t) => { tools[t.name] = t; return () => {}; } }, effect: (f) => f() }); },
+    inject(deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: (t) => { tools[t.name] = t; return () => {}; } }, effect: (f) => f(), on: (...a) => ctx.on(...a) }); },
     llm: { stream: (opts) => { calls.push(opts); return (async function* () { yield { type: 'text-delta', text: llmReply }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'deepseek-v4-flash' }) },
   };

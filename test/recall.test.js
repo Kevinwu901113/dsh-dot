@@ -42,9 +42,9 @@ function harness(config = {}, emb = fakeEmbedders()) {
     effect() {},
     get: (n) => services[n],
     provide(n, v) { services[n] = v; },
-    inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f() }); },
+    inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
   };
-  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, ...config });
+  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, ...config }); // the fake embedder's scores are not cosines
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
   let clock = new Date(2026, 9, 1, 10, 0).getTime();
   const realNow = Date.now;
