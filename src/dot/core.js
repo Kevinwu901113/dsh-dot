@@ -19,7 +19,8 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { sectionOf, setValues } from '../settings.js';
-import { configure as configurePrompts, prompt, table } from '../prompts.js';
+import { configure as configurePrompts, fill, prompt, table } from '../prompts.js';
+import { ago, describeNow, stamp } from '../clock.js';
 
 export const name = 'dsh-dot';
 // Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
@@ -40,7 +41,17 @@ export const ownerSource = () => ({ kind: 'user', rpcId: `qq-dot-${Math.random()
 /** Source of the periodic "pick up your phone" turn; not pushed to IM either. */
 export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-check' });
 /** The periodic turn: she picks up her phone the way people do between things. */
-export const phoneCheckText = () => prompt('dot.phone-check', { silent: SILENT });
+export const phoneCheckText = (now = Date.now()) => prompt('dot.phone-check', { stamp: stamp(now, now), silent: SILENT });
+/** When a wake happened: the first item's arrival (held items keep theirs), else now. */
+const firstAt = (items, now) => { const t = Date.parse(items?.[0]?.at ?? ''); return Number.isFinite(t) ? Math.min(t, now) : now; };
+/** His QQ words as she gets them: one stamp per batch, then exactly what he typed, one message per line. */
+export const ownerWords = (items, now = Date.now()) => prompt('dot.owner-words', { stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n') });
+/** The one line that tells her what time it is, and how long since the last thing said in her conversation. */
+export function nowText(now = Date.now(), lastAt = 0) {
+  const t = table('dot.now');
+  const since = ago(lastAt, now);
+  return fill(t.line, { now: describeNow(new Date(now)), since: since ? fill(t.since, { ago: since }) : '' });
+}
 
 const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
@@ -66,7 +77,7 @@ export function groupNotifications(items) {
 }
 
 /** The wake-up text for the notifications that arrived together (or while she was busy): what the phone showed, and that she decides. */
-export function notificationText(list, { whileBusy = false } = {}) {
+export function notificationText(list, { whileBusy = false, now = Date.now() } = {}) {
   const items = Array.isArray(list) ? list : [list];
   const groups = groupNotifications(items);
   const app = (pkg) => APP_NAMES[pkg] ?? pkg;
@@ -79,11 +90,11 @@ export function notificationText(list, { whileBusy = false } = {}) {
   const when = whileBusy ? prompt('dot.notification.busy') : '';
   const viaQq = groups.some((g) => g.pkg === 'qq');
   const how = prompt(viaQq ? (groups.every((g) => g.pkg === 'qq') ? 'dot.notification.how-qq' : 'dot.notification.how-mixed') : 'dot.notification.how-app');
-  return prompt('dot.notification', { messages, when, how, silent: SILENT });
+  return prompt('dot.notification', { stamp: stamp(firstAt(items, now), now), messages, when, how, silent: SILENT });
 }
 /** The whole message that wakes her: the notifications, the people she remembers in them, the unverified-name warning. */
-export function wakeText(items, { whileBusy = false, cards = '' } = {}) {
-  const text = `${notificationText(items, { whileBusy })}${cards ? `\n${prompt('dot.notification.cards', { cards })}` : ''}`;
+export function wakeText(items, { whileBusy = false, cards = '', now = Date.now() } = {}) {
+  const text = `${notificationText(items, { whileBusy, now })}${cards ? `\n${prompt('dot.notification.cards', { cards })}` : ''}`;
   return items.some((n) => n.unverifiedOwner) ? `${text}\n${prompt('dot.notification.unverified')}` : text;
 }
 
@@ -119,9 +130,9 @@ export const defaults = {
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 /** The note an errand leaves in her conversation: what she did on her phone, in her own words. */
-export function errandNote(origin, text) {
+export function errandNote(origin, text, now = Date.now()) {
   const what = table('dot.errand-note.what');
-  return prompt('dot.errand-note', { what: what[Object.hasOwn(what, origin) ? origin : 'other'], text: String(text).trim() });
+  return prompt('dot.errand-note', { stamp: stamp(now, now), what: what[Object.hasOwn(what, origin) ? origin : 'other'], text: String(text).trim() });
 }
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -394,6 +405,17 @@ export function apply(ctx, config = {}) {
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
       text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()) }) : ''),
     }), 'dsh-dot: working rules section');
+    // Her clock: after the history (like dot:memory), on her conversation and her errands. "Since the
+    // last message" counts from the last line said before this turn began, so it holds for the turn.
+    scope.systemPrompt.context({
+      name: 'dot:now',
+      order: 899,
+      text: (c) => {
+        if (!inHome(c)) return '';
+        const started = turns.get(c.agent?.session?.id)?.startedAt ?? Date.now();
+        return nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0);
+      },
+    });
     scope.systemPrompt.context({
       name: 'dot:scheduled-turn',
       order: 900,
@@ -453,7 +475,7 @@ export function apply(ctx, config = {}) {
       // The owner's words, exactly as typed (several messages → several lines), as human input.
       if (fromOwner.length) {
         // His words reached her on the phone while her computer QQ is not up: she answers in the phone app.
-        found.agent.followup(createUserMessage({ content: [{ type: 'text', text: fromOwner.map((n) => n.text).join('\n') }], source: ownerSource() }));
+        found.agent.followup(createUserMessage({ content: [{ type: 'text', text: ownerWords(fromOwner) }], source: ownerSource() }));
         audit('owner-message', { session: id, count: fromOwner.length, whileBusy }); bump('owner', fromOwner.length);
       }
       if (!items.length) return;

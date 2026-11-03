@@ -1,0 +1,2 @@
+line=现在 {now}{since}
+since= · 距上一条消息 {ago}

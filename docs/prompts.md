@@ -8,7 +8,9 @@
 - `{名字}` 是占位符，代码填；没填到的原样留着，并在日志里提醒一次。别删，删了那部分内容就不出现了。
 - 某一行只有一个 `{名字}` 且它是空的（比如没开电脑时的 `{computerRule}`），这一行整行省掉。
 - 带条件的片段是单独的文件（`qq.channel.owner.txt` 只在设了主人时拼进 `{owner}`；`phone.device.number.txt` 只在设了手机号时拼进 `phone.device` 的 `{number}` 那一行，里面的 `{number}` 是号码本身）。
-- 几个文件是表格，一行一项 `代号=文字`（`dot.errand-note.what`、`interlude.play.verbs`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`）：只改等号右边。
+- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`interlude.play.verbs`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`）：只改等号右边。
+- **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
+- `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
 - `interlude.round` 是幕间一轮的整段系统提示词，从上到下就是模型看到的顺序（HDS-Interlude 1.0.1-rc57 的提示词，AGPL-3.0 © MOMOR1A/MomoiCore，译成中文后合并）。覆盖它就替换整段；`{phase}` `{length}` 这类占位符各对应一个 `interlude.round.<名字>` 小文件，空的那行省掉。
 
@@ -19,9 +21,11 @@
 | 系统提示词 | 工作方式 | `dot.rules` `dot.rules.computer` `dot.rules.phone` |
 | | 手机 | `phone.device` `phone.device.number` |
 | | 电脑上的 QQ | `qq.channel` `qq.channel.owner` `qq.channel.score` `qq.stickers` `qq.channel.no-stickers` `qq.faces` |
+| | 现在几点（每一轮，在对话历史之后） | `dot.now` |
 | | 定时任务那一轮 | `dot.scheduled` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
-| 叫醒她的消息 | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
+| 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words` |
+| | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
 | | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what` |
 | | 交接 | `memory.handoff` |
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |

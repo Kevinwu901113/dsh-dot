@@ -480,7 +480,7 @@ test('play: on by default but only in apps on her phone (none → disabled); a p
   assert.match(h.calls[0].system, /playIntents：\[\{"app":"小黑盒 之一","action":"like\|comment\|follow\|collect"/);
   assert.equal(h.followups.length, 1);
   assert.deepEqual(h.followups[0].m.source, PLAY_SOURCE);
-  assert.match(h.followups[0].m.content[0].text, /^\[想玩会儿手机\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）给「那篇讲黑猴更新的帖子」点个赞。因为写得认真。/);
+  assert.match(h.followups[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 想玩会儿手机\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）给「那篇讲黑猴更新的帖子」点个赞。因为写得认真。/);
   assert.match(h.followups[0].m.content[0].text, /不发新帖、不私信陌生人、不花钱/);
   // the play turn is her act, quiet when DOT_SILENT
   h.emit('s1', 'turn/start', { turn: 2 });

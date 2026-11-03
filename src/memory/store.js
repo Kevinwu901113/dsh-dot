@@ -15,6 +15,7 @@
 // Text similarity is whale's: normalised characters, 3-gram Jaccard (works for Chinese without a
 // tokenizer).
 import { table } from '../prompts.js';
+import { dayMark } from '../clock.js';
 
 export const MEMORY_VERSION = 1;
 
@@ -462,11 +463,7 @@ export function normalizeMemory(m) {
  * A day as she reads it: MM-DD in the current year, YYYY-MM-DD otherwise — a "05-08" written last
  * year must not read as this May, and the common case stays as short as it was.
  */
-export function dayMark(ms, now = Date.now()) {
-  const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
-  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
-  return d.getFullYear() === new Date(now).getFullYear() ? md : `${d.getFullYear()}-${md}`;
-}
+export { dayMark };
 
 const oldYear = (at, now) => (at && new Date(at).getFullYear() !== new Date(now).getFullYear() ? `[${dayMark(at, now)}] ` : '');
 

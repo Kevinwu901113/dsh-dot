@@ -76,10 +76,14 @@ export const entries = [
     render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')]]) },
   { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
     render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
+  { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
+    render: () => variant([['隔了一阵', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)], ['刚说过话（不到一分钟，或者从没说过）', D.nowText(Date.now(), 0)]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
   { id: 'memory', group: 'system', name: '记忆', note: '每一轮都带着：关于他、她自己记下的、最近的事', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
 
+  { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：一批盖一个时间戳，后面是他打的原话', files: ['dot.owner-words'],
+    render: () => D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }]) },
   { id: 'notification', group: 'wake', name: '手机通知', note: '通知把她叫醒时收到的那条', files: ['dot.notification', 'dot.notification.many', 'dot.notification.busy', 'dot.notification.how-qq', 'dot.notification.how-mixed', 'dot.notification.how-app', 'dot.notification.cards', 'dot.notification.unverified'],
     render: () => {
       const qqOne = [{ pkg: 'qq', title: '宽(2条新消息)', text: '在吗' }, { pkg: 'qq', title: '宽', text: '帮我看个东西' }];
@@ -134,6 +138,7 @@ export async function full() {
     ['手机', deviceText('emulator-5554', '13800138000')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
     ['—— 以下在对话历史之后 ——', ''],
+    ['现在几点', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)],
     ['定时任务那一轮（只在那一轮）', D.scheduledRule()],
     ['记忆', standing()],
     ['想起的原话', await recallText()],

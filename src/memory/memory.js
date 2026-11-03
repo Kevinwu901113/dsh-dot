@@ -26,6 +26,7 @@ import {
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends, dayMark,
 } from './store.js';
 import { createRecall } from './recall.js';
+import { unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
@@ -189,7 +190,7 @@ export function transcriptFromEvents(events, session) {
     const at = Number(e?.time) || 0;
     if (e?.type === 'user/message') {
       const src = e.data?.source ?? {};
-      const text = contentText(e.data?.content);
+      const text = unstamp(contentText(e.data?.content));
       if (src.kind === 'user') out.push({ at, session, who: 'owner', text });
       else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') out.push({ at, session, who: 'phone', text: text.split('\n（')[0] });
     } else if (e?.type === 'tool/call' && e.data?.name === 'qq_send') {
@@ -347,7 +348,8 @@ export function apply(ctx, config = {}) {
       case 'user/message': {
         if (event.surfaceOp && event.surfaceOp !== 'append') return;
         const src = event.data?.source ?? {};
-        const text = contentText(event.data?.content ?? event.data?.message?.content);
+        // Wake messages carry a stamp ([11-04 04:51] …); a transcript line has its own time.
+        const text = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
         if (src.kind === 'user') record({ who: 'owner', session: id, text });
         else if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
@@ -608,6 +610,8 @@ export function apply(ctx, config = {}) {
     resolve(e) { return resolvePerson(memory.people, e); },
     card(ref) { return renderPerson(findPerson(memory.people, ref)); },
     setOwner(handle, name) { const p = setOwner(memory, handle, name); save(); return p; },
+    /** When the last thing was said in her conversation (his words or hers) before `before`; 0 when nothing. */
+    lastSaidAt(before = Date.now()) { for (let i = lines.length - 1; i >= 0; i--) { const l = lines[i]; if (l.at < before && (l.who === 'owner' || l.who === 'her')) return l.at; } return 0; },
     syncFriends(platform, friends) { const r = syncFriends(memory, platform, friends, { limits: cfg.limits }); save(); audit('friends-synced', { platform, friends: friends?.length ?? 0, ...r }); return r; },
     /** Cards for the people in a batch of wake items (their `handles`), deduplicated; the owner is left out. */
     cardsFor(items) {

@@ -4,6 +4,9 @@ import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, isSilent, stripSilent, contentText } from '../src/dot/core.js';
+import { unstamp } from '../src/clock.js';
+
+const STAMP = /^\[\d{2}-\d{2} \d{2}:\d{2}[\] ]/; // every message that wakes her starts with one
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -183,11 +186,12 @@ test('a phone notification wakes her latest session with the notification text; 
   assert.equal(followups.length, 1, 'a burst wakes her once');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
-  assert.match(followups[0].m.content[0].text, /^\[手机通知\] 2 个对话\n· QQ · 宽：你会主动给我发消息吗\n· 小黑盒 · 小黑盒：你关注的游戏更新了/);
+  assert.match(followups[0].m.content[0].text, STAMP);
+  assert.match(unstamp(followups[0].m.content[0].text), /^\[手机通知\] 2 个对话\n· QQ · 宽：你会主动给我发消息吗\n· 小黑盒 · 小黑盒：你关注的游戏更新了/);
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
   await wait(40);
   assert.equal(followups.length, 2);
-  assert.match(followups[1].m.content[0].text, /^\[手机通知\] QQ · 宽：在吗/);
+  assert.match(unstamp(followups[1].m.content[0].text), /^\[手机通知\] QQ · 宽：在吗/);
   // she is busy: what arrives during her turn is held, then delivered once, grouped by conversation, in order
   h.emit(h.home, 'turn/start', { turn: 2 });
   h.emit(h.home, 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' } });
@@ -202,7 +206,7 @@ test('a phone notification wakes her latest session with the notification text; 
   h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
   await wait(120);
   assert.equal(followups.length, 3);
-  assert.equal(followups[2].m.content[0].text, '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
+  assert.equal(unstamp(followups[2].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);
@@ -241,7 +245,7 @@ test('phone check: /dot check asks her to pick up the phone when it is up and sh
   await wait(20);
   assert.equal(followups.length, 1);
   assert.deepEqual(followups[0].m.source, PHONE_CHECK_SOURCE);
-  assert.match(followups[0].m.content[0].text, /^\[拿起手机\]/);
+  assert.match(followups[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 拿起手机\]/);
   assert.ok(h.audit.some((e) => e.event === 'phone-check'));
   stop(h);
 });
@@ -272,7 +276,8 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   await wait(40);
   assert.equal(followups.length, 1, 'quiet hours hold the stranger; the owner gets through');
   assert.equal(followups[0].source.kind, 'user');
-  assert.equal(followups[0].content[0].text, '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');
+  assert.match(followups[0].content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2}\] 做个长任务/, 'one stamp per batch');
+  assert.equal(unstamp(followups[0].content[0].text), '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');
   // daytime: a stranger is a notification, not human input
   const h2 = harness();
   const f2 = [];
@@ -284,7 +289,7 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   on2({ kind: 'private', userId: '30003', who: '路人', text: '在吗', fromOwner: false, at: new Date().toISOString() });
   await wait(40);
   assert.deepEqual(f2[0].source, PHONE_NOTIFICATION_SOURCE);
-  assert.match(f2[0].content[0].text, /^\[手机通知\] QQ · 路人（30003）：在吗/);
+  assert.match(unstamp(f2[0].content[0].text), /^\[手机通知\] QQ · 路人（30003）：在吗/);
   stop(h2);
   // a goal is active: /dot check does not cut in
   goal = { phase: 'active' };
@@ -323,7 +328,7 @@ test('errands: app notifications and phone checks run in her errand session; onl
   onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'steam 史低' });
   await wait(40);
   assert.deepEqual(created, [{ cwd: h.home }], 'the errand session is created in her home');
-  assert.deepEqual(followups.map((f) => [f.id, f.m.content[0].text.split('\n')[0]]), [['s1', '[手机通知] QQ · 宽：在吗'], ['errand-1', '[手机通知] 小黑盒 · 小黑盒：steam 史低']]);
+  assert.deepEqual(followups.map((f) => [f.id, unstamp(f.m.content[0].text).split('\n')[0]]), [['s1', '[手机通知] QQ · 宽：在吗'], ['errand-1', '[手机通知] 小黑盒 · 小黑盒：steam 史低']]);
   // the errand turn ends with a finding: it is injected (not followed up) into her conversation
   h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
   h.emitAs('errand-1', h.home, 'user/message', { source: PHONE_NOTIFICATION_SOURCE });
@@ -333,7 +338,7 @@ test('errands: app notifications and phone checks run in her errand session; onl
   assert.equal(injected.length, 1);
   assert.equal(injected[0].id, 's1', 'the errand never becomes her conversation');
   assert.deepEqual(injected[0].m.source, ERRAND_NOTE_SOURCE);
-  assert.match(injected[0].m.content[0].text, /^\[刚才手机响了，你去看了\] 小黑盒在推 steam 史低/);
+  assert.match(injected[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 刚才手机响了，你去看了\] 小黑盒在推 steam 史低/);
   // a silent errand leaves nothing
   h.emitAs('errand-1', h.home, 'turn/start', { turn: 2 });
   h.emitAs('errand-1', h.home, 'user/message', { source: PHONE_CHECK_SOURCE });
@@ -385,7 +390,7 @@ test('phone check goes to the errand session', async () => {
   await handler({ rawInput: 'check' });
   await wait(30);
   assert.deepEqual(followups.map((f) => f.id), ['errand-9']);
-  assert.match(followups[0].m.content[0].text, /^\[拿起手机\]/);
+  assert.match(followups[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 拿起手机\]/);
   stop(h);
 });
 
@@ -531,4 +536,52 @@ test('startup self-check: a remembered conversation that is an errand or archive
   assert.equal(r.session, 'live'); assert.equal(r.audit.length, 0);
   r = boot({ lastSession: 'live' }, { workspaceRegistry: { get archivedSessionIds() { throw new Error('not ready'); } } });
   assert.equal(r.session, 'live', 'what dsh cannot tell is skipped');
+});
+
+test('clock: one stamp format (year only when it differs), how long ago, unstamp', async () => {
+  const { stamp, ago, describeNow } = await import('../src/clock.js');
+  const now = new Date(2026, 10, 4, 4, 51).getTime();
+  assert.equal(stamp(now, now), '11-04 04:51');
+  assert.equal(stamp(new Date(2025, 11, 31, 23, 5).getTime(), now), '2025-12-31 23:05');
+  assert.equal(describeNow(new Date(now)), '2026-11-04 04:51 星期三 深夜');
+  assert.equal(ago(now - 30000, now), '');
+  assert.equal(ago(0, now), '');
+  assert.equal(ago(now - 5 * 60000, now), '5 分钟');
+  assert.equal(ago(now - (3 * 60 + 12) * 60000, now), '3 小时 12 分');
+  assert.equal(ago(now - 2 * 3600000, now), '2 小时');
+  assert.equal(ago(now - (50 * 60) * 60000, now), '2 天 2 小时');
+  assert.equal(unstamp('[11-04 04:51] 在吗'), '在吗');
+  assert.equal(unstamp('[2025-11-04 04:51 手机通知] x'), '[手机通知] x');
+  assert.equal(unstamp('[手机通知] x'), '[手机通知] x');
+  const { ownerWords, errandNote, phoneCheckText, notificationText } = await import('../src/dot/core.js');
+  assert.equal(ownerWords([{ text: '在吗', at: new Date(2026, 10, 4, 4, 50).toISOString() }, { text: '睡了没' }], now), '[11-04 04:50] 在吗\n睡了没');
+  assert.match(errandNote('play', '点了个赞', now), /^\[11-04 04:51 刚才在手机上玩了会儿\] 点了个赞/);
+  assert.match(phoneCheckText(now), /^\[11-04 04:51 拿起手机\] /);
+  assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
+  const { playPrompt, observationPrompt } = await import('../src/interlude/core.js');
+  assert.match(playPrompt({ app: '小黑盒', action: 'like', target: '帖子' }, '', now), /^\[11-04 04:51 想玩会儿手机\] /);
+  assert.match(observationPrompt({ mode: 'search', query: 'q' }, 'vm', '', now), /^\[11-04 04:51 幕间观察\] /);
+});
+
+test('dot:now: one line after the history, on her conversation and errands; "since" counts from before the turn, omitted under a minute', async () => {
+  const { nowText } = await import('../src/dot/core.js');
+  const now = new Date(2026, 10, 4, 4, 51).getTime();
+  assert.equal(nowText(now, now - (3 * 60 + 12) * 60000), '现在 2026-11-04 04:51 星期三 深夜 · 距上一条消息 3 小时 12 分');
+  assert.equal(nowText(now, now - 20000), '现在 2026-11-04 04:51 星期三 深夜');
+  assert.equal(nowText(now, 0), '现在 2026-11-04 04:51 星期三 深夜');
+  const h = harness();
+  const asked = [];
+  h.ctx.get = ((orig) => (name) => (name === 'dotMemory' ? { lastSaidAt: (before) => { asked.push(before); return before - 2 * 3600000; } } : orig(name)))(h.ctx.get);
+  apply(h.ctx, h.config);
+  const ctxNow = h.ctx.prompts.find((c) => c.name === 'dot:now');
+  assert.equal(ctxNow.order, 899);
+  assert.match(ctxNow.text({ agent: { session: { id: 'e1', header: { cwd: h.home } } } }), /^现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+ · 距上一条消息 2 小时$/);
+  assert.equal(ctxNow.text({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } } }), '');
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  const before = Date.now();
+  ctxNow.text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
+  assert.ok(asked.at(-1) <= before, 'from the turn start, so his waking message is not "the last one"');
+  const rules = h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
+  assert.match(rules, /- 几点以「现在」那行为准，不从对话里推；说"刚才""昨晚""待会"、约时间、定提醒之前先看一眼它。/);
+  stop(h);
 });

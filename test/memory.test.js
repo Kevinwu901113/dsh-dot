@@ -322,3 +322,22 @@ test('dates: MM-DD within the current year, YYYY-MM-DD from another (transcript 
   assert.match(s, /- 05-08 他换了工作/);
   assert.equal(s, renderStanding(m, { now: now + 86400000 }), 'byte-stable within the year');
 });
+
+test('stamps: wake messages are stamped, the transcript is not stamped twice; lastSaidAt is the last line before a moment', async () => {
+  const h = harness();
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '[11-04 04:51] 在吗\n睡了没' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[2025-11-04 04:52 手机通知] 小黑盒 · 阿满：回复了你\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'errand-note' }, content: [{ type: 'text', text: '[11-04 04:53 刚才拿起手机看了一眼] 没什么\n（这是你自己刚做过的事…）' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '[不是时间] 原样' }] }, { surfaceOp: 'append' });
+  await wait(10);
+  const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.who, l.text]), [['owner', '在吗\n睡了没'], ['phone', '[手机通知] 小黑盒 · 阿满：回复了你'], ['note', '[刚才拿起手机看了一眼] 没什么'], ['owner', '[不是时间] 原样']]);
+  assert.doesNotMatch(transcriptLine(lines[0]), /\].*\[11-04/, 'one time per line');
+  const mem = h.services.dotMemory;
+  assert.equal(mem.lastSaidAt(lines[1].at + 1), lines[0].at, 'phone and notes do not count, his words do');
+  assert.equal(mem.lastSaidAt(lines[0].at), 0, 'only lines before the moment');
+  const { transcriptFromEvents } = await import('../src/memory/memory.js');
+  assert.deepEqual(transcriptFromEvents([{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '[11-04 04:51] 我下周搬家' }] } }], 's1').map((l) => l.text), ['我下周搬家']);
+});

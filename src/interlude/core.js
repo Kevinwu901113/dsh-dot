@@ -22,6 +22,7 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
 import { prompt, table } from '../prompts.js';
+import { describeNow, stamp } from '../clock.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -110,9 +111,9 @@ export const OBSERVATION_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: '
 export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' });
 
 /** The message that asks her to go and do the small thing she wanted to do on her phone. */
-export function playPrompt(p, pkg) {
+export function playPrompt(p, pkg, now = Date.now()) {
   const parts = table('interlude.play.parts', { text: p.text, why: p.why });
-  const common = { app: p.app, pkg: pkg ? `（${pkg}）` : '', why: p.why ? parts.why : '', phonePrefix: PHONE_TOOL_PREFIX, rules: playRules() };
+  const common = { stamp: stamp(now, now), app: p.app, pkg: pkg ? `（${pkg}）` : '', why: p.why ? parts.why : '', phonePrefix: PHONE_TOOL_PREFIX, rules: playRules() };
   if (p.action === 'collect') return prompt('interlude.play.collect', { ...common, target: p.target && p.target !== '表情包' ? `「${p.target}」` : '' });
   const verbs = table('interlude.play.verbs');
   return prompt('interlude.play', { ...common, target: p.target, verb: Object.hasOwn(verbs, p.action) ? verbs[p.action] : p.action, said: p.text ? parts.said : '' });
@@ -142,11 +143,11 @@ export function appFor(url, apps = {}) {
 }
 
 /** The message that asks the character to go and look herself — in her own browser (vm) or on her phone. */
-export function observationPrompt(b, device = 'vm', app = '') {
+export function observationPrompt(b, device = 'vm', app = '', now = Date.now()) {
   const w = table('interlude.observation.where', { app, what: b.purpose || b.query || b.url, url: b.url, query: b.query });
   const where = device === 'phone' ? (app ? w['phone-app'] : b.mode === 'visit' ? w['phone-visit'] : w['phone-search']) : (b.mode === 'visit' ? w['vm-visit'] : w['vm-search']);
   const tools = device === 'phone' ? prompt('interlude.observation.phone', { phonePrefix: PHONE_TOOL_PREFIX }) : prompt('interlude.observation.vm', { vmPrefix: VM_TOOL_PREFIX });
-  return prompt('interlude.observation', { purpose: b.purpose ? `「${b.purpose}」` : '', where, tools });
+  return prompt('interlude.observation', { stamp: stamp(now, now), purpose: b.purpose ? `「${b.purpose}」` : '', where, tools });
 }
 
 /** Text of a message content array (or string). */
@@ -163,14 +164,7 @@ export function inHours(spec, date = new Date()) {
   return start <= end ? now >= start && now < end : now >= start || now < end;
 }
 
-/** HDSI sends nowLocal with weekday and daylight period as the authoritative endpoint. */
-export function describeNow(input = new Date()) {
-  const d = input instanceof Date ? input : new Date(input);
-  const h = d.getHours();
-  const period = h < 5 ? '深夜' : h < 9 ? '清晨' : h < 12 ? '上午' : h < 14 ? '中午' : h < 18 ? '下午' : h < 20 ? '傍晚' : '夜里';
-  const wd = '日一二三四五六'[d.getDay()];
-  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(h).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')} 星期${wd} ${period}`;
-}
+export { describeNow };
 
 // ── The round's system prompt is one file, src/prompts/interlude.round.txt (overridable whole from
 // <home>/prompts/). Its rules are HDS-Interlude's (1.0.1-rc57, src/narrator.ts and src/specialization.ts,
