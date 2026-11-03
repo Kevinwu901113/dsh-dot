@@ -19,6 +19,7 @@ import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 import { sectionOf, setValues } from '../settings.js';
 import { prompt } from '../prompts.js';
+import { createAccounts, renderAccount } from './accounts.js';
 
 /** The virtual scene's "wall" poster, moved to 1.5 m straight in front of the camera's start pose (1 m square). */
 const WALL_POSTER = ['poster wall', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default poster.png', ''].join('\n');
@@ -43,6 +44,7 @@ export const defaults = {
   gpu: 'auto',
   locale: 'zh-CN',          // the phone's language (emulator -change-locale)
   timezone: 'Asia/Shanghai',
+  number: '',               // her phone number for registering and logging into apps ('' = none); /phone number also sets it
   // Apps she installs herself, the way a person does: her browser may install downloaded APKs.
   // Packages granted "install unknown apps" at boot; [] = she must grant it in Settings first.
   installers: ['com.android.chrome', 'com.google.android.documentsui', 'com.android.documentsui'],
@@ -216,7 +218,15 @@ async function unzip(zip, into) {
 }
 
 /** Her system-prompt section about the phone. */
-export const deviceText = (serial) => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX });
+export const deviceText = (serial, number = '') => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, number: number ? prompt('phone.device.number', { number }) : '' });
+
+/** A phone number as typed (spaces, dashes allowed); '' clears it. Throws on anything else. */
+export function parseNumber(s) {
+  const n = String(s ?? '').replace(/[\s-]/g, '');
+  if (n === '' || n === '-' || n === 'none') return '';
+  if (!/^\+?\d{5,15}$/.test(n)) throw new Error('phone number: digits only (5–15, an optional leading +)');
+  return n;
+}
 
 export function apply(ctx, config = {}, deps = {}) {
   const logger = withFileLog(ctx.logger('dsh-dot/phone'));
@@ -228,6 +238,9 @@ export function apply(ctx, config = {}, deps = {}) {
   cfg.acceptLicense = Boolean(cfg.acceptLicense || settings.acceptLicense);
   // The storage size the owner chose (/phone size, /phone accept <GB>) wins over any file.
   if (settings.dataGb) cfg.dataGb = settings.dataGb;
+  // …and so does the number set by /phone number.
+  if (Object.hasOwn(settings, 'number')) cfg.number = settings.number;
+  cfg.number = String(cfg.number ?? '');
   const fetchImpl = deps.fetch ?? globalThis.fetch;
   const spawnImpl = deps.spawn ?? spawn;
   const exec = deps.run ?? run;
@@ -351,6 +364,10 @@ export function apply(ctx, config = {}, deps = {}) {
     if (st.fixed) throw new Error(`her phone already exists with ${st.gb} GB; the size is fixed when a phone is created (an Android emulator does not grow an existing data partition)`);
     cfg.dataGb = n; writeSettings({ dataGb: n }); audit({ kind: 'storage', gb: n });
   };
+  /** Her phone number ('' = none) and her app accounts (host-side, see accounts.js). */
+  phone.number = () => cfg.number;
+  phone.setNumber = (n) => { cfg.number = parseNumber(n); writeSettings({ number: cfg.number }); audit({ kind: 'number', set: Boolean(cfg.number) }); return cfg.number; };
+  phone.accounts = deps.accounts ?? createAccounts({ number: () => cfg.number });
   phone.accept = () => { cfg.acceptLicense = true; writeSettings({ acceptLicense: true }); audit({ kind: 'license', accepted: true }); if (phone.state === 'needs-license' || phone.state === 'error') void start(); };
 
   const installed = () => existsSync(paths.emulator) && existsSync(paths.adb) && existsSync(join(paths.sysdir, 'system.img'));
@@ -596,16 +613,36 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? deviceText(serial)
+        ? deviceText(serial, cfg.number)
         : ''),
     }), 'dsh-dot/phone: device section');
+  });
+
+  // Her app accounts. Registered whatever the emulator's state, so her conversation and errands both have it.
+  // The password is in the result she reads, never in the audit log.
+  ctx.inject(['tools'], (scope) => {
+    scope.effect(() => scope.tools.register({
+      name: 'account',
+      description: '你各个 App 的账号密码（存在主机上，不进记忆）。action：get 取某个 App 的登录名和密码——没记过的会给你手机号和你的默认密码，拿去注册；set 在注册成功、或 App 逼你改了密码后马上记下（login、password、note 只填变了的）；list 列出记过哪些 App 和登录名（不含密码）。app 写 App 的名字，比如 "小红书"。',
+      parameters: { type: 'object', properties: { action: { type: 'string', enum: ['get', 'set', 'list'] }, app: { type: 'string' }, login: { type: 'string' }, password: { type: 'string' }, note: { type: 'string' } }, required: ['action'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { action: { type: 'string' } }, required: ['action'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: renderAccount(v) }] },
+      async execute(args) {
+        const action = args.action;
+        try {
+          if (action === 'list') return { action, accounts: phone.accounts.list() };
+          if (action === 'get') { const r = phone.accounts.get(args.app); audit({ kind: 'account-get', app: r.app, found: r.found }); return { action, ...r }; }
+          if (action === 'set') { const r = phone.accounts.set(args.app, args); audit({ kind: 'account-set', app: r.app, login: args.login, changed: r.changed }); return { action, ...r }; }
+          return { action: String(action), error: 'action: get, set or list' };
+        } catch (err) { return { action: String(action), error: err.message }; }
+      },
+    }), 'dsh-dot/phone: account tool');
   });
 
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'phone',
-      description: 'the phone: status; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept [GB] | size <GB> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
+      description: 'the phone: status; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "number <digits>" sets her phone number ("number -" clears it); "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
+      input: { hint: '[accept [GB] | size <GB> | number <digits> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
@@ -618,6 +655,10 @@ export function apply(ctx, config = {}, deps = {}) {
           if (!arg1) { const st = phone.storage(); extra = `\nstorage: ${st.gb} GB${st.fixed ? ' (fixed: the phone exists)' : ' (used when the phone is created)'}`; }
           else { try { phone.setStorage(arg1); extra = `\nstorage set to ${arg1} GB for when the phone is created`; } catch (err) { extra = `\n${err.message}`; } }
         }
+        else if (verb0 === 'number') {
+          const rest = arg.slice('number'.length).trim();
+          if (rest) { try { phone.setNumber(rest); extra = `\nnumber ${cfg.number ? `set to ${cfg.number}` : 'cleared'}`; } catch (err) { extra = `\n${err.message}`; } }
+        }
         else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
@@ -629,7 +670,7 @@ export function apply(ctx, config = {}, deps = {}) {
           extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
         }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}${extra}` };
+        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

@@ -72,7 +72,8 @@ export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消�
 export const entries = [
   { id: 'rules', group: 'system', name: '工作方式', note: '定时任务、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
     render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
-  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有', files: ['phone.device'], render: () => deviceText('emulator-5554') },
+  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；设了手机号（/phone number）才有那一句', files: ['phone.device', 'phone.device.number'],
+    render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')]]) },
   { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
     render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
@@ -118,7 +119,7 @@ export async function full() {
   const parts = [
     ['人设（Canon，来自幕间的预设）', I.renderCanon(CANON)],
     ['工作方式', D.workingRules({ computer: true, phone: true })],
-    ['手机', deviceText('emulator-5554')],
+    ['手机', deviceText('emulator-5554', '13800138000')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
     ['—— 以下在对话历史之后 ——', ''],
     ['定时任务那一轮（只在那一轮）', D.scheduledRule()],

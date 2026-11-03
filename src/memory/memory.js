@@ -356,6 +356,7 @@ export function apply(ctx, config = {}) {
         return;
       }
       case 'tool/call': {
+        // Only qq_send's text is her words; no tool's result is ever recorded (the `account` tool's passwords included).
         if (event.data?.name !== 'qq_send') return;
         let args = {};
         try { args = JSON.parse(event.data.arguments ?? '{}'); } catch (error) { void error; }

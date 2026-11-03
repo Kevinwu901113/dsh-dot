@@ -31,6 +31,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `gpu` | `auto` | 模拟器 `-gpu` |
 | `keepAppsAlive` / `keepAliveEveryMinutes` | `true` / `10` | 关掉 doze、standby、cached-apps freezer，给所有第三方 App（含她以后装的）后台运行许可，否则 QQ 退后台几分钟就被冻结、收不到消息（真机实测：发出到弹通知差 3.5 分钟） |
 | `locale` / `timezone` | `zh-CN` / `Asia/Shanghai` | 手机的语言和时区 |
+| `number` | 无 | 她的手机号（注册、登录 App 用）；也可用 `/phone number <号码>` 设 |
 | `installers` | 浏览器、文件管理器 | 开机时被允许安装未知应用的包；`[]` 则她得自己去设置里开 |
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
 | `channel` | `stable` | 模拟器通道 |
@@ -46,8 +47,17 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 ## 装 App 和登录
 
 - **她自己装。** 手机没有应用商店，和一个人拿到新手机一样：她用手机上的浏览器打开官网，下载安装包，点开安装。插件开机时已允许浏览器和文件管理器安装未知应用（`installers`），所以不用进设置。这是故意的——养一个会自己折腾手机的角色，而不是替她把一切装好。`adb install` 当然也能用，但那是你的事，不是她的。
-- 在模拟器窗口里亲手登录。验证码、人脸、短信验证都由你过；她遇到会停下来告诉你。
+- 注册、登录她自己来（见下一节）；你也可以在模拟器窗口里亲手登录。验证码、人脸、短信验证都由你过；她遇到会停下来告诉你。
 - **用小号**：各平台条款都不允许自动化，模拟器也可能被检测。登录态在 AVD 里，重启不丢；`~/.dsh/phone/avd/` 整个目录就是这部手机，可以备份。
+
+## 她的手机号和账号
+
+- **手机号**：`/phone number 13800138000`（`/phone number -` 清掉），或 `dsh-dot.json` 里 `phone.number`；命令设的优先，不用重启。设了以后她的系统提示词里多一句「你的手机号是 …」，验证码发到你那里，她点了发送就会停下来问你要。
+- **账号**：存在 `~/.dsh/dsh-dot-accounts.json`（0600，原子写入），不进她的记忆——整理记忆本来就不记密码，记了也会丢。
+- 她用 `account` 工具：`get <app>` 取登录名和密码，没记过的给她手机号和默认密码去注册；`set <app>` 注册成功或被逼改密码后马上记下；`list` 只列 App 和登录名。
+- **默认密码**：第一次用到时随机生成一个（12 位字母数字，不含 0/O/o/1/l/I），存在同一个文件的 `_default`，以后每个 App 都用它，除非 App 逼她换。
+- 想看、想改：直接编辑那个文件（JSON）。审计日志（`dsh-phone-audit.jsonl`）只记 `account-get` / `account-set` 和 App 名、登录名，不记密码。
+- `/phone` 的状态里有号码和记了几个 App 的账号，不显示密码。
 
 ## 平台
 

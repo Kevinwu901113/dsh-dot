@@ -99,3 +99,12 @@ test('prompts render: separate model calls (group score, memory consolidation)',
     `=== 这段时间的记录 ===\n他：在吗\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已认识的人 ===\n（还没有）\n=== 已有碎片 ===\n（还没有）\n=== 待核实（关于别人的事，说过一次）===\n（没有）\n\n${extractRules()}\n\nhandoff 给 null。\n\n这次要写 diary：今天是 2026-11-03 周二，写今天的日记。`);
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
 });
+
+test('prompts render: phone.device — the number sentence only when she has a number', async () => {
+  const { deviceText } = await import('../src/phone/phone.js');
+  const without = deviceText('emulator-5554');
+  assert.doesNotMatch(without, /你的手机号|\{number\}/);
+  assert.equal(without.split('\n').length, 2);
+  assert.equal(without.split('\n')[1], '账号密码不要自己编、也不要记在记忆里：注册或登录前先 `account get <app>`，拿到手机号和密码；注册成功、或 App 逼你改了密码，马上 `account set` 记下来。');
+  assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。');
+});

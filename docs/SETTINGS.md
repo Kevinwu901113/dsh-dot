@@ -102,6 +102,7 @@ setx DSH_DOT_COMPUTER off
 | `device` | `"pixel_6"` | 机型 🔒 建立时 |
 | `api` / `abi` | `35` / 跟随 CPU | 系统镜像 🔒 建立时 |
 | `locale` / `timezone` | `"zh-CN"` / `"Asia/Shanghai"` | 语言、时区 |
+| `number` | `""` | 她的手机号，注册登录 App 用（也可用 `/phone number`；账号密码另存 `~/.dsh/dsh-dot-accounts.json`，见 [phone.md](phone.md)） |
 | `window` | `true` | 显示模拟器窗口 |
 | `gpu` | `"auto"` | 模拟器 GPU 模式 |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
@@ -189,6 +190,6 @@ setx DSH_DOT_COMPUTER off
 
 ## 优先级和旧文件
 
-从弱到强：组件默认值 → 旧的单组件文件（`~/.dsh/dsh-phone.json`、`dsh-computer.json`、`dsh-qq.json`）→ 插件自带的 `cordis.patch.yml` → **`dsh-dot.json`** → 命令设的值（`/phone size`、`/phone accept`、`/dot memory recall …` 写进 `dsh-phone.json` / `dsh-memory.json`）。
+从弱到强：组件默认值 → 旧的单组件文件（`~/.dsh/dsh-phone.json`、`dsh-computer.json`、`dsh-qq.json`）→ 插件自带的 `cordis.patch.yml` → **`dsh-dot.json`** → 命令设的值（`/phone size`、`/phone accept`、`/phone number`、`/dot memory recall …` 写进 `dsh-phone.json` / `dsh-memory.json`）。
 
 旧文件继续有效，不用迁移；新设置写进 `dsh-dot.json` 就行。不要去改 `node_modules` 里插件自带的 `cordis.patch.yml`，升级会被覆盖。

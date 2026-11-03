@@ -51,17 +51,18 @@ test('phoneGate: installs and sensitive typing ask; looking does not', () => {
   assert.ok(OBSERVATION_TOOLS.includes('mobile_take_screenshot') && !OBSERVATION_TOOLS.includes('mobile_type_keys'));
 });
 
-function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false } = {}) {
+function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false, files = {} } = {}) {
   const state = { running, foreign };
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
+  for (const [f, v] of Object.entries(files)) writeFileSync(join(dsh, f), JSON.stringify(v));
   const home = join(dsh, 'phone');
   if (installed) {
     for (const f of ['emulator/emulator', 'platform-tools/adb', 'system-images/android-35/google_apis/arm64-v8a/system.img']) { mkdirSync(join(home, f, '..'), { recursive: true }); writeFileSync(join(home, f), ''); }
     mkdirSync(join(home, 'emulator', 'resources'), { recursive: true });
     writeFileSync(join(home, 'emulator', 'resources', 'Toren1BD.posters'), 'poster wall\nsize 2 2\nposition -0.807 0.320 5.316\nrotation 0 -150 0\ndefault poster.png\n\nposter table\nsize 1 1\nposition -2.205 -0.077 3.949\nrotation -90 0 120\n');
   }
-  const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [], logcats = [];
+  const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [], logcats = [], tools = [];
   let cmd, child;
   let polls = 0;
   const run = async (file, args) => {
@@ -86,12 +87,13 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
       systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } },
       webServer: { register: (r) => { routes.push(r); return () => {}; }, getOrigin: () => 'http://127.0.0.1:3080' },
       connection: { requestRejection: () => undefined },
+      tools: { register: (t) => { tools.push(t); return () => {}; } },
     }[n]),
   };
   const routes = [];
   apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, aliveEveryMs: 20, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
-  return { ctx, home, state, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, state, spawned, execs, effects, gate, sections, plugins, logcats, tools, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const until = async (pred, ms = 1500) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
 
@@ -277,5 +279,49 @@ test('phone storage: 16 GB by default, chosen before the phone exists, fixed aft
   assert.match((await h.cmd().handler({ rawInput: 'size' })).text, /storage: 16 GB \(fixed: the phone exists\)/);
   assert.match((await h.cmd().handler({ rawInput: '' })).text, /storage: 16 GB · license/);
   assert.match(avdConfig({ avd: 'a', api: 35, tag: 'google_apis', abi: 'arm64-v8a', device: 'pixel', ramMb: 2048, dataGb: 48 }), /^disk\.dataPartition\.size=48G$/m);
+  h.stop();
+});
+
+test('phone number: /phone number persists and wins over dsh-dot.json; the device section says it, or not', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready');
+  assert.doesNotMatch(h.sections[0].text(), /你的手机号/, 'no number, no sentence');
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /number: \(none: \/phone number <digits>\) · accounts: 0 app\(s\)/);
+  assert.match((await h.cmd().handler({ rawInput: 'number 138 0013-8000' })).text, /number set to 13800138000/);
+  assert.equal(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).number, '13800138000');
+  assert.match(h.sections[0].text(), /\n你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。\n账号密码不要自己编/);
+  assert.match((await h.cmd().handler({ rawInput: 'number abc' })).text, /digits only/);
+  assert.equal(h.ctx.dshPhone.number(), '13800138000', 'a bad number changes nothing');
+  assert.match((await h.cmd().handler({ rawInput: 'number -' })).text, /number cleared/);
+  assert.doesNotMatch(h.sections[0].text(), /你的手机号/);
+  h.stop();
+  // dsh-dot.json sets it; one set by /phone number (dsh-phone.json) wins, like /phone size.
+  const h2 = harness({ files: { 'dsh-dot.json': { phone: { number: 13900000000 } } } });
+  assert.equal(h2.ctx.dshPhone.number(), '13900000000');
+  h2.stop();
+  const h3 = harness({ files: { 'dsh-dot.json': { phone: { number: '13900000000' } }, 'dsh-phone.json': { number: '' } } });
+  assert.equal(h3.ctx.dshPhone.number(), '', 'cleared by the command, stays cleared');
+  h3.stop();
+});
+
+test('account tool: get hands out the number and the default password, set records, list hides passwords, audit never has one', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready');
+  await h.cmd().handler({ rawInput: 'number 13800138000' });
+  const tool = h.tools.find((t) => t.name === 'account');
+  assert.ok(tool, 'registered');
+  const render = (v) => tool.output.render({}, v)[0].text;
+  const g = await tool.execute({ action: 'get', app: '小红书' });
+  assert.equal(g.found, false); assert.equal(g.number, '13800138000'); assert.match(g.password, /^[A-HJ-NP-Za-km-np-z2-9]{12}$/);
+  assert.equal(render(g), `小红书 还没记过账号。注册用：手机号 13800138000，密码 ${g.password}。注册好了用 account set 记下来。`);
+  assert.equal(render(await tool.execute({ action: 'set', app: '小红书', login: '13800138000', password: 'Forced-Other-1' })), '记下了：小红书（登录名、密码）');
+  const g2 = await tool.execute({ action: 'get', app: '小红书' });
+  assert.equal(render(g2), '小红书：登录名 13800138000，密码 Forced-Other-1');
+  assert.equal(render(await tool.execute({ action: 'list' })), '- 小红书：13800138000');
+  assert.match(render(await tool.execute({ action: 'set', app: 'x' })), /^account: nothing to record/);
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /accounts: 1 app\(s\)/);
+  const log = readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8');
+  assert.match(log, /"kind":"account-get"/); assert.match(log, /"kind":"account-set"/);
+  assert.ok(!log.includes(g.password) && !log.includes('Forced-Other-1'), 'no password in the audit log');
   h.stop();
 });
