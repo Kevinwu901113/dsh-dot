@@ -51,6 +51,7 @@ export const defaults = {
   channel: 'stable',        // emulator release channel
   bootTimeoutMs: 300_000,
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
+  aliveEveryMs: 15_000,     // once ready, adb is asked this often whether the emulator still answers; 3 misses = relaunch
   liveView: true,           // the live view page (screen + tap/swipe/type) at /dsh-dot/phone/ on dsh's own web server, behind dsh's login
   publicUrl: '',            // the public origin of THIS dsh (your own exposure, e.g. tailscale serve of dsh's port); the live view is <publicUrl>/dsh-dot/phone/
   // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
@@ -520,6 +521,7 @@ export function apply(ctx, config = {}, deps = {}) {
       markReady();
       if (cfg.notifications) shade.start();
       logger.info(`phone ready — ${serial}, Android API ${cfg.api} (${abi}), ${cfg.window ? 'window on the desktop' : 'headless'}`);
+      watchAlive();
       await mountMcp();
     } catch (err) {
       if (phone.state !== 'needs-license') {
@@ -527,6 +529,30 @@ export function apply(ctx, config = {}, deps = {}) {
         setState('error', message); logger.error(`phone failed: ${message}`);
       }
     }
+  }
+  // An attached emulator (left from an earlier run) is not our child: when QEMU hangs and crashes
+  // (11-03: all QEMU threads unresponsive 15 s, then a crash dump), nothing fires 'exit' and the
+  // phone stayed "ready" while every adb call said "device not found". So: once ready, ask adb every
+  // aliveEveryMs; three misses in a row = gone → error, shade off, relaunch like an exit.
+  let aliveTimer = null;
+  function watchAlive() {
+    if (aliveTimer) clearInterval(aliveTimer);
+    let misses = 0;
+    aliveTimer = setInterval(async () => {
+      if (stopping || phone.state !== 'ready') return;
+      let ok = false;
+      try { ok = /^device\s*$/.test(String((await exec(paths.adb, ['-s', serial, 'get-state'], { env: env(), timeout: 8_000 })).stdout)); } catch {}
+      if (ok) { misses = 0; return; }
+      if (++misses < 3) return;
+      clearInterval(aliveTimer); aliveTimer = null;
+      shade.stop?.();
+      audit({ kind: 'emulator-gone', serial });
+      setState('error', 'the emulator is gone (crashed or killed); relaunching');
+      logger.warn(`${serial} no longer answers adb; relaunching in ${cfg.restartDelayMs / 1000}s`);
+      const ours = child; child = null; ours?.removeAllListeners('exit'); try { ours?.kill('SIGKILL'); } catch {}
+      setTimeout(() => { if (!stopping) void start(); }, cfg.restartDelayMs).unref?.();
+    }, cfg.aliveEveryMs);
+    aliveTimer.unref?.();
   }
   /**
    * Stop the emulator and start it again. An emulator dsh attached to (left from an earlier run) is
@@ -613,6 +639,7 @@ export function apply(ctx, config = {}, deps = {}) {
     void start();
     return () => {
       stopping = true;
+      if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }
       // The phone keeps running across dsh restarts, like the computer does; only the MCP child is ours.
       mcpFork?.dispose?.();
     };

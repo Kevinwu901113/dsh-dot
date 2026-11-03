@@ -69,6 +69,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     if (args[0] === 'devices') return { stdout: `List of devices attached\n${state.running || state.foreign ? 'emulator-5554\tdevice\n' : ''}` };
     if (args.includes('emu') && args.includes('avd') && args.includes('name')) { if (state.running && args.includes('emulator-5554')) return { stdout: 'dot\r\nOK\r\n' }; throw new Error('connection refused'); }
     if (args.includes('emu') && args.includes('kill')) { state.running = false; return { stdout: '' }; }
+    if (args.includes('get-state')) { if (state.gone) throw new Error("error: device 'emulator-5554' not found"); return { stdout: 'device\n' }; }
     if (args.includes('sys.boot_completed')) return { stdout: ++polls >= bootAfter ? '1\n' : '\n' };
     return { stdout: '' };
   };
@@ -88,11 +89,23 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     }[n]),
   };
   const routes = [];
-  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
+  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, aliveEveryMs: 20, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
   const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
   return { ctx, home, state, spawned, execs, effects, gate, sections, plugins, logcats, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const until = async (pred, ms = 1500) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
+
+test('an attached emulator that stops answering adb (QEMU crash) is noticed and relaunched', async () => {
+  const h = harness({ running: true }); // left from an earlier run: attached, not our child
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'attached and ready');
+  assert.equal(h.spawned.length, 0, 'nothing spawned: it was attached');
+  h.state.running = false; h.state.gone = true; // QEMU died: adb no longer lists or answers it
+  assert.ok(await until(() => h.ctx.dshPhone.state === 'error', 2000), 'three missed heartbeats → error');
+  assert.match(h.ctx.dshPhone.error, /gone/);
+  h.state.gone = false; // the relaunch brings a fresh one
+  assert.ok(await until(() => h.spawned.length === 1, 2000), 'relaunched after restartDelayMs');
+  h.stop();
+});
 
 test('phone: installed SDK → AVD written, emulator spawned, booted, settled, MCP mounted; section and /phone reflect it', async () => {
   const h = harness();

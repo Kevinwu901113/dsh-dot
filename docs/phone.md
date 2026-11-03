@@ -70,3 +70,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 - mobile-mcp 的工具每次调用都要带 `device`，模型偶尔会忘；提示段里给了设备号。
 - 多台手机未做。
 - 数据分区建好后不能扩大（改 `config.ini` 的 `disk.dataPartition.size` 不生效，实测）；满了只能清 App 数据、卸 App，或清空重建。
+
+## 模拟器挂了
+
+接管的模拟器（上次 dsh 留下的）不是我们的子进程，QEMU 卡死崩溃（11-03：所有 QEMU 线程 15 秒无响应后 crash）时没有退出事件。所以就绪后每 `aliveEveryMs`（15 s）问一次 `adb get-state`，连续 3 次没回应就记 `emulator-gone`、状态转 error、停通知监听，`restartDelayMs` 后像退出一样重开。
