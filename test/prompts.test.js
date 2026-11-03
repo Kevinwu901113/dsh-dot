@@ -122,8 +122,27 @@ test('prompts render: the interlude round is one file; an override of it replace
 test('prompts render: phone.device — the number sentence only when she has a number', async () => {
   const { deviceText } = await import('../src/phone/phone.js');
   const without = deviceText('emulator-5554');
-  assert.doesNotMatch(without, /你的手机号|\{number\}/);
-  assert.equal(without.split('\n').length, 2);
+  assert.doesNotMatch(without, /你的手机号|\{number\}|\{stickers\}/);
+  assert.equal(without.split('\n').length, 2 + prompt('phone.stickers').split('\n').length);
+  assert.ok(without.endsWith(`\n${prompt('phone.stickers')}`), 'the sticker how-to closes the phone section');
   assert.equal(without.split('\n')[1], '账号密码不要自己编、也不要记在记忆里：注册或登录前先 `account get <app>`，拿到手机号和密码；注册成功、或 App 逼你改了密码，马上 `account set` 记下来。');
   assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。');
+});
+
+test('prompts render: stickers — where they really are, and how each phone app adds them (taught, not pushed)', async () => {
+  const how = prompt('phone.stickers');
+  assert.ok(how.split('\n').length <= 6);
+  assert.match(how, /相册的 dot-stickers/);
+  assert.match(how, /- QQ：聊天里别人发的表情长按 → 添加到表情；从相册发出去的图，发出后长按 → 添加到表情/);
+  assert.match(how, /- 微信：聊天里的图或表情长按 → 添加表情/);
+  assert.match(how, /- 小黑盒：评论配图从相册选/);
+  assert.match(how, /第一次在某个 App 里做成了，用 memory 工具记到 self/);
+  assert.doesNotMatch(how, /马上|现在就|主动|记得去|一定要/, 'a how-to, not a chore');
+  for (const id of ['qq.stickers', 'qq.channel.no-stickers']) {
+    const t = raw(id);
+    assert.match(t, /电脑 QQ 用 images 里写 sticker:<id> 发/, id);
+    assert.match(t, /相册的 dot-stickers 里，任何 App 都能从相册选图发/, id);
+    assert.match(t, /手机 QQ 的"收藏"栏本来是空的，想让它们出现在那要自己添加，见手机那段/, id);
+  }
+  assert.match(raw('interlude.play.collect'), /qq_sticker_keep（image: "phone:latest"[\s\S]*存下的会自己回到手机相册的 dot-stickers 里/);
 });

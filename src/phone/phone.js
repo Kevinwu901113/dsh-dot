@@ -217,8 +217,8 @@ async function unzip(zip, into) {
   return run('tar', ['-xf', zip, '-C', into]);
 }
 
-/** Her system-prompt section about the phone. */
-export const deviceText = (serial, number = '') => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, number: number ? prompt('phone.device.number', { number }) : '' });
+/** Her system-prompt section about the phone (only while it is ready): the device, her number, accounts, how each app adds her stickers. */
+export const deviceText = (serial, number = '') => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, number: number ? prompt('phone.device.number', { number }) : '', stickers: prompt('phone.stickers') });
 
 /** A phone number as typed (spaces, dashes allowed); '' clears it. Throws on anything else. */
 export function parseNumber(s) {

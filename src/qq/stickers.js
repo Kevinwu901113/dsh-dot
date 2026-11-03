@@ -1,6 +1,7 @@
 // Her sticker collection: images people send her that QQ marks as stickers (image sub_type 1), and
 // ones she keeps herself (qq_sticker_keep: saved on her phone, or a web image). Files live in
 // $DSH_HOME/stickers/<id>.img (QQ's URLs expire), the list in $DSH_HOME/dsh-qq-stickers.json.
+// `onChange` fires when the set of saved ones changes (sticker-sync.js mirrors them to her phone).
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
@@ -19,7 +20,7 @@ export const isSticker = (d) => {
   return String(d?.sub_type ?? '') === '1' || /表情/.test(summary) || (/^\[.{1,8}\]$/u.test(summary) && !/^\[(图片|image|picture|photo)\]$/i.test(summary));
 };
 
-export function createStickers(file, { fetch = globalThis.fetch } = {}) {
+export function createStickers(file, { fetch = globalThis.fetch, onChange = () => {} } = {}) {
   const dir = join(dirname(file), 'stickers');
   let list = [];
   try { list = JSON.parse(readFileSync(file, 'utf8')); } catch {}
@@ -27,8 +28,10 @@ export function createStickers(file, { fetch = globalThis.fetch } = {}) {
   const path = (id) => join(dir, `${id}.img`);
   const add = (entry) => {
     list.push(entry);
-    while (list.length > MAX) { const old = list.shift(); try { rmSync(path(old.id), { force: true }); } catch {} }
+    let gone = false;
+    while (list.length > MAX) { const old = list.shift(); gone ||= Boolean(old.saved); try { rmSync(path(old.id), { force: true }); } catch {} }
     save();
+    if (gone) onChange();
   };
   const stickers = {
     list: () => list,
@@ -63,6 +66,7 @@ export function createStickers(file, { fetch = globalThis.fetch } = {}) {
       if (!buf.length || buf.length > STICKER_MAX_BYTES) throw new Error(`${buf.length} bytes`);
       mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
       s.saved = true; delete s.url; save();
+      onChange();
       return true;
     },
     /** Keep an image she chose herself (bytes): one entry per picture (by content). Returns { id, isNew }. */
@@ -73,6 +77,7 @@ export function createStickers(file, { fetch = globalThis.fetch } = {}) {
       if (s) { if (note) s.note = String(note).slice(0, 40); save(); return { id, isNew: false }; }
       mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
       add({ id, from: String(from), note: String(note).slice(0, 40), at: new Date().toISOString().slice(0, 10), seen: 1, saved: true });
+      onChange();
       return { id, isNew: true };
     },
     /** One line for her prompt: the newest ones, newest last. */

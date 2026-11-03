@@ -366,3 +366,76 @@ test('isSticker: sub_type 1, a 表情 summary, and QQ\'s own big stickers (mface
   for (const summary of ['', '[图片]', '[image]', '[这是一个很长很长的名字啊]', 'doge', '[a] b']) assert.ok(!isSticker({ sub_type: 0, summary }), summary);
   assert.ok(!isSticker(undefined));
 });
+
+test('stickers to the phone: the plan (push missing / resized, delete aged-out, leave others alone), pushes via adb, media scan, status line', async () => {
+  const { syncPlan, stickerExt, parseListing, createStickerSync, PHONE_STICKER_DIR } = await import('../src/qq/sticker-sync.js');
+  const { createStickers } = await import('../src/qq/stickers.js');
+  assert.deepEqual(syncPlan(
+    [{ name: 'aaaaaaaaaa.png', size: 10 }, { name: 'bbbbbbbbbb.gif', size: 20 }, { name: 'cccccccccc.jpg', size: 30 }],
+    [{ name: 'aaaaaaaaaa.png', size: 10 }, { name: 'bbbbbbbbbb.gif', size: 19 }, { name: 'dddddddddd.webp', size: 5 }, { name: 'mine.png', size: 1 }],
+  ), { push: ['bbbbbbbbbb.gif', 'cccccccccc.jpg'], remove: ['dddddddddd.webp'] });
+  assert.equal(stickerExt(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), 'png');
+  assert.equal(stickerExt(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), 'jpg');
+  assert.equal(stickerExt(Buffer.from('GIF89a')), 'gif');
+  assert.equal(stickerExt(Buffer.from('RIFF\0\0\0\0WEBPVP8 ')), 'webp');
+  assert.equal(stickerExt(Buffer.from('hello')), '');
+  assert.deepEqual(parseListing(`12 ${PHONE_STICKER_DIR}/a.png\nstat: x: No such file\n`), [{ name: 'a.png', size: 12 }]);
+
+  const dir = mkdtempSync(join(tmpdir(), 'stk-'));
+  let changes = 0;
+  const store = createStickers(join(dir, 'list.json'), { onChange: () => { changes++; } });
+  const gif = store.keep(Buffer.from('GIF89a-one'), { note: '无语' });
+  const png = store.keep(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2]));
+  store.keep(Buffer.from('not an image'));
+  store.keep(Buffer.from('GIF89a-one'));
+  assert.equal(changes, 3, 'a new saved sticker is a change; the same picture again is not');
+  // a fake phone: files by name → size; every adb call recorded
+  const files = new Map([['eeeeeeeeee.gif', 7], ['notmine.jpg', 3]]);
+  const calls = [];
+  const phone = {
+    isReady: true,
+    shell: async (cmd) => { calls.push(cmd); if (cmd.startsWith('mkdir')) return [...files].map(([n, s]) => `${s} ${PHONE_STICKER_DIR}/${n}`).join('\n'); const rm = /^rm -f (.*)$/.exec(cmd); if (rm) for (const p of rm[1].split(' ')) files.delete(p.split('/').pop()); return ''; },
+    adbExec: async (args) => { calls.push(args); if (args[0] === 'push') files.set(args[2].split('/').pop(), readFileSync(args[1]).length); return { stdout: '' }; },
+  };
+  let ph = phone;
+  const audits = [];
+  const sync = createStickerSync({ stickers: store, phone: () => ph, audit: (e) => audits.push(e), debounceMs: 5 });
+  assert.equal(sync.statusLine(), 'phone: 0/2 synced (not synced yet)');
+  const r = await sync.sync();
+  assert.deepEqual(r.pushed.sort(), [`${gif.id}.gif`, `${png.id}.png`].sort());
+  assert.deepEqual(r.removed, ['eeeeeeeeee.gif'], 'aged out of the store: deleted; a file that is not ours stays');
+  assert.ok(files.has('notmine.jpg'));
+  assert.deepEqual(calls.filter((c) => Array.isArray(c)).map((c) => c[2]).sort(), [`${PHONE_STICKER_DIR}/${gif.id}.gif`, `${PHONE_STICKER_DIR}/${png.id}.png`].sort());
+  assert.match(calls.at(-1), new RegExp(`MEDIA_SCANNER_SCAN_FILE -d "file://${PHONE_STICKER_DIR}/\\$f"`));
+  assert.match(calls.at(-1), new RegExp(`for f in .*${gif.id}\\.gif.*eeeeeeeeee\\.gif`));
+  assert.equal(sync.statusLine(), 'phone: 2/2 synced');
+  assert.equal(audits.at(-1).kind, 'stickers-synced');
+  // idempotent: nothing to do, nothing pushed, no scan
+  calls.length = 0;
+  const again = await sync.sync();
+  assert.deepEqual([again.pushed, again.removed], [[], []]);
+  assert.equal(calls.length, 1, 'only the listing');
+  // a change schedules a run (debounced)
+  store.keep(Buffer.from('GIF89a-two'));
+  sync.schedule(); sync.schedule();
+  await new Promise((res) => setTimeout(res, 40));
+  assert.equal([...files.keys()].filter((n) => n.endsWith('.gif')).length, 2);
+  // phone down: nothing touched, and the status says why
+  ph = { isReady: false };
+  assert.deepEqual(await sync.sync(), { ready: false, total: 3 });
+  assert.match(sync.statusLine(), /^phone: 3\/3 synced \(phone not ready\)$/);
+});
+
+test('/qq stickers: the status line, and `sync` pushes now; a kept sticker is synced to the phone by itself', async () => {
+  const h = harness();
+  const pushes = [];
+  h.ctx.dshPhone = { isReady: true, shell: async (c) => (c.startsWith('ls -td') ? '/sdcard/Pictures/a.jpg\n' : ''), adbExec: async (a) => { if (a[0] === 'push') pushes.push(a[2]); return { stdout: Buffer.from('GIF89a-kept') }; } };
+  const get0 = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : get0(n));
+  const keep = h.tools.find((t) => t.name === 'qq_sticker_keep');
+  const k = await keep.execute({ image: 'phone:latest', note: '偷笑' });
+  const out = await h.cmd().handler({ rawInput: 'stickers sync' });
+  assert.match(out.text, new RegExp(`stickers: \\d+ saved · phone: (\\d+)/\\1 synced · pushed \\d+, removed 0`));
+  assert.ok(pushes.includes(`/sdcard/Pictures/dot-stickers/${k.id}.gif`));
+  assert.match((await h.cmd().handler({ rawInput: 'stickers' })).text, /stickers: \d+ saved · phone: (\d+)\/\1 synced$/m);
+  h.ctx.get = get0; delete h.ctx.dshPhone;
+});

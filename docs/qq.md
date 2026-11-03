@@ -26,7 +26,7 @@ Her QQ on her computer: [NapCat](https://github.com/NapNeko/NapCatQQ) (a headles
 
 然后她（或你在「手机」标签页里）打开 QQ → 右上角 + → 扫一扫 → 在手机上确认"电脑登录"。这就是真实的 QQ 多端登录流程——她的手机授权她的电脑。登录态保存在 VM 里，以后 `/qq start` 用账号快速登录，不用再扫。
 
-`/qq` 看状态，`/qq log` 看日志（NapCat 或 SnowLuma 的日志和进程；SnowLuma 下还有监听端口和 WebUI 密码；安装中就是安装日志），`/qq stop` 停，`/qq owner <号>` 指定"你"——必须手动指定，不会从谁先私聊自动学。全部子命令：`install [snowluma]`、`backend <napcat|snowluma>`、`account <号>`、`start`、`stop`、`qr`、`log`、`owner <号>`、`group <mention|all|none|score>`。
+`/qq` 看状态，`/qq stickers [sync]` 看表情包和手机相册的同步（见下面表情包那行），`/qq log` 看日志（NapCat 或 SnowLuma 的日志和进程；SnowLuma 下还有监听端口和 WebUI 密码；安装中就是安装日志），`/qq stop` 停，`/qq owner <号>` 指定"你"——必须手动指定，不会从谁先私聊自动学。全部子命令：`install [snowluma]`、`backend <napcat|snowluma>`、`account <号>`、`start`、`stop`、`qr`、`log`、`owner <号>`、`group <mention|all|none|score>`。
 
 ## 扫码登录（`/qq qr`）
 
@@ -49,7 +49,7 @@ QQ 的电脑登录码**不接受相册导入，只认摄像头**。她手机的�
 | 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB |
 | 图片网址规则 | 只接受公网 `http`/`https`、端口 80/443、不带账号密码；回环、私网、链路本地（含 169.254.169.254）、组播、`localhost`/`*.local`/`*.internal`/单段主机名一律拒绝并报错（NapCat 在 VM 里下载，防止她让它访问 VM 内部服务）。公网域名解析到内网（DNS rebinding）这里拦不住 |
 | 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
-| 表情包 | 别人发的表情包（QQ 标 `sub_type: 1`；QQ 自带的大表情 mface 的 summary 是 `[？]`、`[doge]` 这种短方括号，也算）进文本是 `[表情包 sticker:<id>]`，同时下载到 `~/.dsh/stickers/`，列表在 `~/.dsh/dsh-qq-stickers.json`（最多 300 张，先进先出）；她自己也能存：手机 App 里长按保存图片后 `qq_sticker_keep(image: "phone:latest", note: "无语")`（或手机路径、网图）。发：`images: ["sticker:<id>"]`（以 base64 发出，标 sticker），`face:<编号>` 发 QQ 小黄脸；提示词里列最近 12 张；这两种不走审批。**冷启动**：她的表情包少于 5 张时，幕间知道这件事，可以写一个 `collect` 的 playIntent——去某个 App 逛逛顺手攒几张（见 interlude.md 的「玩」） |
+| 表情包 | 别人发的表情包（QQ 标 `sub_type: 1`；QQ 自带的大表情 mface 的 summary 是 `[？]`、`[doge]` 这种短方括号，也算）进文本是 `[表情包 sticker:<id>]`，同时下载到 `~/.dsh/stickers/`，列表在 `~/.dsh/dsh-qq-stickers.json`（最多 300 张，先进先出）；她自己也能存：手机 App 里长按保存图片后 `qq_sticker_keep(image: "phone:latest", note: "无语")`（或手机路径、网图）。发：`images: ["sticker:<id>"]`（以 base64 发出，标 sticker），`face:<编号>` 发 QQ 小黄脸；提示词里列最近 12 张；这两种不走审批。**手机上**：存下的每一张都同步到手机相册的 `dot-stickers`（`/sdcard/Pictures/dot-stickers/<id>.<ext>`；存了、新下载了、被挤掉了、手机开机时各同步一次，名字 + 大小一样的不重推），所以手机上任何 App 都能从相册选图发；手机 QQ 的「收藏」表情栏不会自己有它们——她得在 QQ 里长按 → 添加到表情，提示词（`qq.stickers` / `qq.channel.no-stickers` 说在哪，`phone.stickers` 说各 App 怎么加）只教不催。`/qq stickers` 看 `stickers: N saved · phone: N/M synced`，`/qq stickers sync` 立刻推一次。`phone:latest` 只看各相册目录下的文件本身（`ls -td`），dot-stickers 这个子目录不会被当成「刚存的图」。**冷启动**：她的表情包少于 5 张时，幕间知道这件事，可以写一个 `collect` 的 playIntent——去某个 App 逛逛顺手攒几张（见 interlude.md 的「玩」） |
 | dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
 | 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
 | 她能做什么 | 发文字和图片。加好友、进群、撤回、发文件都没有工具 |

@@ -18,6 +18,7 @@ import { join, dirname } from 'node:path';
 import { createAudit } from '../computer/audit.js';
 import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { createStickers, isSticker, STICKER_MAX_BYTES } from './stickers.js';
+import { createStickerSync } from './sticker-sync.js';
 import { sectionOf, setValues } from '../settings.js';
 import { prompt } from '../prompts.js';
 
@@ -403,7 +404,15 @@ export function apply(ctx, config = {}, deps = {}) {
   sanitise('snowlumaVersion', (v) => { if (!/^[A-Za-z0-9._-]{1,40}$/.test(String(v))) throw new Error('bad release tag'); return String(v); }, '');
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
-  const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'), { fetch: deps.fetch ?? globalThis.fetch });
+  // Her stickers also live in her phone's album (dot-stickers): re-synced whenever the saved set changes and when the phone comes up.
+  let stickerSync = null;
+  const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'), { fetch: deps.fetch ?? globalThis.fetch, onChange: () => stickerSync?.schedule() });
+  stickerSync = createStickerSync({ stickers, phone: () => ctx.get('dshPhone'), logger, audit: (e) => audit(e), debounceMs: deps.stickerSyncMs ?? 2000 });
+  ctx.effect?.(() => () => stickerSync.stop(), 'dsh-dot/qq: sticker sync timer');
+  ctx.inject?.(['dshPhone'], (c) => c.effect(() => {
+    if (c.dshPhone.isReady) stickerSync.schedule();
+    return c.dshPhone.onStatus?.((st) => { if (st.state === 'ready') stickerSync.schedule(); }) ?? (() => {});
+  }, 'dsh-dot/qq: stickers to the phone'));
   const computer = () => ctx.get('dshComputer');
   let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
 
@@ -893,7 +902,7 @@ export function apply(ctx, config = {}, deps = {}) {
     if (src.kind === 'phone-screen') return phone.screenshot();
     let path = src.ref;
     if (src.kind === 'phone-latest') {
-      path = (await phone.shell('ls -t /sdcard/DCIM/Camera/* /sdcard/Pictures/Screenshots/* /sdcard/DCIM/Screenshots/* /sdcard/Pictures/* /sdcard/Download/* 2>/dev/null | grep -iE "\\.(jpe?g|png|webp|gif|heic)$" | head -1')).trim();
+      path = (await phone.shell('ls -td /sdcard/DCIM/Camera/* /sdcard/Pictures/Screenshots/* /sdcard/DCIM/Screenshots/* /sdcard/Pictures/* /sdcard/Download/* 2>/dev/null | grep -iE "\\.(jpe?g|png|webp|gif|heic)$" | head -1')).trim();
       if (!path) throw new Error('no photos on her phone yet');
     }
     const buf = Buffer.from((await phone.adbExec(['exec-out', 'cat', path], { encoding: 'buffer', maxBuffer: MAX_IMAGE_BYTES * 2 })).stdout);
@@ -937,6 +946,7 @@ export function apply(ctx, config = {}, deps = {}) {
     return got;
   };
   qq.stickerCount = () => stickers.count();
+  qq.stickerSync = stickerSync;
   /** Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order. */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
@@ -1015,7 +1025,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({
       name: 'qq_sticker_keep',
-      description: '把一张图存成你自己的表情包，以后用 qq_send 的 images: ["sticker:<id>"] 发。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。',
+      description: '把一张图存成你自己的表情包，以后用 qq_send 的 images: ["sticker:<id>"] 发。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。存下的也会同步到手机相册的 dot-stickers 里。',
       parameters: { type: 'object', properties: { image: { type: 'string' }, note: { type: 'string' } }, required: ['image'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { id: { type: 'string' }, isNew: { type: 'boolean' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sticker:${v?.id}${v?.isNew ? '' : ' (already kept)'}` }] },
       async execute(args) { return qq.keepSticker(args.image, args.note ?? ''); },
@@ -1035,8 +1045,8 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'qq',
-      description: 'her QQ on the computer (NapCat or SnowLuma): status; "install" (NapCat + QQ), "install snowluma", "backend <napcat|snowluma>", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "clean [napcat]" (free disk: installer leftovers, caches; with napcat also NapCat itself), "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
-      input: { hint: '[install [snowluma] | backend <napcat|snowluma> | account <n> | start | stop | qr | log | clean [napcat] | owner <n> | group <mention|all|none|score>]' },
+      description: 'her QQ on the computer (NapCat or SnowLuma): status; "install" (NapCat + QQ), "install snowluma", "backend <napcat|snowluma>", "account <number>", "start", "stop", "qr" (login QR → her camera and album), "log", "clean [napcat]" (free disk: installer leftovers, caches; with napcat also NapCat itself), "stickers [sync]" (her collection and how much of it is in the phone album; sync pushes now), "owner <number>", "group <mention|all|none|score>" (which group messages wake her)',
+      input: { hint: '[install [snowluma] | backend <napcat|snowluma> | account <n> | start | stop | qr | log | clean [napcat] | stickers [sync] | owner <n> | group <mention|all|none|score>]' },
       handler: async ({ rawInput }) => {
         const [verb, arg] = String(rawInput ?? '').trim().split(/\s+/);
         let extra = '';
@@ -1060,6 +1070,11 @@ export function apply(ctx, config = {}, deps = {}) {
             const out = await vmShell(`${arg === 'napcat' ? `${KILL_ALL}; rm -rf ${NAPCAT} ${VM_HOME}/NapCat ${INSTALL_DONE}; ` : ''}${CLEAN_SCRIPT}; ${DISK_LINE}`, 300_000);
             audit({ kind: 'cleaned', napcat: arg === 'napcat' });
             extra = `\ncleaned${arg === 'napcat' ? ' (NapCat removed; /qq install to put it back)' : ''} · ${String(out).trim()}`;
+          }
+          else if (verb === 'stickers') {
+            let done = '';
+            if (arg === 'sync') { const r = await stickerSync.sync(); done = r.ready ? ` · pushed ${r.pushed.length}, removed ${r.removed.length}` : ' · phone not ready, nothing pushed'; }
+            extra = `\nstickers: ${stickers.count()} saved · ${stickerSync.statusLine()}${done}`;
           }
           else if (verb === 'start') { extra = (await qq.start()) ? '\nstarting; if this account is new here, /qq qr to log in' : `\n${qq.error}`; }
           else if (verb === 'stop') { await qq.stop(); extra = '\nstopped'; }
