@@ -297,9 +297,9 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
 });
 
 test('working rules tell her to use a goal for long tasks', async () => {
-  const { WORKING_RULES } = await import('../src/dot/core.js');
-  assert.match(WORKING_RULES, /create_goal/);
-  assert.match(WORKING_RULES, /一轮就能做完的事不用建目标/);
+  const { workingRules } = await import('../src/dot/core.js');
+  assert.match(workingRules(), /create_goal/);
+  assert.match(workingRules(), /一轮就能做完的事不用建目标/);
 });
 
 test('errands: app notifications and phone checks run in her errand session; only the conclusion reaches her conversation', async () => {

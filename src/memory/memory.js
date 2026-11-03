@@ -27,6 +27,7 @@ import {
 } from './store.js';
 import { createRecall } from './recall.js';
 import { sectionOf, setValues } from '../settings.js';
+import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -112,31 +113,24 @@ export function takeChunk(fresh, maxChars) {
   return out;
 }
 
-export const EXTRACT_RULES =`你在帮她整理记忆。上面是她这段时间真实发生的事（"他"是她的人；"我"是她自己真正发出去的话；[手机] 是手机通知；[我刚做的] 是她自己在手机上做过的事）。只根据这些记录，不要猜，不要补。
+/** What the consolidation call is asked to do (the JSON it returns, field by field). */
+export const extractRules = () => prompt('memory.extract');
 
-只输出一个 JSON 对象，不要代码围栏，不要解释：
-{
-  "owner": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
-  "self": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
-  "people": [{"id":"已认识的人的 id（u0001 这种），新认识的留空","platform":"qq/wechat/xiaoheihe/bilibili/…","name":"名字","tier":"talked|seen","impression":"一句话印象，20 字以内","facts":["关于这个人的具体事"]}],
-  "same": [{"a":"u0003","b":"u0007","why":"为什么认定是同一个人（记录里的证据）"}],
-  "fragments": [{"text":"...","kind":"event|plan|promise|preference|fact","tag":0,"mergeWith":null}],
-  "confirm": ["这段记录又一次证实了的待核实条目 id"],
-  "handoff": {"now":"她此刻在做什么、什么心情","inFlight":[],"promises":[],"openQuestions":[]},
-  "diary": "今天的日记，只有要求时才写，否则 null"
+/** The whole consolidation prompt: the records, what she already has, the rules, and whether to write a handoff / diary. */
+export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', pending = '', withHandoff = false, withDiary = false, day = '' }) {
+  return [
+    ...(recent ? [prompt('memory.extract.earlier'), recent, ''] : []),
+    prompt('memory.extract.input', {
+      records: text || '（这段时间没有新记录）',
+      banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
+      people: known || '（还没有）', fragments: frags || '（还没有）', pending: pending || '（没有）',
+    }),
+    '',
+    extractRules(),
+    `\n${prompt(withHandoff ? 'memory.extract.handoff-yes' : 'memory.extract.handoff-no')}`,
+    `\n${withDiary ? prompt('memory.extract.diary-yes', { day }) : prompt('memory.extract.diary-no')}`,
+  ].join('\n');
 }
-
-各栏怎么写：
-- owner：关于他、长期有效的事（他是谁、在做什么、喜好、雷点、称呼、长期计划）。一次性的事不进这里，进 fragments。已有的条目要改就 replace（oldText 写原条目里一小段），过时了就 remove。每条一句话。
-- self：她自己长期的东西：学会了什么（装了什么 App、学会怎么用）、在做的事、形成的习惯（比如常用哪个 App、多久看一次、喜欢在什么时候做什么）、自己的看法。不写她的设定（设定在别处）。
-- people：除了他以外，这段记录里和她真正打过交道的人，不管在哪个 App。已认识的写 id；新认识的留空 id、写 platform 和 name。互发过消息的 tier=talked；只是看/点赞/评论过对方帖子的 tier=seen（seen 只写 impression，不写 facts）。
-- same：已认识的人里，记录明确显示是同一个人的两张卡（比如同一个人在 QQ 和小黑盒都出现、自己说了另一个号是他）。要有证据才写，拿不准就不写。
-- fragments：这段时间发生的具体的事，每条 60 字以内，保留时间、人名、数字、地点。tag：0=知道就行；1=影响接下来怎么说话（他今天心情、正在做的事、刚纠正过的说法）；2=不记住就会出错（他的计划和截止、她答应过的事、他明确的要求）。和已有碎片说的是同一件事就给 mergeWith（填已有 id），拿不准就新增。
-- confirm：待核实清单里，这段记录明确又证实了一次的条目，填它们的 id。
-- handoff：只有要求时才写，否则给 null。
-- diary：只有要求时才写，否则给 null。用她自己的口吻、第一人称，40 到 120 字，写今天：只写记录里真实发生的事和她自己记下的东西，不编、不抒情、不总结人生；没发生什么就写没发生什么。
-- 没有可写的就给空数组。寒暄、语气词、系统和工具的事一律不记。
-- 密码和 API key / token / 密钥一律不记，哪一栏都不行（写了也会被丢掉）；账号本身、手机号这些可以记。`;
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
 export function parseLooseJson(raw) {
@@ -212,13 +206,14 @@ export function transcriptFromEvents(events, session) {
 
 /** The note a new session opens with after a handoff. */
 export function renderHandoff(h, tail, gen) {
-  const lines = [`【交接 · 第 ${gen} 段】这是你自己上一段对话留下的交接，不是谁的新消息；接着往下过就行，别回应它，也别提"交接"。`];
-  if (h?.now) lines.push(`· 你此刻：${h.now}`);
-  const list = (title, xs) => { if (xs?.length) { lines.push(`· ${title}：`); for (const x of xs) lines.push(`  - ${x}`); } };
-  list('手上还没做完的', h?.inFlight);
-  list('你答应过的', h?.promises);
-  list('还没问清、或他还没回的', h?.openQuestions);
-  if (tail.length) { lines.push('· 上一段最后几句（原文）：'); for (const l of tail) lines.push(`  ${clip(transcriptLine(l).replace(/\s*\n+\s*/g, ' / '), 240)}`); }
+  const t = table('memory.handoff', { gen, now: h?.now ?? '' });
+  const lines = [t.head];
+  if (h?.now) lines.push(t.now);
+  const list = (title, xs) => { if (xs?.length) { lines.push(title); for (const x of xs) lines.push(`  - ${x}`); } };
+  list(t.inFlight, h?.inFlight);
+  list(t.promises, h?.promises);
+  list(t.openQuestions, h?.openQuestions);
+  if (tail.length) { lines.push(t.tail); for (const l of tail) lines.push(`  ${clip(transcriptLine(l).replace(/\s*\n+\s*/g, ' / '), 240)}`); }
   return lines.join('\n');
 }
 
@@ -229,6 +224,7 @@ export function apply(ctx, config = {}) {
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
+  configurePrompts({ home });
   const dir = join(home, 'memory');
   const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md') };
   mkdirSync(dir, { recursive: true });
@@ -420,24 +416,16 @@ export function apply(ctx, config = {}) {
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
       const frags = [...memory.fragments].sort(compareFragments).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
-      const prompt = [
-        ...(recent ? ['=== 更早一点的对话（已经整理过，只用来写 handoff，别重复记）===', clip(recent, 12000), ''] : []),
-        '=== 这段时间的记录 ===', text || '（这段时间没有新记录）', '',
-        ...(bankless ? ['=== 关于他 / 她自己记下的 ===', '（由别的记忆插件负责：owner 和 self 都给 []）'] : [
-          '=== 已有：关于他 ===', memory.owner.map((e) => `- ${e}`).join('\n') || '（空）',
-          '=== 已有：她自己记下的 ===', memory.self.map((e) => `- ${e}`).join('\n') || '（空）']),
-        '=== 已认识的人 ===', known || '（还没有）',
-        '=== 已有碎片 ===', frags || '（还没有）',
-        '=== 待核实（关于别人的事，说过一次）===', memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n') || '（没有）', '',
-        EXTRACT_RULES,
-        withHandoff ? '\n这次要写 handoff：她马上换到一段新对话，handoff 让她接得上。' : '\nhandoff 给 null。',
-        withDiary ? `\n这次要写 diary：今天是 ${dayLabel(new Date())}，写今天的日记。` : '\ndiary 给 null。',
-      ].join('\n');
+      const ask = extractPrompt({
+        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags,
+        pending: memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'),
+        withHandoff, withDiary, day: withDiary ? dayLabel(new Date()) : '',
+      });
       let raw = '';
       let usage = null;
       try {
         let finish = null;
-        for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: prompt }], source: { kind: 'dsh-dot-memory' } })] })) {
+        for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: ask }], source: { kind: 'dsh-dot-memory' } })] })) {
           if (chunk.type === 'text-delta') raw += chunk.text;
           if (chunk.type === 'usage') usage = chunk.usage ?? null;
           if (chunk.type === 'finish') finish = chunk.reason;

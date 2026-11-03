@@ -1,0 +1,1 @@
+intents: [{"at":"ISO-8601 strictly after now","kind":"reminder|reply|contact","text":"what to do then","willingness":0.0}] — concrete future possibilities only; otherwise an empty array.

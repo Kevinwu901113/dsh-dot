@@ -457,7 +457,7 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
 });
 
 test('play: on by default but only in apps on her phone (none → disabled); a playIntent becomes one normal turn on her phone, gated by actions, apps, willingness and daily cap', async () => {
-  const { PLAY_SOURCE, PLAY_RULES } = await import('../src/interlude/core.js');
+  const { PLAY_SOURCE, playRules } = await import('../src/interlude/core.js');
   const withPlay = GOOD.replace('"contact":null', '"contact":null,"playIntents":[{"app":"小黑盒","action":"like","target":"那篇讲黑猴更新的帖子","why":"写得认真","willingness":0.8}]');
   // nothing of the known apps on her phone: prompt says disabled, nothing executed
   const off = harness({ reply: withPlay, vm: {} });
@@ -473,7 +473,7 @@ test('play: on by default but only in apps on her phone (none → disabled); a p
   h.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe', 'com.android.chrome'] } : orig(n))(h.ctx.get);
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
-  assert.ok(h.calls[0].system.includes(PLAY_RULES), 'the rulebook is in the prompt');
+  assert.ok(h.calls[0].system.includes(playRules()), 'the rulebook is in the prompt');
   assert.match(h.calls[0].system, /playIntents: \[\{"app":"one of 小黑盒","action":"like\|comment\|follow\|collect"/);
   assert.equal(h.followups.length, 1);
   assert.deepEqual(h.followups[0].m.source, PLAY_SOURCE);

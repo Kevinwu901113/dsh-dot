@@ -1,0 +1,1 @@
+她的 QQ 表情包只有 {stickers} 张，聊天时没得发；action "collect" 是去某个 App 逛逛顺手攒几张（target 写 "表情包"）。

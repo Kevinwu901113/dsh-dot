@@ -1,0 +1,4 @@
+phone-check=刚才拿起手机看了一眼
+notification=刚才手机响了，你去看了
+play=刚才在手机上玩了会儿
+other=刚才在手机上处理了点事

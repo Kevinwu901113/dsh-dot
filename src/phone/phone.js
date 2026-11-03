@@ -18,6 +18,7 @@ import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 import { sectionOf, setValues } from '../settings.js';
+import { prompt } from '../prompts.js';
 
 /** The virtual scene's "wall" poster, moved to 1.5 m straight in front of the camera's start pose (1 m square). */
 const WALL_POSTER = ['poster wall', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default poster.png', ''].join('\n');
@@ -213,6 +214,9 @@ async function unzip(zip, into) {
   try { return await run('unzip', ['-oq', zip, '-d', into]); } catch (err) { if (err.code !== 'ENOENT') throw err; }
   return run('tar', ['-xf', zip, '-C', into]);
 }
+
+/** Her system-prompt section about the phone. */
+export const deviceText = (serial) => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX });
 
 export function apply(ctx, config = {}, deps = {}) {
   const logger = withFileLog(ctx.logger('dsh-dot/phone'));
@@ -592,7 +596,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? `你有一部自己的手机：Android（设备 ${serial}，工具 ${PHONE_TOOL_PREFIX}*）。手机上来了通知（QQ 消息之类）会直接叫醒你，用不着定闹钟去看——但 App 开在前台时不会有通知，所以每次用完 App 记得按 HOME 回到桌面。用法：先 mobile_list_elements_on_screen 看屏幕上有什么（带坐标），再 mobile_click_on_screen_at_coordinates 点；看不清就 mobile_take_screenshot；mobile_launch_app 打开 App，mobile_press_button BACK/HOME 返回。这部手机没有应用商店：想要什么 App 就像人一样自己装——用手机上的浏览器打开官网下载安装包，点开安装（浏览器已被允许安装）。登录、验证码、人脸、短信验证由用户来做：停下来告诉他，不要自己绕。`
+        ? deviceText(serial)
         : ''),
     }), 'dsh-dot/phone: device section');
   });

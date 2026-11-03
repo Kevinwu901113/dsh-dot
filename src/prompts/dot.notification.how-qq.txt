@@ -1,0 +1,1 @@
+QQ 的消息用 qq_send 回（私聊 to 用 user:<括号里的QQ号>，群里 to 用 group:<群号>）

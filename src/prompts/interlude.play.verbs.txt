@@ -1,0 +1,3 @@
+like=点个赞
+comment=评论一句
+follow=关注

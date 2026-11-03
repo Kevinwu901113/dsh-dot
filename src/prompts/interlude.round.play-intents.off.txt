@@ -1,0 +1,1 @@
+playIntents: [] (playing on her apps is disabled by the host).

@@ -4,6 +4,7 @@
 import { createHash } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import { prompt } from '../prompts.js';
 
 const MAX = 300;
 export const STICKER_MAX_BYTES = 4 * 1024 * 1024;
@@ -77,7 +78,7 @@ export function createStickers(file, { fetch = globalThis.fetch } = {}) {
     /** One line for her prompt: the newest ones, newest last. */
     prompt(n = 12) {
       const got = list.filter((s) => s.saved).slice(-n);
-      return got.length ? `你存的表情包（images 里写 sticker:<id> 就能发）：${got.map((s) => `${s.id}（${s.note || `${s.from} 发的`}${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、')}` : '';
+      return got.length ? prompt('qq.stickers', { list: got.map((s) => `${s.id}（${s.note || `${s.from} 发的`}${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、') }) : '';
     },
   };
   return stickers;

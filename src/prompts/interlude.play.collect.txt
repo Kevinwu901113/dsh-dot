@@ -1,0 +1,4 @@
+[想玩会儿手机] 你刚才想：去{app}{pkg}逛逛{target}，攒几张表情包。{why}
+去吧，用你的手机（{phonePrefix}*）。评论区、帖子里看到合你口味的表情包就长按保存到手机，然后 qq_sticker_keep（image: "phone:latest"，note 写一两个词）存成你的。挑你真会用的，三五张就够，不要见一张存一张；不发帖、不私信、不花钱。
+{rules}
+做完把手机放回桌面（HOME），只回一句你存了什么，或者 DOT_SILENT。

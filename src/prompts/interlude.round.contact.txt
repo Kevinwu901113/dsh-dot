@@ -1,0 +1,1 @@
+contact: null, or {"content":"exact message text, bubbles separated by <sep/>","willingness":0.0,"reason":"short reason"} for a message genuinely sent to the user now. {rule}

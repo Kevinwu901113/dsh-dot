@@ -1,0 +1,2 @@
+said=，想说的是：「{text}」
+why=因为{why}。

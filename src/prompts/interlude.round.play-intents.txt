@@ -1,0 +1,1 @@
+playIntents: [{"app":"one of {apps}","action":"{actions}","target":"the post/person, as she would name it","text":"the comment, if action is comment","why":"short reason","willingness":0.0}] — at most one, only when she genuinely wants to; otherwise [].

@@ -14,6 +14,7 @@
 //                byte-stable selection under a token budget.
 // Text similarity is whale's: normalised characters, 3-gram Jaccard (works for Chinese without a
 // tokenizer).
+import { table } from '../prompts.js';
 
 export const MEMORY_VERSION = 1;
 
@@ -462,14 +463,15 @@ export function normalizeMemory(m) {
  * memory (no clocks, no counters), because a context snapshot is re-sent only when its text changes.
  */
 export function renderStanding(memory, { budgetTokens = 600, banks = true } = {}) {
+  const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
-  if (banks && memory.owner.length) parts.push(`## 关于他\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
-  if (banks && memory.self.length) parts.push(`## 你自己记下的\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
   const picked = selectFragments(memory.fragments, budgetTokens);
-  if (picked.length) parts.push(`## 最近的事（越靠前越要紧）\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${f.text}`).join('\n')}`);
+  if (picked.length) parts.push(`${t.recent}\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${f.text}`).join('\n')}`);
   if (!parts.length) return '';
-  return ['<memory>', '这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。', ...parts, '</memory>'].join('\n');
+  return ['<memory>', t.intro, ...parts, '</memory>'].join('\n');
 }
 
 /** Lines matching a query (character bigrams), for the recall tool. */

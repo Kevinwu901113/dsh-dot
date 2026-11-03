@@ -25,6 +25,7 @@ import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { estimateTokens, rejectReason, search } from './store.js';
+import { prompt } from '../prompts.js';
 
 export const BACKENDS = ['local', 'siliconflow', 'dashscope', 'off'];
 const MODELS = {
@@ -344,7 +345,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     picked = picked.filter((x) => { const n = estimateTokens(x.c.text); if (used + n > budget) return false; used += n; return true; });
     picked.sort((x, y) => x.c.at - y.c.at);
     res.hits = picked.map((x) => ({ at: x.c.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.c.text }));
-    res.text = picked.length ? ['你记得的相关原话（从以前的聊天里自动翻出来的，按时间；不是新消息，用得上就用，用不上就当没看见，也别提"翻到"）：', ...picked.map((x) => x.c.text)].join('\n\n') : '';
+    res.text = picked.length ? [prompt('memory.recall.header'), ...picked.map((x) => x.c.text)].join('\n\n') : '';
     res.ms = Math.round(performance.now() - t0);
     if (record) last = { at: Date.now(), ms: res.ms, mode: res.mode, hits: res.hits.length, query: clip(q, 40) };
     return res;

@@ -1,0 +1,1 @@
+你存的表情包（images 里写 sticker:<id> 就能发）：{list}

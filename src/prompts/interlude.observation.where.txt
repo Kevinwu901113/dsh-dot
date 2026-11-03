@@ -1,0 +1,5 @@
+phone-app=打开你手机上的 App（{app}）看看：{what}
+phone-visit=用手机打开这个页面看看：{url}
+phone-search=在手机上搜一下：{query}
+vm-visit=打开这个页面看看：{url}
+vm-search=在浏览器里搜一下：{query}

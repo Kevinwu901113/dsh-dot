@@ -1,13 +1,12 @@
 #!/usr/bin/env node
-// npm run prompts — every prompt dsh-dot puts in front of the model, on one local page:
-// rendered with sample inputs through the real code, the source beside it, plain literals editable
-// in place (node --check after each save, reverted if it fails). A developer tool; not shipped behaviour.
+// npm run prompts — every prompt file she is given, on one local page: edit one, save it to
+// <home>/prompts/ (or to src/prompts/ with --src), put the built-in one back, preview it rendered
+// through the real code with sample inputs, or see her whole system prompt. A developer tool.
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, statSync, mkdtempSync } from 'node:fs';
-import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // dsh's own packages are peer dependencies: present where the plugin runs, usually absent in a bare
@@ -26,9 +25,16 @@ const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
     register(`data:text/javascript,${encodeURIComponent(`const STUBS=${JSON.stringify(missing)};${hook}`)}`);
   }
 }
-const read = (f) => readFileSync(join(ROOT, f), 'utf8');
-// Fresh module per file version, so a saved edit shows on the next render.
-const mod = (f) => import(`${pathToFileURL(join(ROOT, f)).href}?v=${statSync(join(ROOT, f)).mtimeMs}`);
+const P = await import('../src/prompts.js');
+const D = await import('../src/dot/core.js');
+const I = await import('../src/interlude/core.js');
+const M = await import('../src/memory/memory.js');
+const S = await import('../src/memory/store.js');
+const Q = await import('../src/qq/qq.js');
+const { deviceText } = await import('../src/phone/phone.js');
+const { createRecall } = await import('../src/memory/recall.js');
+// Pinned now: the recall sample below points DSH_HOME (and so the settings file) at a temp dir.
+P.configure({ home: P.promptHome() });
 
 // ── samples ──
 const CANON = { storyDefaults: { characterName: '小点', characterProfile: '二十三岁，刚毕业，在广州租房住。\n话少，直接，有自己的看法；熟了以后会吐槽。', perspective: '第三人称限知，贴着她。', relationship: '他是她大学时认识的朋友，现在每天都会聊几句。', userProfile: '宽，做 AI agent 开发，常熬夜。', world: '现实中国，2026 年。', location: '广州天河的一间合租房。', replyRules: '一句话一行；不用敬语。' }, blacklist: ['作为一个 AI', '我理解你的感受'], examples: '他：在吗\n她：在 怎么了' };
@@ -40,263 +46,193 @@ const LINES = [
   { at: T0 + 864e5 + 6e4, session: 'old', who: 'her', text: '多喝水 别硬撑 benchmark 晚一天也行' },
 ];
 const STATE = { current: '在出租屋里改简历，有点困', recent: ['下午去楼下买了杯咖啡'], salient: ['周五他要交 benchmark'] };
-const C = { agent: { session: { id: 's1', header: { cwd: '/home/dot' } } } };
-const fakeScope = (got) => ({ effect: (f) => f(), systemPrompt: { section: (o) => got.push(o), context: (o) => got.push(o), getSectionOrder: () => 0 } });
+const STICKERS = P.prompt('qq.stickers', { list: 'a1b2c3d4e5（无语）、f6e5d4c3b2（偷笑 ×3）' });
 const variant = (pairs) => pairs.map(([k, v]) => `━━ ${k} ━━\n${v}`).join('\n\n');
 
-async function sampleMemory() {
-  const s = await mod('src/memory/store.js');
-  const m = s.emptyMemory();
+function sampleMemory() {
+  const m = S.emptyMemory();
   m.owner = ['他叫宽，在广州做 AI agent 开发', '不喜欢被叫"亲"'];
   m.self = ['装了小黑盒，常在晚上逛', '学会了在 B 站发弹幕'];
   m.pending = [{ id: 'p0001', person: '阿满', text: '阿满下个月搬去深圳' }];
-  s.observeFragment(m, { text: '10-31 他说这周要赶一个 benchmark，周五前交', tag: 2, kind: 'plan', gen: 1 });
-  s.observeFragment(m, { text: '11-02 他感冒了，嗓子疼，说话很少', tag: 1, kind: 'event', gen: 1 });
-  return { s, m };
+  S.observeFragment(m, { text: '10-31 他说这周要赶一个 benchmark，周五前交', tag: 2, kind: 'plan', gen: 1 });
+  S.observeFragment(m, { text: '11-02 他感冒了，嗓子疼，说话很少', tag: 1, kind: 'event', gen: 1 });
+  return m;
 }
-let dshHome = '';
+let recallDir = '';
 async function recallText() {
-  if (!dshHome) process.env.DSH_HOME = dshHome = mkdtempSync(join(tmpdir(), 'dot-prompts-')); // no real recall settings
-  const { createRecall } = await mod('src/memory/recall.js');
-  const r = createRecall({ cfg: { recallBackend: 'local', recallTopK: 3, recallChunkChars: 1200, recallMaxTokens: 800, recallWindowTurns: 0 }, dir: dshHome, lines: () => LINES, logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('preview')) });
+  if (!recallDir) process.env.DSH_HOME = recallDir = mkdtempSync(join(tmpdir(), 'dot-prompts-')); // no real recall settings
+  const r = createRecall({ cfg: { recallBackend: 'local', recallTopK: 3, recallChunkChars: 1200, recallMaxTokens: 800, recallWindowTurns: 0 }, dir: recallDir, lines: () => LINES, logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('preview')) });
   return (await r.query('你 benchmark 跑完了吗', { session: 's1', record: false })).text;
 }
-// Run a region of the real source with the given fakes in scope; a section/context registration yields its text.
-function run(reg, vars, tail = '') {
-  const got = [];
-  const v = { scope: fakeScope(got), ...vars };
-  const r = new Function(...Object.keys(v), reg.code + tail)(...Object.values(v));
-  return tail ? r : got[0].text(C);
-}
+const standing = () => S.renderStanding(sampleMemory(), { budgetTokens: 600 });
+const context = () => I.renderContext({ state: STATE, entries: ['11-03 14:00：她把窗帘拉开一半，靠在床头改简历，咖啡放凉了。'], intents: [{ at: new Date(Date.now() + 3 * 36e5).toISOString(), kind: 'contact', text: '问他感冒好点没' }], cursor: Date.now() - 90 * 6e4, restarted: false });
 
-// ── inventory: [file, line, identifier on that line, { back: region starts n lines up, line: that line only, readonly, note }] ──
-const I = 'src/interlude/core.js', D = 'src/dot/core.js', M = 'src/memory/memory.js', Q = 'src/qq/qq.js', P = 'src/phone/phone.js';
-const sec = { back: 1 };
-export const inventory = [
-  { id: 'canon', group: 'A', name: 'interlude:canon', purpose: '人设 Canon，系统提示词里紧跟部署人设的第一段', at: [[I, 898, "name: 'interlude:canon'", sec], [I, 471, 'export function renderCanon']],
-    render: async (R) => { const { renderCanon } = await mod(I); return run(R[0], { inHome: () => true, canonText: () => renderCanon(CANON) }); } },
-  { id: 'rules', group: 'A', name: 'dot:rules', purpose: 'dot 的工作方式：电脑、手机、定时任务、静默、审批、长任务', at: [[D, 396, "name: 'dot:rules'", sec], [D, 91, 'export const workingRules']],
-    render: async (R) => run(R[0], { inHome: () => true, workingRules: (await mod(D)).workingRules, computer: () => true, phone: () => true }) },
-  { id: 'phone', group: 'A', name: 'phone:device', purpose: '她有一部 Android 手机、怎么用、什么时候停下交给他', at: [[P, 592, "name: 'phone:device'", sec]],
-    render: async (R) => run(R[0], { phone: { state: 'ready' }, serial: 'emulator-5554', PHONE_TOOL_PREFIX: (await mod('src/tool-prefixes.js')).PHONE_TOOL_PREFIX }) },
-  { id: 'qq', group: 'A', name: 'qq:channel', purpose: '她的电脑 QQ：谁是他、怎么回、群聊、表情包', at: [[Q, 1020, "name: 'qq:channel'", sec], ['src/qq/stickers.js', 78, 'prompt(n = 12)']],
-    render: async (R) => run(R[0], { qq: { connected: true, qq: '123456789', owner: '987654321' }, cfg: { groupPolicy: 'score' }, stickers: { prompt: () => '你存的表情包（images 里写 sticker:<id> 就能发）：a1b2c3d4e5（无语）、f6e5d4c3b2（偷笑 ×3）' } }) },
-  { id: 'memory', group: 'A', name: 'dot:memory', purpose: '每轮都看得到的记忆：关于他、她自己记下的、最近的事', at: [[M, 540, "name: 'dot:memory'", sec], ['src/memory/store.js', 464, 'export function renderStanding']],
-    render: async (R) => { const { s, m } = await sampleMemory(); return run(R[0], { dot: () => ({ isErrand: () => false }), isConversation: () => true, renderStanding: s.renderStanding, memory: m, cfg: { fragmentBudgetTokens: 600 }, peopleOnly: () => false }); } },
-  { id: 'recall', group: 'A', name: 'dot:recall', purpose: '叫醒时自动翻出的旧对话原话（样例走词法回退）', at: [[M, 551, "name: 'dot:recall'", sec], ['src/memory/recall.js', 347, 'res.text = picked.length']],
-    render: async (R) => { const t = await recallText(); return run(R[0], { dot: () => ({ isErrand: () => false }), isConversation: () => true, recall: { textFor: () => t } }); } },
-  { id: 'interlude', group: 'A', name: 'interlude', purpose: '幕间连续性：此刻、最近、打算（JSON，历史之后的动态上下文）', at: [[I, 912, "name: 'interlude',", sec], [I, 415, 'export function renderContext']],
-    render: async (R) => run(R[0], { inHome: () => true, renderContext: (await mod(I)).renderContext, state: STATE, readScript: () => ['11-03 14:00：她把窗帘拉开一半，靠在床头改简历，咖啡放凉了。'], files: { script: '' }, cfg: { scriptEntriesInPrompt: 3 }, intents: [{ at: new Date(Date.now() + 3 * 36e5).toISOString(), kind: 'contact', text: '问他感冒好点没' }], meta: { cursor: Date.now() - 90 * 6e4 }, startedAt: Date.now() - 5 * 36e5 }) },
-  { id: 'scheduled', group: 'A', name: 'dot:scheduled-turn', purpose: '只在定时任务叫醒的那一轮：没新东西就静默', at: [[D, 401, "name: 'dot:scheduled-turn'", sec], [D, 87, 'export const SCHEDULED_RULE']],
-    render: async (R) => run(R[0], { turns: new Map([['s1', { scheduled: true }]]), SCHEDULED_RULE: (await mod(D)).SCHEDULED_RULE }) },
+// ── what she sees, in order: each entry is one thing she is given, made of these files ──
+export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消息'], ['call', '独立模型调用']];
+export const entries = [
+  { id: 'rules', group: 'system', name: '工作方式', note: '定时任务、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
+    render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
+  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有', files: ['phone.device'], render: () => deviceText('emulator-5554') },
+  { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
+    render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
+  { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
+  { id: 'memory', group: 'system', name: '记忆', note: '每一轮都带着：关于他、她自己记下的、最近的事', files: ['memory.standing'], render: standing },
+  { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
 
-  { id: 'notification', group: 'B', name: 'notificationText', purpose: '手机通知叫醒她的那条消息（+ 未验证身份的提醒）', at: [[D, 68, 'export function notificationText'], [D, 466, 'createUserMessage({ content: [{ type: \'text\', text: items.some'], [D, 509, '（未验证身份）']],
-    render: async (R) => {
-      const { notificationText } = await mod(D);
+  { id: 'notification', group: 'wake', name: '手机通知', note: '通知把她叫醒时收到的那条', files: ['dot.notification', 'dot.notification.many', 'dot.notification.busy', 'dot.notification.how-qq', 'dot.notification.how-mixed', 'dot.notification.how-app', 'dot.notification.cards', 'dot.notification.unverified'],
+    render: () => {
       const qqOne = [{ pkg: 'qq', title: '宽(2条新消息)', text: '在吗' }, { pkg: 'qq', title: '宽', text: '帮我看个东西' }];
-      const mixed = [{ pkg: 'com.max.xiaoheihe', title: '暮看云', text: '回复了你的评论' }, { pkg: 'qq', title: '宽（未验证身份）', text: '在吗' }];
-      let sent = null;
-      run(R[1], { found: { agent: { followup: (m) => { sent = m; } } }, createUserMessage: (x) => x, items: [{ unverifiedOwner: true }], text: notificationText(mixed), PHONE_NOTIFICATION_SOURCE: {} }, ';');
-      return variant([['一个 QQ 对话', notificationText(qqOne)], ['她忙时来的', notificationText(qqOne[0], { whileBusy: true })], ['两个 App + 未验证身份', sent.content[0].text]]);
+      const mixed = [{ pkg: 'com.max.xiaoheihe', title: '暮看云', text: '回复了你的评论' }, { pkg: 'qq', title: '阿满', text: '在吗', unverifiedOwner: true }];
+      return variant([['一个 QQ 对话', D.wakeText(qqOne)], ['她忙的时候来的', D.wakeText(qqOne.slice(0, 1), { whileBusy: true })], ['两个 App，带着记得的人和冒名提醒', D.wakeText(mixed, { cards: '阿满（qq:42）：聊过；群里说话 3 次' })]]);
     } },
-  { id: 'phonecheck', group: 'B', name: 'PHONE_CHECK_TEXT', purpose: '没事也隔一阵拿起手机看一眼', at: [[D, 42, 'export const PHONE_CHECK_TEXT']], render: async () => (await mod(D)).PHONE_CHECK_TEXT },
-  { id: 'errand', group: 'B', name: 'errandNote', purpose: '跑腿会话做完后，留在她对话里的一句', at: [[D, 126, 'export function errandNote']],
-    render: async () => { const { errandNote } = await mod(D); return variant(['phone-check', 'notification', 'play', 'other'].map((o) => [o, errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')])); } },
-  { id: 'handoff', group: 'B', name: 'renderHandoff', purpose: '15 万 token 交班后，新会话开头的交接', at: [[M, 214, 'export function renderHandoff']],
-    render: async () => (await mod(M)).renderHandoff({ now: '窝在床上改简历，有点困', inFlight: ['帮他查广州降温'], promises: ['周五提醒他交 benchmark'], openQuestions: ['他感冒好了没'] }, LINES.slice(-2), 3) },
-  { id: 'observation', group: 'B', name: 'observationPrompt', purpose: '幕间「去看」：只读地看一眼', at: [[I, 160, 'export function observationPrompt']],
-    render: async () => { const { observationPrompt } = await mod(I); return variant([['电脑浏览器 · 搜索', observationPrompt({ mode: 'search', query: '广州 本周 降温', purpose: '他感冒了，看看天气' }, 'vm')], ['手机 App', observationPrompt({ mode: 'search', query: '新番', purpose: '看看有没有新番' }, 'phone', 'tv.danmaku.bili')]]); } },
-  { id: 'play', group: 'B', name: 'playPrompt + PLAY_RULES', purpose: '幕间「玩」：去 App 里点赞、评论、攒表情包', at: [[I, 120, 'export function playPrompt'], [I, 104, 'export const PLAY_RULES']],
-    render: async () => { const { playPrompt } = await mod(I); return variant([['comment', playPrompt({ app: '小黑盒', action: 'comment', target: '那篇耳机测评', text: '低频确实糊', why: '她也用这副耳机' }, 'com.max.xiaoheihe')], ['collect', playPrompt({ app: 'B站', action: 'collect', target: '表情包', why: '表情包太少了' }, 'tv.danmaku.bili')]]); } },
+  { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
+  { id: 'errand', group: 'wake', name: '跑腿回来', note: '手机上的事办完后，留在她对话里的一句', files: ['dot.errand-note', 'dot.errand-note.what'],
+    render: () => variant(['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')])) },
+  { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],
+    render: () => M.renderHandoff({ now: '窝在床上改简历，有点困', inFlight: ['帮他查广州降温'], promises: ['周五提醒他交 benchmark'], openQuestions: ['他感冒好了没'] }, LINES.slice(-2), 3) },
+  { id: 'observation', group: 'wake', name: '幕间：去看一眼', note: '她自己想去看看的时候，只看不动', files: ['interlude.observation', 'interlude.observation.where', 'interlude.observation.vm', 'interlude.observation.phone'],
+    render: () => variant([['电脑浏览器里搜', I.observationPrompt({ mode: 'search', query: '广州 本周 降温', purpose: '他感冒了，看看天气' }, 'vm')], ['手机 App', I.observationPrompt({ mode: 'search', query: '新番', purpose: '看看有没有新番' }, 'phone', 'tv.danmaku.bili')]]) },
+  { id: 'play', group: 'wake', name: '幕间：玩一会儿', note: '去 App 里点赞、评论、攒表情包', files: ['interlude.play', 'interlude.play.collect', 'interlude.play.verbs', 'interlude.play.parts', 'interlude.play-rules'],
+    render: () => variant([['评论', I.playPrompt({ app: '小黑盒', action: 'comment', target: '那篇耳机测评', text: '低频确实糊', why: '她也用这副耳机' }, 'com.max.xiaoheihe')], ['攒表情包', I.playPrompt({ app: 'B站', action: 'collect', target: '表情包', why: '表情包太少了' }, 'tv.danmaku.bili')]]) },
 
-  { id: 'extract', group: 'C', name: 'EXTRACT_RULES', purpose: '记忆整理：记录 → owner / self / 人物 / 碎片 / 交班 / 日记（JSON）', at: [[M, 115, 'export const EXTRACT_RULES'], [M, 423, 'const prompt = [']],
-    render: async (R) => {
-      const mm = await mod(M); const { m } = await sampleMemory();
-      return run(R[1], { recent: LINES.slice(0, 2).map(mm.transcriptLine).join('\n'), clip: (s) => s, text: LINES.slice(2).map(mm.transcriptLine).join('\n'), bankless: false, memory: m, known: 'u0002 · 阿满 · qq:42 · talked', frags: m.fragments.map((f) => `${f.id} | ${f.text}`).join('\n'), EXTRACT_RULES: mm.EXTRACT_RULES, withHandoff: true, withDiary: false, dayLabel: mm.dayLabel }, '\nreturn prompt;');
+  { id: 'extract', group: 'call', name: '整理记忆', note: '把最近的记录整理进记忆，按要求写交接和日记', files: ['memory.extract.earlier', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off', 'memory.extract', 'memory.extract.handoff-yes', 'memory.extract.handoff-no', 'memory.extract.diary-yes', 'memory.extract.diary-no'],
+    render: () => {
+      const m = sampleMemory();
+      return M.extractPrompt({ recent: LINES.slice(0, 2).map(M.transcriptLine).join('\n'), text: LINES.slice(2).map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked', frags: m.fragments.map((f) => `${f.id} | ${f.text}`).join('\n'), pending: m.pending.map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'), withHandoff: true, withDiary: true, day: M.dayLabel(new Date()) });
     } },
-  { id: 'round', group: 'C', name: 'buildPrompt', purpose: '幕间一轮：HDSI lite 组装的 system + JSON 载荷', at: [[I, 276, 'export function buildPrompt'], [I, 249, 'export const DOT'], [I, 201, 'export const HDSI', { readonly: true, note: 'HDSI 原文（HDS-Interlude 上游逐字照搬，只读）' }]],
-    render: async () => {
-      const { buildPrompt, renderCanon } = await mod(I);
-      const r = buildPrompt({ phase: 'advance', identity: renderCanon(CANON), state: STATE, script: '11-03 14:00：她把窗帘拉开一半，靠在床头改简历。', cursor: Date.now() - 90 * 6e4, now: new Date(), speak: true, model: 'deepseek-chat', entries: [{ owner: 'user', at: '11-03 15:10', content: '在吗' }], browser: 'deferred', play: true, playApps: ['小黑盒', 'B站'], playActions: ['like', 'comment', 'follow', 'collect'], stickers: 2, memories: ['他叫宽，在广州做 AI agent 开发'], herLife: ['装了小黑盒，常在晚上逛'] });
-      return variant([['system', r.system], ['user', r.user]]);
+  { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活；HDS-Interlude 的原文在代码里，不在这儿', files: ['interlude.round.real-ledger', 'interlude.round.her-life', 'interlude.round.contact-mark', 'interlude.round.contact-off', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.format', 'interlude.round.script', 'interlude.round.script.seed', 'interlude.round.intents', 'interlude.round.browser-intents', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh'],
+    render: () => {
+      const r = I.buildPrompt({ phase: 'advance', identity: I.renderCanon(CANON), state: STATE, script: '11-03 14:00：她把窗帘拉开一半，靠在床头改简历。', cursor: Date.now() - 90 * 6e4, now: new Date(), speak: true, model: 'deepseek-chat', entries: [{ owner: 'user', at: '11-03 15:10', content: '在吗' }], browser: 'deferred', play: true, playApps: ['小黑盒', 'B站'], playActions: ['like', 'comment', 'follow', 'collect'], stickers: 2, memories: ['他叫宽，在广州做 AI agent 开发'], herLife: ['装了小黑盒，常在晚上逛'] });
+      return variant([['system', r.system], ['user', r.user], ['补全那一次（第一次没给全时）', P.prompt('interlude.round.refresh')]]);
     } },
-  { id: 'score', group: 'C', name: 'scorePrompt', purpose: '群消息打分（groupPolicy score）：值不值得她插一句', at: [[Q, 255, 'export function scorePrompt']],
-    render: async () => { const r = (await mod(Q)).scorePrompt({ who: '小点：二十三岁，话少、直接', recent: '阿满：今晚谁打瓦\n老王：我', message: '小点你上次说的那个耳机多少钱', group: '123456' }); return variant([['system', r.system], ['user', r.user]]); } },
-
-  ...[['memory 工具', M, 576, "description: '你自己的长期记忆"], ['recall 工具', M, 600, "description: '想不起来的时候"], ['qq_send', Q, 1001, "description: '用你的 QQ"], ['qq_sticker_keep', Q, 1011, "description: '把一张图存成"],
-    ['interval 工具', I, 348, "description: 'Write this interval"], ['/dot', D, 565, "description: 'dot status"], ['/qq', Q, 1032, "description: 'her QQ on the computer"], ['/phone', P, 603, "description: 'the phone: status"], ['/interlude', I, 925, "description: '幕间 status"]]
-    .map(([name, f, line, find]) => ({ id: `d-${name.replace(/\W/g, '') || line}`, group: 'D', name, purpose: name.startsWith('/') ? '命令说明（给人看，模型也会见到）' : '工具说明（模型据此决定怎么调用）', at: [[f, line, find, { line: true, readonly: true }]],
-      render: async (R) => R[0].pieces[0]?.value ?? '' })),
+  { id: 'score', group: 'call', name: '群消息打分', note: '群消息值不值得她插一句（群消息设成打分时）', files: ['qq.score.system', 'qq.score.who', 'qq.score.user'],
+    render: () => { const r = Q.scorePrompt({ who: '小点：二十三岁，话少、直接', recent: '阿满：今晚谁打瓦\n老王：我', message: '小点你上次说的那个耳机多少钱', group: '123456' }); return variant([['system', r.system], ['user', r.user]]); } },
 ];
-export const GROUPS = { A: 'A. 系统提示词', B: 'B. 注入的用户消息', C: 'C. 独立模型调用', D: 'D. 工具说明（只读）' };
-const FULL = [['canon', 'section · 部署人设 +1'], ['rules', 'section · 部署人设 +2'], ['phone', 'section · 60'], ['qq', 'section · 61'], ['scheduled', 'context · 900（只在定时任务那一轮）'], ['memory', 'context · 904'], ['recall', 'context · 905'], ['interlude', 'context · 905']];
+const entryOf = (id) => entries.find((e) => e.files.includes(id));
 
-// ── a small JS scanner: string / template literals (with ${} parts), comments, regexes, brackets ──
-function lit(s, i, out) {
-  const q = s[i];
-  let j = i + 1;
-  if (q !== '`') { while (s[j] !== q) j += s[j] === '\\' ? 2 : 1; out.push({ start: i, end: j + 1, parts: null }); return j + 1; }
-  const parts = [];
-  let a = j;
-  while (s[j] !== '`') {
-    if (s[j] === '\\') j += 2;
-    else if (s[j] === '$' && s[j + 1] === '{') { parts.push([a, j]); j = walk(s, j + 2, out, true); a = j; } else j++;
-  }
-  parts.push([a, j]);
-  out.push({ start: i, end: j + 1, parts });
-  return j + 1;
+export async function renderEntry(e) {
+  try { return String(await e.render()); } catch (err) { return `（没拼出来：${err.stack}）`; }
 }
-/** From `i`, the end of one statement (or, with `expr`, of the `${…}` it is inside); literals go to `out`. */
-function walk(s, i, out, expr = false) {
-  let depth = 0, prev = '(';
-  for (; i < s.length; i++) {
-    const c = s[i];
-    if (c === "'" || c === '"' || c === '`') { i = lit(s, i, out) - 1; prev = 'x'; continue; }
-    if (c === '/' && s[i + 1] === '/') { i = s.indexOf('\n', i) - 1; continue; }
-    if (c === '/' && s[i + 1] === '*') { i = s.indexOf('*/', i) + 1; continue; }
-    if (c === '/' && '(,=:[!&|?{};+'.includes(prev)) {
-      let k = i + 1, cls = false;
-      for (; s[k] !== '/' || cls; k++) { if (s[k] === '\\') k++; else if (s[k] === '[') cls = true; else if (s[k] === ']') cls = false; }
-      for (i = k; /[a-z]/.test(s[i + 1]); i++);
-      prev = 'x'; continue;
-    }
-    if ('([{'.includes(c)) depth++;
-    else if (')]}'.includes(c)) { if (depth === 0) return expr ? i + 1 : i; depth--; } else if (!expr && depth === 0 && c === ';') return i + 1;
-    else if (!expr && depth === 0 && c === '\n' && !'=+,(:?&|.'.includes(prev) && !/^\s*[+.?:|&]/.test(s.slice(i + 1, i + 40))) return i;
-    if (!/\s/.test(c)) prev = c;
-  }
-  return i;
+/** Her conversation's system prompt from top to bottom (dsh's own sections left out). */
+export async function full() {
+  const parts = [
+    ['人设（Canon，来自幕间的预设）', I.renderCanon(CANON)],
+    ['工作方式', D.workingRules({ computer: true, phone: true })],
+    ['手机', deviceText('emulator-5554')],
+    ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
+    ['—— 以下在对话历史之后 ——', ''],
+    ['定时任务那一轮（只在那一轮）', D.scheduledRule()],
+    ['记忆', standing()],
+    ['想起的原话', await recallText()],
+    ['幕间的连续性（数据，没有文字）', context()],
+  ];
+  return parts.map(([k, v]) => (v ? `━━━━ ${k} ━━━━\n${v}` : `━━━━ ${k} ━━━━`)).join('\n\n');
 }
-const lineAt = (s, at) => s.slice(0, at).split('\n').length;
-const decode = (raw, kind) => new Function(`return ${kind === 'q' ? `\`${raw}\`` : raw}`)();
-const encT = (v) => v.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
-const encode = (v, kind, q) => (kind === 'q' ? encT(v) : kind === 'tpl' ? `\`${encT(v)}\``
-  : q + v.replace(/\\/g, '\\\\').replace(new RegExp(q, 'g'), `\\${q}`).replace(/\n/g, '\\n').replace(/\r/g, '\\r') + q);
-const worth = (v) => v.length >= 4 && (/[　-鿿＀-￯]/.test(v) || (v.length >= 30 && / /.test(v)));
 
-export function locate([file, line, find]) {
-  const ls = read(file).split('\n');
-  const at = ls[line - 1]?.includes(find) ? line : ls.findIndex((l) => l.includes(find)) + 1;
-  if (!at) throw new Error(`${file}: 找不到「${find}」`);
-  return { line: at, drift: at !== line };
+const placeholders = (t) => [...new Set([...t.matchAll(/\{([A-Za-z]\w*)\}/g)].map((m) => m[1]))];
+const isTable = (t) => t.split('\n').every((l) => /^[\w-]+=/.test(l));
+function fileInfo(id, src) {
+  P.raw(id); // unknown id → throws
+  const builtin = readFileSync(P.builtinPath(id), 'utf8').replace(/\n$/, '');
+  const over = P.list().find((x) => x.id === id)?.override;
+  return { id, text: src ? builtin : P.raw(id), overridden: !src && Boolean(over), path: src || !over ? P.builtinPath(id) : over, placeholders: placeholders(builtin), table: isTable(builtin) };
 }
-function region(anchor) {
-  const [file, , , o = {}] = anchor;
-  const src = read(file);
-  const { line, drift } = locate(anchor);
-  const start = line - (o.back ?? 0);
-  const a = src.split('\n').slice(0, start - 1).join('\n').length + (start > 1 ? 1 : 0);
-  const a2 = a + /^\s*/.exec(src.slice(a))[0].length;
-  const out = [];
-  let end;
-  if (o.line) { end = src.indexOf('\n', a); for (let i = a2; i < end; i++) if (`'"\``.includes(src[i])) i = lit(src, i, out) - 1; } else end = walk(src, a2, out);
-  const readonly = Boolean(o.readonly);
-  const pieces = [];
-  for (const l of out.sort((x, y) => x.start - y.start)) {
-    const spans = !l.parts ? [[l.start, l.end, 'str']] : l.parts.length === 1 ? [[l.start, l.end, 'tpl']] : l.parts.map(([x, y]) => [x, y, 'q']);
-    for (const [x, y, kind] of spans) {
-      const raw = src.slice(x, y);
-      let value;
-      try { value = decode(raw, kind); } catch { continue; }
-      if (!worth(value)) continue;
-      const n = src.split(raw).length - 1;
-      pieces.push({ line: lineAt(src, x), raw, kind, quote: kind === 'str' ? raw[0] : '`', value, editable: !readonly && n === 1, why: readonly ? '只读' : n === 1 ? '' : `源文件里出现 ${n} 次，不能原地改` });
-    }
-  }
-  return { file, line, drift, start, end: lineAt(src, end), text: src.slice(a, end), code: src.slice(a2, end), readonly, note: o.note ?? '', pieces };
+function save(id, text, src) {
+  P.raw(id); // unknown id → throws
+  const body = `${String(text).replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
+  const path = src ? P.builtinPath(id) : P.overridePath(id);
+  mkdirSync(dirname(path), { recursive: true });
+  writeFileSync(path, body);
+  const lost = placeholders(readFileSync(P.builtinPath(id), 'utf8')).filter((k) => !body.includes(`{${k}}`));
+  return { text: `已保存：${path}`, warn: lost.length ? `注意：${lost.map((k) => `{${k}}`).join(' ')} 不见了，那里的内容就不会再出现` : '' };
 }
-const byId = (id) => inventory.find((x) => x.id === id);
-export async function renderItem(it) {
-  const regions = it.at.map(region);
-  let rendered;
-  try { rendered = String(await it.render(regions)); } catch (err) { rendered = `（渲染失败：${err.stack}）`; }
-  return { regions, rendered };
-}
-async function full() {
-  const parts = [];
-  for (const [id, where] of FULL) { const it = byId(id); parts.push(`━━━━ ${it.name} · ${where} ━━━━\n${(await renderItem(it)).rendered || '（空）'}`); }
-  return parts.join('\n\n');
-}
-function save({ id, r, p, raw, value }) {
-  const it = byId(id);
-  if (!it) throw new Error('没有这一项');
-  const reg = region(it.at[r]);
-  const piece = reg.pieces[p];
-  if (!piece || piece.raw !== raw) throw new Error('源文件已经变了，刷新后再改');
-  if (!piece.editable) throw new Error(piece.why);
-  const path = join(ROOT, reg.file), before = readFileSync(path, 'utf8');
-  const n = before.split(raw).length - 1;
-  if (n !== 1) throw new Error(`原文在 ${reg.file} 里找到 ${n} 处（要恰好 1 处），没改`);
-  if (value === piece.value) return '没有变化';
-  writeFileSync(path, before.replace(raw, () => encode(value, piece.kind, piece.quote)));
-  try { execFileSync(process.execPath, ['--check', path], { stdio: 'pipe' }); } catch (err) {
-    writeFileSync(path, before);
-    throw new Error(`node --check 没过，已还原：\n${String(err.stderr || err.message).trim()}`);
-  }
-  return `已保存 ${reg.file}:${piece.line}`;
-}
-function open({ file, line }) {
-  if (!inventory.some((it) => it.at.some((a) => a[0] === file))) throw new Error('不在清单里的文件');
-  const target = `${join(ROOT, file)}:${Number(line) || 1}`;
-  return new Promise((ok) => {
-    const child = spawn('code', ['-g', target], { stdio: 'ignore', detached: true });
-    child.on('error', () => { console.log(`open: ${target}`); ok(`没找到 code 命令，路径：${target}`); });
-    child.on('spawn', () => { child.unref(); ok(`已在编辑器里打开 ${file}:${line}`); });
-  });
+function reset(id) {
+  P.raw(id);
+  const path = P.overridePath(id);
+  rmSync(path, { force: true });
+  return { text: '已恢复内置版本' };
 }
 
 const PAGE = `<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>dot 提示词</title><style>
-:root{--bg:#fafaf9;--fg:#1c1917;--mute:#78716c;--line:#e7e5e4;--card:#fff;--acc:#4f46e5;--warn:#b45309;--code:#f5f5f4}
-@media (prefers-color-scheme:dark){:root{--bg:#0c0a09;--fg:#e7e5e4;--mute:#a8a29e;--line:#292524;--card:#1c1917;--acc:#818cf8;--warn:#f59e0b;--code:#141210}}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.6 system-ui,"PingFang SC","Microsoft YaHei",sans-serif;display:grid;grid-template-columns:300px 1fr;height:100vh}
-nav{border-right:1px solid var(--line);overflow:auto;padding:12px}main{overflow:auto;padding:20px 28px}
-nav h3{font-size:12px;color:var(--mute);margin:16px 0 4px}nav a{display:block;padding:6px 8px;border-radius:6px;cursor:pointer;color:inherit;text-decoration:none}
-nav a:hover,nav a.on{background:var(--code)}nav a b{font-weight:600}nav a small{display:block;color:var(--mute);font-size:12px}
-pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px;white-space:pre-wrap;word-break:break-word;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace;margin:6px 0 16px}
-h2{margin:0 0 4px}h4{margin:20px 0 4px}.mute{color:var(--mute)}.warn{color:var(--warn)}
-button{background:var(--acc);color:#fff;border:0;border-radius:6px;padding:4px 12px;cursor:pointer;font:inherit}button.ghost{background:none;color:var(--acc);border:1px solid var(--line)}
-textarea{width:100%;min-height:60px;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:8px;font:13px/1.55 ui-monospace,Menlo,Consolas,monospace}
-.piece{border:1px solid var(--line);border-radius:8px;padding:8px 10px;margin:8px 0;background:var(--card)}.row{display:flex;gap:8px;align-items:center;margin:4px 0}#msg{position:fixed;right:16px;bottom:16px;max-width:520px;white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:none}
-</style></head><body><nav id="nav"></nav><main id="main"><p class="mute">选左边一项。</p></main><div id="msg"></div><script>
+:root{--bg:#f7f6f3;--fg:#1f1d1a;--mute:#77716a;--line:#e4e0da;--card:#fff;--acc:#3d5a80;--acc-fg:#fff;--warn:#a1520c;--soft:#efece6;--ok:#2f6b4f}
+@media (prefers-color-scheme:dark){:root{--bg:#141311;--fg:#e9e6e1;--mute:#9b958c;--line:#2c2a26;--card:#1c1b18;--acc:#8fb0d9;--acc-fg:#10161e;--warn:#e0a35c;--soft:#23211e;--ok:#7cc4a0}}
+*{box-sizing:border-box}html,body{height:100%}body{margin:0;background:var(--bg);color:var(--fg);font:14px/1.65 system-ui,"PingFang SC","Microsoft YaHei",sans-serif;display:grid;grid-template-rows:auto 1fr;height:100vh}
+header{padding:14px 22px;border-bottom:1px solid var(--line);display:flex;gap:24px;align-items:flex-start}header h1{font-size:16px;margin:0;white-space:nowrap}header p{margin:0;color:var(--mute);font-size:13px}
+.wrap{display:grid;grid-template-columns:320px 1fr;min-height:0}
+nav{border-right:1px solid var(--line);overflow:auto;padding:10px 10px 40px}main{overflow:auto;padding:20px 28px 40px;display:flex;flex-direction:column;min-height:0}
+nav h2{font-size:12px;letter-spacing:.08em;color:var(--mute);margin:18px 8px 6px;font-weight:600}nav h3{font-size:13px;margin:10px 8px 2px;font-weight:600}
+nav h3 small{display:block;font-weight:400;color:var(--mute);font-size:12px}
+nav a{display:flex;justify-content:space-between;gap:8px;padding:3px 8px 3px 16px;border-radius:6px;cursor:pointer;color:inherit;text-decoration:none;font:12.5px/1.6 ui-monospace,Menlo,Consolas,monospace}
+nav a:hover{background:var(--soft)}nav a.on{background:var(--acc);color:var(--acc-fg)}nav a.on .tag{color:inherit;border-color:currentColor}
+.tag{font:11px/1.6 system-ui,sans-serif;color:var(--mute);border:1px solid var(--line);border-radius:4px;padding:0 5px;white-space:nowrap}.tag.over{color:var(--warn);border-color:var(--warn)}
+#full{display:block;margin:4px 0 0;padding:6px 8px;font:600 13px/1.6 system-ui,sans-serif}
+h2.t{margin:0;font:600 16px/1.4 ui-monospace,Menlo,Consolas,monospace}.mute{color:var(--mute)}.path{font-size:12px;color:var(--mute);word-break:break-all;margin:2px 0 10px}
+.hint{font-size:12.5px;color:var(--mute);margin:0 0 8px}.hint code{background:var(--soft);padding:0 4px;border-radius:3px}
+textarea{flex:1;min-height:260px;width:100%;resize:vertical;background:var(--card);color:var(--fg);border:1px solid var(--line);border-radius:8px;padding:12px 14px;font:13px/1.7 ui-monospace,Menlo,Consolas,monospace}
+textarea:focus{outline:2px solid var(--acc);outline-offset:-1px}
+.bar{display:flex;gap:8px;align-items:center;margin:10px 0}.bar .dirty{color:var(--warn);font-size:12.5px}
+button{background:var(--acc);color:var(--acc-fg);border:0;border-radius:6px;padding:6px 16px;cursor:pointer;font:inherit}button.ghost{background:none;color:var(--fg);border:1px solid var(--line)}button:disabled{opacity:.4;cursor:default}
+pre{background:var(--card);border:1px solid var(--line);border-radius:8px;padding:12px 14px;white-space:pre-wrap;word-break:break-word;font:13px/1.65 ui-monospace,Menlo,Consolas,monospace;margin:6px 0 0}
+h4{margin:18px 0 0;font-size:13px}#msg{position:fixed;right:16px;bottom:16px;max-width:520px;white-space:pre-wrap;background:var(--card);border:1px solid var(--line);border-radius:8px;padding:10px 14px;display:none;box-shadow:0 4px 18px rgba(0,0,0,.08)}#msg.bad{color:var(--warn)}
+@media (max-width:760px){.wrap{grid-template-columns:1fr}nav{max-height:40vh;border-right:0;border-bottom:1px solid var(--line)}header{flex-direction:column;gap:6px}}
+</style></head><body><header><h1>dot 的提示词</h1><div id="help"></div></header><div class="wrap"><nav id="nav"></nav><main id="main"><p class="mute">从左边选一个文件。</p></main></div><div id="msg"></div><script>
 const $ = (t, a = {}, ...kids) => { const e = document.createElement(t); for (const [k, v] of Object.entries(a)) k.startsWith('on') ? e.addEventListener(k.slice(2), v) : e.setAttribute(k, v); for (const c of kids.flat()) c != null && e.append(c); return e; };
 const api = (p, body) => fetch(p, body ? { method: 'POST', headers: { 'content-type': 'application/json', 'x-prompts': '1' }, body: JSON.stringify(body) } : {}).then(async (r) => { const j = await r.json(); if (!r.ok) throw new Error(j.error); return j; });
-const say = (t, bad) => { const m = document.getElementById('msg'); m.textContent = t; m.className = bad ? 'warn' : ''; m.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(() => { m.style.display = 'none'; }, bad ? 9000 : 3000); };
-const openBtn = (file, line) => $('button', { class: 'ghost', onclick: () => api('/api/open', { file, line }).then((r) => say(r.text), (e) => say(e.message, true)) }, '在编辑器里打开');
-let cur = '';
+const say = (t, bad) => { const m = document.getElementById('msg'); m.textContent = t; m.className = bad ? 'bad' : ''; m.style.display = 'block'; clearTimeout(say.t); say.t = setTimeout(() => { m.style.display = 'none'; }, bad ? 9000 : 3500); };
+let cur = '', saved = '', state = null;
+const dirty = () => cur && document.getElementById('ta') && document.getElementById('ta').value !== saved;
+window.addEventListener('beforeunload', (e) => { if (dirty()) e.preventDefault(); });
 async function nav() {
-  const { items, groups } = await api('/api/items');
+  state = await api('/api/list');
+  document.getElementById('help').replaceChildren(
+    $('p', {}, state.src ? '这里是她收到的每一段话。改完点「保存」会直接写进仓库的 src/prompts/。' : '这里是她收到的每一段话。改完点「保存」，会存一份到 ' + state.dir + '，她下一轮就用新的；仓库里的原文不动。'),
+    $('p', {}, '「恢复内置」删掉你改过的那份；「预览」用样例数据拼出她实际看到的样子；「全貌」是她对话里完整的系统提示词。'));
   const n = document.getElementById('nav');
-  n.replaceChildren($('a', { onclick: () => full(), id: 'n-full' }, $('b', {}, '全貌'), $('small', {}, '她对话的系统提示词，从上到下')));
-  for (const [g, title] of Object.entries(groups)) {
-    n.append($('h3', {}, title));
-    for (const it of items.filter((x) => x.group === g)) n.append($('a', { id: 'n-' + it.id, onclick: () => show(it.id) }, $('b', {}, it.name), $('small', {}, it.at.map((a) => a.file.replace('src/', '') + ':' + a.line + (a.drift ? '（行号已漂移）' : '')).join(' · ')), $('small', {}, it.purpose)));
+  n.replaceChildren($('a', { id: 'full', onclick: () => go(full) }, '全貌：她的系统提示词'));
+  for (const g of state.groups) {
+    n.append($('h2', {}, g.title));
+    for (const e of g.entries) {
+      n.append($('h3', {}, e.name, $('small', {}, e.note)));
+      for (const f of e.files) n.append($('a', { 'data-id': f.id, onclick: () => go(() => show(f.id)) }, $('span', {}, f.id), $('span', { class: 'tag' + (f.overridden ? ' over' : '') }, f.overridden ? '已改过' : '内置')));
+    }
   }
+  mark();
 }
-const mark = (id) => document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.id === 'n-' + id));
-async function full() { cur = ''; mark('full'); const { text } = await api('/api/full'); document.getElementById('main').replaceChildren($('h2', {}, '全貌'), $('p', { class: 'mute' }, '她的对话里，系统提示词按顺序拼起来的样子（样例输入）。dsh 自己的段落不在这里。'), $('pre', {}, text)); }
+const mark = () => document.querySelectorAll('nav a').forEach((a) => a.classList.toggle('on', a.dataset.id ? a.dataset.id === cur : !cur && a.id === 'full' && document.getElementById('fulltext')));
+function go(f) { if (dirty() && !confirm('改动还没保存，确定离开吗？')) return; f(); }
+async function full() {
+  cur = ''; const main = document.getElementById('main');
+  main.replaceChildren($('p', { class: 'mute' }, '正在拼…'));
+  const { text } = await api('/api/full');
+  main.replaceChildren($('h2', { class: 't' }, '全貌'), $('p', { class: 'hint' }, '她的对话里，插件加进系统提示词的部分从上到下拼起来的样子（样例数据）。dsh 自己的段落不在这里。'), $('pre', { id: 'fulltext' }, text));
+  mark();
+}
 async function show(id) {
-  cur = id; mark(id);
-  const it = await api('/api/item?id=' + id);
-  const main = document.getElementById('main');
-  main.replaceChildren($('h2', {}, it.name), $('p', { class: 'mute' }, it.purpose), $('h4', {}, '模型看到的（样例输入）'), $('pre', {}, it.rendered || '（空）'));
-  it.regions.forEach((r, ri) => {
-    main.append($('h4', {}, r.file + ':' + r.start + '–' + r.end + ' ', r.drift ? $('span', { class: 'warn' }, '（清单里的行号已漂移，按标识找到 ' + r.line + ' 行）') : '', r.note ? $('span', { class: 'warn' }, r.note) : ''), $('div', { class: 'row' }, openBtn(r.file, r.line)));
-    const editable = r.pieces.filter((p) => p.editable).length;
-    if (r.pieces.length) main.append($('p', { class: 'mute' }, r.readonly ? '只读。' : '文字片段 ' + r.pieces.length + ' 段，可原地改 ' + editable + ' 段；其余是代码拼接，用编辑器改。'));
-    if (!r.readonly) r.pieces.forEach((p, pi) => {
-      const ta = $('textarea', { rows: Math.min(14, p.value.split('\\n').length + Math.ceil(p.value.length / 90)) }); ta.value = p.value;
-      if (!p.editable) ta.readOnly = true;
-      main.append($('div', { class: 'piece' }, $('div', { class: 'row mute' }, r.file + ':' + p.line + ' · ' + { str: '字符串', tpl: '模板字符串', q: '模板里的一段（\${…} 之间）' }[p.kind], p.why ? $('span', { class: 'warn' }, ' · ' + p.why) : ''), ta,
-        p.editable ? $('div', { class: 'row' }, $('button', { onclick: () => api('/api/save', { id, r: ri, p: pi, raw: p.raw, value: ta.value }).then((x) => { say(x.text); show(id); }, (e) => say(e.message, true)) }, '保存')) : null));
-    });
-    main.append($('pre', {}, r.text));
-  });
+  const f = await api('/api/file?id=' + encodeURIComponent(id));
+  cur = id; saved = f.text; mark();
+  const ta = $('textarea', { id: 'ta', spellcheck: 'false' }); ta.value = f.text;
+  const flag = $('span', { class: 'dirty' });
+  ta.addEventListener('input', () => { flag.textContent = dirty() ? '有改动，还没保存' : ''; });
+  const out = $('div');
+  const hints = [];
+  if (f.table) hints.push($('p', { class: 'hint' }, '这个文件一行一项：等号左边是代号，别改；右边是她看到的文字。'));
+  if (f.placeholders.length) hints.push($('p', { class: 'hint' }, '花括号里的 ', ...f.placeholders.flatMap((k, i) => [i ? ' ' : '', $('code', {}, '{' + k + '}')]), ' 会换成实际内容，别删。某一行如果只有一个 {…}，而它刚好是空的，这一行会整行省掉。'));
+  const preview = async () => { out.replaceChildren($('p', { class: 'mute' }, '正在拼…')); const r = await api('/api/preview', { id, text: ta.value }).catch((e) => ({ text: e.message })); out.replaceChildren($('h4', {}, dirty() ? '预览（按你还没保存的改动）' : '预览'), $('pre', {}, r.text || '（空）')); };
+  document.getElementById('main').replaceChildren(
+    $('h2', { class: 't' }, id + '.txt'), $('div', { class: 'path' }, (f.overridden ? '你改过的版本：' : state.src ? '仓库里的文件：' : '内置版本：') + f.path),
+    ...hints, ta,
+    $('div', { class: 'bar' },
+      $('button', { onclick: async () => { try { const r = await api('/api/save', { id, text: ta.value }); saved = ta.value; flag.textContent = ''; say(r.warn ? r.text + '\\n' + r.warn : r.text, Boolean(r.warn)); await nav(); } catch (e) { say(e.message, true); } } }, '保存'),
+      state.src ? null : $('button', { class: 'ghost', ...(f.overridden ? {} : { disabled: '' }), onclick: async () => { if (!confirm('删掉你改过的版本，换回内置的？')) return; try { say((await api('/api/reset', { id })).text); await nav(); await show(id); } catch (e) { say(e.message, true); } } }, '恢复内置'),
+      $('button', { class: 'ghost', onclick: preview }, '预览'), flag),
+    out);
 }
 nav();
 </script></body></html>`;
 
-export function serve(port = Number(process.env.PORT) || 7870) {
+export function serve(port = Number(process.env.PORT) || 7870, { src = process.argv.includes('--src') } = {}) {
   const okHost = new Set([`127.0.0.1:${port}`, `localhost:${port}`]);
+  if (src) P.configure({ home: mkdtempSync(join(tmpdir(), 'dot-prompts-src-')) }); // previews show the files in src/, not her overrides
   const server = createServer(async (req, res) => {
     const send = (code, body, type = 'application/json; charset=utf-8') => { res.writeHead(code, { 'content-type': type }); res.end(typeof body === 'string' ? body : JSON.stringify(body)); };
     // Loopback only, and writes need a header a cross-site page cannot send without a preflight.
@@ -304,20 +240,24 @@ export function serve(port = Number(process.env.PORT) || 7870) {
     const url = new URL(req.url, `http://${req.headers.host}`);
     try {
       if (req.method === 'GET' && url.pathname === '/') return send(200, PAGE, 'text/html; charset=utf-8');
-      if (req.method === 'GET' && url.pathname === '/api/items') return send(200, { groups: GROUPS, items: inventory.map((it) => ({ id: it.id, group: it.group, name: it.name, purpose: it.purpose, at: it.at.map((a) => ({ file: a[0], ...locate(a) })) })) });
-      if (req.method === 'GET' && url.pathname === '/api/item') { const it = byId(url.searchParams.get('id')); if (!it) return send(404, { error: '没有这一项' }); return send(200, { id: it.id, name: it.name, purpose: it.purpose, ...(await renderItem(it)) }); }
+      if (req.method === 'GET' && url.pathname === '/api/list') {
+        const over = new Map(P.list().map((x) => [x.id, x.override]));
+        return send(200, { src, dir: P.overrideDir(), groups: GROUPS.map(([g, title]) => ({ title, entries: entries.filter((e) => e.group === g).map((e) => ({ name: e.name, note: e.note, files: e.files.map((id) => ({ id, overridden: !src && Boolean(over.get(id)) })) })) })) });
+      }
+      if (req.method === 'GET' && url.pathname === '/api/file') return send(200, fileInfo(url.searchParams.get('id'), src));
       if (req.method === 'GET' && url.pathname === '/api/full') return send(200, { text: await full() });
       if (req.method === 'POST' && req.headers['x-prompts'] === '1') {
         let body = '';
         for await (const c of req) body += c;
-        const args = JSON.parse(body || '{}');
-        if (url.pathname === '/api/save') return send(200, { text: save(args) });
-        if (url.pathname === '/api/open') return send(200, { text: await open(args) });
+        const { id, text } = JSON.parse(body || '{}');
+        if (url.pathname === '/api/save') return send(200, save(id, text, src));
+        if (url.pathname === '/api/reset' && !src) return send(200, reset(id));
+        if (url.pathname === '/api/preview') { const e = entryOf(id); if (!e) throw new Error('这个文件不在清单里'); return send(200, { text: await P.withDraft(id, text ?? P.raw(id), () => renderEntry(e)) }); }
       }
       send(404, { error: 'not found' });
     } catch (err) { send(400, { error: err.message }); }
   });
-  server.listen(port, '127.0.0.1', () => console.log(`dot 提示词: http://127.0.0.1:${port}/`));
+  server.listen(port, '127.0.0.1', () => console.log(`dot 提示词: http://127.0.0.1:${port}/${src ? '（--src：保存写进 src/prompts/）' : ''}`));
   return server;
 }
 
