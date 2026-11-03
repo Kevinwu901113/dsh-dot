@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
-  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson,
+  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, dayMark,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk } from '../src/memory/memory.js';
 
@@ -303,4 +303,22 @@ test('coexist full: banks on even next to another memory service', async () => {
   h.emit('s1', 'turn/end', {});
   await wait(50);
   assert.match(h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } }), /关于他\n- 他下周六搬家/);
+});
+
+test('dates: MM-DD within the current year, YYYY-MM-DD from another (transcript lines and standing fragments)', () => {
+  const now = new Date(2026, 4, 20, 12, 0).getTime();
+  const thisYear = new Date(2026, 4, 8, 9, 5).getTime(), lastYear = new Date(2025, 4, 8, 9, 5).getTime();
+  assert.equal(dayMark(thisYear, now), '05-08');
+  assert.equal(dayMark(lastYear, now), '2025-05-08');
+  assert.equal(transcriptLine({ at: thisYear, who: 'owner', text: '在吗' }, { now }), '[05-08 09:05] 他：在吗');
+  assert.equal(transcriptLine({ at: lastYear, who: 'owner', text: '在吗' }, { now }), '[2025-05-08 09:05] 他：在吗');
+  // as a .map callback the index must not be taken for `now`
+  assert.deepEqual([{ at: Date.now(), who: 'owner', text: 'x' }].map(transcriptLine)[0].match(/^\[(\d\d-\d\d) /)?.length, 2);
+  const m = emptyMemory();
+  observeFragment(m, { text: '05-08 他去体检', tag: 2, kind: 'event', gen: 1, now: lastYear });
+  observeFragment(m, { text: '05-08 他换了工作', tag: 1, kind: 'event', gen: 1, now: thisYear });
+  const s = renderStanding(m, { now });
+  assert.match(s, /- \[2025-05-08\] 05-08 他去体检/);
+  assert.match(s, /- 05-08 他换了工作/);
+  assert.equal(s, renderStanding(m, { now: now + 86400000 }), 'byte-stable within the year');
 });

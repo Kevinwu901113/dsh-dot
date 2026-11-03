@@ -23,7 +23,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
   observeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
-  resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
+  resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends, dayMark,
 } from './store.js';
 import { createRecall } from './recall.js';
 import { sectionOf, setValues } from '../settings.js';
@@ -87,16 +87,16 @@ export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const contentText = (content) => (typeof content === 'string' ? content : (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join(''));
 const isSilent = (t) => /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(String(t ?? ''));
-const stamp = (ms) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
+const stamp = (ms, now = Date.now()) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${dayMark(ms, now)} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 /** "2026-10-27 周一" — a day as the diary heads it (local time). */
 export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${'周日周一周二周三周四周五周六'.slice(d.getDay() * 2, d.getDay() * 2 + 2)}`; };
 
-/** One transcript line as the consolidation reads it. */
-export function transcriptLine(l) {
+/** One transcript line as the consolidation reads it: [MM-DD HH:MM], or [YYYY-MM-DD HH:MM] from another year. */
+export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
   const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]' }[l.who] ?? l.who;
   const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : '';
-  return `[${stamp(l.at)}] ${who}${to}：${l.text}`;
+  return `[${stamp(l.at, now)}] ${who}${to}：${l.text}`;
 }
 
 /**

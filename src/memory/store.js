@@ -459,17 +459,31 @@ export function normalizeMemory(m) {
 }
 
 /**
- * What every turn of hers sees: you, her own notes, what still matters. Byte-stable for the same
- * memory (no clocks, no counters), because a context snapshot is re-sent only when its text changes.
+ * A day as she reads it: MM-DD in the current year, YYYY-MM-DD otherwise — a "05-08" written last
+ * year must not read as this May, and the common case stays as short as it was.
  */
-export function renderStanding(memory, { budgetTokens = 600, banks = true } = {}) {
+export function dayMark(ms, now = Date.now()) {
+  const d = new Date(ms), p = (n) => String(n).padStart(2, '0');
+  const md = `${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+  return d.getFullYear() === new Date(now).getFullYear() ? md : `${d.getFullYear()}-${md}`;
+}
+
+const oldYear = (at, now) => (at && new Date(at).getFullYear() !== new Date(now).getFullYear() ? `[${dayMark(at, now)}] ` : '');
+
+/**
+ * What every turn of hers sees: you, her own notes, what still matters. Byte-stable for the same
+ * memory (no counters; the clock only through the year), because a context snapshot is re-sent only
+ * when its text changes. A fragment recorded in another year carries that date, since its own text
+ * was written with MM-DD dates.
+ */
+export function renderStanding(memory, { budgetTokens = 600, banks = true, now = Date.now() } = {}) {
   const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
   if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
   if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
   const picked = selectFragments(memory.fragments, budgetTokens);
-  if (picked.length) parts.push(`${t.recent}\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${f.text}`).join('\n')}`);
+  if (picked.length) parts.push(`${t.recent}\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${oldYear(f.createdAt, now)}${f.text}`).join('\n')}`);
   if (!parts.length) return '';
   return ['<memory>', t.intro, ...parts, '</memory>'].join('\n');
 }
