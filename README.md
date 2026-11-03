@@ -203,6 +203,8 @@ flowchart LR
 /qq [install|account|start|qr|backend|owner]
 ```
 
+**改提示词**：仓库里 `npm run prompts` 打开本机页面，看她收到的每一段提示词、原地改，见 [docs/prompts.md](docs/prompts.md)。
+
 **状态面板**：会话顶部 ◎ 按钮打开右侧栏 dot 标签页——设备状态、交班进度、她此刻在做什么、今天的 token，以及**最近 30 场**（每次被叫醒到结束是一场，展开看她做了什么、说了什么）。
 
 <details>
