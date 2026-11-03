@@ -106,7 +106,7 @@ const at=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'nume
 const badge=(cls,label,text)=>'<span class="badge '+cls+'"><i class="dotc"></i>'+esc(label)+(text?' <span class="mute">'+esc(text)+'</span>':'')+'</span>';
 const tile=(n,label)=>'<div class="tile"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>';
 const bar=(v,max)=>'<div class="bar"><i style="width:'+Math.min(100,Math.round(100*(v||0)/(max||1)))+'%"></i></div>';
-const ZH=/^zh/i.test(navigator.language||'zh');
+const ZH=true; // the rest of this page is Chinese; Electron's navigator.language said en on a Chinese Mac
 const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
   src:{owner:'你',qq:'QQ',phone:'手机',check:'拿手机',interlude:'幕间',schedule:'定时',play:'玩'},
   phase:{advance:'推进','follow-up':'跟进',intent:'打算到点',seed:'开场',diary:'日记'},
