@@ -557,6 +557,8 @@ export function apply(ctx, config = {}) {
           `computer: ${vm ? `${vm.state}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}` : 'not installed (optional)'} · phone: ${ph ? `${ph.state}${ph.error ? ` (${ph.error})` : ''}` : 'not installed (optional)'}`,
           `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
+          // Where his next message goes: when she "does not answer", look here first.
+          `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'} · errand: ${errandId || '(none)'}`,
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];

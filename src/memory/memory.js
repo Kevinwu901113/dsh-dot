@@ -13,9 +13,10 @@
 //               archive it, open a new one in <home>, and inject a handoff note (what she is doing,
 //               what she promised, the last lines verbatim). Deliveries wait meanwhile.
 // She edits her memory herself too: `memory` (Hermes-style add/replace/remove) and `recall`.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
@@ -47,6 +48,8 @@ export const defaults = {
   coexist: 'auto',
   // Names other memory plugins provide. A bare 'memory' is deliberately not here: too generic a name
   // to risk silencing her own banks because something unrelated provides it. Add names as you meet them.
+  // Most memory plugins provide no service at all (dsh-auto-memory and friends), so the packages
+  // installed next to this one are looked at too: any whose name says "memory" counts.
   otherMemoryServices: ['hermesMemory', 'autoMemory', 'dshMemory', 'memoryBank'],
 };
 
@@ -206,11 +209,26 @@ export function apply(ctx, config = {}) {
   const peopleOnly = () => {
     if (cfg.coexist === 'people-only') return true;
     if (cfg.coexist !== 'auto') return false;
-    const other = [].concat(cfg.otherMemoryServices ?? []).find((n) => { try { return ctx.get(n) != null; } catch { return false; } });
+    const other = [].concat(cfg.otherMemoryServices ?? []).find((n) => { try { return ctx.get(n) != null; } catch { return false; } }) || installedMemoryPlugin();
     if (other && !coexistLogged) { coexistLogged = true; logger.info(`another memory service (${other}) is present: people-only mode (owner/self banks left to it)`); }
     return Boolean(other);
   };
   const audit = (event, data = {}) => (ctx.get('dshComputer')?.audit ?? ctx.get('dshPhone')?.audit)?.({ kind: 'memory', event, ...data });
+  /** A memory plugin installed in the same profile (a package next to ours whose name says "memory"), or ''. Looked up once. */
+  let installedMemory;
+  function installedMemoryPlugin() {
+    if (installedMemory !== undefined) return installedMemory;
+    installedMemory = '';
+    try {
+      const here = fileURLToPath(import.meta.url);
+      const nm = here.slice(0, here.lastIndexOf(`${sep}node_modules${sep}`) + 14);
+      if (!nm.endsWith('node_modules')) return installedMemory;
+      const names = [];
+      for (const n of readdirSync(nm)) { if (n.startsWith('@')) { try { for (const m of readdirSync(join(nm, n))) names.push(`${n}/${m}`); } catch {} } else names.push(n); }
+      installedMemory = names.find((n) => /memory/i.test(n) && !/^dsh-dot(-|$)/.test(n) && !n.includes('/dsh-dot')) ?? '';
+    } catch {}
+    return installedMemory;
+  }
 
   let memory;
   try { memory = normalizeMemory(JSON.parse(readFileSync(files.memory, 'utf8'))); } catch (error) { void error; memory = emptyMemory(); }
