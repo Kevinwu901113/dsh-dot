@@ -11,10 +11,17 @@
 //            per backend+model, so switching back and forth never mixes vector spaces or re-embeds.
 //   query    the waking message (owner, QQ, notification, schedule) → top-k by cosine (cloud backends
 //            rerank the top candidates), minus what is already in her context window, in time order.
-//   backends local  — bge-small-zh-v1.5 (ONNX q8) via transformers.js on the CPU, no key. The library
-//                     is 300–480 MB, so it is not a dependency: it is installed into $DSH_HOME on first
-//                     use (the way qq/phone pull their MCP servers with npx), models come from an HF
-//                     mirror. Until it is there, queries fall back to lexical search (said in status).
+//            Two filters, neither tied to a model's cosine scale: a message with fewer than
+//            recallMinQueryLength distinct content tokens (好的 / 哈哈哈哈 / ok thanks) recalls nothing,
+//            and a hit must stand out from the whole index (contrast, below). recallMinScore is an
+//            optional absolute floor on top.
+//   backends local  — multilingual-e5-small (ONNX q8) via transformers.js on the CPU, no key; the
+//                     same 85/108 as bge-small-zh-v1.5 on the Chinese benchmark, plus English and ~100
+//                     other languages, for 129 MB / ~0.4 GB RSS instead of 23 MB / ~0.13 GB (bge-small-zh
+//                     stays one command away). The library is 300–480 MB, so it is not a dependency: it
+//                     is installed into $DSH_HOME on first use (the way qq/phone pull their MCP servers
+//                     with npx), models come from an HF mirror. Until both are there, queries fall back
+//                     to lexical search (said in status).
 //            siliconflow / dashscope — cloud embedding + rerank, key from /dot memory recall key or env.
 //            off.
 // Passwords and keys never reach the index, the cloud, or her prompt (the same filter as fragments).
@@ -29,19 +36,46 @@ import { prompt } from '../prompts.js';
 
 export const BACKENDS = ['local', 'siliconflow', 'dashscope', 'off'];
 const MODELS = {
-  local: { embed: 'Xenova/bge-small-zh-v1.5', rerank: 'none' },
+  local: { embed: 'Xenova/multilingual-e5-small', rerank: 'none' }, // 0.15.2; was Xenova/bge-small-zh-v1.5
   siliconflow: { embed: 'BAAI/bge-m3', rerank: 'BAAI/bge-reranker-v2-m3' },
   dashscope: { embed: 'qwen3.7-text-embedding', rerank: 'qwen3.7-text-rerank' },
 };
 const KEY_ENV = { siliconflow: 'SILICONFLOW_API_KEY', dashscope: 'DASHSCOPE_API_KEY' };
 // transformers.js needs the ONNX export; people will type the BAAI name from the model card.
 const ALIASES = { 'BAAI/bge-small-zh-v1.5': 'Xenova/bge-small-zh-v1.5', 'BAAI/bge-m3': 'Xenova/bge-m3', 'intfloat/multilingual-e5-small': 'Xenova/multilingual-e5-small' };
-// Per-model conventions from each model card (pooling, query/passage prefixes).
-const SPECS = {
-  'Xenova/bge-small-zh-v1.5': { pooling: 'cls', query: '为这个句子生成表示以用于检索相关文章：', passage: '' },
-  'Xenova/bge-m3': { pooling: 'cls', query: '', passage: '' },
-  'Xenova/multilingual-e5-small': { pooling: 'mean', query: 'query: ', passage: 'passage: ' },
+// Per-model conventions from each model card (pooling, query/passage prefixes), and the q8 download size.
+export const SPECS = {
+  'Xenova/bge-small-zh-v1.5': { pooling: 'cls', query: '为这个句子生成表示以用于检索相关文章：', passage: '', mb: 23 },
+  'Xenova/bge-m3': { pooling: 'cls', query: '', passage: '', mb: 560 },
+  'Xenova/multilingual-e5-small': { pooling: 'mean', query: 'query: ', passage: 'passage: ', mb: 129 },
 };
+
+/**
+ * How much a message says, in any script: distinct CJK / kana / hangul characters plus distinct words
+ * in the rest (case-folded), punctuation and emoji ignored. 好的 → 2, 哈哈哈哈 → 1, "ok thanks" → 2,
+ * 我回来了 → 4, "What did Caroline research?" → 4.
+ */
+const CJK = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/gu;
+export function queryLength(q) {
+  const s = String(q ?? '').toLowerCase();
+  return new Set(s.match(CJK) ?? []).size + new Set(s.replace(CJK, ' ').match(/[\p{L}\p{N}]+/gu) ?? []).size;
+}
+
+/**
+ * Contrast: keep a cosine hit only if it stands out from the crowd — score ≥ median + k·(best − median)
+ * over every chunk searched. Small talk and vague messages match everything about equally; a real
+ * question has a few turns well above the rest. Scale-free, so the same k works for bge-small-zh
+ * (cosines 0.35–0.77) and e5 (0.78–0.94), Chinese and English. Needs a crowd: below CONTRAST_MIN_POOL
+ * chunks the median says nothing and every hit is kept.
+ */
+const CONTRAST_MIN_POOL = 20;
+export function contrastCut(scores, k) {
+  if (!(k > 0) || scores.length < CONTRAST_MIN_POOL) return -Infinity;
+  const s = Float64Array.from(scores).sort();
+  const mid = s.length >> 1;
+  const median = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
+  return median + k * (s[s.length - 1] - median);
+}
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-memory.json');
@@ -209,9 +243,21 @@ async function localEmbedder({ model, mirror, install, version, log, onPhase }) 
   tf.env.cacheDir = join(libDir(), 'models');
   tf.env.allowLocalModels = false;
   tf.env.remoteHost = `${mirror.replace(/\/+$/, '')}/`;
-  onPhase('loading');
   const spec = SPECS[model] ?? { pooling: 'mean', query: '', passage: '' };
-  const ex = await tf.pipeline('feature-extraction', model, { dtype: 'q8', device: 'cpu' });
+  // First use of a model: say so, it is the slow part (129 MB for the default) and recall is lexical meanwhile.
+  let progress_callback;
+  if (!existsSync(join(tf.env.cacheDir, model, 'onnx', 'model_quantized.onnx'))) {
+    const size = spec.mb ? `~${spec.mb} MB` : 'size unknown';
+    log(`recall: downloading ${model} (${size}, once) from ${mirror} into ${tf.env.cacheDir}; lexical recall until it is done`);
+    onPhase(`downloading (${size})`);
+    const t0 = Date.now();
+    let pct = -1;
+    progress_callback = (p) => {
+      if (p?.status === 'progress_total' && Number.isFinite(p.progress) && Math.floor(p.progress) !== pct) { pct = Math.floor(p.progress); onPhase(`downloading (${size}) ${pct}%`); }
+      if (p?.status === 'ready') log(`recall: ${model} downloaded in ${Math.round((Date.now() - t0) / 1000)} s`);
+    };
+  } else onPhase('loading');
+  const ex = await tf.pipeline('feature-extraction', model, { dtype: 'q8', device: 'cpu', ...(progress_callback ? { progress_callback } : {}) });
   return {
     async embed(texts, role = 'passage') {
       const out = [];
@@ -307,6 +353,12 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     q = clip(String(q ?? '').trim(), 500);
     // Off, nothing to search for, or a secret (which must not go to a cloud API either).
     if (b === 'off' || !q || rejectReason(q) === 'secret') return res;
+    // Too little said to look anything up (好的 / 哈哈 / ok): nothing, not even lexically.
+    if (queryLength(q) < (Number(cfg.recallMinQueryLength) || 0)) {
+      res.mode = `${b}·short`;
+      if (record) last = { at: Date.now(), ms: 0, mode: res.mode, hits: 0, query: clip(q, 40) };
+      return res;
+    }
     const impl = await ready(b, 50);
     if (impl) await sync();
     let picked;
@@ -322,12 +374,14 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
         if (pool.length) {
           const [qv] = (await impl.embed([q], 'query')).map(norm);
           const vecs = ix.vecs();
-          let cand = pool.map((c) => ({ c, s: dot(qv, vecs[c.i]) })).sort((x, y) => y.s - x.s);
+          let cand = pool.map((c) => ({ c, s: dot(qv, vecs[c.i]) }));
+          const cut = impl.rerank ? -Infinity : contrastCut(cand.map((x) => x.s), Number(cfg.recallContrast) || 0);
+          cand.sort((x, y) => y.s - x.s);
           if (impl.rerank) {
             cand = cand.slice(0, cfg.recallCandidates);
             const r = await impl.rerank(q, cand.map((x) => x.c.text), Math.min(cfg.recallTopK, cand.length));
             picked = r.map((x) => ({ c: cand[x.index].c, s: x.score }));
-          } else picked = cand.slice(0, cfg.recallTopK);
+          } else picked = cand.slice(0, cfg.recallTopK).filter((x) => x.s >= cut);
           picked = picked.filter((x) => x.s >= (Number(cfg.recallMinScore) || -Infinity));
         }
       } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; }

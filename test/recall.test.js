@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, statSync, readdirSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../src/memory/memory.js';
-import { chunkTurns, openIndex, settingsFile } from '../src/memory/recall.js';
+import { SPECS, chunkTurns, contrastCut, createRecall, libDir, openIndex, queryLength, settingsFile } from '../src/memory/recall.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -30,9 +30,10 @@ function fakeEmbedders({ fail = false } = {}) {
   return { factory, calls };
 }
 
-function harness(config = {}, emb = fakeEmbedders()) {
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
-  const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
+// `over`: a previous harness whose DSH_HOME and home this one boots over (a restart / an upgrade).
+function harness(config = {}, emb = fakeEmbedders(), over = null) {
+  if (!over) process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const home = over?.home ?? join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], contexts = [], assemble = [];
   let session = 's1';
   const services = { dshDot: { session: () => session, setSession: (id) => { session = id; }, isErrand: (id) => id === 'errand', isIm: () => false } };
@@ -44,7 +45,7 @@ function harness(config = {}, emb = fakeEmbedders()) {
     provide(n, v) { services[n] = v; },
     inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
   };
-  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, ...config }); // the fake embedder's scores are not cosines
+  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
   let clock = new Date(2026, 9, 1, 10, 0).getTime();
   const realNow = Date.now;
@@ -180,7 +181,7 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   h.turn('s0', '团子是橘猫', '嗯');
   await h.recall().sync();
   let out = await h.api().command('memory recall');
-  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 · ready/);
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · ready/, 'the default local model (0.15.2)');
   assert.match(out, /index: 1 turn\(s\) through 2026-10-01/);
   assert.match(out, /mirror https:\/\/hf-mirror\.com/);
   assert.match(await h.api().command('memory'), /recall: local/, '/dot memory shows it too');
@@ -194,12 +195,15 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   assert.match(await h.api().command('memory recall rerank none'), /recall: siliconflow · BAAI\/bge-m3 · /);
   await h.api().command('memory recall backend local');
   assert.match(await h.api().command('memory recall rerank x'), /local has no reranker/);
-  out = await h.api().command('memory recall model BAAI/bge-small-zh-v1.5');
-  assert.match(out, /Xenova\/bge-small-zh-v1\.5/, 'the BAAI name maps to its ONNX export');
-  await h.api().command('memory recall model Xenova/multilingual-e5-small');
-  await h.recall().sync();
   assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
+  out = await h.api().command('memory recall model BAAI/bge-small-zh-v1.5');
+  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 · /, 'the BAAI name maps to its ONNX export');
+  await h.recall().sync();
+  assert.match(h.recall().status().dir, /local-Xenova_bge-small-zh-v1\.5$/);
   assert.equal(h.recall().status().turns, 1);
+  out = await h.api().command('memory recall model intfloat/multilingual-e5-small');
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · /, 'so does the intfloat name');
+  assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
   await h.api().command('memory recall model default');
   assert.match(await h.api().command('memory recall mirror https://huggingface.co'), /mirror: https:\/\/huggingface\.co/);
   assert.match(await h.api().command('memory recall mirror ftp://x'), /http\(s\) URL/);
@@ -209,6 +213,144 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   const panel = await h.api().panel();
   assert.equal(panel.recall.backend, 'local');
   assert.equal(panel.recall.turns, 1);
+});
+
+test('upgrade from 0.15.1: no saved model → e5, its index built from the whole transcript; the bge-small-zh index is left as it was', async () => {
+  // 0.15.1: bge-small-zh was the default, and its index is on disk.
+  const old = harness({ recallModel: 'Xenova/bge-small-zh-v1.5' });
+  old.turn('s0', '团子是橘猫', '嗯');
+  old.turn('s0', '下周去成都', '好');
+  await old.recall().sync();
+  const bgeDir = old.recall().status().dir;
+  assert.match(bgeDir, /local-Xenova_bge-small-zh-v1\.5$/);
+  const bgeVectors = readFileSync(join(bgeDir, 'vectors.f32'));
+  // 0.15.2 over the same home, nothing chosen anywhere.
+  const h = harness({}, fakeEmbedders(), old);
+  assert.equal(h.recall().status().model, 'Xenova/multilingual-e5-small');
+  assert.equal(h.recall().status().turns, 0, 'a new, empty index');
+  await h.recall().warm(); // what the first wake (or the boot-time sync) sets off
+  const s = h.recall().status();
+  assert.match(s.dir, /local-Xenova_multilingual-e5-small$/);
+  assert.equal(s.turns, 2, 'rebuilt from transcript.jsonl on first use');
+  assert.equal(h.emb.calls.filter((c) => c.role === 'passage').flatMap((c) => c.texts).length, 2);
+  assert.deepEqual(readFileSync(join(bgeDir, 'vectors.f32')), bgeVectors, 'the old index is not touched');
+  assert.deepEqual(readdirSync(join(h.home, 'memory', 'recall')).sort(), ['local-Xenova_bge-small-zh-v1.5', 'local-Xenova_multilingual-e5-small']);
+  // Switching back reuses it: nothing is embedded again.
+  const passages = () => h.emb.calls.filter((c) => c.role === 'passage').length;
+  const n = passages();
+  await h.api().command('memory recall model BAAI/bge-small-zh-v1.5');
+  await h.recall().warm();
+  assert.equal(h.recall().status().dir, bgeDir);
+  assert.equal(h.recall().status().turns, 2);
+  assert.equal(passages(), n);
+});
+
+test('upgrade from 0.15.1: a saved bge-small-zh choice is kept (dsh-memory.json, or recallModel in dsh-dot.json)', async () => {
+  const h = harness();
+  h.turn('s0', '团子是橘猫', '嗯');
+  await h.api().command('memory recall model BAAI/bge-small-zh-v1.5'); // what a 0.15.1 user typed
+  assert.equal(JSON.parse(readFileSync(settingsFile(), 'utf8')).recall.model.local, 'BAAI/bge-small-zh-v1.5');
+  await h.recall().sync();
+  const up = harness({}, fakeEmbedders(), h);
+  assert.equal(up.recall().status().model, 'Xenova/bge-small-zh-v1.5');
+  assert.match(up.recall().status().dir, /local-Xenova_bge-small-zh-v1\.5$/);
+  assert.equal(up.recall().status().turns, 1);
+  await up.recall().sync();
+  assert.equal(up.emb.calls.length, 0, 'its index is used as it is');
+  // The same choice made in the plugin config (dsh-dot.json memory.recallModel).
+  const c = harness({ recallModel: 'BAAI/bge-small-zh-v1.5' });
+  assert.equal(c.recall().status().model, 'Xenova/bge-small-zh-v1.5');
+});
+
+test('model conventions: e5 mean-pools with "query: " / "passage: ", bge-small-zh cls with its instruction', () => {
+  assert.deepEqual(SPECS['Xenova/multilingual-e5-small'], { pooling: 'mean', query: 'query: ', passage: 'passage: ', mb: 129 });
+  assert.deepEqual(SPECS['Xenova/bge-small-zh-v1.5'], { pooling: 'cls', query: '为这个句子生成表示以用于检索相关文章：', passage: '', mb: 23 });
+});
+
+test('filters that do not depend on the model: query length (any script) and contrast against the whole index', async () => {
+  assert.deepEqual(['好的', '哈哈哈哈', 'ok thanks', '在吗？', '我回来了', 'What did Caroline research?', 'Hey hey hey!!', '阿岑会修什么？', '明天 8 点 meeting'].map(queryLength), [2, 1, 2, 2, 4, 4, 1, 6, 5]);
+  // Contrast: median + k·(best − median), scale-free.
+  const crowd = (base, spread, top) => [...Array.from({ length: 30 }, (_, i) => base + (i % 5) * spread), ...top];
+  assert.equal(contrastCut(crowd(0.4, 0.01, [0.7]), 0), -Infinity, 'k 0 is off');
+  assert.equal(contrastCut([0.9, 0.5, 0.4], 0.35), -Infinity, 'too few chunks to say what stands out');
+  const bge = crowd(0.40, 0.01, [0.70, 0.62]), e5 = bge.map((x) => 0.78 + x * 0.2); // same ranking, e5's squeezed scale
+  const kept = (s) => s.filter((x) => x >= contrastCut(s, 0.35)).length;
+  assert.equal(kept(bge), 2);
+  assert.equal(kept(e5), 2, 'the same turns stand out on either scale');
+  // The gate: nothing recalled, nothing embedded, not even lexically; the status says why.
+  const h = harness({ recallMinQueryLength: 4 });
+  h.turn('s0', '好的好的，团子是橘猫', '嗯');
+  await h.recall().sync();
+  const n = h.emb.calls.length;
+  const r = await h.recall().query('好的', { session: 's1' });
+  assert.deepEqual([r.text, r.mode, h.emb.calls.length], ['', 'local·short', n]);
+  assert.match(await h.api().command('memory recall'), /0 hit\(s\) via local·short/);
+  assert.match((await h.recall().query('团子是什么猫', { session: 's1' })).text, /团子是橘猫/);
+});
+
+// A stand-in for @huggingface/transformers, installed where recall.js installs the real one. Its
+// model download waits for `release()`, so the status in between can be looked at.
+function fakeTransformers() {
+  const dir = join(libDir(), 'node_modules', '@huggingface', 'transformers');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'package.json'), '{ "name": "@huggingface/transformers", "type": "module", "main": "index.js" }\n');
+  writeFileSync(join(dir, 'index.js'), `export const env = {};
+export async function pipeline(task, model, opts) {
+  const t = globalThis.__fakeTf;
+  t.pipelines.push({ task, model, opts: { ...opts, progress_callback: Boolean(opts.progress_callback) } });
+  if (opts.progress_callback) { opts.progress_callback({ status: 'progress_total', progress: 40.6 }); await t.gate; opts.progress_callback({ status: 'progress_total', progress: 100 }); opts.progress_callback({ status: 'ready', model }); }
+  return async (text, o) => { t.embeds.push({ model, text, ...o }); const v = new Float32Array(8); for (const ch of text) v[ch.codePointAt(0) % 8] += 1; return { data: v }; };
+}
+`);
+  let release;
+  globalThis.__fakeTf = { pipelines: [], embeds: [], gate: new Promise((r) => { release = r; }) };
+  return { t: globalThis.__fakeTf, release };
+}
+
+test('first use: the model download is logged and shown in status (phase, %), recall is lexical meanwhile; a cached model is not re-downloaded', async () => {
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const savedEndpoint = process.env.HF_ENDPOINT; delete process.env.HF_ENDPOINT;
+  const alive = setInterval(() => {}, 1000); // dsh keeps the loop alive; recall's own timers are unref'd
+  try {
+    const { t, release } = fakeTransformers();
+    const dir = mkdtempSync(join(tmpdir(), 'mem-'));
+    const at = new Date(2026, 9, 1, 10, 0).getTime();
+    const lines = [{ at, session: 's0', who: 'owner', text: '团子是橘猫' }, { at: at + 1, session: 's0', who: 'her', text: '嗯' }];
+    const logs = [];
+    const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m) };
+    const cfg = { recallBackend: 'local', recallModel: '', recallMirror: '', recallMinScore: 0.45, recallInstall: false, recallTopK: 8, recallMaxTokens: 1500, recallChunkChars: 1200 };
+    const r = createRecall({ cfg, dir, lines: () => lines, transcriptFile: join(dir, 'transcript.jsonl'), logger });
+    assert.equal(r.status().state, 'not started');
+    const q = await r.query('团子什么颜色', { session: 's1' });
+    assert.equal(q.mode, 'local→lexical', 'nothing waits for the download');
+    assert.match(q.text, /团子是橘猫/);
+    const s = r.status();
+    assert.equal(s.model, 'Xenova/multilingual-e5-small');
+    assert.equal(s.mirror, 'https://hf-mirror.com', 'recallMirror default unchanged');
+    assert.equal(s.state, 'downloading (~129 MB) 40% → lexical fallback meanwhile');
+    assert.match(await r.command([]), /recall: local · Xenova\/multilingual-e5-small · downloading \(~129 MB\) 40% → lexical fallback meanwhile[\s\S]*mirror https:\/\/hf-mirror\.com/);
+    assert.ok(logs.some((m) => m === `recall: downloading Xenova/multilingual-e5-small (~129 MB, once) from https://hf-mirror.com into ${join(libDir(), 'models')}; lexical recall until it is done`), logs.join('\n'));
+    assert.equal(t.pipelines[0].model, 'Xenova/multilingual-e5-small');
+    assert.deepEqual(t.pipelines[0].opts, { dtype: 'q8', device: 'cpu', progress_callback: true });
+    release();
+    assert.equal(await r.warm(), true);
+    assert.equal(r.status().state, 'ready');
+    assert.ok(logs.some((m) => /^recall: Xenova\/multilingual-e5-small downloaded in \d+ s$/.test(m)));
+    assert.deepEqual(t.embeds.map((e) => [e.text, e.pooling, e.normalize]), [['passage: [2026-10-01 10:00] 他：团子是橘猫\n我：嗯', 'mean', true]]);
+    await r.query('团子什么颜色', { session: 's1' });
+    assert.deepEqual(t.embeds.at(-1).text, 'query: 团子什么颜色');
+    // bge-small-zh, already in the cache: loaded, not downloaded; its own pooling and prefix.
+    mkdirSync(join(libDir(), 'models', 'Xenova', 'bge-small-zh-v1.5', 'onnx'), { recursive: true });
+    writeFileSync(join(libDir(), 'models', 'Xenova', 'bge-small-zh-v1.5', 'onnx', 'model_quantized.onnx'), '');
+    logs.length = 0;
+    await r.command(['model', 'BAAI/bge-small-zh-v1.5']);
+    assert.equal(await r.warm(), true);
+    assert.equal(t.pipelines.at(-1).model, 'Xenova/bge-small-zh-v1.5');
+    assert.equal(t.pipelines.at(-1).opts.progress_callback, false);
+    assert.ok(!logs.some((m) => /downloading/.test(m)), logs.join('\n'));
+    await r.query('团子什么颜色', { session: 's1' });
+    assert.deepEqual([t.embeds.at(-1).text, t.embeds.at(-1).pooling], ['为这个句子生成表示以用于检索相关文章：团子什么颜色', 'cls']);
+  } finally { clearInterval(alive); if (savedEndpoint) process.env.HF_ENDPOINT = savedEndpoint; delete globalThis.__fakeTf; }
 });
 
 test('fallback: a backend that cannot load (no library, no network, no key) recalls by words and says so', async () => {

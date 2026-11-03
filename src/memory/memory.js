@@ -10,7 +10,7 @@
 //               fragments. Every `consolidateEveryLines` lines, or after `consolidateIdleMinutes`
 //               of quiet, or at a handoff.
 //   recall      before each turn, the old turns most like the message that woke her (RAG over the
-//               transcript, recall.js): local bge-small-zh by default, cloud or off by one command.
+//               transcript, recall.js): local multilingual-e5-small by default, cloud or off by one command.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and inject a handoff note (what she is doing,
 //               what she promised, the last lines verbatim). Deliveries wait meanwhile.
@@ -58,18 +58,19 @@ export const defaults = {
   otherMemoryServices: ['hermesMemory', 'autoMemory', 'dshMemory', 'memoryBank'],
   // Automatic recall (recall.js). Everything here can also be changed at runtime with
   // /dot memory recall … (saved to $DSH_HOME/dsh-memory.json, which wins over this config).
-  recallBackend: 'local',       // local (bge-small-zh on this machine, no key) | siliconflow | dashscope | off
-  recallModel: '',              // embedding model; '' = the backend's own (local Xenova/bge-small-zh-v1.5 · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding)
+  recallBackend: 'local',       // local (multilingual-e5-small on this machine, no key) | siliconflow | dashscope | off
+  recallModel: '',              // embedding model; '' = the backend's own (local Xenova/multilingual-e5-small · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding); BAAI/bge-small-zh-v1.5 is the lighter Chinese-only local one
   recallRerankModel: '',        // cloud only; '' = BAAI/bge-reranker-v2-m3 · qwen3.7-text-rerank; 'none' = cosine only
   recallMirror: '',             // where local models download from; '' = $HF_ENDPOINT, else https://hf-mirror.com
   recallInstall: true,          // install @huggingface/transformers into $DSH_HOME/dsh-dot-recall on first use (300–480 MB; not a package dependency)
   recallTransformersVersion: '4.3.2',
   recallTopK: 8,                // turns injected per wake
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
-  // Drop hits below this similarity (local: cosine; cloud: rerank score). bge-small-zh on the public
-  // sample: real questions score 0.60–0.75 at the top, small talk (在吗 / 好的 / 哈哈) stays under 0.45,
-  // so 0.45 keeps the answers and stops greetings from pulling in 8 turns. 95/108 vs 93 at 0.
-  recallMinScore: 0.45,
+  // Which hits are worth showing her. Cosines are on a different scale for every model (bge-small-zh
+  // 0.35–0.77, multilingual-e5-small 0.78–0.94) and every language, so the defaults are scale-free:
+  recallMinQueryLength: 4,      // a waking message with fewer distinct content tokens (CJK characters, other words) recalls nothing: 好的 / 哈哈哈哈 / ok thanks. 0 = off
+  recallContrast: 0.35,         // keep a cosine hit only if ≥ median + k·(best − median) over the whole index; 0 = off. Not applied after a reranker
+  recallMinScore: 0,            // optional absolute floor (local: cosine; cloud: rerank score); 0 = none. Model-specific: 0.45 suited bge-small-zh, e5 needs ~0.87 and then drops English
   recallCandidates: 40,         // cosine candidates handed to a reranker
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding

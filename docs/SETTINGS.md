@@ -155,7 +155,9 @@ setx DSH_DOT_COMPUTER off
 | `dailyAt` | `"23:30"` | 每天整理 + 写日记的时间 |
 | `coexist` | `"auto"` | `auto` / `people-only` / `full` |
 | `recallBackend` | `"local"` | `local` / `siliconflow` / `dashscope` / `off`（建议用 `/dot memory recall backend`，命令设的值优先） |
-| `recallTopK` / `recallMaxTokens` / `recallMinScore` | `8` / `1500` / `0.45` | 每次叫醒注入多少旧对话 |
+| `recallModel` | `""` | 本机默认 `Xenova/multilingual-e5-small`；只用中文可填 `BAAI/bge-small-zh-v1.5`（更轻，23 MB / 约 0.13 GB）。建议用 `/dot memory recall model` |
+| `recallTopK` / `recallMaxTokens` | `8` / `1500` | 每次叫醒注入多少旧对话 |
+| `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；命中要比整个索引的中位数高出一截；可选的绝对分数下限（和模型绑死，默认不用）。见 [memory.md](memory.md) |
 | `recallMirror` | `""` | 本机模型下载镜像，默认 hf-mirror |
 
 ### `interlude`

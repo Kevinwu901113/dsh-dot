@@ -16,7 +16,7 @@ dot 是一个**在自己手机上过日子的角色**：有自己的手机、账
 | 电脑（`computer`） | ✅ 可选；网关加密钥、端口转发封死、实时画面一次性票据、按操作类型审批、审计 | `DSH_DOT_COMPUTER=off` |
 | 她电脑上的 QQ（`qq`） | ✅ NapCat 或 SnowLuma（`/qq backend`），她用手机摄像头扫码登录（`/qq qr`）；只认她的号 | 10-30 真机：SnowLuma 连上、`mcp__dot-qq__*` 挂载，她自己扫码登录 |
 | IM 通道 | ✅ QQ 连上时 dot 的提醒、幕间主动联系、她对你 QQ 消息的回答都走她的 QQ；没连上时退回 dsh-im 官方机器人。SnowLuma 下收发已实测（10-29，22 条进 38 条出）；`qq_send` 对陌生人的审批只有单元测试，没有陌生人来过 | 真机 10-29 |
-| 自动召回（`memory` 的 RAG 层） | ✅ 0.12：每次叫醒前按叫醒她的话从 transcript 取原话注入；本机 bge-small-zh 默认（首次用时装库、走 hf-mirror 下模型），SiliconFlow / DashScope 可切，`/dot memory recall …` 一条命令切换 | 公开基准 108 题：74 → 93（真实代码路径，本机后端）；真机未跑 |
+| 自动召回（`memory` 的 RAG 层） | ✅ 0.12：每次叫醒前按叫醒她的话从 transcript 取原话注入；本机 bge-small-zh 默认（0.15.2 起换成 multilingual-e5-small；首次用时装库、走 hf-mirror 下模型），SiliconFlow / DashScope 可切，`/dot memory recall …` 一条命令切换 | 公开基准 108 题：74 → 96（0.15.2，真实代码路径，本机 e5）；真机未跑 |
 | "玩"（点赞/评论/关注） | ✅ 代码在（playIntent → 正常轮次，Moltbook 守则），11-02 起默认开、内置 App 表按手机上装的收窄；发帖/私信不做 | 真机 0 次（之前默认关） |
 
 ## 架构（不再变的部分）

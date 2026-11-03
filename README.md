@@ -50,7 +50,7 @@ NapCat / SnowLuma（OneBot 11）和她手机上同一个账号。你发消息 **
 <td valign="top">
 
 ### 🧠 记得你，也记得她遇到的人
-画像 + 碎片 + 交班，每个人一张卡；0.12 起叫醒前自动召回最相关的旧对话。公开记忆基准 **74 → 95 / 108**。每天 23:30 写日记。
+画像 + 碎片 + 交班，每个人一张卡；0.12 起叫醒前自动召回最相关的旧对话。公开记忆基准 **74 → 96 / 108**。每天 23:30 写日记。
 
 </td>
 </tr>
@@ -176,7 +176,7 @@ flowchart LR
 | **`phone`** 📱 | Android 模拟器，以 `mcp__dot-phone__*` 暴露（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）；任何 App 的通知都能叫醒她 · [文档](docs/phone.md) | 硬件虚拟化 | `DSH_DOT_PHONE=off` |
 | **`interlude`** 🌙 | 幕间：Canon 人设、剧本、连续性、打算、只读的「去看」、可选的主动联系 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
 | **`qq`** 💬 | 她电脑 VM 里的 QQ，和手机同号；`qq_send` 回复、表情包 · [文档](docs/qq.md) | computer | `DSH_DOT_QQ=off` |
-| **`memory`** 🧠 | 画像、人物卡、碎片、日记；15 万 token 交班；自动召回（默认本机 bge-small-zh，可切 SiliconFlow / DashScope） · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
+| **`memory`** 🧠 | 画像、人物卡、碎片、日记；15 万 token 交班；自动召回（默认本机 multilingual-e5-small，中英文都行；只用中文可换更轻的 bge-small-zh；可切 SiliconFlow / DashScope） · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
 | **`dot`** ◎ | 定时结果 → IM、审批与设备提醒、工作规则、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 | **`computer`** 🖥️ | 自带 microVM：shell、浏览器、桌面、实时画面、审批、审计 · [文档](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker | `DSH_DOT_COMPUTER=off` |
 

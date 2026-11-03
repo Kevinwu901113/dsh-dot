@@ -28,7 +28,7 @@ Between your conversations, she keeps living.
 - 📱 **A real phone** — the plugin downloads, builds and boots an Android emulator (no Java / Android Studio). No app store: **she installs her own apps**.
 - 💬 **Her own QQ** — NapCat or SnowLuma (OneBot 11), same account as on her phone. Your message wakes her in **1–2 s**; she replies in several short messages and sends stickers.
 - 🌙 **A life between conversations** — the interlude, ported from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): she writes down her days, keeps intents, goes to look at what she's curious about, and sometimes has a real reason to message you.
-- 🧠 **Memory** — profile, people cards, fragments, handoff at 150k tokens, and (0.12+) automatic recall of the most relevant past turns. Public memory benchmark: **74 → 95 / 108**. A diary every night at 23:30.
+- 🧠 **Memory** — profile, people cards, fragments, handoff at 150k tokens, and (0.12+) automatic recall of the most relevant past turns. Public memory benchmark: **74 → 96 / 108**. A diary every night at 23:30.
 - 🎮 **She browses and plays** — likes, comments and follows in the apps she installed herself. How much is her own habit, not a quota.
 - 🖥️ **An optional computer** — a bundled microVM (no Docker): shell, browser, desktop, live view, approval gates, audit log.
 
@@ -111,7 +111,7 @@ flowchart LR
 | **`phone`** | Android emulator exposed as `mcp__dot-phone__*` via [mobile-mcp](https://github.com/mobile-next/mobile-mcp) · [docs](docs/phone.md) | `DSH_DOT_PHONE=off` |
 | **`interlude`** | Canon persona, script, continuity, intents, read-only looking, optional proactive contact · [docs](docs/interlude.md) | `DSH_DOT_INTERLUDE=off` |
 | **`qq`** | Her QQ inside the computer VM, same account as her phone · [docs](docs/qq.md) | `DSH_DOT_QQ=off` |
-| **`memory`** | Profile, people, fragments, diary, handoff, auto-recall (local bge-small-zh by default; SiliconFlow / DashScope optional) · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
+| **`memory`** | Profile, people, fragments, diary, handoff, auto-recall (local multilingual-e5-small by default, Chinese, English and ~100 more; bge-small-zh as the lighter Chinese-only option; SiliconFlow / DashScope optional) · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
 | **`dot`** | Scheduled results → IM, approval and device notices, working rules, sidebar status panel | `DSH_DOT_CONTACT=off` |
 | **`computer`** | Bundled microVM ([microsandbox](https://github.com/zerocore-ai/microsandbox)) or Docker · [docs](docs/computer.md) | `DSH_DOT_COMPUTER=off` |
 
