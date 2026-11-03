@@ -1,1 +1,1 @@
-playIntents: [] (playing on her apps is disabled by the host).
+playIntents：[]（宿主关闭了她在 App 上玩）。

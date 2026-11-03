@@ -1,1 +1,1 @@
-contact: null (proactive contact is disabled by the host).
+contact：null（宿主关闭了主动联系）。

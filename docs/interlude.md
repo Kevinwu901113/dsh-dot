@@ -45,6 +45,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - `state`：`mood` 一句话、`now` 在做什么、`next` 接下来打算、`threads` 挂念的事；
    - `intents`：确实要在未来某个时刻处理的事，带时间、类型（提醒 / 答应的回复 / 想联系）和意愿值；
    - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
+   - **提示词**：这一轮的系统提示词整段是一个文件 `src/prompts/interlude.round.txt`，全中文。它由 HDS-Interlude 1.0.1-rc57 的提示词块（`src/narrator.ts`、`src/specialization.ts`，AGPL-3.0 © MOMOR1A/MomoiCore）译成中文、按 HDSI "lite" 档的组装顺序合并而成，中间插着本插件自己的几段（观察到的账本、她自己的生活、`<contact/>` 标记、玩、字段清单）；字段名和 JSON 键保持英文。随轮次变化的部分是 `{phase}` `{length}` `{contact}` 这类占位符，各自对应一个 `interlude.round.<名字>.txt` 小文件（阶段、按模型选的篇幅段、主动联系开/关、浏览、玩……）；某个占位符为空时那一行整行省掉。把它复制到 `~/dot/prompts/interlude.round.txt` 再改，替换的就是整段系统提示词；`npm run prompts` 页面里能直接改、预览。
 3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
 4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
 5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。看的方式有两种：

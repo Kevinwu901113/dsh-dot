@@ -10,6 +10,7 @@
 - 带条件的片段是单独的文件（`qq.channel.owner.txt` 只在设了主人时拼进 `{owner}`；`phone.device.number.txt` 只在设了手机号时拼进 `phone.device` 的 `{number}` 那一行，里面的 `{number}` 是号码本身）。
 - 几个文件是表格，一行一项 `代号=文字`（`dot.errand-note.what`、`interlude.play.verbs`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`）：只改等号右边。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
+- `interlude.round` 是幕间一轮的整段系统提示词，从上到下就是模型看到的顺序（HDS-Interlude 1.0.1-rc57 的提示词，AGPL-3.0 © MOMOR1A/MomoiCore，译成中文后合并）。覆盖它就替换整段；`{phase}` `{length}` 这类占位符各对应一个 `interlude.round.<名字>` 小文件，空的那行省掉。
 
 **页面**：仓库根目录跑 `npm run prompts`，打开 http://127.0.0.1:7870/（`PORT=xxxx` 换端口）。左边按她看到的顺序列出全部文件，标着「内置」或「已改过」；右边是整个文件，「保存」写到 `<home>/prompts/`，「恢复内置」删掉覆盖文件，「预览」用样例数据跑真实代码（没保存的改动也能预览），「全貌」拼出她对话里插件加的整段系统提示词。`npm run prompts -- --src` 时「保存」直接写进 `src/prompts/`，改的是内置版本。
 
@@ -26,11 +27,10 @@
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |
 | | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `.verbs` `.parts` `interlude.play-rules` |
 | 独立模型调用 | 整理记忆 | `memory.extract`（规则）`memory.extract.input` `.banks` `.banks.off` `.earlier` `.handoff-yes/no` `.diary-yes/no` |
-| | 幕间一轮 | `interlude.round.*`（`real-ledger` `her-life` `contact-mark` `contact-off` `play` `format` `script` `intents` … `refresh`） |
+| | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 
 **还在代码里的**：
-- HDS-Interlude 的原文（`src/interlude/core.js` 的 `HDSI.*`，以及它组装用的几行英文标题）：上游逐字照搬，不拆。
 - 工具说明（`memory` `recall` `qq_send` `qq_sticker_keep` `account` `interval`）和命令说明：跟参数定义写在一起，启动时注册一次，改了也要重启才生效。
 - 人设 Canon：内容来自幕间的预设（`<home>/interlude/canon.json`，`/interlude preset` 导入），代码只加 `## 角色设定` 这类小标题。
 - 数据的格式和空值占位：通知里的 App 名表、`（无内容）`、`（空）`、`（还没有）`、`（无）`，人物卡、召回结果、工具返回的话。

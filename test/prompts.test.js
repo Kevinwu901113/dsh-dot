@@ -27,7 +27,7 @@ test('prompts page: lists every file exactly once, and every entry renders', asy
   for (const e of entries) {
     const r = await renderEntry(e);
     assert.ok(r && !r.startsWith('（没拼出来'), `${e.id}: ${r.slice(0, 200)}`);
-    assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps)\}/, e.id);
+    assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps|canon|length|phase|contactRule|agency|browsing|herLife|play|playRules|playApps|playActions|collect|glm|style|seed|playIntents|contact)\}/, e.id);
   }
   assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机：Android[\s\S]*<memory>/);
 });
@@ -98,6 +98,23 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   assert.equal(extractPrompt({ text: '他：在吗', bankless: true, withDiary: true, day: '2026-11-03 周二' }),
     `=== 这段时间的记录 ===\n他：在吗\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已认识的人 ===\n（还没有）\n=== 已有碎片 ===\n（还没有）\n=== 待核实（关于别人的事，说过一次）===\n（没有）\n\n${extractRules()}\n\nhandoff 给 null。\n\n这次要写 diary：今天是 2026-11-03 周二，写今天的日记。`);
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
+});
+
+test('prompts render: the interlude round is one file; an override of it replaces the whole system prompt', async () => {
+  const { buildPrompt } = await import('../src/interlude/core.js');
+  const text = raw('interlude.round');
+  for (const k of ['canon', 'length', 'phase', 'herLife', 'contactRule', 'browsing', 'agency', 'play', 'glm', 'style', 'seed', 'playIntents', 'contact']) assert.ok(text.includes(`{${k}}`), k);
+  const args = { phase: 'advance', identity: '# 你是 小点', speak: true, model: 'deepseek-chat', browser: 'deferred', play: true, playApps: ['小黑盒'], playActions: ['like'], herLife: ['x'], now: Date.now() };
+  const sys = buildPrompt(args).system;
+  assert.match(sys, /^故事设定（Canon）：\n# 你是 小点\n把这一段写成/);
+  assert.match(sys, /\nplayIntents：\[\{"app":"小黑盒 之一","action":"like"[\s\S]*\ncontact：null，或者 \{"content"[\s\S]*没有具体动机时，返回 null。$/);
+  assert.doesNotMatch(sys, /\{[A-Za-z]\w*\}/);
+  mkdirSync(join(HOME, 'prompts'), { recursive: true });
+  writeFileSync(overridePath('interlude.round'), '只有这一行。{phase}\n{agency}\n');
+  try {
+    assert.equal(buildPrompt(args).system, `只有这一行。${prompt('interlude.round.phase.advance')}\n${prompt('interlude.round.agency')}`);
+    assert.equal(buildPrompt({ ...args, speak: false }).system, `只有这一行。${prompt('interlude.round.phase.advance')}`, 'an empty variant drops its line');
+  } finally { rmSync(overridePath('interlude.round')); }
 });
 
 test('prompts render: phone.device — the number sentence only when she has a number', async () => {

@@ -1,1 +1,0 @@
-Write the whole round as ONE call of the `interval` tool: its arguments are script, continuity, intents, browserIntents, playIntents and contact. Do not write the passage as plain text and do not wrap anything in Markdown fences; if you cannot call tools, return the same fields as one bare JSON object.

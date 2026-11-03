@@ -1,1 +1,0 @@
-script: the passage for this interval, Chinese prose, third person{seed}. When she sends a message to someone in the story, write its exact words at the sending action (several bubbles separated by <sep/>); a message to the user is the <contact/> marker only.

@@ -1,1 +1,0 @@
-, covering the last day in 3 to 5 segments, each segment starting with [MM-DD HH:MM]

@@ -1,1 +1,1 @@
-playIntents: [{"app":"one of {apps}","action":"{actions}","target":"the post/person, as she would name it","text":"the comment, if action is comment","why":"short reason","willingness":0.0}] — at most one, only when she genuinely wants to; otherwise [].
+playIntents：[{"app":"{playApps} 之一","action":"{playActions}","target":"那条帖子/那个人，用她自己会叫的说法","text":"评论内容（action 是 comment 时）","why":"简短的理由","willingness":0.0}]——最多一个，只在她真心想做时才写；没有就给 []。

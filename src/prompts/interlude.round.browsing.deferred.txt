@@ -1,0 +1,1 @@
+这一轮的浏览是延后执行的。场景里有动机时，最多返回一个 timing=deferred 的 browserIntent；它的结果只有在观察之后才成为证据。

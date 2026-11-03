@@ -1,1 +1,0 @@
-browserIntents: [{"mode":"search|visit","query":"...","url":"...","purpose":"why she looks","timing":"deferred"}] or [].

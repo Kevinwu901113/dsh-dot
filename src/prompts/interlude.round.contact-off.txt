@@ -1,1 +1,0 @@
-MESSAGES TO THE USER: proactive contact is off in this interval — she does not message the user at all. She may think of him or start to type and stop, but the script must not show any message to him as sent, and continuity must never claim he ignored or failed to answer her.
