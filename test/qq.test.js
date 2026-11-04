@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, sendReport, inputStatus } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, sendReport, inputStatus } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -544,4 +544,12 @@ test('input_status: NapCat\'s "正在输入" notice for his private chat reaches
   assert.deepEqual(seen, [{ userId: '20002', fromOwner: true, typing: true }, { userId: '20002', fromOwner: true, typing: false }]);
   assert.equal(heard.length, 0, 'a notice is not a message');
   h.stop();
+});
+
+test('transcript notation typed as words is not sent: [图片] is dropped, [表情包 sticker:id] becomes the sticker', () => {
+  assert.deepEqual(markerOf('[图片]'), { sticker: '' });
+  assert.deepEqual(markerOf('[图片×2]'), { sticker: '' });
+  assert.deepEqual(markerOf('[表情包 sticker:9384f5360b]'), { sticker: 'sticker:9384f5360b' });
+  assert.equal(markerOf('已经点上了 [图片]'), null);
+  assert.equal(markerOf('ok'), null);
 });

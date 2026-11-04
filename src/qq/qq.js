@@ -253,6 +253,12 @@ export function tidyVoice(text) {
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
+/** A whole bubble that is transcript notation: `[图片]`, `[图片×3]`, `[表情包 sticker:<id>]`, `[表情 …]`. */
+export function markerOf(line) {
+  const m = /^\[(图片|表情包?|image)(?:\s*[×x]\s*\d+)?(?:\s+sticker:([a-f0-9]{6,12}))?\]$/i.exec(String(line ?? '').trim());
+  return m ? { sticker: m[2] ? `sticker:${m[2]}` : '' } : null;
+}
+
 /**
  * A bubble that is English prose, not chat: 30+ characters (URLs aside) of which ≥ 80% are ASCII
  * letters, punctuation or spaces. That is the model thinking aloud ("hmm, actually don't over-explain…").
@@ -1012,12 +1018,17 @@ export function apply(ctx, config = {}, deps = {}) {
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
     let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
     let dropped = 0;
+    // Transcript notation typed as words ("[图片]", "[图片×2]", "[表情包 sticker:ab12]"): not chat. A
+    // sticker marker becomes the sticker itself; a bare picture marker is dropped.
+    const markers = parts.map(markerOf).filter(Boolean);
+    if (markers.length) { parts = parts.filter((p) => !markerOf(p)); images = [...[].concat(images ?? []), ...markers.map((m) => m.sticker).filter(Boolean)]; }
     if (cfg.tidy && cfg.dropLatinLeaks !== false) {
       parts = parts.filter((p) => { if (!latinLeak(p)) return true; dropped++; logger.warn(`dropped an English-prose bubble (reasoning leak?): ${p.slice(0, 60)}`); return false; });
     }
     const refs = [].concat(images ?? []).filter(Boolean);
     const segments = [];
     for (const ref of refs) segments.push(await imageSegment(ref));
+    if (!parts.length && !segments.length && markers.length) return { sent: 0, messageIds: [], said: [], imagesSent: 0, note: '只有 [图片] 这种记录标记，没有要发的内容；发图用 images' };
     if (!parts.length && !segments.length) throw new Error(dropped ? `nothing to send: ${dropped} line(s) were English prose, not chat, and were dropped — write what you mean to say to them` : 'nothing to send (text and images both empty)');
     const ids = [], failed = [];
     const started = Date.now();
