@@ -291,4 +291,7 @@ export function serve(port = Number(process.env.PORT) || 7870, { src = process.a
   return server;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) serve();
+if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  serve();
+  process.on('disconnect', () => process.exit()); // started by /dot prompts: go when dsh goes
+}

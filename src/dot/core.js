@@ -13,9 +13,12 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../tool-prefixes.js';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { spawn } from 'node:child_process';
+import { get as httpGet } from 'node:http';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute } from 'node:path';
+import { join, relative, isAbsolute, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { sectionOf, setValues } from '../settings.js';
@@ -170,6 +173,7 @@ export const defaults = {
   errandMaxTokens: 60000, // the errand session is archived and a fresh one started past this
   // Notifications from these apps are conversations: they wake her conversation, not the errand.
   conversationApps: ['qq', 'com.tencent.mobileqq', 'com.tencent.mm'],
+  promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
 };
 
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
@@ -195,6 +199,55 @@ export function inHours(spec, date = new Date()) {
   const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], now = date.getHours() * 60 + date.getMinutes();
   return start <= end ? now >= start && now < end : now >= start || now < end;
 }
+const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+const answers = (url) => new Promise((r) => {
+  const q = httpGet(url, { agent: false, timeout: 1000 }, (res) => { res.resume(); r(res.statusCode === 200); });
+  q.on('error', () => r(false)).on('timeout', () => q.destroy());
+});
+/**
+ * /dot prompts: scripts/prompts.mjs in a child process (it rewrites process.env.DSH_HOME and the
+ * prompt home when imported, which must not happen inside the dsh host). Same <home> as hers.
+ */
+export function promptsPage({ home, port, timeoutMs = 20000 }) {
+  const url = `http://127.0.0.1:${port}/`;
+  const log = join(dshHome(), 'dsh-dot-prompts.log');
+  let child = null, starting = null;
+  async function start() {
+    if (child && child.exitCode === null) return url;
+    mkdirSync(dshHome(), { recursive: true });
+    try { if (statSync(log).size > 1_000_000) rmSync(log, { force: true }); } catch {}
+    const fd = openSync(log, 'a');
+    let failed = '';
+    try {
+      // dsh may be Electron: ELECTRON_RUN_AS_NODE makes its executable a plain Node.
+      child = spawn(process.execPath, [join(PACKAGE_ROOT, 'scripts', 'prompts.mjs')], {
+        cwd: PACKAGE_ROOT, stdio: ['ignore', fd, fd, 'ipc'], windowsHide: true,
+        env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', DSH_DOT_HOME: home, PORT: String(port) },
+      });
+    } finally { closeSync(fd); }
+    const c = child;
+    c.unref(); c.channel?.unref(); // the channel only lets the page know when dsh is gone (see prompts.mjs)
+    c.on('error', (err) => { failed = err.message; });
+    c.on('exit', (code, sig) => { failed ||= `exited (${sig ?? code})`; if (child === c) child = null; });
+    for (const until = Date.now() + timeoutMs; Date.now() < until && !failed;) {
+      if (await answers(url)) return url;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    stop();
+    throw new Error(`${failed || `no answer within ${timeoutMs / 1000} s`} — log: ${log}`);
+  }
+  function stop() {
+    const c = child; child = null;
+    if (!c || c.exitCode !== null) return Promise.resolve(false);
+    return new Promise((r) => { c.once('exit', () => r(true)); c.kill(); });
+  }
+  return {
+    url,
+    start: () => (starting ??= start().finally(() => { starting = null; })),
+    stop,
+  };
+}
+
 const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
 /** Text of a message content array (or string). */
@@ -713,19 +766,26 @@ export function apply(ctx, config = {}) {
     if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept（默认 16 GB 存储，要别的大小发 /phone accept 32 这样，建好后不能改）。', 'plain');
   }) ?? (() => {}), 'dsh-dot: phone status'));
 
+  const prompts = promptsPage({ home, port: Number(cfg.promptsPort) || 7870 });
+  ctx.effect(() => () => { void prompts.stop(); }, 'dsh-dot: prompts page');
+
   // /dot
   // The command registry can come up after dot, so register through a child that waits for it.
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers',
-      input: { hint: '[test | check | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page',
+      input: { hint: '[test | check | prompts [stop] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         // /dot memory … and /dot people … belong to dsh-dot/memory.
         if (/^(memory|people)\b/.test(arg)) {
           const mem = ctx.get('dotMemory');
           return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
+        }
+        if (arg === 'prompts stop') return { kind: 'success', text: (await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running' };
+        if (arg === 'prompts') {
+          try { return { kind: 'success', text: `提示词和人设页面：${await prompts.start()}\n（只在本机打开；/dot prompts stop 关掉）` }; } catch (err) { return { kind: 'success', text: `prompts page failed: ${err.message}` }; }
         }
         const t = await im.target();
         let test = '';

@@ -59,3 +59,16 @@ test('phone live view: an open /stream does not keep dsh alive after close()', (
   assert.ok(r.ok, `dsh did not exit after close (${r.ms} ms): ${r.out}`);
   assert.ok(r.ms < 4000, `took ${r.ms} ms`);
 });
+
+test('/dot prompts: a running editor page does not keep dsh alive, and goes with it', () => {
+  const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const code = `
+    process.env.DSH_HOME = ${JSON.stringify(dsh)};
+    const { promptsPage } = await import(${JSON.stringify(src('dot/core.js'))});
+    const page = promptsPage({ home: ${JSON.stringify(join(dsh, 'dot'))}, port: 18192 });
+    await page.start();
+    void page.stop(); // what the dispose effect does
+  `;
+  const r = exitsWithin(code, 15000);
+  assert.ok(r.ok, `dsh did not exit after dispose (${r.ms} ms): ${r.out}`);
+});

@@ -14,7 +14,7 @@
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
 - `interlude.round` 是幕间一轮的整段系统提示词，从上到下就是模型看到的顺序（HDS-Interlude 1.0.1-rc57 的提示词，AGPL-3.0 © MOMOR1A/MomoiCore，译成中文后合并）。覆盖它就替换整段；`{phase}` `{length}` 这类占位符各对应一个 `interlude.round.<名字>` 小文件，空的那行省掉。
 
-**页面**：仓库根目录跑 `npm run prompts`，打开 http://127.0.0.1:7870/（`PORT=xxxx` 换端口）。左边按她看到的顺序列出全部文件，标着「内置」或「已改过」；右边是整个文件，「保存」写到 `<home>/prompts/`，「恢复内置」删掉覆盖文件，「预览」用样例数据跑真实代码（没保存的改动也能预览），「全貌」拼出她对话里插件加的整段系统提示词。`npm run prompts -- --src` 时「保存」直接写进 `src/prompts/`，改的是内置版本。
+**页面**：在 dsh 里发 `/dot prompts`，打开它回的网址（默认 http://127.0.0.1:7870/，只监听本机，端口用 `dot.promptsPort` 换；日志 `~/.dsh/dsh-dot-prompts.log`），`/dot prompts stop` 关掉，dsh 退出时也跟着关。开发时在仓库根目录跑 `npm run prompts` 是同一个页面（`PORT=xxxx` 换端口）。左边第一项是人设（canon.json），其余按她看到的顺序列出全部文件，标着「内置」或「已改过」；右边是整个文件，「保存」写到 `<home>/prompts/`，「恢复内置」删掉覆盖文件，「预览」用样例数据跑真实代码（没保存的改动也能预览），「全貌」拼出她对话里插件加的整段系统提示词。`npm run prompts -- --src` 时「保存」直接写进 `src/prompts/`，改的是内置版本。
 
 | 分组 | 是什么 | 文件 |
 |---|---|---|

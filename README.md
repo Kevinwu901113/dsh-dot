@@ -197,13 +197,13 @@ flowchart LR
 ```text
 /phone [accept|restart|screenshot]
 /interlude [now|advance|seed|preset <code>|canon]
-/dot [test|check]
+/dot [test|check|prompts [stop]]
 /dot memory [now|diary|handoff|recall …]
 /dot people [approve <id>|drop <id>|forget <名字>]
 /qq [install|account|start|qr|backend|owner]
 ```
 
-**改提示词**：她收到的每段话都是 `src/prompts/` 里的纯文本，复制到 `~/dot/prompts/` 改就能覆盖；`npm run prompts` 打开本机页面直接改，见 [docs/prompts.md](docs/prompts.md)。
+**改提示词和人设**：在 dsh 里发 `/dot prompts`，回一个本机网址（默认 http://127.0.0.1:7870/），打开就能改，第一项是人设 `canon.json`；`/dot prompts stop` 关掉。她收到的每段话都是 `src/prompts/` 里的纯文本，页面保存到 `~/dot/prompts/` 覆盖内置版本。开发时在仓库里 `npm run prompts` 也行，见 [docs/prompts.md](docs/prompts.md)。
 
 **状态面板**：会话顶部 ◎ 按钮打开右侧栏 dot 标签页——设备状态、交班进度、她此刻在做什么、今天的 token，以及**最近 30 场**（每次被叫醒到结束是一场，展开看她做了什么、说了什么）。
 
