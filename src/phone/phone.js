@@ -263,7 +263,21 @@ export async function screencapRetry(grab, { waitMs = 400, wait = sleep } = {}) 
 }
 
 /** Her system-prompt section about the phone (only while it is ready): the device, her number, accounts, how each app adds her stickers. */
-export const deviceText = (serial, number = '') => prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, number: number ? prompt('phone.device.number', { number }) : '', stickers: prompt('phone.stickers') });
+/**
+ * The phone section. Parts that only hold with a sibling component are said only when it is there
+ * (the phone also runs alone, next to someone else's character): notifications wake her only
+ * through dot, the sticker album is fed by qq, and "remember it" needs memory. Defaults: all on.
+ */
+export const deviceText = (serial, number = '', has = {}) => {
+  const { dot = true, qq = true, memory = true } = has;
+  return prompt('phone.device', {
+    serial,
+    phonePrefix: PHONE_TOOL_PREFIX,
+    notify: prompt(dot ? 'phone.device.wake' : 'phone.device.no-wake'),
+    number: number ? prompt('phone.device.number', { number }) : '',
+    stickers: qq ? prompt('phone.stickers', { learned: memory ? prompt('phone.stickers.learned') : '' }) : '',
+  });
+};
 
 /** A phone number as typed (spaces, dashes allowed); '' clears it. Throws on anything else. */
 export function parseNumber(s) {
@@ -658,7 +672,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? deviceText(serial, cfg.number)
+        ? deviceText(serial, cfg.number, { dot: Boolean(ctx.get?.('dshDot')), qq: Boolean(ctx.get?.('dshQq')), memory: Boolean(ctx.get?.('dotMemory')) })
         : ''),
     }), 'dsh-dot/phone: device section');
   });

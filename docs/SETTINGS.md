@@ -74,6 +74,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 换她的家目录 | `dot.home`、`memory.home`、`interlude.home` **三处写同一个路径** | 默认 `~/dot` |
 | **没有硬件虚拟化 / 不要手机** | `phone.enabled: false` | |
 | 关掉某个组件 | `qq.enabled`、`memory.enabled`、`interlude.enabled`、`dot.enabled` 设 `false` | 其余组件照常 |
+| **已有自己的角色，只要手机和电脑** | `dot`、`memory`、`interlude`、`qq` 四段都写 `"enabled": false` | 手机通知不再叫醒 agent，审批不推 IM；手机的提示词会随之改口，不提叫醒、表情包和记忆 |
 | **不要电脑** | 只能用环境变量 `DSH_DOT_COMPUTER=off`（见下） | 电脑组件会改 dsh 的全局沙箱设置，必须在插件加载前决定，设置文件来不及 |
 
 ### 设置环境变量（只有关电脑等少数项需要）

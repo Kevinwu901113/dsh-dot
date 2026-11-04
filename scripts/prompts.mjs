@@ -72,8 +72,8 @@ export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消�
 export const entries = [
   { id: 'rules', group: 'system', name: '工作方式', note: '定时任务（先看已有的）、问一次就放下、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
     render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
-  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；设了手机号（/phone number）才有那一句；最后是各 App 怎么加表情包', files: ['phone.device', 'phone.device.number', 'phone.stickers'],
-    render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')]]) },
+  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；通知叫醒她那句要 dot 组件在；设了手机号（/phone number）才有那一句；表情包段要 qq 组件在，最后"记到 self"要 memory 在', files: ['phone.device', 'phone.device.wake', 'phone.device.no-wake', 'phone.device.number', 'phone.stickers', 'phone.stickers.learned'],
+    render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')], ['只装手机（没有 dot、qq、memory）', deviceText('emulator-5554', '', { dot: false, qq: false, memory: false })]]) },
   { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
     render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],

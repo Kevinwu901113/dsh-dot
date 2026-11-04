@@ -125,14 +125,27 @@ test('prompts render: phone.device — the number sentence only when she has a n
   const { deviceText } = await import('../src/phone/phone.js');
   const without = deviceText('emulator-5554');
   assert.doesNotMatch(without, /你的手机号|\{number\}|\{stickers\}/);
-  assert.equal(without.split('\n').length, 2 + prompt('phone.stickers').split('\n').length);
-  assert.ok(without.endsWith(`\n${prompt('phone.stickers')}`), 'the sticker how-to closes the phone section');
+  const stickers = prompt('phone.stickers', { learned: prompt('phone.stickers.learned') });
+  assert.equal(without.split('\n').length, 2 + stickers.split('\n').length);
+  assert.ok(without.endsWith(`\n${stickers}`), 'the sticker how-to closes the phone section');
+  assert.ok(without.includes(prompt('phone.device.wake')), 'with dot: notifications wake her');
   assert.equal(without.split('\n')[1], '账号密码不要自己编、也不要记在记忆里：注册或登录前先 `account get <app>`，拿到手机号和密码；注册成功、或 App 逼你改了密码，马上 `account set` 记下来。');
   assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。');
 });
 
+test('prompts render: phone.device alone — nothing that needs dot, qq or memory', async () => {
+  const { deviceText } = await import('../src/phone/phone.js');
+  const alone = deviceText('emulator-5554', '', { dot: false, qq: false, memory: false });
+  assert.doesNotMatch(alone, /叫醒你，用不着|dot-stickers|memory 工具|\{notify\}|\{stickers\}|\{learned\}/);
+  assert.ok(alone.includes(prompt('phone.device.no-wake')));
+  assert.equal(alone.split('\n').length, 2, 'device line + account line');
+  const noMemory = deviceText('emulator-5554', '', { memory: false });
+  assert.match(noMemory, /dot-stickers/);
+  assert.doesNotMatch(noMemory, /memory 工具|\{learned\}/);
+});
+
 test('prompts render: stickers — where they really are, and how each phone app adds them (taught, not pushed)', async () => {
-  const how = prompt('phone.stickers');
+  const how = prompt('phone.stickers', { learned: prompt('phone.stickers.learned') });
   assert.ok(how.split('\n').length <= 6);
   assert.match(how, /相册的 dot-stickers/);
   assert.match(how, /- QQ：聊天里别人发的表情长按 → 添加到表情；从相册发出去的图，发出后长按 → 添加到表情/);
