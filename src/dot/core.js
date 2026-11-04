@@ -534,11 +534,22 @@ export function apply(ctx, config = {}) {
    * steered into it, so she reads them at her next step instead of after the turn (an agent without
    * `steer` gets the followup).
    */
+  let agentShapeLogged = false;
   const toOwnerAgent = (agent, id, items) => {
-    const steer = turns.has(id) && typeof agent.steer === 'function';
-    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: steer }), items), source: ownerSource() });
-    if (steer) agent.steer(message); else agent.followup(message);
-    audit('owner-message', { session: id, count: items.length, whileBusy: turns.has(id), via: steer ? 'steer' : 'followup' }); bump('owner', items.length);
+    const busy = turns.has(id);
+    // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
+    // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
+    const via = busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
+    if (!agentShapeLogged) {
+      agentShapeLogged = true;
+      const methods = [...new Set([...Object.keys(agent), ...Object.getOwnPropertyNames(Object.getPrototypeOf(agent) ?? {})])].filter((k) => typeof agent[k] === 'function');
+      logger.info(`her agent handle offers: ${methods.join(', ')} (busy now: ${busy}, open turns: ${[...turns.keys()].map((k) => k.slice(0, 16)).join(' ') || 'none'})`);
+    }
+    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via !== 'followup' }), items), source: ownerSource() });
+    try {
+      if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
+    } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
+    audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
   };
   // The pictures in what wakes her (dsh-dot/qq saved them in the attachment store): image blocks in the
   // message, capped per message by qq's imageSeeMax and the store's imageLimits. Without a store: text only.
