@@ -301,6 +301,47 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   stop(h);
 });
 
+test('pictures she is sent: his words and the wake text carry one image block per picture, right after its words; capped; text only without a store', async () => {
+  const { withImages, contentText: text } = await import('../src/dot/core.js');
+  const ref = (n, bytes = 10) => ({ attachmentId: `sha256:${n}`, mediaType: 'image/gif', bytes, width: 1, height: 1 });
+  const t = '[11-04 10:00] 你看[表情包 sticker:aa11bb22cc]\n[图片 https://x.qq.com/a]哈哈';
+  const c = withImages(t, [{ ref: ref(1), text: '[表情包 sticker:aa11bb22cc]' }, { ref: ref(2), text: '[图片 https://x.qq.com/a]' }]);
+  assert.deepEqual(c.map((p) => p.type), ['text', 'image', 'text', 'image', 'text']);
+  assert.equal(c[0].text, '[11-04 10:00] 你看[表情包 sticker:aa11bb22cc]');
+  assert.deepEqual(c[3].attachment, ref(2));
+  assert.equal(text(c), t, 'the text parts are the text, exactly: memory records the same line');
+  assert.deepEqual(withImages(t, [{ ref: ref(1), text: '[表情包 sticker:aa11bb22cc]' }, { ref: ref(2), text: '[图片 https://x.qq.com/a]' }], { max: 1 }).filter((p) => p.type === 'image').length, 1, 'capped');
+  assert.deepEqual(withImages(t, [{ ref: ref(1, 9), text: '[表情包 sticker:aa11bb22cc]' }, { ref: ref(2, 9), text: '[图片 https://x.qq.com/a]' }], { maxBytes: 10 }).filter((p) => p.type === 'image').length, 1, 'within the message byte limit');
+  assert.deepEqual(withImages('在吗', []), [{ type: 'text', text: '在吗' }]);
+  // wired: his message with a sticker and a stranger's picture, with and without the attachment store
+  const run = async (store) => {
+    const h = harness();
+    const followups = [];
+    let onMessage;
+    h.ctx.get = ((orig) => (name) => name === 'dshQq' ? { connected: true, owner: '20002', imageSeeMax: 4, onMessage: (fn) => { onMessage = fn; return () => {}; } }
+      : name === 'attachments' ? store
+      : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push(m) } }) } : orig(name))(h.ctx.get);
+    apply(h.ctx, h.config);
+    h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
+    onMessage({ kind: 'private', userId: '20002', who: '宽', text: '你看[表情包 sticker:aa11bb22cc]', images: [{ ref: ref(1), text: '[表情包 sticker:aa11bb22cc]' }], fromOwner: true, at: new Date().toISOString() });
+    onMessage({ kind: 'private', userId: '30003', who: '路人', text: '[图片 https://x.qq.com/a]', images: [{ ref: ref(2), text: '[图片 https://x.qq.com/a]' }], fromOwner: false, at: new Date().toISOString() });
+    await wait(50);
+    stop(h);
+    return { followups, audit: h.audit };
+  };
+  const seen = await run({ imageLimits: { maxImagesPerMessage: 8, maxMessageImageBytes: 1e6 } });
+  const owner = seen.followups.find((m) => m.source.kind === 'user');
+  assert.deepEqual(owner.content.map((p) => p.type), ['text', 'image']);
+  assert.match(owner.content[0].text, /你看\[表情包 sticker:aa11bb22cc\]$/);
+  assert.equal(owner.content[1].attachment.attachmentId, 'sha256:1');
+  const woke = seen.followups.find((m) => m.source.kind === 'dsh-dot');
+  assert.deepEqual(woke.content.map((p) => p.type), ['text', 'image', 'text']);
+  assert.match(woke.content[0].text, /路人（30003）：\[图片 https:\/\/x\.qq\.com\/a\]$/);
+  assert.ok(seen.audit.some((e) => e.event === 'images-in-message' && e.count === 1));
+  const blind = await run(undefined);
+  assert.ok(blind.followups.length === 2 && blind.followups.every((m) => m.content.length === 1 && m.content[0].type === 'text'), 'no store: text only, as before');
+});
+
 test('working rules tell her to use a goal for long tasks', async () => {
   const { workingRules } = await import('../src/dot/core.js');
   assert.match(workingRules(), /create_goal/);

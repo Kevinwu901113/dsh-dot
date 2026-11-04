@@ -49,6 +49,27 @@ const firstAt = (items, now) => { const t = Date.parse(items?.[0]?.at ?? ''); re
  * `whileBusy` (steered into the turn she is in the middle of) adds one line saying so.
  */
 export const ownerWords = (items, now = Date.now(), { whileBusy = false } = {}) => prompt('dot.owner-words', { stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n'), busy: whileBusy ? prompt('dot.owner-words.busy') : '' });
+/**
+ * A wake text with the pictures in it: the text cut right after each picture's words (`[表情包 sticker:<id>]`,
+ * `[图片]`), one `{ type: 'image', attachment }` there, in message order. The text parts joined are the text
+ * exactly, so what memory records (text parts only) does not change. A picture whose words are not in
+ * the text, or past `max` / `maxBytes` for the whole message, is left out (its words stay).
+ * @param images - `[{ ref: ImageAttachmentRef, text }]` from dsh-dot/qq.
+ */
+export function withImages(text, images = [], { max = Infinity, maxBytes = Infinity } = {}) {
+  const content = [];
+  let from = 0, n = 0, bytes = 0;
+  for (const im of images ?? []) {
+    if (!im?.ref || !im.text || n >= max || bytes + (Number(im.ref.bytes) || 0) > maxBytes) continue;
+    const i = text.indexOf(im.text, from);
+    if (i < 0) continue;
+    const end = i + im.text.length;
+    content.push({ type: 'text', text: text.slice(from, end) }, { type: 'image', attachment: im.ref });
+    from = end; n++; bytes += Number(im.ref.bytes) || 0;
+  }
+  if (from < text.length || !content.length) content.push({ type: 'text', text: text.slice(from) });
+  return content;
+}
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
@@ -86,7 +107,8 @@ export function groupNotifications(items) {
     const id = n.key || `${n.pkg}|${title}`;
     const g = groups.get(id) ?? { pkg: n.pkg, title, texts: [] };
     const text = String(n.text ?? '').trim();
-    if (text && g.texts.at(-1) !== text) g.texts.push(text);
+    // The same words twice in a row are one line, unless they carry a picture (two [图片] are two pictures).
+    if (text && (g.texts.at(-1) !== text || n.images?.length)) g.texts.push(text);
     groups.set(id, g);
   }
   return [...groups.values()];
@@ -502,7 +524,7 @@ export function apply(ctx, config = {}) {
       if (!items.length) return;
       // The people in these messages, as she remembers them (dsh-dot/memory).
       const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: wakeText(items, { whileBusy, cards }) }], source: PHONE_NOTIFICATION_SOURCE }));
+      found.agent.followup(createUserMessage({ content: contentFor(wakeText(items, { whileBusy, cards }), items), source: PHONE_NOTIFICATION_SOURCE }));
       bump('woke', 1);
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
@@ -514,9 +536,26 @@ export function apply(ctx, config = {}) {
    */
   const toOwnerAgent = (agent, id, items) => {
     const steer = turns.has(id) && typeof agent.steer === 'function';
-    const message = createUserMessage({ content: [{ type: 'text', text: ownerWords(items, Date.now(), { whileBusy: steer }) }], source: ownerSource() });
+    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: steer }), items), source: ownerSource() });
     if (steer) agent.steer(message); else agent.followup(message);
     audit('owner-message', { session: id, count: items.length, whileBusy: turns.has(id), via: steer ? 'steer' : 'followup' }); bump('owner', items.length);
+  };
+  // The pictures in what wakes her (dsh-dot/qq saved them in the attachment store): image blocks in the
+  // message, capped per message by qq's imageSeeMax and the store's imageLimits. Without a store: text only.
+  let warnedImages = false;
+  const contentFor = (text, items) => {
+    const images = items.flatMap((n) => n.images ?? []);
+    if (!images.length) return [{ type: 'text', text }];
+    const store = ctx.get('attachments');
+    if (!store) {
+      if (!warnedImages) { warnedImages = true; logger.warn('pictures arrived but no attachment store (ctx.attachments) is mounted: she reads them as text'); }
+      return [{ type: 'text', text }];
+    }
+    const limits = store.imageLimits ?? {};
+    const content = withImages(text, images, { max: Math.min(ctx.get('dshQq')?.imageSeeMax ?? 4, limits.maxImagesPerMessage || Infinity), maxBytes: limits.maxMessageImageBytes || Infinity });
+    const seen = content.filter((p) => p.type === 'image').length;
+    if (seen) audit('images-in-message', { count: seen, of: images.length });
+    return content;
   };
   let frozen = 0; let frozenQueue = []; // while her conversation is being handed over (dsh-dot/memory)
   const send = (id, items) => {
@@ -607,6 +646,7 @@ export function apply(ctx, config = {}) {
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
+    ...(m.images?.length ? { images: m.images } : {}),
     handles: [`qq:${m.userId}`], platform: 'qq', name: m.who, kind: m.kind,
   })) ?? (() => {}), 'dsh-dot: qq messages'));
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));

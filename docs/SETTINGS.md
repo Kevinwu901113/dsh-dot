@@ -142,6 +142,7 @@ setx DSH_DOT_COMPUTER off
 | `scoreThreshold` | `7` | `score` 模式的插话门槛（0–10） |
 | `sendPolicy` | `"reply"` | `reply` / `always` / `off` |
 | `replyWindowMinutes` | `30` | `reply` 模式下多久内算"对方找过她" |
+| `imageSeeMax` | `4` | 别人发来的图和表情包，每条消息最多给她看几张；0 只给文字 |
 | `typingMsPerChar` | `60` | 分条发送的打字停顿，0 一次发完 |
 | `tidy` | `true` | 去掉句号、引号、破折号等书面符号 |
 | `dropLatinLeaks` | `true` | 不发整条都是英文的气泡（思考漏出来），短英文照发 |

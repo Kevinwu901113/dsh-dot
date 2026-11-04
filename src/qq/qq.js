@@ -60,6 +60,10 @@ export const defaults = {
   // could carry anything). 'always' asks for everything but the owner; 'off' never asks.
   sendPolicy: 'reply',
   replyWindowMinutes: 30,
+  // Pictures and stickers people send her (the owner and anyone whose message wakes her) go into the
+  // message as images she sees: at most this many per message, each within the attachment store's
+  // imageLimits (else 4 MB). 0 = text only ("[图片 <url>]", "[表情包 sticker:<id>]").
+  imageSeeMax: 4,
   reconnectMs: 5000,
   requestTimeoutMs: 15000,
 };
@@ -229,7 +233,8 @@ export function sendGate({ to, text = '', images = [] }, { owner, policy = 'repl
   const target = parseTarget(to, owner);
   if (!target) return null; // qq.send rejects it with a clear error
   if (owner && target.user_id === Number(owner)) return null;
-  const local = [].concat(images ?? []).filter((r) => r && !/^(https?:\/\/|sticker:|face:)/i.test(String(r)));
+  // `[图 /sdcard/…]` typed as a bubble is sent as that image (qq.send), so it is judged as one here.
+  const local = [...[].concat(images ?? []), ...typedImages(text)].filter((r) => r && !/^(https?:\/\/|sticker:|face:)/i.test(String(r)));
   const who = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
   if (local.length) return `dsh-dot/qq: sending ${local.length} file(s) from her devices to ${who} (${local.map((r) => String(r).slice(0, 40)).join(', ')})`;
   if (policy === 'always') return `dsh-dot/qq: message to ${who}: ${String(text).slice(0, 80)}`;
@@ -253,10 +258,40 @@ export function tidyVoice(text) {
   }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
 }
 
-/** A whole bubble that is transcript notation: `[图片]`, `[图片×3]`, `[表情包 sticker:<id>]`, `[表情 …]`. */
+/**
+ * A whole bubble that is transcript notation: `[图片]`, `[图片×3]`, `[表情包 sticker:<id>]`, `[表情 …]`,
+ * or what her transcript records for an image she sent — `[图 <ref>]` (phone:screen, phone:latest, a
+ * URL, face:<n>, a path) — and `[图片 <url>]`, a picture someone sent her. `image` is the ref it stands for ('' = a bare picture marker, nothing to send).
+ */
 export function markerOf(line) {
-  const m = /^\[(图片|表情包?|image)(?:\s*[×x]\s*\d+)?(?:\s+sticker:([a-f0-9]{6,12}))?\]$/i.exec(String(line ?? '').trim());
-  return m ? { sticker: m[2] ? `sticker:${m[2]}` : '' } : null;
+  const s = String(line ?? '').trim();
+  const sent = /^\[图片?\s+([^\s\]]+)\]$/.exec(s);
+  if (sent) return imageSource(sent[1]) ? { image: sent[1] } : null;
+  const m = /^\[(图片|表情包?|image)(?:\s*[×x]\s*\d+)?(?:\s+sticker:([a-f0-9]{6,12}))?\]$/i.exec(s);
+  return m ? { image: m[2] ? `sticker:${m[2]}` : '' } : null;
+}
+/** Image refs typed as whole-bubble markers in a qq_send text (see markerOf), in order. */
+export const typedImages = (text) => String(text ?? '').split(/<sep\s*\/>|\n/i).map(markerOf).filter((m) => m?.image).map((m) => m.image);
+/** The ref of an image that went out, as she wrote it, normalised: `sticker:<id>`, `face:<n>`, a URL, phone:…, a path. */
+export function sentRef(ref) {
+  const src = imageSource(ref);
+  if (!src) return String(ref ?? '').trim();
+  if (src.kind === 'sticker' || src.kind === 'face') return `${src.kind}:${src.ref}`;
+  if (src.kind === 'phone-screen') return 'phone:screen';
+  if (src.kind === 'phone-latest') return 'phone:latest';
+  return src.kind === 'phone' && !/^\/(sdcard|storage)\//.test(src.ref) ? `phone:${src.ref}` : src.ref;
+}
+/** An image ref as her transcript writes it — itself sendable (markerOf reads it back): `[表情包 sticker:<id>]`, else `[图 <ref>]`. */
+export const imageMarker = (ref) => (/^sticker:/.test(String(ref)) ? `[表情包 ${ref}]` : `[图 ${ref}]`);
+
+/** The media type of image bytes, from their first bytes ('' = not PNG, JPEG, GIF or WebP). */
+export function imageType(buf) {
+  const b = Buffer.isBuffer(buf) ? buf : Buffer.from(buf ?? []);
+  if (b.length >= 8 && b[0] === 0x89 && b.toString('latin1', 1, 4) === 'PNG') return 'image/png';
+  if (b.length >= 3 && b[0] === 0xff && b[1] === 0xd8 && b[2] === 0xff) return 'image/jpeg';
+  if (b.length >= 6 && b.toString('latin1', 0, 4) === 'GIF8') return 'image/gif';
+  if (b.length >= 12 && b.toString('latin1', 0, 4) === 'RIFF' && b.toString('latin1', 8, 12) === 'WEBP') return 'image/webp';
+  return '';
 }
 
 /**
@@ -887,7 +922,16 @@ export function apply(ctx, config = {}, deps = {}) {
     if (String(ev.user_id) === selfId) return;
     const isGroup = ev.message_type === 'group';
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
-    const text = segmentsToText(Array.isArray(ev.message) ? ev.message.map((s) => (s?.type === 'image' && isSticker(s.data) ? keepSticker(s.data, who) : s)) : ev.message, selfId);
+    // Every picture in it, in order, with the words that stand for it in `text` — what she may get to see (seeImages).
+    const seen = [];
+    const segs = Array.isArray(ev.message) ? ev.message.map((s) => {
+      if (s?.type !== 'image') return s;
+      if (!isSticker(s.data)) { if (s.data?.url) seen.push({ url: s.data.url, text: segmentsToText([s]) }); return s; }
+      const k = keepSticker(s.data, who);
+      if (k.id) seen.push({ sticker: k.id, text: k.seg.data.text, fetching: k.fetching });
+      return k.seg;
+    }) : ev.message;
+    const text = segmentsToText(segs, selfId);
     if (!text) return;
     const wanted = isGroup ? groupWanted(ev, cfg.groupPolicy, selfId) : true;
     if (isGroup) {
@@ -901,24 +945,92 @@ export function apply(ctx, config = {}, deps = {}) {
     if (fromOwner) lastOwnerAt = Date.now();
     recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
     if (recent.size > 500) recent.delete(recent.keys().next().value);
-    if (wanted === 'score') { void scoreAndDeliver(msg); return; }
-    deliver(msg);
+    if (wanted === 'score') { void scoreAndDeliver(msg, seen); return; }
+    deliver(msg, seen);
   }
   /** A sticker someone sent: into her collection (downloaded once, in the background) and named in the text she reads. */
   function keepSticker(d, who) {
     const got = urlRefusal(d.url) ? null : stickers.note({ file: d.file, url: d.url, from: who });
-    if (!got) return { type: 'text', data: { text: '[表情包]' } };
-    if (got.isNew) stickers.fetch(got.id).then((ok) => { if (ok) audit({ kind: 'sticker-kept', id: got.id, from: who }); }, (err) => logger.debug(`sticker ${got.id}: ${err.message}`));
-    return { type: 'text', data: { text: `[表情包 sticker:${got.id}]` } };
+    if (!got) return { seg: { type: 'text', data: { text: '[表情包]' } } };
+    // `fetching`: the one download, which seeing it (seeImages) waits for instead of fetching again.
+    const fetching = got.isNew ? stickers.fetch(got.id).then((ok) => { if (ok) audit({ kind: 'sticker-kept', id: got.id, from: who }); return ok; }, (err) => { logger.debug(`sticker ${got.id}: ${err.message}`); return false; }) : undefined;
+    return { seg: { type: 'text', data: { text: `[表情包 sticker:${got.id}]` } }, id: got.id, fetching };
   }
-  function deliver(msg) {
-    audit({ kind: 'message', ...msg, text: msg.text.slice(0, 200) });
+  // ---- what she sees: pictures and stickers in a message that wakes her, as images in that message ----
+  const warned = new Set();
+  const warnOnce = (key, m) => { if (warned.has(key)) return; warned.add(key); logger.warn(m); };
+  const SEE_MAX_BYTES = 4 * 1024 * 1024;
+  const SEE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif'];
+  /** The bytes of one picture in a message: a sticker from her collection (downloaded once), else its QQ URL. */
+  async function seenBytes(item, cap) {
+    let buf;
+    if (item.sticker) {
+      if (!(await (item.fetching ?? stickers.fetch(item.sticker).catch(() => false)))) throw new Error(`sticker ${item.sticker} not downloaded`);
+      buf = stickers.read(item.sticker);
+      if (!buf) throw new Error(`sticker ${item.sticker} not in her collection`);
+    } else {
+      const why = urlRefusal(item.url);
+      if (why) throw new Error(`image URL refused: ${why}`);
+      const res = await (deps.fetch ?? globalThis.fetch)(publicHttpUrl(item.url), { signal: AbortSignal.timeout(15_000) });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      if (Number(res.headers?.get?.('content-length') ?? 0) > cap) throw new Error(`image over ${cap} bytes`);
+      buf = Buffer.from(await res.arrayBuffer());
+    }
+    if (!buf.length || buf.length > cap) throw new Error(`image is ${buf.length} bytes (1 – ${cap})`);
+    return buf;
+  }
+  /**
+   * The message with `images: [{ ref, text }]`: each picture she can see, saved in dsh's attachment store
+   * (`ctx.attachments`), with the words that stand for it in the message text (`[表情包 sticker:<id>]`,
+   * `[图片 <url>]` — the URL stays, for qq_sticker_keep). The text itself is unchanged. At most
+   * imageSeeMax, each within the store's imageLimits. No store, nothing fetchable, or every save
+   * refused: the message as it was (text only).
+   */
+  async function seeImages(msg, seen) {
+    if (!seen.length || !(cfg.imageSeeMax > 0)) return msg;
+    const store = ctx.get?.('attachments');
+    if (typeof store?.saveImages !== 'function') { warnOnce('no-store', 'no attachment store (ctx.attachments): pictures and stickers reach her as text only'); return msg; }
+    const limits = store.imageLimits ?? {};
+    const max = Math.min(cfg.imageSeeMax, limits.maxImagesPerMessage || Infinity);
+    const cap = limits.maxImageBytes || SEE_MAX_BYTES;
+    const types = limits.mediaTypes ?? SEE_TYPES;
+    const got = [];
+    for (const item of seen) {
+      if (got.length >= max) break;
+      try {
+        const data = await seenBytes(item, cap);
+        const mediaType = imageType(data);
+        if (!types.includes(mediaType)) throw new Error(`not an image she can see (${mediaType || 'unknown type'})`);
+        got.push({ item, input: { data: new Uint8Array(data), mediaType, name: item.sticker ? `sticker-${item.sticker}` : 'qq-image' } });
+      } catch (err) { logger.debug(`picture not seen: ${err.message}`); }
+    }
+    if (!got.length) return msg;
+    const refs = new Map();
+    try { (await store.saveImages(got.map((g) => g.input))).forEach((ref, i) => refs.set(got[i].item, ref)); } catch (err) {
+      // The batch is all or nothing: one bad picture must not hide the others.
+      for (const g of got) { try { refs.set(g.item, (await store.saveImages([g.input]))[0]); } catch (e) { logger.warn(`picture not saved for her to see: ${e.message}`); } }
+      if (!refs.size) warnOnce(`save:${err.message}`, `attachment store refused the pictures (${err.message}): text only`);
+    }
+    if (!refs.size) return msg;
+    const images = seen.filter((item) => refs.has(item)).map((item) => ({ ref: refs.get(item), text: item.text }));
+    audit({ kind: 'images-seen', from: msg.userId, count: images.length });
+    return { ...msg, images };
+  }
+  // Messages reach her in the order they came: one with pictures waits for them, and those after it wait too.
+  let delivering = Promise.resolve(), queued = 0;
+  function deliver(msg, seen = []) {
+    if (!seen.length && !queued) { emit(msg); return; }
+    queued++;
+    delivering = delivering.then(() => seeImages(msg, seen)).catch((err) => { logger.warn(`pictures not seen: ${err.message}`); return msg; }).then((m) => emit(m)).finally(() => { queued--; });
+  }
+  function emit(msg) {
+    audit({ kind: 'message', ...msg, text: msg.text.slice(0, 200), ...(msg.images ? { images: msg.images.length } : {}) });
     for (const fn of listeners) { try { fn(msg); } catch (err) { logger.warn(`qq listener: ${err.message}`); } }
   }
   /** groupPolicy 'score': one short model call decides whether this group message wakes her. */
   const groupLines = new Map();
   const scoreBudget = new Map(); // group → [timestamps of calls in the last minute]
-  async function scoreAndDeliver(msg) {
+  async function scoreAndDeliver(msg, seen = []) {
     const llm = ctx.get?.('llm');
     const sel = (() => { try { return ctx.get?.('agentDefaultModel')?.currentSelection?.(); } catch { return null; } })();
     if (!llm?.stream) return;
@@ -939,7 +1051,7 @@ export function apply(ctx, config = {}, deps = {}) {
     } catch (err) { logger.debug(`group score failed: ${err.message}`); return; }
     const score = parseScore(text);
     audit({ kind: 'group-score', group: msg.groupId, from: msg.userId, score, raw: text.slice(0, 40), text: msg.text.slice(0, 80) });
-    if (score >= cfg.scoreThreshold) deliver({ ...msg, score });
+    if (score >= cfg.scoreThreshold) deliver({ ...msg, score }, seen);
   }
   function call(action, params) {
     return new Promise((resolve, reject) => {
@@ -1003,6 +1115,8 @@ export function apply(ctx, config = {}, deps = {}) {
     return got;
   };
   qq.stickerCount = () => stickers.count();
+  /** At most this many pictures per message she is woken with (dot caps a whole wake the same). */
+  qq.imageSeeMax = cfg.imageSeeMax;
   qq.stickerSync = stickerSync;
   /**
    * Send to "user:123" | "group:456" | "owner" | a number: text (one bubble per line or <sep/>, paced) and/or images, in that order.
@@ -1010,7 +1124,7 @@ export function apply(ctx, config = {}, deps = {}) {
    * QQ then refuses an image after something was already delivered, the call does not throw (she would
    * resend the text): it returns `failed: [{ image, error }]` next to what was sent.
    * To him: if he says something while the bubbles are going out, the rest is not sent — `{ sent,
-   * interrupted: true, unsent: [lines…] }` (images not yet sent are listed as `[图片 <ref>]`).
+   * interrupted: true, unsent: [lines…] }` (images not yet sent are listed as `[图 <ref>]` / `[表情包 sticker:<id>]`).
    */
   qq.send = async (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
@@ -1018,17 +1132,17 @@ export function apply(ctx, config = {}, deps = {}) {
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
     let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
     let dropped = 0;
-    // Transcript notation typed as words ("[图片]", "[图片×2]", "[表情包 sticker:ab12]"): not chat. A
-    // sticker marker becomes the sticker itself; a bare picture marker is dropped.
+    // Transcript notation typed as words ("[图片]", "[图片×2]", "[表情包 sticker:ab12]", "[图 phone:latest]"):
+    // not chat. A marker that names an image becomes that image; a bare picture marker is dropped.
     const markers = parts.map(markerOf).filter(Boolean);
-    if (markers.length) { parts = parts.filter((p) => !markerOf(p)); images = [...[].concat(images ?? []), ...markers.map((m) => m.sticker).filter(Boolean)]; }
+    if (markers.length) { parts = parts.filter((p) => !markerOf(p)); images = [...[].concat(images ?? []), ...markers.map((m) => m.image).filter(Boolean)]; }
     if (cfg.tidy && cfg.dropLatinLeaks !== false) {
       parts = parts.filter((p) => { if (!latinLeak(p)) return true; dropped++; logger.warn(`dropped an English-prose bubble (reasoning leak?): ${p.slice(0, 60)}`); return false; });
     }
     const refs = [].concat(images ?? []).filter(Boolean);
     const segments = [];
     for (const ref of refs) segments.push(await imageSegment(ref));
-    if (!parts.length && !segments.length && markers.length) return { sent: 0, messageIds: [], said: [], imagesSent: 0, note: '只有 [图片] 这种记录标记，没有要发的内容；发图用 images' };
+    if (!parts.length && !segments.length && markers.length) return { sent: 0, messageIds: [], said: [], imagesSent: 0, images: [], note: '只有 [图片] 这种记录标记，没有要发的内容；发图用 images' };
     if (!parts.length && !segments.length) throw new Error(dropped ? `nothing to send: ${dropped} line(s) were English prose, not chat, and were dropped — write what you mean to say to them` : 'nothing to send (text and images both empty)');
     const ids = [], failed = [];
     const started = Date.now();
@@ -1037,16 +1151,17 @@ export function apply(ctx, config = {}, deps = {}) {
     for (const [i, part] of parts.entries()) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
       // He spoke while she was typing these out: stop, she reads him first.
-      if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => `[图片 ${String(r).slice(0, 80)}]`)]; break; }
+      if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; break; }
       ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
     }
     if (unsent) {
       qq.sentToOwnerAt = Date.now();
       audit({ kind: 'sent', to: target, text: parts.slice(0, ids.length).join(' / ').slice(0, 200), interrupted: true, unsent: unsent.length });
-      return { sent: ids.length, messageIds: ids, interrupted: true, unsent, said: parts.slice(0, ids.length), imagesSent: 0 };
+      return { sent: ids.length, messageIds: ids, interrupted: true, unsent, said: parts.slice(0, ids.length), imagesSent: 0, images: [] };
     }
+    const went = []; // the refs of the images that went out, in order (her transcript records them)
     for (const [i, seg] of segments.entries()) {
-      try { ids.push((await call(action, { ...target, message: [seg] }))?.message_id); } catch (err) {
+      try { ids.push((await call(action, { ...target, message: [seg] }))?.message_id); went.push(sentRef(refs[i])); } catch (err) {
         if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
         failed.push({ image: String(refs[i]).slice(0, 80), error: err.message });
       }
@@ -1054,7 +1169,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const n = ids.length;
     if (qq.owner && target.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
     audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}) });
-    return { sent: n, messageIds: ids, said: parts, imagesSent: segments.length - failed.length, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
+    return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
   qq.friends = async () => ((await call('get_friend_list', {})) ?? []).map((f) => ({ uid: String(f.user_id ?? ''), nickname: String(f.nickname ?? ''), remark: String(f.remark ?? '') })).filter((f) => f.uid);
@@ -1109,10 +1224,10 @@ export function apply(ctx, config = {}, deps = {}) {
       description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
       parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
       // presentationMeta lands on the durable tool/result: what really went out, for her memory's transcript.
-      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, ...(v?.interrupted ? { interrupted: true } : {}) }) },
+      output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, images: v?.images ?? [], ...(v?.interrupted ? { interrupted: true } : {}) }) },
       async execute(args) {
         const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
-        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent } : {}) };
+        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent } : {}) };
         return r.failed || r.dropped || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },
     }), 'dsh-dot/qq: qq_send tool');

@@ -49,7 +49,8 @@ QQ 的电脑登录码**不接受相册导入，只认摄像头**。她手机的�
 | 她回 | `qq_send(to: "owner" \| "user:<号>" \| "group:<号>", text, images)`，**text 每一行一条**（`<sep/>` 也行），条与条之间按字数停一下（`typingMsPerChar`，默认 60 ms/字，最多 2.5 s）。dot 转发她在对话里的回答时同样按行拆。**审批**（`sendPolicy: reply`）：发给你永远不问；回最近 30 分钟内给她发过消息的人或群（文字、网图）不问；发给没找过她的人、沉默的群，或者发她手机/电脑上的文件（`phone:*`、`/sdcard/…`、电脑路径）——先弹审批 |
 | 她发图 | `images` 里每一项直接作为**图片**发出（不是链接）：网址（NapCat 下载）、`phone:screen`（手机此刻截图）、`phone:latest`（手机里最新的照片/截图/下载）、`/sdcard/…`（手机上的文件）、电脑上的绝对路径；≤10 MB。**先文字后图**，但所有图在发第一条之前就先准备好（读手机、查网址、取表情包）：哪张准备不了，整次调用报错，一条都没发出去。图已准备好、QQ 上传时才失败的，如果前面的文字已经发出去了，不报错：返回 `failed: [{ image, error }]`，她看到的是「文字已发出；图片 X 没发成：…」，这样她不会把文字再发一遍（审计里的 `sent` 也记着 `failed`）。`phone:screen` 截到一张纯白或纯黑的图（亮屏中、切换动画中）时，隔 400 ms 再截一次 |
 | 图片网址规则 | 只接受公网 `http`/`https`、端口 80/443、不带账号密码；回环、私网、链路本地（含 169.254.169.254）、组播、`localhost`/`*.local`/`*.internal`/单段主机名一律拒绝并报错（NapCat 在 VM 里下载，防止她让它访问 VM 内部服务）。公网域名解析到内网（DNS rebinding）这里拦不住 |
-| 别人发图给她 | 叫醒文本里是 `[图片 <网址>]`，她想看就打开 |
+| 别人发图给她 | **她直接看得到**：你（或任何一条会叫醒她的消息）发来的图和表情包，dot/qq 取到字节（图片走 QQ 给的网址，经同一套公网 URL 检查；表情包用 `stickers.js` 里已下载的那份，不再下第二次），存进 dsh 的附件仓库（`ctx.attachments.saveImages`），作为 `{ type: 'image', attachment }` 跟在消息里那张图的文字后面，按消息里的顺序。文字不变：`[表情包 sticker:<id>]`、`[图片 <网址>]`（网址留着，她想存成表情包就 `qq_sticker_keep`）。每条消息最多 `imageSeeMax`（4）张，每张不超过附件仓库的 `imageLimits.maxImageBytes`（没有就 4 MB），只收 PNG / JPEG / GIF / WebP；一次叫醒合起来也按 `imageSeeMax` 和 `maxImagesPerMessage` / `maxMessageImageBytes` 截断。有图的消息要等取图，后面来的消息排在它后面，顺序不乱。没有附件仓库、取不到、存不进：就是以前的纯文字，日志 warn 一次。模型不收图时，dsh 自己把图换成一行文字占位 |
+| 她的话怎么发出去 | 两条路：`qq_send`；或者她在对话里直接写回复，dot 原样转给你（只发文字）。图和表情包只能走 `qq_send` 的 `images`——提示词（`qq.channel.owner`）这么说。写在文字里的标记（一整条气泡就是 `[表情包 sticker:<id>]`、`[图 <ref>]`、`[图片 <网址>]`）会被当成那张图发出去，`[图片]` 这种空标记丢掉（0.17.1 的兜底，仍在）；`[图 /sdcard/…]` 这类本地文件和写在 `images` 里一样要审批 |
 | 表情包 | 别人发的表情包（QQ 标 `sub_type: 1`；QQ 自带的大表情 mface 的 summary 是 `[？]`、`[doge]` 这种短方括号，也算）进文本是 `[表情包 sticker:<id>]`，同时下载到 `~/.dsh/stickers/`，列表在 `~/.dsh/dsh-qq-stickers.json`（最多 300 张，先进先出）；她自己也能存：手机 App 里长按保存图片后 `qq_sticker_keep(image: "phone:latest", note: "无语")`（或手机路径、网图）。发：`images: ["sticker:<id>"]`（以 base64 发出，标 sticker），`face:<编号>` 发 QQ 小黄脸；提示词里列最近 12 张；这两种不走审批。**手机上**：存下的每一张都同步到手机相册的 `dot-stickers`（`/sdcard/Pictures/dot-stickers/<id>.<ext>`；存了、新下载了、被挤掉了、手机开机时各同步一次，名字 + 大小一样的不重推），所以手机上任何 App 都能从相册选图发；手机 QQ 的「收藏」表情栏不会自己有它们——她得在 QQ 里长按 → 添加到表情，提示词（`qq.stickers` / `qq.channel.no-stickers` 说在哪，`phone.stickers` 说各 App 怎么加）只教不催。`/qq stickers` 看 `stickers: N saved · phone: N/M synced`，`/qq stickers sync` 立刻推一次。`phone:latest` 只看各相册目录下的文件本身（`ls -td`），dot-stickers 这个子目录不会被当成「刚存的图」。**冷启动**：她的表情包少于 5 张时，幕间知道这件事，可以写一个 `collect` 的 playIntent——去某个 App 逛逛顺手攒几张（见 interlude.md 的「玩」） |
 | dot 的提醒、幕间的主动联系 | 连上后优先走她的 QQ（发给 `owner`），dsh-im 的官方机器人退为后备 |
 | 手机上 QQ 的通知 | 连上后自动忽略（否则同一条叫两次）；手机 QQ 照常可以看空间、看群、发图 |
@@ -122,6 +123,7 @@ QQ 的电脑登录码**不接受相册导入，只认摄像头**。她手机的�
 | `dropLatinLeaks` | `true` | 跟着 `tidy` 生效：一条 ≥ 30 字、80% 以上是英文字母/标点/空格（网址不算）的气泡，是她的思考漏进了回复（比如 `hmm, actually don't over-explain. Let's just be brief…`），不发，日志里 warn 一行（前 60 字）；`ok`、`lol`、`GG` 这种短英文照发。全被拦下又没有图时，调用报错让她重写 |
 | `sendPolicy` | `reply` | `qq_send` 审批：`reply`（见上表）/ `always`（除了你，发谁都问）/ `off`（不问） |
 | `replyWindowMinutes` | `30` | `reply` 策略里"最近给她发过消息"的时间窗 |
+| `imageSeeMax` | `4` | 叫醒她的消息里，每条最多让她看几张图 / 表情包；0 = 只给文字 |
 | `githubProxy` / `DSH_DOT_GITHUB_PROXY` | 无 | 安装脚本下载 GitHub 资源的镜像前缀 |
 | `autoStart` | `true` | 电脑就绪后自动启动 |
 | `DSH_DOT_QQ=off` | | 不加载；电脑关了它也不加载 |

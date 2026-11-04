@@ -3,4 +3,4 @@ now=· 你此刻：{now}
 inFlight=· 手上还没做完的：
 promises=· 你答应过的：
 openQuestions=· 还没问清、或他还没回的：
-tail=· 上一段最后几句（原文；[图片×1] 这种是记录标记，不是要你打这几个字——发图用 qq_send 的 images）：
+tail=· 上一段最后几句（原文；[表情包 sticker:…]、[图 phone:latest] 这种是当时发的表情包和图，要发就把方括号里的 sticker:… / phone:latest 放进 qq_send 的 images；[图片 …] 是别人发来的图）：

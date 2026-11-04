@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, sendReport, inputStatus } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -37,13 +37,13 @@ class FakeSocket extends EventEmitter {
   close() { this.readyState = 3; this.emit('close'); }
 }
 
-function harness({ installed = true, running = false } = {}) {
+function harness({ installed = true, running = false, attachments, bytes = () => Buffer.from('GIF89a') } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const shells = [], effects = [], tools = [], sections = [], warns = [];
   let cmd, onReady;
   const computer = { port: 18080, authHeaders: () => ({ 'X-AIO-API-Key': 'k' }), keyHeader: 'X-AIO-API-Key', backend: { rootShell: async () => '' }, ready: new Promise((r) => { onReady = r; }) };
   const fetched = [];
-  const fetch = async (url) => { fetched.push(url); return { ok: true, arrayBuffer: async () => Buffer.from('GIF89a') }; };
+  const fetch = async (url) => { fetched.push(url); return { ok: true, arrayBuffer: async () => bytes(url) }; };
   const rootShell = async (script) => { shells.push(script); if (script.includes('test -x')) return installed ? 'yes\n' : 'no\n'; if (script.includes('pgrep -f')) return running ? 'yes\n' : 'no\n'; if (script.includes('base64 -w0')) return 'age=3\nerr=\nUE5H\n'; return ''; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn(m) { warns.push(String(m)); }, error() {} }),
@@ -52,7 +52,7 @@ function harness({ installed = true, running = false } = {}) {
     handlers: {},
     provide(n, v) { ctx[n] = v; },
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
-    get: (n) => ({ dshComputer: computer, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
+    get: (n) => ({ dshComputer: computer, attachments, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
   apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell, fetch });
   return { ctx, shells, fetched, tools, sections, warns, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
@@ -100,7 +100,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.equal(sock.sent.length, 2);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 2 }, echo: sock.sent[1].echo }));
-  assert.deepEqual(await p, { sent: 2, said: ['在', '刚看到'], imagesSent: 0 });
+  assert.deepEqual(await p, { sent: 2, said: ['在', '刚看到'], imagesSent: 0, images: [] });
   // images: a URL goes as-is, a phone screenshot as base64, each its own message
   h.ctx.dshPhone = { isReady: true, screenshot: async () => Buffer.from('PNGDATA'), shell: async () => '/sdcard/Pictures/a.jpg\n', adbExec: async () => ({ stdout: Buffer.from('JPG') }) };
   const get0 = h.ctx.get; h.ctx.get = (n) => (n === 'dshPhone' ? h.ctx.dshPhone : get0(n));
@@ -111,7 +111,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.deepEqual(sock.sent[3].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('PNGDATA').toString('base64')}` } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 4 }, echo: sock.sent[3].echo }));
-  assert.deepEqual(await pi, { sent: 2, said: [], imagesSent: 2 });
+  assert.deepEqual(await pi, { sent: 2, said: [], imagesSent: 2, images: ['https://example.com/cat.jpg', 'phone:screen'] });
   // a sticker she receives is kept (downloaded here) and can be sent back as sticker:<id>; a face by number
   h.fetched.length = 0;
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'image', data: { file: 'abc.jpg', url: 'https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x', sub_type: 1 } }], sender: { nickname: '宽' } }));
@@ -128,7 +128,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   await tick(5);
   assert.deepEqual(sock.sent[5].params.message, [{ type: 'face', data: { id: '179' } }]);
   sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 6 }, echo: sock.sent[5].echo }));
-  assert.deepEqual(await ps, { sent: 2, said: [], imagesSent: 2 });
+  assert.deepEqual(await ps, { sent: 2, said: [], imagesSent: 2, images: [`sticker:${id}`, 'face:179'] });
   // she keeps one herself from her phone, with a note; the same picture twice is one sticker
   const keep = h.tools.find((t) => t.name === 'qq_sticker_keep');
   const k1 = await keep.execute({ image: 'phone:latest', note: '无语' });
@@ -241,14 +241,14 @@ test('qq_send: images resolve before anything goes out; an image QQ refuses afte
   assert.deepEqual(r.failed, [{ image: 'https://example.com/bad.png', error: 'upload failed' }]);
   assert.match(sendReport(r), /^sent 2 message\(s\)\n文字已发出；图片 https:\/\/example\.com\/bad\.png 没发成：upload failed/);
   assert.match(r.note, /文字已发出/);
-  assert.deepEqual([r.said, r.imagesSent], [['你看', '这个'], 0], 'the text went out, the image did not');
+  assert.deepEqual([r.said, r.imagesSent, r.images], [['你看', '这个'], 0, []], 'the text went out, the image did not');
   assert.equal(sock.sent.filter((m) => m.params.message[0].type === 'text').length, 2, 'each bubble once');
   const audited = readFileSync(join(process.env.DSH_HOME, 'dsh-qq-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'sent');
   assert.deepEqual(audited.at(-1).failed, r.failed, 'the audit notes the failure');
   // the first image failing with nothing sent before it is still an ordinary error
   await assert.rejects(tool.execute({ to: 'owner', images: ['https://example.com/bad.png'] }), /upload failed/);
   // all ok: the plain result
-  assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2, said: ['好'], imagesSent: 1 });
+  assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2, said: ['好'], imagesSent: 1, images: ['https://example.com/ok.png'] });
   h.stop();
 });
 
@@ -511,13 +511,13 @@ test('qq_send to him stops between bubbles once he speaks: the rest is not sent 
   assert.equal(sock.sent.length, 1, 'only the first bubble went out');
   assert.equal(r.sent, 1);
   assert.equal(r.interrupted, true);
-  assert.deepEqual(r.unsent, ['还挺好吃的', '下次带你去', '[图片 face:14]']);
-  assert.equal(sendReport(r), 'sent 1 message(s)\n发了 1 条，他插了话，剩下的没发：还挺好吃的 / 下次带你去 / [图片 face:14]（先看他说的，再决定还要不要说）');
+  assert.deepEqual(r.unsent, ['还挺好吃的', '下次带你去', '[图 face:14]']);
+  assert.equal(sendReport(r), 'sent 1 message(s)\n发了 1 条，他插了话，剩下的没发：还挺好吃的 / 下次带你去 / [图 face:14]（先看他说的，再决定还要不要说）');
   assert.match(r.note, /他插了话/);
-  assert.deepEqual(tool.output.presentationMeta({}, r), { sent: 1, said: ['那家店我去过'], imagesSent: 0, interrupted: true }, 'what went out, on the durable tool/result');
+  assert.deepEqual(tool.output.presentationMeta({}, r), { sent: 1, said: ['那家店我去过'], imagesSent: 0, images: [], interrupted: true }, 'what went out, on the durable tool/result');
   // to someone else, or with him quiet: everything goes
   sock.sent.length = 0;
-  assert.deepEqual(await tool.execute({ to: 'owner', text: '好\n那就这样' }), { sent: 2, said: ['好', '那就这样'], imagesSent: 0 });
+  assert.deepEqual(await tool.execute({ to: 'owner', text: '好\n那就这样' }), { sent: 2, said: ['好', '那就这样'], imagesSent: 0, images: [] });
   assert.equal(sock.sent.length, 2);
   h.stop();
 });
@@ -546,10 +546,90 @@ test('input_status: NapCat\'s "正在输入" notice for his private chat reaches
   h.stop();
 });
 
-test('transcript notation typed as words is not sent: [图片] is dropped, [表情包 sticker:id] becomes the sticker', () => {
-  assert.deepEqual(markerOf('[图片]'), { sticker: '' });
-  assert.deepEqual(markerOf('[图片×2]'), { sticker: '' });
-  assert.deepEqual(markerOf('[表情包 sticker:9384f5360b]'), { sticker: 'sticker:9384f5360b' });
+test('transcript notation typed as words is not sent: [图片] is dropped, [表情包 sticker:id] and [图 <ref>] become that image', () => {
+  assert.deepEqual(markerOf('[图片]'), { image: '' });
+  assert.deepEqual(markerOf('[图片×2]'), { image: '' });
+  assert.deepEqual(markerOf('[表情包 sticker:9384f5360b]'), { image: 'sticker:9384f5360b' });
+  for (const ref of ['phone:screen', 'phone:latest', 'https://example.com/a.png', 'face:14', '/sdcard/Pictures/a.jpg']) assert.deepEqual(markerOf(`[图 ${ref}]`), { image: ref }, ref);
+  assert.deepEqual(markerOf('[图片 https://multimedia.nt.qq.com.cn/download?fileid=1]'), { image: 'https://multimedia.nt.qq.com.cn/download?fileid=1' }, 'a picture someone sent, by its URL');
+  assert.equal(markerOf('[图 我也不知道]'), null, 'not a ref: words');
+  assert.deepEqual(typedImages('看\n[图 /sdcard/a.jpg]'), ['/sdcard/a.jpg']);
+  // her transcript writes what went out the way markerOf reads it back
+  for (const ref of ['sticker:9384f5360b', 'phone:screen', 'face:14', 'https://example.com/a.png']) assert.equal(markerOf(imageMarker(ref)).image, ref);
+  assert.equal(sentRef(' Sticker:9384F5360B '), 'sticker:9384f5360b');
+  assert.equal(sentRef('phone:screenshot'), 'phone:screen');
+  assert.equal(sentRef('phone:/data/local/tmp/a.png'), 'phone:/data/local/tmp/a.png', 'a phone path stays a phone path');
   assert.equal(markerOf('已经点上了 [图片]'), null);
   assert.equal(markerOf('ok'), null);
+});
+
+test('pictures she is sent: stickers (from her collection) and pictures (their QQ URL) are saved in the attachment store and ride with the message, capped, in order; no store → text only', async () => {
+  const saved = [];
+  let failBatches = false;
+  const store = {
+    imageLimits: { maxImageBytes: 1024, maxImagesPerMessage: 10, maxMessageImageBytes: 1e6, mediaTypes: ['image/png', 'image/jpeg', 'image/webp', 'image/gif'] },
+    async saveImages(inputs) {
+      if (failBatches && inputs.length > 1) throw new Error('one image in the batch is invalid');
+      return inputs.map((x) => { saved.push(x); return { attachmentId: `sha256:${saved.length}`, mediaType: x.mediaType, bytes: x.data.length, width: 1, height: 1 }; });
+    },
+  };
+  const h = harness({ attachments: store, bytes: (url) => (url.includes('=big') ? Buffer.alloc(4096, 1) : url.includes('=txt') ? Buffer.from('<html>') : Buffer.from('GIF89a')) });
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  const got = [];
+  h.ctx.dshQq.onMessage((m) => got.push(m));
+  const qqUrl = (n) => `https://multimedia.nt.qq.com.cn/download?fileid=${n}`;
+  const pic = (url) => ({ type: 'image', data: { file: `${url.slice(-4)}.jpg`, url } });
+  const from = (message, user = 20002) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: user, self_id: 10001, message, sender: { nickname: user === 20002 ? '宽' : '路人' } }));
+  // his message: words, a sticker, then six pictures (one too big, one not an image): four seen, in order
+  from([{ type: 'text', data: { text: '看' } }, { type: 'image', data: { file: 's.gif', url: qqUrl('s'), sub_type: 1 } }, pic(qqUrl('big')), pic(qqUrl('txt')), pic(qqUrl(1)), pic(qqUrl(2)), pic(qqUrl(3)), pic(qqUrl(4))]);
+  from([{ type: 'text', data: { text: '就这些' } }]); // after it, not before: messages keep their order
+  await tick(30);
+  assert.deepEqual(got.map((m) => m.text.slice(0, 3)), ['看[表', '就这些']);
+  const m = got[0];
+  const sticker = /\[表情包 sticker:([0-9a-f]{10})\]/.exec(m.text)[1];
+  assert.equal(m.images.length, 4, 'imageSeeMax');
+  assert.deepEqual(m.images.map((x) => x.text), [`[表情包 sticker:${sticker}]`, `[图片 ${qqUrl(1)}]`, `[图片 ${qqUrl(2)}]`, `[图片 ${qqUrl(3)}]`]);
+  let at = -1;
+  for (const x of m.images) { const i = m.text.indexOf(x.text, at + 1); assert.ok(i > at, `${x.text} in the text, in order`); at = i; }
+  assert.deepEqual(m.images.map((x) => x.ref.attachmentId), ['sha256:1', 'sha256:2', 'sha256:3', 'sha256:4']);
+  assert.deepEqual(saved.map((x) => x.mediaType), ['image/gif', 'image/gif', 'image/gif', 'image/gif']);
+  assert.equal(h.fetched.filter((u) => u === qqUrl('s')).length, 1, 'the sticker is downloaded once, for her collection and her eyes');
+  assert.ok(!h.fetched.includes(qqUrl(4)), 'nothing fetched past the cap');
+  assert.equal(got[1].images, undefined, 'a message without pictures is as before');
+  // the attachment store refuses the batch: each picture on its own
+  failBatches = true; got.length = 0;
+  from([pic(qqUrl(5)), pic(qqUrl(6))], 30003);
+  await tick(30);
+  assert.equal(got[0].images.length, 2, 'saved one by one');
+  // a refused URL (internal address) is never fetched
+  got.length = 0; h.fetched.length = 0;
+  from([pic('http://127.0.0.1/x.gif')], 30003);
+  await tick(30);
+  assert.equal(got[0].images, undefined);
+  assert.deepEqual(h.fetched, []);
+  h.stop();
+  // no attachment store: the text she has always had, and one warning
+  const blind = harness();
+  blind.ctx.dshQq.setOwner('20002');
+  blind.ready(); await tick(30);
+  const heard = [];
+  blind.ctx.dshQq.onMessage((x) => heard.push(x));
+  for (const n of [7, 8]) FakeSocket.last.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [pic(qqUrl(n))], sender: { nickname: '宽' } }));
+  await tick(30);
+  assert.deepEqual(heard.map((x) => [x.text, x.images]), [[`[图片 ${qqUrl(7)}]`, undefined], [`[图片 ${qqUrl(8)}]`, undefined]]);
+  assert.equal(blind.warns.filter((w) => /no attachment store/.test(w)).length, 1, 'said once');
+  blind.stop();
+});
+
+test('imageType sniffs PNG, JPEG, GIF, WebP; a typed [图 /sdcard/…] bubble is judged like images: ["/sdcard/…"]', () => {
+  assert.equal(imageType(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])), 'image/png');
+  assert.equal(imageType(Buffer.from([0xff, 0xd8, 0xff, 0xe0])), 'image/jpeg');
+  assert.equal(imageType(Buffer.from('GIF89a')), 'image/gif');
+  assert.equal(imageType(Buffer.from('RIFF\0\0\0\0WEBPVP8 ')), 'image/webp');
+  assert.equal(imageType(Buffer.from('<html>')), '');
+  const opt = { owner: '20002', policy: 'reply', recent: () => Date.now() };
+  assert.match(sendGate({ to: 'user:30003', text: '给你看\n[图 /sdcard/DCIM/a.jpg]' }, opt), /file\(s\) from her devices/);
+  assert.equal(sendGate({ to: 'user:30003', text: '[表情包 sticker:9384f5360b]' }, opt), null);
 });

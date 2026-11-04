@@ -344,6 +344,23 @@ test('stamps: wake messages are stamped, the transcript is not stamped twice; la
   assert.deepEqual(transcriptFromEvents([{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '[11-04 04:51] 我下周搬家' }] } }], 's1').map((l) => l.text), ['我下周搬家']);
 });
 
+test('pictures in what woke her: memory records the words for them only, never the image blocks', async () => {
+  const img = { type: 'image', attachment: { attachmentId: 'sha256:1', mediaType: 'image/gif', bytes: 6, width: 1, height: 1 } };
+  const content = [{ type: 'text', text: '[11-04 10:00] 你看[表情包 sticker:aa11bb22cc]' }, img, { type: 'text', text: '\n[图片 https://x.qq.com/a]' }, img, { type: 'text', text: '哈哈' }];
+  const h = harness();
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[11-04 10:01 手机通知] QQ · 路人（30003）：[图片 https://x.qq.com/b]' }, img, { type: 'text', text: '\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' });
+  await wait(10);
+  const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.who, l.text]), [['owner', '你看[表情包 sticker:aa11bb22cc]\n[图片 https://x.qq.com/a]哈哈'], ['phone', '[手机通知] QQ · 路人（30003）：[图片 https://x.qq.com/b]']]);
+  assert.ok(lines.every((l) => typeof l.text === 'string' && !/sha256|attachment/.test(JSON.stringify(l))), 'no image block, no attachment id');
+  const { transcriptFromEvents } = await import('../src/memory/memory.js');
+  assert.deepEqual(transcriptFromEvents([{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content } }], 's1').map((l) => l.text), ['你看[表情包 sticker:aa11bb22cc]\n[图片 https://x.qq.com/a]哈哈']);
+  for (const d of h.effects) if (typeof d === 'function') d();
+});
+
 test('his words steered into a running turn are recorded without the line dot adds', async () => {
   const { ownerSaid, transcriptFromEvents } = await import('../src/memory/memory.js');
   const { ownerWords } = await import('../src/dot/core.js');
@@ -365,10 +382,15 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   assert.equal(qqSentText(args, denied), '');
   assert.equal(qqSentText(args, cut), '那家店我去过');
   assert.equal(qqSentText(args, imageFailed), '那家店我去过 / 还挺好吃的 / 下次带你去');
-  assert.equal(qqSentText(args, result({ sent: 4, said: ['a', 'b', 'c'], imagesSent: 1 })), 'a / b / c [图片×1]');
+  // images as the refs that went out — sendable as they read (qq's markerOf takes them back)
+  assert.equal(qqSentText(args, result({ sent: 4, said: ['a', 'b', 'c'], imagesSent: 1, images: ['face:14'] })), 'a / b / c [图 face:14]');
+  assert.equal(qqSentText({ to: 'owner', images: ['sticker:9384f5360b', 'phone:screen', 'https://example.com/a.png'] }, result({ sent: 3, said: [], imagesSent: 3, images: ['sticker:9384f5360b', 'phone:screen', 'https://example.com/a.png'] })), '[表情包 sticker:9384f5360b] [图 phone:screen] [图 https://example.com/a.png]');
+  assert.equal(qqSentText({ to: 'owner', images: ['phone:latest', 'https://example.com/bad.png'] }, result({ sent: 2, said: ['看'], imagesSent: 1, images: ['phone:latest'] })), '看 [图 phone:latest]', 'a refused image is not recorded');
+  // 0.17.0 meta (a count, no refs): the first that many of the call's images
+  assert.equal(qqSentText(args, result({ sent: 4, said: ['a', 'b', 'c'], imagesSent: 1 })), 'a / b / c [图 face:14]');
   // no meta (an older qq_send): the first `sent` lines
   assert.equal(qqSentText(args, result(null, 'sent 2 message(s)\n发了 2 条，他插了话…')), '那家店我去过 / 还挺好吃的');
-  assert.equal(qqSentText(args, result(null, 'sent 4 message(s)')), '那家店我去过 / 还挺好吃的 / 下次带你去 [图片×1]');
+  assert.equal(qqSentText(args, result(null, 'sent 4 message(s)')), '那家店我去过 / 还挺好吃的 / 下次带你去 [图 face:14]');
   // backfill from the session log
   const ev = (type, time, data) => ({ type, time, data });
   const call = (id, time) => ev('tool/call', time, { callId: id, name: 'qq_send', arguments: JSON.stringify(args) });
@@ -391,7 +413,7 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   await wait(10);
   const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
   assert.deepEqual(lines.filter((l) => l.who === 'her').map((l) => l.text), ['那家店我去过', '那家店我去过 / 还挺好吃的 / 下次带你去']);
-  assert.ok(!lines.some((l) => l.text.includes('[图片')), 'the face never went out');
+  assert.ok(!lines.some((l) => l.text.includes('[图')), 'the face never went out');
   assert.deepEqual(lines.sort((a, b) => a.at - b.at).map((l) => [l.who, l.text]), [['her', '那家店我去过'], ['owner', '等下'], ['her', '那家店我去过 / 还挺好吃的 / 下次带你去']], 'in time order: the cut send came before his interruption');
   const found = await h.tools.recall.execute({ query: '好吃' });
   assert.match(found.found, /我：那家店我去过 \/ 还挺好吃的 \/ 下次带你去/);

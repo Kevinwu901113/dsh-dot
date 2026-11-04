@@ -186,27 +186,29 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
 /** His words as he typed them: without the line dot adds when they were steered into a running turn. */
 export const ownerSaid = (text) => { const busy = `\n${prompt('dot.owner-words.busy')}`; return text.endsWith(busy) ? text.slice(0, -busy.length) : text; };
 
+/** An image she sent, as her transcript writes it — the ref itself, so the line can be sent again as it reads: `[表情包 sticker:<id>]`, else `[图 <ref>]` (phone:screen, phone:latest, a URL, face:<n>, a path). */
+export const sentImage = (ref) => { const r = String(ref ?? '').trim(); return /^sticker:/i.test(r) ? `[表情包 ${r}]` : `[图 ${r}]`; };
 /**
  * What one qq_send really put on QQ, as a transcript line's text ('' = nothing went out), from its
  * `tool/result`: denied or failed → nothing; otherwise the bubbles qq_send reports as sent
- * (`meta.said`, `meta.imagesSent` — an interrupted send, a dropped leak line and an image QQ refused
- * are not in them). A result without that meta (older plugin version, a nested call): the first
- * `sent N` lines of the call's text, then images.
+ * (`meta.said`, `meta.images` — an interrupted send, a dropped leak line and an image QQ refused
+ * are not in them), the images as their refs (sentImage). A result without `meta.images` (0.17.0's
+ * `imagesSent` count, an older version, a nested call): the first that many of the call's images; a
+ * result with no meta at all: the first `sent N` lines of the call's text, then images.
  */
 export function qqSentText(args, result) {
   if (!result || result.isError || result.message?.isError) return '';
   const meta = result.meta && typeof result.meta === 'object' ? result.meta : null;
+  const asked = [].concat(args?.images ?? []).filter(Boolean).map(String);
   let said, images;
-  if (Array.isArray(meta?.said)) { said = meta.said.map(String); images = Number(meta.imagesSent) || 0; }
+  if (Array.isArray(meta?.said)) { said = meta.said.map(String); images = Array.isArray(meta.images) ? meta.images.map(String) : asked.slice(0, Number(meta.imagesSent) || 0); }
   else {
     const parts = String(args?.text ?? '').split(/<sep\s*\/>|\n/i).map((x) => x.trim()).filter(Boolean);
-    const refs = [].concat(args?.images ?? []).filter(Boolean).length;
     const m = /^sent (\d+) message/.exec(contentText(result.message?.content ?? result.content));
-    const n = m ? Number(m[1]) : parts.length + refs;
-    said = parts.slice(0, n); images = Math.min(refs, Math.max(0, n - parts.length));
+    const n = m ? Number(m[1]) : parts.length + asked.length;
+    said = parts.slice(0, n); images = asked.slice(0, Math.max(0, n - parts.length));
   }
-  const text = said.join(' / ');
-  return `${text}${images ? `${text ? ' ' : ''}[图片×${images}]` : ''}`;
+  return [said.join(' / '), ...images.map(sentImage)].filter(Boolean).join(' ');
 }
 const parseArgs = (s) => { try { return JSON.parse(s ?? '{}') ?? {}; } catch { return {}; } };
 /** Lines kept in time order: a qq_send is recorded at its result, with the time of its call. */
