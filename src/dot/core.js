@@ -185,6 +185,8 @@ export const defaults = {
 
 /** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
 export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
+/** The note a stalled errand leaves in her conversation: what it was doing when it was given up. */
+export const errandStalledText = (doing, minutes) => prompt('dot.errand-stalled', { doing, minutes });
 /** The owner's message for an approval she is waiting on. */
 export function approvalNotice({ tool, reason = '', link = '', minutes = 0 }) {
   const r = String(reason ?? '').trim();
@@ -858,7 +860,46 @@ export function apply(ctx, config = {}) {
       audit('phone-check', { session: target, errand: target !== lastSession });
     }).catch((err) => logger.warn(`phone check failed: ${err.message}`));
   };
-  ctx.effect(() => { const timer = setInterval(phoneCheck, 60000); return () => clearInterval(timer); }, 'dsh-dot: phone check');
+  // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
+  // A stalled errand is given up after errandStallMs — cancelled keeping its inbox, what was held for it
+  // released, a note in her conversation, and the next errand gets a fresh session. Her conversation
+  // is never cancelled: he is told once per turn (unless he was already told about its approval).
+  const pendingApproval = (id) => { let first; for (const a of approvals.values()) if (a.session === id && (!first || a.since < first.since)) first = a; return first; };
+  const doingOf = (t, a) => (a ? `等 ${shortTool(a.tool)} 的审批` : t.doing || (t.said ? t.said.replace(/\s+/g, ' ').slice(0, 60) : '') || '（不清楚）');
+  const noteOrigin = (o) => (o === 'phone-notification' ? 'notification' : o || 'other');
+  const abandonErrand = (id, t, idle) => {
+    const doing = doingOf(t, pendingApproval(id));
+    let cancelled = false;
+    try {
+      const agent = ctx.get('agents')?.get?.(id);
+      if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'hook', reason: 'dot-watchdog' }, { keepInbox: true }); cancelled = true; }
+    } catch (err) { logger.warn(`errand cancel failed: ${err.message}`); }
+    turns.delete(id);
+    if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
+    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
+    audit('errand-cancelled', { session: id, idleMs: idle, cancelled, doing });
+    const r = setTimeout(() => { void releaseHeld(id); }, 50); r.unref?.();
+    void noteToConversation(noteOrigin(t.origin), errandStalledText(doing, Math.round(idle / 60000)));
+  };
+  const watchTurns = (now = Date.now()) => {
+    if (!(cfg.turnStallMs > 0)) return;
+    for (const [id, t] of [...turns]) {
+      const idle = now - (t.lastEventAt ?? t.startedAt);
+      if (idle < cfg.turnStallMs) continue;
+      const a = pendingApproval(id);
+      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, errand: isErrand(id), idleMs: idle, doing: doingOf(t, a), ...(a ? { approval: a.tool } : {}) }); }
+      if (isErrand(id)) {
+        // An approval still inside its own wait is left to expire first.
+        const approvalDone = !a || (cfg.approvalWaitMs > 0 && now - a.since >= cfg.approvalWaitMs);
+        if (cfg.errandStallMs > 0 && idle >= cfg.errandStallMs && approvalDone) abandonErrand(id, t, idle);
+        continue;
+      }
+      if (id !== lastSession || t.ownerTold || a?.notified) continue;
+      t.ownerTold = true;
+      void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
+    }
+  };
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); phoneCheck(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
   phoneCheckNow = phoneCheck;
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');

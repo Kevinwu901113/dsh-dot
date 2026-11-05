@@ -196,6 +196,8 @@ setx DSH_DOT_COMPUTER off
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
 | `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
 | `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
+| `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
+| `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
 | `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 

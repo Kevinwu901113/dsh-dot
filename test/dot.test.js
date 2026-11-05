@@ -810,3 +810,59 @@ test('read before send: qq_send to him is denied while he has words she has not 
     stop(o.h);
   } finally { mock.timers.reset(); }
 });
+
+test('turn watchdog: a stalled errand is cancelled keeping its inbox, held items released to a fresh errand, a note in her conversation; her conversation is only reported, once', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+  try {
+    const { prompt } = await import('../src/prompts.js');
+    const h = harness();
+    const followups = [], injected = [], cancels = [];
+    let onNotification, n = 0;
+    const live = new Map();
+    const agentFor = (id) => { if (!live.has(id)) live.set(id, { session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }), cancel: (cause, opts) => cancels.push({ id, cause, opts }) }); return live.get(id); };
+    const controller = { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) };
+    h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : name === 'agents' ? { get: agentFor } : orig(name))(h.ctx.get);
+    apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0 });
+    h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
+    onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'a', at: new Date().toISOString() });
+    mock.timers.tick(10); for (let i = 0; i < 5; i++) await settle();
+    assert.deepEqual(followups.map((f) => f.id), ['errand-1']);
+    h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+    h.emitAs('errand-1', h.home, 'user/message', { source: { kind: 'dsh-dot', form: 'phone-check' } });
+    h.emitAs('errand-1', h.home, 'tool/call', { callId: 'k1', name: 'mcp__dot-phone__mobile_take_screenshot', arguments: '{}' });
+    onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: 'b', at: new Date().toISOString() });
+    mock.timers.tick(10); for (let i = 0; i < 5; i++) await settle();
+    assert.equal(followups.length, 1, 'held while the errand runs');
+    mock.timers.tick(360_000 - 20); await settle(); // the watchdog looks once a minute
+    const stalled = h.audit.filter((e) => e.event === 'turn-stalled');
+    assert.equal(stalled.length, 1);
+    assert.equal(stalled[0].session, 'errand-1'); assert.equal(stalled[0].errand, true); assert.equal(stalled[0].doing, 'mobile_take_screenshot');
+    assert.equal(cancels.length, 0, 'stalled, not yet given up');
+    mock.timers.tick(300_000); for (let i = 0; i < 5; i++) await settle();
+    assert.deepEqual(cancels, [{ id: 'errand-1', cause: { kind: 'hook', reason: 'dot-watchdog' }, opts: { keepInbox: true } }]);
+    assert.equal(h.audit.filter((e) => e.event === 'turn-stalled').length, 1, 'audited once per turn');
+    assert.ok(h.audit.some((e) => e.event === 'errand-cancelled' && e.session === 'errand-1'));
+    assert.equal(injected.length, 1);
+    assert.equal(injected[0].id, 's1');
+    assert.match(injected[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 刚才拿起手机看了一眼\] 做到一半卡住了（11 分钟没动静），放弃了：mobile_take_screenshot\n/);
+    assert.equal(prompt('dot.errand-stalled', { minutes: 10, doing: 'x' }), '做到一半卡住了（10 分钟没动静），放弃了：x');
+    mock.timers.tick(100); for (let i = 0; i < 10; i++) await settle();
+    assert.deepEqual(followups.map((f) => f.id), ['errand-1', 'errand-2'], 'what was held goes to a fresh errand');
+    // a late turn/end of the cancelled turn changes nothing
+    h.emitAs('errand-1', h.home, 'turn/end', { turn: 1, reason: 'aborted' });
+    mock.timers.tick(100); for (let i = 0; i < 5; i++) await settle();
+    assert.equal(injected.length, 1);
+    // her conversation stalls: he is told once; never cancelled
+    const sentBefore = h.sent.length;
+    h.emit(h.home, 'turn/start', { turn: 2 });
+    h.emit(h.home, 'tool/call', { callId: 'k2', name: 'bash', arguments: '{}' });
+    for (let m = 0; m < 20; m++) { mock.timers.tick(60_000); await settle(); }
+    for (let i = 0; i < 10; i++) await settle();
+    const told = h.sent.slice(sentBefore).filter((s) => /没动静了/.test(s.text));
+    assert.equal(told.length, 1);
+    assert.match(told[0].text, /她这一轮 [56] 分钟没动静了（最后在做：bash）/);
+    assert.ok(h.audit.some((e) => e.event === 'turn-stalled' && e.session === 's1' && !e.errand));
+    assert.equal(cancels.length, 1, 'her conversation is not cancelled');
+    stop(h);
+  } finally { mock.timers.reset(); }
+});

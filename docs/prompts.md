@@ -28,7 +28,7 @@
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
 | | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
-| | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what` |
+| | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what`（跑腿卡住被放弃：`dot.errand-stalled`） |
 | | 交接 | `memory.handoff` |
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |
 | | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `.verbs` `.parts` `interlude.play-rules` |

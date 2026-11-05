@@ -95,8 +95,8 @@ export const entries = [
       return variant([['一个 QQ 对话', D.wakeText(qqOne)], ['她忙的时候来的', D.wakeText(qqOne.slice(0, 1), { whileBusy: true })], ['两个 App，带着记得的人和冒名提醒', D.wakeText(mixed, { cards: '阿满（qq:42）：聊过；群里说话 3 次' })]]);
     } },
   { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
-  { id: 'errand', group: 'wake', name: '跑腿回来', note: '手机上的事办完后，留在她对话里的一句', files: ['dot.errand-note', 'dot.errand-note.what'],
-    render: () => variant(['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')])) },
+  { id: 'errand', group: 'wake', name: '跑腿回来', note: '手机上的事办完后，留在她对话里的一句；跑腿卡住 dot.errandStallMs（默认 10 分钟）被放弃时是 dot.errand-stalled', files: ['dot.errand-note', 'dot.errand-note.what', 'dot.errand-stalled'],
+    render: () => variant([...['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')]), ['卡住了，放弃', D.errandNote('phone-check', D.errandStalledText('等 mobile_install_app 的审批', 10))]]) },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],
     render: () => M.renderHandoff({ now: '窝在床上改简历，有点困', inFlight: ['帮他查广州降温'], promises: ['周五提醒他交 benchmark'], openQuestions: ['他感冒好了没'] }, LINES.slice(-2), 3) },
   { id: 'observation', group: 'wake', name: '幕间：去看一眼', note: '她自己想去看看的时候，只看不动', files: ['interlude.observation', 'interlude.observation.where', 'interlude.observation.vm', 'interlude.observation.phone'],
