@@ -97,6 +97,8 @@ export const entries = [
   { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
   { id: 'errand', group: 'wake', name: '跑腿回来', note: '手机上的事办完后，留在她对话里的一句；跑腿卡住 dot.errandStallMs（默认 10 分钟）被放弃时是 dot.errand-stalled', files: ['dot.errand-note', 'dot.errand-note.what', 'dot.errand-stalled'],
     render: () => variant([...['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')]), ['卡住了，放弃', D.errandNote('phone-check', D.errandStalledText('等 mobile_install_app 的审批', 10))]]) },
+  { id: 'onevoice', group: 'wake', name: '跑腿只汇报', note: '跑腿那一轮带着 dot.errand-report；跑腿给他发 qq_send 被拦下时的工具结果；跑腿还在做时她对话里的一行；一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果', files: ['dot.errand-report', 'dot.errand-no-owner', 'dot.errand-inflight', 'dot.loop-stopped'],
+    render: () => { const t = P.table('dot.errand-inflight'); return variant([['跑腿那一轮', P.prompt('dot.errand-report', { silent: D.SILENT })], ['跑腿找他被拦', P.prompt('dot.errand-no-owner')], ['她对话里：还在做的', P.fill(t.line, { doing: `${P.fill(t.thread, { app: '小黑盒', source: '《耳机测评》', count: 3 })}；${t.other}` })], ['重复调用被拦', P.prompt('dot.loop-stopped', { times: 5 })]]); } },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],
     render: () => M.renderHandoff({ now: '窝在床上改简历，有点困', inFlight: ['帮他查广州降温'], promises: ['周五提醒他交 benchmark'], openQuestions: ['他感冒好了没'] }, LINES.slice(-2), 3) },
   { id: 'observation', group: 'wake', name: '幕间：去看一眼', note: '她自己想去看看的时候，只看不动', files: ['interlude.observation', 'interlude.observation.where', 'interlude.observation.vm', 'interlude.observation.phone'],
