@@ -64,6 +64,11 @@ export const defaults = {
   notifyPollMs: 4000,       // reconcile snapshot interval (events trigger immediate reads); 0 = events only
   notifyApps: [],           // [] = every app she installs, now or later, until muted
   notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
+  notifyCatchUpMs: 12 * 3600_000, // at start, notifications that arrived while dsh was down (no older than this) still wake her
+  // One session drives the phone at a time (her conversation, an errand, an interlude round all act as her).
+  leaseIdleMs: 120_000,     // the lease lapses this long after its holder's last phone call (or when its turn ends)
+  leaseWaitMs: 60_000,      // another session's phone call waits this long for it, then is refused
+  qqSendOnPhone: false,     // false = in the phone's QQ she reads; she sends with qq_send
   mcp: true,                // mount mobile-mcp as mcp__dot-phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
@@ -78,6 +83,7 @@ const CHANNELS = { stable: 'channel-0', beta: 'channel-1', dev: 'channel-2', can
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-phone.json');
 export const auditFile = () => join(dshHome(), 'dsh-phone-audit.jsonl');
+export const shadeFile = () => join(dshHome(), 'dsh-phone-shade.json');
 
 /** Optional user settings file ($DSH_HOME/dsh-phone.json), for the desktop app which has no shell env. */
 export function readSettingsFile() {
@@ -161,6 +167,9 @@ export function phoneGate(exec, cfg) {
   }
   return null;
 }
+
+/** A phone call that would type or send in the foreground app: typing, Enter (alone or in a batch). */
+export const typesText = (tool, input) => tool === 'mobile_type_keys' || (['mobile_press_button', 'mobile_batch_commands'].includes(tool) && /ENTER|type_keys/i.test(JSON.stringify(input ?? '')));
 
 /** Phone tools an observation turn may use: look, scroll, open an app, go back; never type, install or open URLs. */
 export const OBSERVATION_TOOLS = ['mobile_list_available_devices', 'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_list_apps', 'mobile_launch_app', 'mobile_take_screenshot', 'mobile_list_elements_on_screen', 'mobile_click_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button'];
@@ -398,6 +407,8 @@ export function apply(ctx, config = {}, deps = {}) {
     try { appsCache = { at: Date.now(), pkgs: (await phone.shell('pm list packages -3')).split('\n').map((l) => l.replace(/^package:/, '').trim()).filter(Boolean) }; } catch (error) { void error; }
     return appsCache.pkgs;
   };
+  /** The resumed activity, "pkg/.Activity" ('' when unknown). */
+  phone.foreground = async () => { try { return /([\w.]+\/[\w.$]+)/.exec(await phone.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity|mResumedActivity'"))?.[1] ?? ''; } catch { return ''; } };
   /** PNG of the screen right now (a blank frame — mid-transition, screen waking — is retaken once). */
   phone.screenshot = () => screencapRetry(async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout));
   /**
@@ -448,6 +459,9 @@ export function apply(ctx, config = {}, deps = {}) {
       return () => { stopped = true; proc?.kill(); proc = null; };
     },
     pollMs: cfg.notifyPollMs,
+    catchUpMs: cfg.notifyCatchUpMs,
+    load: () => { try { return JSON.parse(readFileSync(shadeFile(), 'utf8')); } catch { return null; } },
+    save: (known) => { try { writeFileSync(shadeFile(), JSON.stringify(known)); } catch (err) { logger.warn(`shade file: ${err.message}`); } },
     wanted: (n) => policy.wanted(n),
     onChange: (kind, n) => {
       if (kind === 'removed') return;
@@ -714,6 +728,46 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'approval-asked', tool: exec_.name, session: exec_.agent?.session?.id, reason });
     return { kind: 'ask', reason };
   });
+
+  // One session drives the phone at a time: any phone call takes the lease — looking too, since a
+  // screenshot mid-way through another session's steps shows a screen she did not put there. It lapses
+  // leaseIdleMs after the holder's last call or when the holder's turn ends; a call from another
+  // session waits up to leaseWaitMs, then is refused. Her conversation (setPriority) goes first.
+  const lease = { holder: '', tool: '', at: 0, priority: '' };
+  const waiting = new Set();
+  const lapse = () => { audit({ kind: 'phone-lease', event: 'expired', session: lease.holder, holder: lease.holder }); lease.holder = ''; };
+  phone.setPriority = (id) => { lease.priority = id || ''; };
+  async function takeLease(id, tool) {
+    const until = Date.now() + cfg.leaseWaitMs;
+    for (;;) {
+      if (lease.holder && lease.holder !== id && Date.now() - lease.at > cfg.leaseIdleMs) lapse();
+      const first = waiting.has(lease.priority) ? lease.priority : waiting.values().next().value;
+      if (lease.holder === id || (!lease.holder && (first ?? id) === id)) {
+        waiting.delete(id);
+        if (lease.holder !== id) audit({ kind: 'phone-lease', event: 'acquired', session: id, holder: id });
+        Object.assign(lease, { holder: id, tool, at: Date.now() });
+        return null;
+      }
+      if (Date.now() >= until) { waiting.delete(id); audit({ kind: 'phone-lease', event: 'refused', session: id, holder: lease.holder }); return `手机正被另一件事占着（${lease.holder ? `在用 ${lease.tool}` : '有别的事排在前面'}），稍后再试`; }
+      if (!waiting.has(id)) { waiting.add(id); audit({ kind: 'phone-lease', event: 'waited', session: id, holder: lease.holder }); }
+      await sleep(Math.min(50, until - Date.now()));
+    }
+  }
+  ctx.on('session/event', (session, event) => { if (event?.type === 'turn/end' && session?.id && session.id === lease.holder) lapse(); });
+  // Prepended: a listener ahead of it that answers without next() (interlude's observation `allow`) would skip it.
+  ctx.on('tools/pre-execute', async (exec_, next) => {
+    const tool = exec_.name.startsWith(PHONE_TOOL_PREFIX) ? exec_.name.slice(PHONE_TOOL_PREFIX.length) : exec_.name === PHONE_ZOOM_TOOL ? exec_.name : '';
+    const id = exec_.agent?.session?.id;
+    if (!tool) return next();
+    const refused = id ? await takeLease(id, tool) : null;
+    if (refused) return { kind: 'deny', reason: refused };
+    // QQ goes one way on the phone: she reads there, and sends with qq_send (QQ's search box still types).
+    if (!cfg.qqSendOnPhone && typesText(tool, exec_.input ?? exec_.args ?? exec_.arguments) && /^com\.tencent\.mobileqq\/(?!.*search)/i.test(await phone.foreground())) {
+      audit({ kind: 'qq-send-blocked', session: id, tool });
+      return { kind: 'deny', reason: '在手机 QQ 里不发消息，给人发 QQ 用 qq_send。' };
+    }
+    return next();
+  }, { prepend: true });
 
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({
