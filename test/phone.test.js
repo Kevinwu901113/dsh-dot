@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, OBSERVATION_TOOLS, blankPng, screencapRetry } from '../src/phone/phone.js';
+import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, OBSERVATION_TOOLS, blankPng, screencapRetry, decodePng, encodePng, zoomPng } from '../src/phone/phone.js';
 import { deflateSync } from 'node:zlib';
 
 const REPO_XML = `
@@ -365,5 +365,50 @@ test('account tool: get hands out the number and the default password, set recor
   const log = readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8');
   assert.match(log, /"kind":"account-get"/); assert.match(log, /"kind":"account-set"/);
   assert.ok(!log.includes(g.password) && !log.includes('Forced-Other-1'), 'no password in the audit log');
+  h.stop();
+});
+
+test('zoomPng: crops screen px (clamped), enlarges ≤ 3× (bilinear), encodes a valid PNG; decodePng reads every filter', async () => {
+  const zlib = await import('node:zlib');
+  const red = [255, 0, 0, 255], white = [255, 255, 255, 255];
+  for (const f of [0, 1, 2]) {
+    const img = decodePng(png(8, 6, (x, y) => (x >= 4 && y >= 3 ? red : white), f));
+    assert.deepEqual([img.width, img.height, img.bpp], [8, 6, 4]);
+    assert.deepEqual([...img.pixels.subarray((3 * 8 + 4) * 4, (3 * 8 + 4) * 4 + 4)], red, `filter ${f}`);
+  }
+  const src = png(8, 6, (x, y) => (x >= 4 && y >= 3 ? red : white));
+  const z = zoomPng(src, { x: 4, y: 3, w: 2, h: 2, scale: 2 });
+  assert.deepEqual({ x: z.x, y: z.y, w: z.w, h: z.h, scale: z.scale, width: z.width, height: z.height }, { x: 4, y: 3, w: 2, h: 2, scale: 2, width: 4, height: 4 });
+  const out = decodePng(z.png);
+  assert.equal(out.width, 4); assert.ok(out.pixels.every((v, i) => v === red[i % 4]), 'all red inside the red block');
+  // valid chunk CRCs (encodePng computes them)
+  if (zlib.crc32) for (let o = 8; o < z.png.length;) { const len = z.png.readUInt32BE(o); assert.equal(z.png.readUInt32BE(o + 8 + len), zlib.crc32(z.png.subarray(o + 4, o + 8 + len))); o += 12 + len; }
+  assert.equal(zoomPng(src, { x: 6, y: 5, w: 100, h: 100, scale: 9 }).scale, 3, 'scale capped at 3');
+  const c = zoomPng(src, { x: 6, y: 5, w: 100, h: 100, scale: 1 });
+  assert.deepEqual([c.w, c.h], [2, 1], 'clamped to the image');
+  assert.equal(zoomPng(src, { x: 0, y: 0, w: 4, h: 2 }).scale, 3, 'default: as large as fits, at most 3×');
+  assert.match(zoomPng(Buffer.from('nope'), { x: 0, y: 0, w: 1, h: 1 }).error, /not a PNG/);
+  assert.equal(blankPng(encodePng({ width: 3, height: 2, bpp: 3, pixels: Buffer.alloc(18, 255) })), true);
+});
+
+test('phone_zoom tool: a part of the screen, enlarged, through the attachment store; says why when it cannot', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready');
+  const tool = h.tools.find((t) => t.name === 'phone_zoom');
+  assert.ok(tool, 'registered');
+  assert.equal(tool.parameters.properties.scale.maximum, 3);
+  h.ctx.dshPhone.screenshot = async () => png(8, 6, (x) => (x < 4 ? [0, 0, 255, 255] : [255, 255, 255, 255]));
+  const none = await tool.execute({ x: 0, y: 0, w: 4, h: 4 });
+  assert.match(tool.output.render({}, none)[0].text, /^没放大成：没有附件仓库/);
+  const saved = [];
+  const get0 = h.ctx.get;
+  h.ctx.get = (n) => (n === 'attachments' ? { saveImages: async (inputs) => { saved.push(...inputs); return inputs.map(() => ({ id: 'att-1', mediaType: 'image/png' })); } } : get0(n));
+  const v = await tool.execute({ x: 0, y: 0, w: 4, h: 4, scale: 2 });
+  assert.equal(saved.length, 1); assert.equal(saved[0].mediaType, 'image/png');
+  assert.deepEqual([decodePng(Buffer.from(saved[0].data)).width, decodePng(Buffer.from(saved[0].data)).height], [8, 8]);
+  assert.deepEqual(tool.output.render({}, v), [{ type: 'text', text: '屏幕 (0, 0) 起 4×4，放大 2 倍：' }, { type: 'image', attachment: { id: 'att-1', mediaType: 'image/png' } }]);
+  assert.equal(JSON.stringify(v).includes('"png"'), false, 'the bytes are not in the value');
+  assert.match(readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8'), /"kind":"phone-zoom"/);
+  assert.match(h.sections[0].text(), /phone_zoom 放大截图的一块，不用去电脑里裁图/);
   h.stop();
 });

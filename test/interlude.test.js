@@ -417,6 +417,7 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   assert.match(h.followups[0].m.content[0].text, /bilibili\.com\/u\/1/);
   // while it runs: read-only vm tools pass without reaching the next gate, anything else is denied, other sessions untouched
   assert.deepEqual(await h.gate('s1', 'mcp__dot-vm__browser_get_markdown'), { kind: 'allow' });
+  assert.deepEqual(await h.gate('s1', 'phone_zoom'), { kind: 'allow' }, 'looking closer is looking');
   assert.equal((await h.gate('s1', 'mcp__dot-vm__browser_click')).kind, 'deny');
   assert.equal((await h.gate('s1', 'mcp__dot-vm__sandbox_execute_bash')).kind, 'deny');
   assert.equal((await h.gate('s2', 'mcp__dot-vm__browser_click')).via, 'next');

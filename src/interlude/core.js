@@ -15,7 +15,7 @@
 // continuity snapshot (state.json), intents; slow change in who she is lives in dsh-dot/memory's self bank
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
-import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX } from '../tool-prefixes.js';
+import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -584,7 +584,7 @@ export function apply(ctx, config = {}) {
     if (!sessionId || !observing.has(sessionId)) return next();
     const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
     const phoneTool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
-    if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool))) return { kind: 'allow' };
+    if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool)) || exec.name === PHONE_ZOOM_TOOL) return { kind: 'allow' };
     audit('observation-refused', { session: sessionId, tool: exec.name });
     return { kind: 'deny', reason: `dsh-interlude: this is an observation — looking only, nothing to approve. "${exec.name}" is not available here; look with ${cfg.vmObservationTools.slice(0, 2).join(', ')}, ${cfg.phoneObservationTools.slice(5, 7).join(', ')}… or write down what you saw.` };
   }, { prepend: true });

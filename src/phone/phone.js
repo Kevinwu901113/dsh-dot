@@ -4,7 +4,7 @@
 // Google's repository (after the SDK license is accepted), writes the AVD itself (no Java, no
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. The phone's window is its
 // live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
-import { PHONE_SERVER, PHONE_TOOL_PREFIX } from '../tool-prefixes.js';
+import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
@@ -12,7 +12,7 @@ import { join, dirname } from 'node:path';
 import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
-import { inflateSync } from 'node:zlib';
+import { deflateSync, inflateSync } from 'node:zlib';
 import { createAudit } from '../computer/audit.js';
 import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
@@ -219,39 +219,87 @@ async function unzip(zip, into) {
 }
 
 /**
- * Is this PNG one flat colour, all white or all black? (`screencap` gives that mid-transition or with
- * the screen off.) Decodes 8-bit RGB/RGBA, the screencap formats; anything else counts as not blank.
+ * Decode an 8-bit RGB/RGBA, non-interlaced PNG (the screencap formats) → { width, height, bpp, pixels }
+ * with `pixels` the unfiltered rows; anything else → null. CRCs are not checked.
  */
-export function blankPng(buf) {
+export function decodePng(buf) {
   try {
-    if (!Buffer.isBuffer(buf) || buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return false;
+    if (!Buffer.isBuffer(buf) || buf.length < 33 || buf.readUInt32BE(0) !== 0x89504e47) return null;
     const width = buf.readUInt32BE(16), height = buf.readUInt32BE(20), depth = buf[24], color = buf[25], interlace = buf[28];
     const bpp = color === 6 ? 4 : color === 2 ? 3 : 0;
-    if (!bpp || depth !== 8 || interlace || !width || !height) return false;
+    if (!bpp || depth !== 8 || interlace || !width || !height) return null;
     const idat = [];
     for (let o = 8; o + 8 <= buf.length;) { const len = buf.readUInt32BE(o), type = buf.toString('latin1', o + 4, o + 8); if (type === 'IDAT') idat.push(buf.subarray(o + 8, o + 8 + len)); if (type === 'IEND') break; o += 12 + len; }
     const raw = inflateSync(Buffer.concat(idat));
     const stride = width * bpp;
-    if (raw.length < (stride + 1) * height) return false;
-    let prev = Buffer.alloc(stride), first = -1;
+    if (raw.length < (stride + 1) * height) return null;
+    const pixels = Buffer.alloc(stride * height);
+    let prev = Buffer.alloc(stride);
     for (let y = 0; y < height; y++) {
-      const f = raw[y * (stride + 1)], line = Buffer.from(raw.subarray(y * (stride + 1) + 1, (y + 1) * (stride + 1)));
-      for (let i = 0; i < stride; i++) {
-        if (!f) break;
+      const f = raw[y * (stride + 1)], line = pixels.subarray(y * stride, (y + 1) * stride);
+      raw.copy(line, 0, y * (stride + 1) + 1, (y + 1) * (stride + 1));
+      if (f) for (let i = 0; i < stride; i++) {
         const a = i >= bpp ? line[i - bpp] : 0, b = prev[i], c = i >= bpp ? prev[i - bpp] : 0;
         let add = f === 1 ? a : f === 2 ? b : f === 3 ? (a + b) >> 1 : 0;
         if (f === 4) { const p = a + b - c, pa = Math.abs(p - a), pb = Math.abs(p - b), pc = Math.abs(p - c); add = pa <= pb && pa <= pc ? a : pb <= pc ? b : c; }
         line[i] = (line[i] + add) & 0xff;
       }
-      for (let x = 0; x < stride; x += bpp) {
-        const r = line[x], g = line[x + 1], bl = line[x + 2];
-        if (r !== g || g !== bl || (r !== 0 && r !== 255)) return false;
-        if (first < 0) first = r; else if (r !== first) return false;
-      }
       prev = line;
     }
-    return true;
-  } catch { return false; }
+    return { width, height, bpp, pixels };
+  } catch { return null; }
+}
+
+const CRC = Array.from({ length: 256 }, (_, n) => { let c = n; for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1; return c >>> 0; });
+const crc32 = (buf) => { let c = 0xffffffff; for (const b of buf) c = CRC[(c ^ b) & 0xff] ^ (c >>> 8); return (c ^ 0xffffffff) >>> 0; };
+/** Encode 8-bit RGB (bpp 3) or RGBA (bpp 4) rows as a PNG. */
+export function encodePng({ width, height, bpp, pixels }) {
+  const chunk = (type, data) => { const t = Buffer.from(type, 'latin1'), len = Buffer.alloc(4), crc = Buffer.alloc(4); len.writeUInt32BE(data.length); crc.writeUInt32BE(crc32(Buffer.concat([t, data]))); return Buffer.concat([len, t, data, crc]); };
+  const ihdr = Buffer.alloc(13);
+  ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4); ihdr[8] = 8; ihdr[9] = bpp === 4 ? 6 : 2;
+  const stride = width * bpp, raw = Buffer.alloc((stride + 1) * height);
+  for (let y = 0; y < height; y++) pixels.copy(raw, y * (stride + 1) + 1, y * stride, (y + 1) * stride);
+  return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}
+
+export const ZOOM_MAX_SCALE = 3;
+const ZOOM_LONG_EDGE = 1200; // default output size: the long edge, unless scale says otherwise
+/**
+ * Crop {x, y, w, h} (screen px; clamped to the image) out of a PNG and enlarge it `scale` times
+ * (bilinear; ≤ ZOOM_MAX_SCALE; default: as large as fits ZOOM_LONG_EDGE, at least 1×).
+ * → { png, x, y, w, h, scale, width, height } or { error }.
+ */
+export function zoomPng(buf, { x, y, w, h, scale } = {}) {
+  const img = decodePng(buf);
+  if (!img) return { error: 'the screenshot is not a PNG this can read' };
+  const x0 = Math.max(0, Math.min(img.width - 1, Math.round(Number(x) || 0))), y0 = Math.max(0, Math.min(img.height - 1, Math.round(Number(y) || 0)));
+  const cw = Math.max(1, Math.min(img.width - x0, Math.round(Number(w) || 0))), ch = Math.max(1, Math.min(img.height - y0, Math.round(Number(h) || 0)));
+  const k = Math.min(ZOOM_MAX_SCALE, Math.max(1, Number(scale) > 0 ? Number(scale) : ZOOM_LONG_EDGE / Math.max(cw, ch)));
+  const ow = Math.max(1, Math.round(cw * k)), oh = Math.max(1, Math.round(ch * k)), { bpp } = img;
+  const out = Buffer.alloc(ow * oh * bpp), src = img.pixels, stride = img.width * bpp;
+  for (let j = 0; j < oh; j++) {
+    const sy = Math.min(ch - 1, Math.max(0, (j + 0.5) / k - 0.5)), y1 = Math.floor(sy), y2 = Math.min(ch - 1, y1 + 1), fy = sy - y1;
+    for (let i = 0; i < ow; i++) {
+      const sx = Math.min(cw - 1, Math.max(0, (i + 0.5) / k - 0.5)), x1 = Math.floor(sx), x2 = Math.min(cw - 1, x1 + 1), fx = sx - x1;
+      const a = (y0 + y1) * stride + (x0 + x1) * bpp, b = (y0 + y1) * stride + (x0 + x2) * bpp, c = (y0 + y2) * stride + (x0 + x1) * bpp, d = (y0 + y2) * stride + (x0 + x2) * bpp;
+      for (let n = 0; n < bpp; n++) out[(j * ow + i) * bpp + n] = Math.round((src[a + n] * (1 - fx) + src[b + n] * fx) * (1 - fy) + (src[c + n] * (1 - fx) + src[d + n] * fx) * fy);
+    }
+  }
+  return { png: encodePng({ width: ow, height: oh, bpp, pixels: out }), x: x0, y: y0, w: cw, h: ch, scale: Math.round(k * 100) / 100, width: ow, height: oh };
+}
+
+/**
+ * Is this PNG one flat colour, all white or all black? (`screencap` gives that mid-transition or with
+ * the screen off.) Decodes 8-bit RGB/RGBA, the screencap formats; anything else counts as not blank.
+ */
+export function blankPng(buf) {
+  const img = decodePng(buf);
+  if (!img) return false;
+  const { pixels, bpp } = img;
+  const first = pixels[0];
+  if (first !== 0 && first !== 255) return false;
+  for (let i = 0; i < pixels.length; i += bpp) if (pixels[i] !== first || pixels[i + 1] !== first || pixels[i + 2] !== first) return false;
+  return true;
 }
 
 /** One screenshot; a blank one (all white/black) is taken once more after `waitMs`. */
@@ -695,6 +743,34 @@ export function apply(ctx, config = {}, deps = {}) {
         } catch (err) { return { action: String(action), error: err.message }; }
       },
     }), 'dsh-dot/phone: account tool');
+  });
+
+  // A part of the screen, enlarged: mobile-mcp only scales the whole screenshot down (scale ≤ 1, maxSize),
+  // so small text and details were cropped in the computer instead. The image goes through the
+  // attachment store, like mobile_take_screenshot's (dsh-mcp-client); without one, no zoom.
+  ctx.inject(['tools'], (scope) => {
+    scope.effect(() => scope.tools.register({
+      name: PHONE_ZOOM_TOOL,
+      description: '把手机屏幕的一块放大来看（现截一张）。x、y 是那块的左上角，w、h 是宽和高，单位是屏幕像素（和 mobile_list_elements_on_screen 的坐标一样）；scale 是放大倍数，最多 3，不填就放到看得清的大小。小字、图里的细节看不清时用。',
+      parameters: { type: 'object', properties: { x: { type: 'number' }, y: { type: 'number' }, w: { type: 'number' }, h: { type: 'number' }, scale: { type: 'number', exclusiveMinimum: 0, maximum: ZOOM_MAX_SCALE } }, required: ['x', 'y', 'w', 'h'], additionalProperties: false },
+      output: {
+        schema: { type: 'object', properties: { error: { type: 'string' } }, additionalProperties: true },
+        render: (_a, v) => (v.error ? [{ type: 'text', text: `没放大成：${v.error}` }] : [{ type: 'text', text: `屏幕 (${v.x}, ${v.y}) 起 ${v.w}×${v.h}，放大 ${v.scale} 倍：` }, { type: 'image', attachment: v.image }]),
+      },
+      async execute(args) {
+        if (!phone.isReady) return { error: `手机还没就绪（${phone.state}）` };
+        const store = ctx.get?.('attachments');
+        if (typeof store?.saveImages !== 'function') return { error: '没有附件仓库（ctx.attachments），图传不过去；用 mobile_take_screenshot' };
+        try {
+          const z = zoomPng(await phone.screenshot(), args);
+          if (z.error) return { error: z.error };
+          const { png, ...at } = z;
+          const [image] = await store.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: 'phone-zoom' }]);
+          audit({ kind: 'phone-zoom', ...at, bytes: png.length });
+          return { ...at, image };
+        } catch (err) { return { error: err.message }; }
+      },
+    }), 'dsh-dot/phone: zoom tool');
   });
 
   ctx.inject(['commands'], (scope) => {

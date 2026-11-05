@@ -9,3 +9,5 @@ export const PHONE_TOOL_PREFIX = `mcp__${PHONE_SERVER}__`;
 // SnowLuma's own MCP server (qq.js, backend 'snowluma'): her 219 OneBot actions, gated by qqToolGate.
 export const QQ_SERVER = 'dot-qq';
 export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
+// dot's own phone tool (phone.js): a part of the screen, enlarged. Read-only, so observation turns allow it.
+export const PHONE_ZOOM_TOOL = 'phone_zoom';
