@@ -933,9 +933,11 @@ function errandHarness(config = {}) {
   const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }) });
   const controller = { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) };
   h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : orig(name))(h.ctx.get);
+  let dot;
+  h.ctx.provide = (name, svc) => { if (name === 'dshDot') dot = svc; };
   apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0, ...config });
   h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
-  return { h, followups, injected, notify: (x) => onNotification({ pkg: 'com.max.xiaoheihe', at: new Date().toISOString(), ...x }) };
+  return { h, dot, followups, injected, notify: (x) => onNotification({ pkg: 'com.max.xiaoheihe', at: new Date().toISOString(), ...x }) };
 }
 
 test('app notifications: ignored ones only recorded; one wake per thread per window; a thread being handled stays with its errand', async () => {
@@ -1040,5 +1042,74 @@ test('approvals: one message to him per turn, later ones only counted', async ()
   assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理/);
   assert.equal(h.audit.filter((e) => e.event === 'approval-merged').length, 3);
   assert.equal(h.audit.filter((e) => e.event === 'approval-merged').at(-1).count, 4);
+  stop(h);
+});
+
+test('interlude tasks: notification work goes first; one at a time, after the errand turn ends; play is noted, look is not', async () => {
+  const { h, dot, followups, injected, notify } = errandHarness();
+  const started = [], done = [];
+  const task = (kind, form, extra = {}) => ({ kind, key: `${kind}|x`, text: `去${kind}`, source: { kind: 'dsh-interlude', form }, onStart: (id) => started.push(id), onDone: (r) => done.push({ kind, ...r }), ...extra });
+  notify({ title: '有新动态', text: '丙 来自“帖子B”' }); // a thread is queued
+  assert.equal(dot.task(task('play', 'play')), 'queued');
+  await wait(30);
+  assert.deepEqual(followups.map((f) => f.m.source.form), ['phone-notification'], 'the notification goes first');
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  h.emit(h.home, 'turn/start', { turn: 2 }); // and he is talking with her
+  dot.task(task('look', 'observation', { readOnly: true }));
+  await wait(20);
+  assert.equal(followups.length, 1, 'nothing starts while an errand turn runs');
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('DOT_SILENT'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1 });
+  await wait(80);
+  assert.deepEqual(followups.map((f) => [f.id, f.m.source.form]), [['errand-1', 'phone-notification'], ['errand-1', 'play']], 'then the oldest task, alone');
+  assert.deepEqual(started, ['errand-1']);
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 2 });
+  h.emitAs('errand-1', h.home, 'user/message', { source: { kind: 'dsh-interlude', form: 'play' } });
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('做了：点了赞\n结果：成了\n找他：不用'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 2 });
+  await wait(80);
+  assert.equal(done[0].status, 'done'); assert.equal(done[0].report, '做了：点了赞\n结果：成了\n找他：不用');
+  assert.equal(followups.at(-1).m.source.form, 'observation');
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 3 });
+  h.emitAs('errand-1', h.home, 'user/message', { source: { kind: 'dsh-interlude', form: 'observation' } });
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('她更新了《秋天》'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 3 });
+  await wait(20);
+  assert.equal(done[1].report, '她更新了《秋天》');
+  assert.equal(done[1].busyWith, '看小黑盒《帖子B》的 1 条；在和他聊天', 'what she was busy with when it was posted');
+  assert.ok(done[1].queuedAt <= done[1].startedAt && done[1].startedAt <= done[1].doneAt);
+  assert.equal(injected.length, 1, 'only the play is noted in her conversation');
+  assert.match(injected[0].m.content[0].text, /刚才在手机上玩了会儿\] 做了：点了赞/);
+  stop(h);
+});
+
+test('interlude tasks: the same key refreshes its expiry; expired and dropped ones say so, with what she was busy with', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+  try {
+    const { h, dot, notify } = errandHarness({ interludeTaskTtlMs: 60_000, interludeQueueMax: 2, turnStallMs: 0, errandStallMs: 0, heldMaxMs: 0 });
+    const flushAll = async () => { mock.timers.tick(10); for (let i = 0; i < 10; i++) await settle(); };
+    notify({ title: '甲回复了你', text: '1 来自“帖子A”' }); await flushAll();
+    h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 }); // the errand is busy all along
+    const done = [];
+    const task = (key) => ({ kind: 'look', key, text: key, source: { kind: 'dsh-interlude', form: 'observation' }, onDone: (r) => done.push({ key, ...r }) });
+    assert.equal(dot.task(task('a')), 'queued');
+    mock.timers.tick(40_000); await flushAll();
+    assert.equal(dot.task(task('a')), 'refreshed');
+    mock.timers.tick(30_000); await flushAll(); // past a's first expiry: the 60 s check found it fresh
+    assert.deepEqual(done, []);
+    mock.timers.tick(60_000); await flushAll();
+    assert.deepEqual(done.map((d) => [d.key, d.status, d.busyWith, d.startedAt]), [['a', 'expired', '看小黑盒《帖子A》的 1 条', null]]);
+    for (const k of ['b', 'c', 'd']) dot.task(task(k));
+    assert.deepEqual(done.slice(1).map((d) => [d.key, d.status]), [['b', 'dropped']], 'cap: the oldest goes');
+    assert.ok(h.audit.some((e) => e.event === 'task-expired') && h.audit.some((e) => e.event === 'task-refreshed'));
+    stop(h);
+  } finally { mock.timers.reset(); }
+});
+
+test('say: what she wanted to tell him goes into her conversation as a note; she decides', async () => {
+  const { h, dot, injected } = errandHarness();
+  assert.equal(await dot.say('降温了\n你那边冷不冷'), true);
+  assert.equal(injected[0].id, 's1');
+  assert.equal(injected[0].m.content[0].text, '（这是你自己在过日子时想跟他说的：降温了\n你那边冷不冷）看现在合不合适，合适就用你自己的话说，不合适就不说。');
   stop(h);
 });

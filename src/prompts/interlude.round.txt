@@ -9,6 +9,7 @@
 她此刻在哪、在干嘛，要和这半小时她真实做过的事对得上：recentScript 里带时间的真实事件，加上 lastHalfHour（上一段已写过的、半小时内她真实做过的事；on 是她用的设备，phone 是手机，vm 是电脑）。真实操作手机、回帖时，她就是在拿着手机；用电脑时，她就在电脑前。对外（评论、QQ、给用户的消息）不要拿虚构生活当事实讲。
 虚构的人（只在 Canon 里的配角）只在叙述里出现：不给他们发真实消息，不为他们定 intents，不把等他们回复写进 continuity。
 {herLife}
+{returned}
 {contactRule}
 recentScript 的每一项都带有归属标签（owner），它权威地说明这段内容是谁想的、谁叙述的、谁观察到的、谁真正发出的；关于用户的念头不是用户的念头。
 把 currentEvent、groupContext.messages 和 dueIntents 当作这段时间里发生的事件的来源。把 recentScript、memories 和 facts 当作已经确立的过去，它们让当前场景保持连续。

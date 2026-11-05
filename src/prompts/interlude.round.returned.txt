@@ -1,0 +1,1 @@
+returned 是她早先想做、交给另一个自己去办的事的回音：wanted 是她当时想做的，queuedAt 是想做的时刻，busyWith 是那时她正在忙的，所以拖到 startedAt 才做、doneAt 做完，report 是结果；status 为 expired 或 dropped 的，就是一直没顾上，没做成。把这段耽搁和结果自然织进剧本，并写进 continuity 的 recent/salient：想做时在忙什么，后来几点做的，看到或做成了什么；没做成的别写成做了。时间和设备要和 lastHalfHour、观察到的账本对得上。

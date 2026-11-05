@@ -181,7 +181,7 @@ setx DSH_DOT_COMPUTER off
 | `vmSites` | `[]` | 用电脑浏览器看的网站（她登录过的） |
 | `phoneApps` / `playApps` | 内置表 | 逛 / 玩的 App |
 | `play` | `true` | 「玩」（点赞、评论、关注） |
-| `speak` | `false` | 主动找你 |
+| `speak` | `false` | 主动找你；有 dot 时不自己发，交给她的对话（留一句「想跟他说的」），合不合适由她定，交过去才算一次 |
 | `maxContactsPerDay` / `willingnessThreshold` | `2` / `0.6` | 主动联系的上限和门槛 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
 
@@ -204,6 +204,8 @@ setx DSH_DOT_COMPUTER off
 | `heldMaxMs` | `600000` | 通知等忙着的跑腿等了这么久，就交给一个新的跑腿会话（记 `notification-rerouted`）；那个跑腿正在处理的话题除外 |
 | `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |
 | `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
+| `interludeQueueMax` | `3` | 幕间想做的事（玩、用手机 / 电脑去看）不自己动手，排队交给跑腿：优先级最低，没有通知在排、在等，也没有跑腿在跑时才做，一次一件；同一件事再来只刷新过期时间；排满这么多件，最早的作废（`dropped`） |
+| `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`）。做完、过期、作废都回给幕间：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成），下一轮写进剧情 |
 | `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
 | `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
 | `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |

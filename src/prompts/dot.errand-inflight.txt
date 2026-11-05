@@ -1,3 +1,4 @@
 line=另一个你正在：{doing}。还没交回汇报，别说已经办好了。
 thread=看{app}{source}的 {count} 条
 other=在手机上办事
+chat=在和他聊天
