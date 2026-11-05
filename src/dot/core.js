@@ -23,7 +23,7 @@ import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { sectionOf, setValues } from '../settings.js';
-import { configure as configurePrompts, fill, prompt, table } from '../prompts.js';
+import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
 import { ago, describeNow, stamp } from '../clock.js';
 
 export const name = 'dsh-dot';
@@ -933,7 +933,7 @@ export function apply(ctx, config = {}) {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
       description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page',
-      input: { hint: '[test | check | prompts [stop] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+      input: { hint: '[test | check | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         // /dot memory … and /dot people … belong to dsh-dot/memory.
@@ -942,8 +942,10 @@ export function apply(ctx, config = {}) {
           return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
         }
         if (arg === 'prompts stop') return { kind: 'success', text: (await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running' };
+        const rb = /^prompts rebase (\S+)( --reset)?$/.exec(arg);
+        if (rb) { try { return { kind: 'success', text: rebase(rb[1], Boolean(rb[2])) }; } catch (err) { return { kind: 'success', text: err.message }; } }
         if (arg === 'prompts') {
-          try { return { kind: 'success', text: `提示词和人设页面：${await prompts.start()}\n（只在本机打开；/dot prompts stop 关掉）` }; } catch (err) { return { kind: 'success', text: `prompts page failed: ${err.message}` }; }
+          try { return { kind: 'success', text: [`提示词和人设页面：${await prompts.start()}\n（只在本机打开；/dot prompts stop 关掉）`, ...overrideNotes().map((n) => `提示词覆盖 ${n}（/dot prompts rebase <id>）`)].join('\n') }; } catch (err) { return { kind: 'success', text: `prompts page failed: ${err.message}` }; }
         }
         const t = await im.target();
         let test = '';

@@ -173,7 +173,7 @@ function save(id, text, src) {
   const body = `${String(text).replace(/\r\n/g, '\n').replace(/\n*$/, '')}\n`;
   const path = src ? P.builtinPath(id) : P.overridePath(id);
   mkdirSync(dirname(path), { recursive: true });
-  writeFileSync(path, body);
+  writeFileSync(path, src ? body : P.stamp(id, body));
   const lost = placeholders(readFileSync(P.builtinPath(id), 'utf8')).filter((k) => !body.includes(`{${k}}`));
   return { text: `已保存：${path}`, warn: lost.length ? `注意：${lost.map((k) => `{${k}}`).join(' ')} 不见了，那里的内容就不会再出现` : '' };
 }

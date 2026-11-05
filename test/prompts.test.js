@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configure, prompt, table, list, raw, fill, overridePath } from '../src/prompts.js';
+import { configure, prompt, table, list, raw, fill, overridePath, stamp, rebase, overrideNotes } from '../src/prompts.js';
 
 const HOME = mkdtempSync(join(tmpdir(), 'dot-prompts-test-'));
 configure({ home: HOME });
@@ -46,6 +46,32 @@ test('prompts loader: an override in <home>/prompts wins, edits show without a r
   assert.equal(prompt('dot.notification.busy'), builtin);
   assert.throws(() => prompt('dot.nope'), /unknown prompt/);
   assert.throws(() => prompt('../package'), /unknown prompt/);
+});
+
+test('prompts overrides: a `# base:` line is not part of the text; a changed built-in shows as stale, a missing base as unbased; rebase stamps or resets', () => {
+  const id = 'dot.notification.busy', at = () => list().find((x) => x.id === id);
+  mkdirSync(join(HOME, 'prompts'), { recursive: true });
+  const touch = () => utimesSync(overridePath(id), new Date(), new Date(Date.now() + Math.random() * 1e6));
+  writeFileSync(overridePath(id), stamp(id, '你忙的时候来的。'));
+  assert.match(readFileSync(overridePath(id), 'utf8'), /^# base: [0-9a-f]{12}\n你忙的时候来的。\n$/);
+  assert.equal(raw(id), '你忙的时候来的。');
+  assert.equal(at().stale, undefined); assert.equal(at().unbased, undefined);
+  assert.deepEqual(overrideNotes(), []);
+  writeFileSync(overridePath(id), '# base: 000000000000\n你忙的时候来的。\n'); touch();
+  assert.equal(raw(id), '你忙的时候来的。');
+  assert.equal(at().stale, true);
+  assert.deepEqual(overrideNotes(), [`默认已更新：${id}`]);
+  writeFileSync(overridePath(id), '你忙的时候来的。\n'); touch();
+  assert.equal(at().unbased, true);
+  assert.deepEqual(overrideNotes(), [`未记录基线：${id}`]);
+  const shown = rebase(id);
+  assert.match(shown, /- 你忙的时候来的。\n\+ 你上一轮期间来的。/);
+  assert.equal(readFileSync(overridePath(id), 'utf8'), stamp(id, '你忙的时候来的。'));
+  assert.equal(at().unbased, undefined); assert.equal(at().stale, undefined);
+  assert.match(rebase(id, true), /已删除/);
+  assert.equal(at().override, null);
+  assert.equal(raw(id), '你上一轮期间来的。');
+  assert.match(rebase(id), /没有覆盖/);
 });
 
 test('prompts loader: placeholders, a missing one left as written and warned once, empty placeholder lines dropped, tables', () => {
