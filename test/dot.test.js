@@ -657,16 +657,17 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
 test('dot:now: one line after the history, on her conversation and errands; "since" counts from before the turn, omitted under a minute', async () => {
   const { nowText } = await import('../src/dot/core.js');
   const now = new Date(2026, 10, 4, 4, 51).getTime();
-  assert.equal(nowText(now, now - (3 * 60 + 12) * 60000), '现在 2026-11-04 04:51 星期三 深夜 · 距上一条消息 3 小时 12 分');
-  assert.equal(nowText(now, now - 20000), '现在 2026-11-04 04:51 星期三 深夜');
-  assert.equal(nowText(now, 0), '现在 2026-11-04 04:51 星期三 深夜');
+  assert.equal(nowText(now, now - (3 * 60 + 12) * 60000), '现在 2026-11-04 04:51 星期三 深夜（这周一是 11-02） · 距上一条消息 3 小时 12 分');
+  assert.equal(nowText(now, now - 20000), '现在 2026-11-04 04:51 星期三 深夜（这周一是 11-02）');
+  assert.equal(nowText(now, 0), '现在 2026-11-04 04:51 星期三 深夜（这周一是 11-02）');
+  assert.equal(nowText(new Date(2027, 0, 1, 9, 0).getTime(), 0), '现在 2027-01-01 09:00 星期五 上午（这周一是 2026-12-28）', 'a Monday in last year carries its year');
   const h = harness();
   const asked = [];
   h.ctx.get = ((orig) => (name) => (name === 'dotMemory' ? { lastSaidAt: (before) => { asked.push(before); return before - 2 * 3600000; } } : orig(name)))(h.ctx.get);
   apply(h.ctx, h.config);
   const ctxNow = h.ctx.prompts.find((c) => c.name === 'dot:now');
   assert.equal(ctxNow.order, 899);
-  assert.match(ctxNow.text({ agent: { session: { id: 'e1', header: { cwd: h.home } } } }), /^现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+ · 距上一条消息 2 小时$/);
+  assert.match(ctxNow.text({ agent: { session: { id: 'e1', header: { cwd: h.home } } } }), /^现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+（这周一是 \d{2}-\d{2}） · 距上一条消息 2 小时$/);
   assert.equal(ctxNow.text({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } } }), '');
   h.emit(h.home, 'turn/start', { turn: 1 });
   const before = Date.now();

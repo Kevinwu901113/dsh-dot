@@ -399,13 +399,29 @@ export function cleanWho(who) {
 /** Kinds that can be left open (还没了的事): something planned, promised, or put off. */
 export const OPENABLE = ['plan', 'promise'];
 
-export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now = Date.now(), open, who }) {
+export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now = Date.now(), open, who, replaces }) {
   const body = String(text ?? '').trim();
   const t = Number(tag);
   if (!body || !Number.isInteger(t) || t < 0 || t > 2 || rejectReason(body)) return { action: 'dropped' };
   const norm = normText(body);
   const hash = fnv1a(norm);
   const list = memory.fragments;
+  // The same thing, changed (a new state, a change of mind, a correction): the new text takes the
+  // old one's place; the old text is kept as `was` (not shown) so the change can still be traced.
+  const old = replaces ? list.find((f) => f.id === String(replaces).trim()) : null;
+  if (old && old.hash !== hash) {
+    old.was = old.text;
+    old.text = body; old.hash = hash;
+    if (FRAGMENT_KINDS.includes(kind)) old.kind = kind;
+    old.refs += 1;
+    old.importance = Math.min(MAX_IMPORTANCE, Math.max(old.importance, t));
+    old.lastSeenAt = now; old.lastSeenGen = gen; old.updatedAt = now;
+    const names = cleanWho([...(old.who ?? []), ...cleanWho(who)]);
+    if (names.length) old.who = names;
+    if (open === true && OPENABLE.includes(old.kind)) { old.open = true; delete old.closedAt; }
+    else if (old.open && (open === false || !OPENABLE.includes(old.kind))) { old.open = false; old.closedAt = now; }
+    return { action: 'replaced', id: old.id };
+  }
   let hit = list.find((f) => f.hash === hash) ?? (mergeWith ? list.find((f) => f.id === mergeWith) : null);
   if (!hit) {
     let best = null, sim = 0;

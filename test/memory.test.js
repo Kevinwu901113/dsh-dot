@@ -450,3 +450,25 @@ test('还没了的事: open plan / promise fragments shown on their own, newest 
   ageFragments(m, 20);
   assert.ok(m.fragments.includes(list), 'aging keeps an open one');
 });
+
+test('取代: a changed state replaces the old fragment (old text kept as was); the calendar for dates', async () => {
+  const m = emptyMemory();
+  applyExtraction(m, { fragments: [{ text: '05-28 门口灯箱：师傅量了尺寸，还没报价', kind: 'plan', tag: 1, open: true }] }, { now: 1000 });
+  const [f] = m.fragments;
+  const r = applyExtraction(m, { fragments: [{ text: '05-29 灯箱报价到了，他让师傅先别排制作（05-28 时还没报价）', kind: 'plan', tag: 1, open: true, replaces: f.id }] }, { now: 2000 });
+  assert.equal(r.replaced, 1);
+  assert.equal(m.fragments.length, 1, 'no second fragment: old and new do not sit side by side');
+  assert.match(f.text, /报价到了/); assert.match(f.was, /还没报价/); assert.equal(f.refs, 2); assert.equal(f.updatedAt, 2000);
+  assert.equal(f.open, true);
+  applyExtraction(m, { fragments: [{ text: '06-02 灯箱不做了', kind: 'event', tag: 1, replaces: f.id }] }, { now: 3000 });
+  assert.equal(f.kind, 'event'); assert.equal(f.open, false, 'became an event: no longer open');
+  // An unknown id: an ordinary new fragment.
+  applyExtraction(m, { fragments: [{ text: '06-03 他换了新的门牌', kind: 'event', tag: 0, replaces: 'f9999' }] }, { now: 4000 });
+  assert.equal(m.fragments.length, 2);
+  const { calendar } = await import('../src/clock.js');
+  const at = new Date(2026, 5, 22, 18, 31).getTime();
+  const cal = calendar(at, at);
+  assert.match(cal, /^06-15一 06-16二 [^\n]* 06-21日\n06-22一 /);
+  assert.match(cal, /\n06-29一 06-30二 07-01三 /, 'next Wednesday from 06-22 is on the line after');
+  assert.match(extractPrompt({ text: 'x', cal }), /=== 日历（这段记录前后，一行一周，周一开头）===\n06-15一/);
+});

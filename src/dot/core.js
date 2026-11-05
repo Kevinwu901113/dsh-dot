@@ -24,7 +24,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
-import { ago, describeNow, stamp } from '../clock.js';
+import { ago, describeNow, mondayOf, stamp } from '../clock.js';
 
 export const name = 'dsh-dot';
 // Devices are optional components: the computer (dshComputer) and the phone (dshPhone). dot works
@@ -91,7 +91,7 @@ export function ownerUnread(agent) {
 export function nowText(now = Date.now(), lastAt = 0) {
   const t = table('dot.now');
   const since = ago(lastAt, now);
-  return fill(t.line, { now: describeNow(new Date(now)), since: since ? fill(t.since, { ago: since }) : '' });
+  return fill(t.line, { now: describeNow(new Date(now)), monday: mondayOf(now), since: since ? fill(t.since, { ago: since }) : '' });
 }
 
 const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };

@@ -25,8 +25,8 @@ import {
   observeFragment, closeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends, dayMark,
 } from './store.js';
-import { createRecall } from './recall.js';
-import { unstamp } from '../clock.js';
+import { createBm25, createRecall } from './recall.js';
+import { calendar, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
@@ -123,13 +123,13 @@ export function takeChunk(fresh, maxChars) {
 export const extractRules = () => prompt('memory.extract');
 
 /** The whole consolidation prompt: the records, what she already has, the rules, and whether to write a handoff / diary. */
-export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', open = '', pending = '', withHandoff = false, withDiary = false, day = '' }) {
+export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', open = '', pending = '', cal = '', withHandoff = false, withDiary = false, day = '' }) {
   return [
     ...(recent ? [prompt('memory.extract.earlier'), recent, ''] : []),
     prompt('memory.extract.input', {
       records: text || '（这段时间没有新记录）',
       banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', fragments: frags || '（还没有）', open: open || '（没有）', pending: pending || '（没有）',
+      people: known || '（还没有）', fragments: frags || '（还没有）', open: open || '（没有）', pending: pending || '（没有）', calendar: cal || '（无）',
     }),
     '',
     extractRules(),
@@ -178,8 +178,9 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
   }
   for (const f of [].concat(out?.fragments ?? [])) {
     if (!f || typeof f !== 'object') continue;
-    const r = observeFragment(memory, { ...f, open: f.open === true ? true : f.open === false ? false : undefined, gen: memory.gen, now });
-    if (r.action === 'new' || r.action === 'dup') report.fragments++;
+    const r = observeFragment(memory, { ...f, open: f.open === true ? true : f.open === false ? false : undefined, replaces: typeof f.replaces === 'string' ? f.replaces : null, gen: memory.gen, now });
+    if (r.action === 'new' || r.action === 'dup' || r.action === 'replaced') report.fragments++;
+    if (r.action === 'replaced') report.replaced = (report.replaced ?? 0) + 1;
   }
   for (const id of [].concat(out?.closed ?? [])) { if (closeFragment(memory, typeof id === 'object' ? id?.id : id, now)) report.closed = (report.closed ?? 0) + 1; }
   return report;
@@ -321,7 +322,7 @@ export function apply(ctx, config = {}) {
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
       `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
       `## 待核实（${memory.pending.length}）`, ...memory.pending.map((x) => `- ${x.id} · ${x.person}：${x.text}`), '',
-      `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}${f.open ? '/未了' : ''}${f.who?.length ? `/${f.who.join('、')}` : ''}] ${f.text}`), '',
+      `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}${f.open ? '/未了' : ''}${f.was ? '/改过' : ''}${f.who?.length ? `/${f.who.join('、')}` : ''}] ${f.text}`), '',
     ].join('\n');
   }
 
@@ -481,10 +482,18 @@ export function apply(ctx, config = {}) {
       // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
-      const frags = [...memory.fragments].filter((f) => !f.open).sort(compareFragments).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
+      // The most important ones, plus the ones these records are about (BM25 of the records against
+      // every fragment), so an old state the records change can be found and replaced by id.
+      const closed = memory.fragments.filter((f) => !f.open);
+      const top = [...closed].sort(compareFragments).slice(0, 40);
+      const bm = createBm25(); for (const f of closed) bm.add(f.text);
+      const sc = bm.score(text);
+      const related = closed.map((f, i) => ({ f, s: sc[i] })).filter((x) => x.s > 0 && !top.includes(x.f)).sort((a, b) => b.s - a.s).slice(0, 20).map((x) => x.f);
+      const frags = [...top, ...related].map((f) => `${f.id} | ${f.text}`).join('\n');
+      const cal = fresh.length ? calendar(fresh[0].at, fresh.at(-1).at) : '';
       const open = memory.fragments.filter((f) => f.open).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
       const ask = extractPrompt({
-        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags, open,
+        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags, open, cal,
         pending: memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'),
         withHandoff, withDiary, day: withDiary ? dayLabel(new Date()) : '',
       });
