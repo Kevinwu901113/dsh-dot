@@ -234,7 +234,7 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **记下的就是能发的**：交接尾巴里她的旧话写着 `… [图片×1]`（记录用的写法），新一段她照着打了一条 `[图片]`，dot 把对话里的回复原样转给他。现在 `qq_send` 的结果（`presentationMeta`）带上真正发出去的图的 ref（`images`，QQ 拒收的不在里面），记忆把它们写成 `[表情包 sticker:<id>]` / `[图 phone:screen]` / `[图 phone:latest]` / `[图 <网址>]`——照着打出来就是那张图（`markerOf` 认得，`sendGate` 也把它当 `images` 审）。只有数量的旧结果取调用里的前 N 张。交接尾巴的说明（`memory.handoff` 的 `tail`）跟着改；`qq.channel.owner` 说清两条路：直接写的回复会原样发给他，图和表情包只能用 `images`。
 - **别人发的图她看得见**：以前进她会话的只有 `[图片 <网址>]` / `[表情包 sticker:<id>]` 这几个字。dsh 的用户消息本来就能带图（dsh-llm 的 `ImageBlock { type: 'image', attachment }`，`attachment` 是附件仓库 `ctx.attachments`——`@deepseek-ai/dsh-attachment` 的 `AttachmentStore`，cordis 服务名 `attachments`——`saveImages` 返回的 `ImageAttachmentRef`；mobile-mcp 截图走的也是这条：dsh-mcp-client 用 `ctx.get('attachments').saveImages` 存 MCP 结果里的图）。dot/qq 在会叫醒她的消息上取图、存进仓库，`m.images: [{ ref, text }]`；dot/core 把他的话和通知的叫醒文本拆成内容数组，图紧跟在它的文字后面（`withImages`）。文字部分拼起来和原来一字不差，所以记忆（只取 text 部分）、recall 索引都不变，也不会记下附件 id。模型不收图时 dsh 的请求组装自己换成文字占位（`projectImagesForTextModel`）。
 
-## 0.18（未发版，版本号仍是 0.17.x）：活性、闸门、可见
+## 0.18.0：活性、闸门、可见
 
 起因：11-04 15:04 跑腿会话被一个没人点的审批卡了十几个小时，扣下 16 条通知，定时看手机全停。计划见 dsh-dot-research/plan-0.18.md。
 
