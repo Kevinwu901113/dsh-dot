@@ -172,10 +172,10 @@ export { describeNow };
 // assembles them, with this plugin's own lines (the observed ledger, her own life, the <contact/>
 // marker, playing, the field list). What varies per round is a small file filled into a placeholder.
 
-/** What the <contact/> marker becomes once the host knows whether her message went out. */
+/** What the <contact/> marker becomes once the host knows whether her message went out ('handed': her conversation decides). */
 export function fillContact(script, contact, said) {
   const text = String(contact?.text ?? '').replace(/<sep\s*\/>/gi, ' / ').trim();
-  const sent = said && text ? `「${text}」` : '';
+  const sent = said && text ? (said === 'handed' ? `（想跟他说「${text}」，等聊天那边看合不合适再说）` : `「${text}」`) : '';
   const kept = text ? '（打了几个字，最后没发出去）' : '（想了想，没发）';
   const filled = String(script ?? '').replace(/<contact\s*\/>/gi, () => (sent || kept));
   return { script: filled, marked: filled !== String(script ?? '') };
@@ -724,7 +724,7 @@ export function apply(ctx, config = {}) {
       if (parsed?.contact) said = await contact(parsed.contact, phase);
       if (phase !== 'seed') {
         const filled = fillContact(script, parsed?.contact, said);
-        const sentLine = said && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
+        const sentLine = said === true && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
         appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${filled.script}\n\n${sentLine}`);
       }
       if (parsed?.truncated) logger.warn('interlude reply was cut off; kept the script only (raise maxTokens?)');
@@ -815,7 +815,7 @@ export function apply(ctx, config = {}) {
       const handed = await dshDot().say(c.text.replace(/<sep\s*\/>/gi, '\n'));
       if (handed) { meta.dayContacts++; saveMeta(); }
       audit(handed ? 'contact-handed' : 'contact-held', { phase, ...(handed ? {} : { why: 'not handed over' }) });
-      return handed;
+      return handed ? 'handed' : false;
     }
     const q = ctx.get('dshQq');
     if (q?.connected && q.owner) {

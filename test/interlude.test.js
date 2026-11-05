@@ -531,6 +531,7 @@ test('contact marker: what really went out, or her deleting it; the prompt forbi
   assert.equal(fillContact(s, { text: '睡了没' }, false).script, '她点开 QQ。（打了几个字，最后没发出去）\n发完把手机扣在桌上。');
   assert.equal(fillContact(s, null, false).script, '她点开 QQ。（想了想，没发）\n发完把手机扣在桌上。');
   assert.equal(fillContact('没有标记', { text: 'x' }, true).marked, false);
+  assert.equal(fillContact(s, { text: '睡了没' }, 'handed').script, '她点开 QQ。（想跟他说「睡了没」，等聊天那边看合不合适再说）\n发完把手机扣在桌上。');
   const off = buildPrompt({ phase: 'advance', speak: false, now: Date.now() }).system;
   assert.ok(off.includes(prompt('interlude.round.contact-rule.off')) && !off.includes(prompt('interlude.round.contact-rule')));
   assert.match(off, /^观察到的账本：/m);
