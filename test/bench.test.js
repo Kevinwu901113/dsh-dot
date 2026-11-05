@@ -21,7 +21,7 @@ const ok = (text) => [200, { choices: [{ message: { content: text }, finish_reas
 
 test('ctx.llm.stream: retries 429/5xx, then yields text-delta, usage, finish as memory.js reads them', async () => {
   const { s, seen, url } = await server([[429, {}], [503, {}], ok('{"owner":[]}')]);
-  const m = createModel({ baseUrl: url, apiKey: 'k', model: 'deepseek-chat', backoffMs: 5 });
+  const m = createModel({ baseUrl: url, apiKey: 'k', model: 'deepseek-flash', backoffMs: 5 });
   const events = [];
   for await (const e of m.llm.stream({ maxTokens: 16384, messages: [{ role: 'user', content: [{ type: 'text', text: '整理' }] }] })) events.push(e);
   s.close();
@@ -34,7 +34,7 @@ test('ctx.llm.stream: retries 429/5xx, then yields text-delta, usage, finish as 
 
 test('a returned answer is final; a 4xx is not retried and ends the stream as an error', async () => {
   const { s, seen, url } = await server([ok(''), [400, { error: 'bad' }]]);
-  const m = createModel({ baseUrl: url, apiKey: 'k', model: 'deepseek-chat', backoffMs: 5 });
+  const m = createModel({ baseUrl: url, apiKey: 'k', model: 'deepseek-flash', backoffMs: 5 });
   const a = await m.complete([{ role: 'user', content: 'q' }], { maxTokens: 100, purpose: 'answer' });
   assert.equal(a.text, '', 'an empty reply is not asked again');
   const events = [];

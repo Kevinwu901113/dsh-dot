@@ -19,7 +19,7 @@
 //
 // node bench/chat-memory-benchmark.mjs --dataset <…/datasets/natural-timegrid-20261101-v2> --out <dir>
 //   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--save-prompts]
-// env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-chat),
+// env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-flash),
 //      DSH_BENCH_EXTRA_BODY (JSON merged into every request), DSH_BENCH_MAX_TOKENS_CAP (8192),
 //      DSH_BENCH_PRICE_RMB ("0.2,2,3": per 1M tokens, input cache hit, input cache miss, output)
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -240,7 +240,7 @@ async function main() {
   const { stamp } = await import('../src/clock.js');
   const { prompt } = await import('../src/prompts.js');
 
-  const modelName = process.env.DSH_BENCH_MODEL || 'deepseek-chat';
+  const modelName = process.env.DSH_BENCH_MODEL || 'deepseek-flash';
   const baseUrl = process.env.DEEPSEEK_BASE_URL || 'https://api.deepseek.com';
   if (!o['fake-llm'] && !process.env.DEEPSEEK_API_KEY) throw new Error('DEEPSEEK_API_KEY is not set (or use --fake-llm)');
   const extraBody = process.env.DSH_BENCH_EXTRA_BODY ? JSON.parse(process.env.DSH_BENCH_EXTRA_BODY) : {};
@@ -260,7 +260,7 @@ async function main() {
     window: { turns: WINDOW, why: 'the last 6 complete turns as chat messages, as Soul/ROFM/Qwen/OpenViking/Hindsight/Suzu were tested (docs/tested-configurations.md)' },
     recall: { backend: o.recall, model: o.recall === 'local' ? 'Xenova/multilingual-e5-small' : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
     memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, consolidateIdleMinutes: defaults.consolidateIdleMinutes, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, sessionBaseTokens: SESSION_BASE, tz: o.tz },
-    pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-chat (assumption; override DSH_BENCH_PRICE_RMB)' },
+    pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-flash (assumption; override DSH_BENCH_PRICE_RMB)' },
     personas: oldMeta?.personas ?? {},
     usage: null, costRmb: null, startedAt: oldMeta?.startedAt ?? new RealDate().toISOString(), updatedAt: null,
   };

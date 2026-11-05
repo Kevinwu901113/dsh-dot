@@ -14,7 +14,7 @@ node bench/chat-memory-benchmark.mjs \
 # 中断后同一命令加 --resume 接着跑；--persona P01 可重复，只跑指定人物
 ```
 
-环境变量：`DEEPSEEK_API_KEY`（必填）、`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）、`DSH_BENCH_MODEL`（默认 `deepseek-chat`，非思考）、`DSH_BENCH_EXTRA_BODY`（并入每个请求的 JSON，比如某渠道需要显式关思考时用）、`DSH_BENCH_MAX_TOKENS_CAP`（默认 8192）、`DSH_BENCH_PRICE_RMB`（默认 `0.2,2,3`：每百万 token 缓存命中输入 / 未命中输入 / 输出，按 DeepSeek 官网价假设）。
+环境变量：`DEEPSEEK_API_KEY`（必填）、`DEEPSEEK_BASE_URL`（默认 `https://api.deepseek.com`）、`DSH_BENCH_MODEL`（默认 `deepseek-flash`，非思考）、`DSH_BENCH_EXTRA_BODY`（并入每个请求的 JSON，比如某渠道需要显式关思考时用）、`DSH_BENCH_MAX_TOKENS_CAP`（默认 8192）、`DSH_BENCH_PRICE_RMB`（默认 `0.2,2,3`：每百万 token 缓存命中输入 / 未命中输入 / 输出，按 DeepSeek 官网价假设）。
 
 其他参数：`--recall off`（不用自动召回）、`--window 6`、`--save-prompts`（把每题真实发给模型的消息写进 `prompts.jsonl`，自查输入边界用，公开前先检查）、`--fake-llm`（离线测试：整理返回固定 JSON，回答是固定句子）、`--max-questions N`。
 
