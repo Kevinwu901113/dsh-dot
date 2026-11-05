@@ -9,7 +9,8 @@
 // What is left, because no plugin does it:
 //   1. results of scheduled turns in <home> go to IM through dsh-im's public `send()`,
 //      unless the reply is only DOT_SILENT (nothing worth reporting);
-//   2. an approval asked during such a turn is announced on IM with the live-view link;
+//   2. an approval asked in her sessions is announced to the owner (QQ when connected, else IM) with
+//      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../tool-prefixes.js';
@@ -174,7 +175,36 @@ export const defaults = {
   // Notifications from these apps are conversations: they wake her conversation, not the errand.
   conversationApps: ['qq', 'com.tencent.mobileqq', 'com.tencent.mm'],
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
+  // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
+  // (0 = wait for ever). A turn with no session event for turnStallMs is stalled; an errand stalled
+  // for errandStallMs is cancelled (her conversation never is: he is told once).
+  approvalWaitMs: 600000,
+  turnStallMs: 300000,
+  errandStallMs: 600000,
 };
+
+/** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
+export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
+/** The owner's message for an approval she is waiting on. */
+export function approvalNotice({ tool, reason = '', link = '', minutes = 0 }) {
+  const r = String(reason ?? '').trim();
+  const lines = [`🔐 dot 需要你审批：${tool || '工具调用'}`, r, `在 DeepSeek Harness 里批准或拒绝${minutes ? `；${minutes} 分钟没人点就当拒绝` : ''}。`];
+  if (link && !r.includes(link)) lines.push(`实时画面：${link}`);
+  return lines.filter(Boolean).join('\n');
+}
+/** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
+export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
+/**
+ * An open turn as the panel and /dot show it: 'approval' (waiting on one, not yet expired),
+ * 'timed-out' (stalled after an approval expired), 'stalled' (no session event for turnStallMs), 'running'.
+ */
+export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStallMs, approval } = {}) {
+  const idleMs = Math.max(0, now - (t.lastEventAt ?? t.startedAt ?? now));
+  const stalled = turnStallMs > 0 && idleMs >= turnStallMs;
+  if (approval && !approval.timedOutAt) return { state: 'approval', idleMs, waitMs: Math.max(0, now - approval.since), tool: approval.tool };
+  if (stalled) return { state: t.approvalTimedOutAt || approval?.timedOutAt ? 'timed-out' : 'stalled', idleMs };
+  return { state: 'running', idleMs };
+}
 
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
@@ -418,7 +448,9 @@ export function apply(ctx, config = {}) {
   const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
 
   // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
-  const turns = new Map(); // session id → { turn, scheduled, text }
+  const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
+  const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
+  const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   ctx.on('session/event', (session, event) => {
@@ -428,6 +460,19 @@ export function apply(ctx, config = {}) {
     if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) imSessions.add(id);
     if (wantIm && event.type === 'user/message' && isImMessage(event.data)) imSessions.add(id);
     if (!isDotSession(id, cwd)) return;
+    const open = turns.get(id);
+    if (open) {
+      open.lastEventAt = Date.now();
+      if (event.type === 'tool/call') open.doing = shortTool(event.data?.name);
+      if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
+    }
+    // Pending approvals (the log's pair; the answerer below adds the ones it sees first).
+    if (event.type === 'approval/asked') {
+      const key = event.data?.callId ?? event.data?.id;
+      if (key && !approvals.has(key)) approvals.set(key, { session: id, tool: String(event.data?.toolName ?? ''), reason: String(event.data?.reason ?? ''), since: Date.now() });
+      if (key) approvals.get(key).eventId = event.data?.id;
+    }
+    if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
     if (event.type === 'turn/end' && lastSession !== id && !isErrand(id)) { lastSession = id; store.set('lastSession', id); }
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
@@ -437,7 +482,7 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'turn/start') {
       ownerDenies.delete(id);
-      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '', startedAt: Date.now() });
+      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
       return;
     }
     const t = turns.get(id);
@@ -469,18 +514,6 @@ export function apply(ctx, config = {}) {
       if (text.trim()) t.text = text; // the last non-empty reply of the turn is its answer
       return;
     }
-    if (event.type === 'approval/asked') {
-      // Payload: { id, toolName, reason? }. dsh-computer's gate puts the live-view link in reason.
-      const onPhone = String(event.data?.toolName ?? '').startsWith(PHONE_TOOL_PREFIX);
-      const vm = (onPhone ? phone()?.status?.() : computer()?.status?.()) ?? {};
-      const link = vm.publicLiveViewUrl || vm.liveViewUrl;
-      const reason = String(event.data?.reason ?? '').trim();
-      const lines = [`🔐 dot 需要你审批：${event.data?.toolName ?? '工具调用'}`, reason, '在 DeepSeek Harness 里批准或拒绝。'];
-      if (link && !reason.includes(link)) lines.push(`实时画面：${link}`);
-      void im.send(lines.filter(Boolean).join('\n'), 'plain');
-      audit('approval-notified', { session: id, tool: event.data?.toolName });
-      return;
-    }
     if (ended) {
       const text = t.text.trim();
       if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
@@ -493,6 +526,58 @@ export function apply(ctx, config = {}) {
       }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
     }
+  });
+
+  // 2. Approvals in her sessions: he is told at once (QQ when connected, else IM), and an ask nobody
+  // answers within approvalWaitMs is rejected — an unanswered one held an errand for 13 hours
+  // (11-04). Prepended, so it wraps the answerers behind it (the UI); their late answer is dropped.
+  const liveLink = (toolName) => {
+    const vm = (String(toolName ?? '').startsWith(PHONE_TOOL_PREFIX) ? phone()?.status?.() : computer()?.status?.()) ?? {};
+    return vm.publicLiveViewUrl || vm.liveViewUrl || '';
+  };
+  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id)); };
+  const EXPIRED = Symbol('expired'), WITHDRAWN = Symbol('withdrawn');
+  ctx.on('approval/request', async (req, next) => {
+    if (!hers(req.agent)) return next();
+    const id = req.agent.session.id;
+    const key = req.callId ?? Symbol('approval');
+    const a = approvals.get(key) ?? { session: id, tool: String(req.toolName ?? ''), reason: String(req.reason ?? ''), since: Date.now() };
+    approvals.set(key, a);
+    const wait = Number(cfg.approvalWaitMs) || 0;
+    const minutes = wait > 0 ? Math.max(1, Math.round(wait / 60000)) : 0;
+    a.notified = true;
+    void im.send(approvalNotice({ tool: req.toolName, reason: req.reason, link: liveLink(req.toolName), minutes }), 'plain');
+    audit('approval-notified', { session: id, tool: req.toolName, errand: isErrand(id) });
+    if (!wait) { try { return await next(); } finally { approvals.delete(key); } }
+    let timer, onAbort;
+    const expired = new Promise((r) => {
+      timer = setTimeout(() => r(EXPIRED), wait); timer.unref?.();
+      onAbort = () => r(WITHDRAWN);
+      req.signal?.addEventListener?.('abort', onAbort, { once: true });
+    });
+    try {
+      const out = await Promise.race([Promise.resolve().then(() => next()), expired]);
+      if (out === WITHDRAWN) return 'cancelled';
+      if (out !== EXPIRED) return out;
+      a.timedOutAt = Date.now();
+      const t = turns.get(id);
+      if (t) t.approvalTimedOutAt = a.timedOutAt;
+      if (req.callId !== undefined) expiredCalls.set(req.callId, minutes);
+      audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, errand: isErrand(id) });
+      void im.send(`⌛ dot: ${req.toolName} 的审批 ${minutes} 分钟没人点，过期了，当拒绝处理——她放下了这步。`, 'plain');
+      return 'rejected';
+    } finally {
+      clearTimeout(timer); req.signal?.removeEventListener?.('abort', onAbort);
+      approvals.delete(key);
+    }
+  }, { prepend: true });
+  // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
+  ctx.on('tools/post-execute', async (exec, result, next) => {
+    const minutes = expiredCalls.get(exec?.callId);
+    if (minutes === undefined) return next();
+    expiredCalls.delete(exec.callId);
+    const d = await next();
+    return { kind: 'block', feedback: [{ type: 'text', text: approvalTimeoutText(minutes) }], ...(d?.additionalContexts?.length ? { additionalContexts: d.additionalContexts } : {}) };
   });
 
   // Working rules are a system-prompt section for sessions in <home> (static per session, so the

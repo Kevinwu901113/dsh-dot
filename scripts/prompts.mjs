@@ -86,6 +86,8 @@ export const entries = [
     render: () => variant([['她空闲', D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }])], ['她这轮进行中', D.ownerWords([{ text: '算了' }, { text: '先别弄了' }], Date.now(), { whileBusy: true })]]) },
   { id: 'interrupt', group: 'wake', name: '他插话了', note: '她要 qq_send 给他时他还有没看的话：这次发送被拦下（工具返回的理由，每轮最多 2 次）；气泡发到一半他又说话：剩下的不发（qq_send 的结果）', files: ['dot.owner-interrupt', 'qq.send-interrupted'],
     render: () => variant([['发送被拦下', D.ownerInterruptText()], ['发到一半', Q.sendReport({ sent: 1, interrupted: true, unsent: ['那家店我去过', '还挺好吃的'] })]]) },
+  { id: 'approval', group: 'wake', name: '审批过期', note: '她那步要审批、dot.approvalWaitMs（默认 10 分钟）没人点：当拒绝处理，这句替换 dsh 的「the user rejected tool」作为工具结果', files: ['dot.approval-timeout'],
+    render: () => D.approvalTimeoutText(10) },
   { id: 'notification', group: 'wake', name: '手机通知', note: '通知把她叫醒时收到的那条', files: ['dot.notification', 'dot.notification.many', 'dot.notification.busy', 'dot.notification.how-qq', 'dot.notification.how-mixed', 'dot.notification.how-app', 'dot.notification.cards', 'dot.notification.unverified'],
     render: () => {
       const qqOne = [{ pkg: 'qq', title: '宽(2条新消息)', text: '在吗' }, { pkg: 'qq', title: '宽', text: '帮我看个东西' }];

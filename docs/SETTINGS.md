@@ -196,6 +196,7 @@ setx DSH_DOT_COMPUTER off
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
 | `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
 | `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
+| `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 
 ## 优先级和旧文件

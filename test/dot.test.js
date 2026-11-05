@@ -15,7 +15,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   process.env.DSH_HOME = dsh;
   writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify(state));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
-  const effects = [], audit = [], sent = [], listeners = [];
+  const effects = [], audit = [], sent = [], listeners = [], hooks = {};
   const budgetSvc = { blockedScopes: [...blocked], status() { return { blockedScopes: this.blockedScopes }; }, unblock(s) { this.blockedScopes = this.blockedScopes.filter((x) => x !== s); } };
   const dshIm = {
     listBots: async () => [{ botId: 'bot_1', channel: 'qq' }],
@@ -24,7 +24,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
-    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); },
+    on: (name, fn, opts) => { if (name === 'session/event') listeners.push(fn); else hooks[name] = Object.assign(fn, { opts }); },
     effect(fn) { effects.push(fn()); },
     prompts: [], sections: [],
     systemPrompt: { context(c) { ctx.prompts.push(c); }, section(c) { ctx.sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
@@ -34,7 +34,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -78,19 +78,67 @@ test('scheduled turn in home: result goes to IM; DOT_SILENT stays silent; other 
   stop(h);
 });
 
-test('approval during a scheduled turn is announced with the live view link', async () => {
+test('an approval in her session is announced to him at once, with the live view link and the wait', async () => {
   const h = harness();
   apply(h.ctx, h.config);
+  const answerer = h.hooks['approval/request'];
+  assert.equal(answerer.opts?.prepend, true, 'wraps the answerers behind it (the UI)');
+  const agent = { session: { id: 's1', header: { cwd: h.home } } };
   h.emit(h.home, 'turn/start', { turn: 1 });
-  h.emit(h.home, 'user/message', { source: { kind: 'schedule' } });
-  h.emit(h.home, 'approval/asked', { id: 'a1', toolName: 'mcp__dot-vm__browser_click', reason: 'dsh-computer: sensitive browser action browser_click' });
+  const out = await answerer({ agent, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'dsh-computer: sensitive browser action browser_click' }, async () => 'allowed-once');
+  assert.equal(out, 'allowed-once', 'his answer goes through as it is');
   await wait(20);
-  assert.match(h.sent[0].text, /审批：mcp__dot-vm__browser_click[\s\S]*sensitive browser action[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
+  assert.match(h.sent[0].text, /审批：mcp__dot-vm__browser_click[\s\S]*sensitive browser action[\s\S]*10 分钟没人点就当拒绝[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
   // The gate already includes the link in its reason: not repeated.
-  h.emit(h.home, 'approval/asked', { id: 'a2', toolName: 'bash', reason: 'risky\n实时画面 / live view: https://mac.ts.net/vnc' });
+  await answerer({ agent, toolName: 'bash', callId: 'c2', reason: 'risky\n实时画面 / live view: https://mac.ts.net/vnc' }, async () => 'rejected');
   await wait(20);
   assert.equal((h.sent[1].text.match(/mac\.ts\.net\/vnc/g) || []).length, 1);
+  assert.equal(h.audit.filter((e) => e.event === 'approval-notified').length, 2);
+  // Not her session: passed on, nobody told.
+  assert.equal(await answerer({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } }, toolName: 'bash' }, async () => 'rejected'), 'rejected');
+  await wait(20);
+  assert.equal(h.sent.length, 2);
   stop(h);
+});
+
+test('an approval nobody answers within approvalWaitMs is rejected; he hears it expired; she reads why; a withdrawn one is not', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const { prompt } = await import('../src/prompts.js');
+    const h = harness();
+    apply(h.ctx, h.config);
+    const answerer = h.hooks['approval/request'];
+    const agent = { session: { id: 's1', header: { cwd: h.home } } };
+    h.emit(h.home, 'turn/start', { turn: 1 });
+    h.emit(h.home, 'approval/asked', { id: 'ap1', toolName: 'bash', callId: 'c1', reason: 'rm -rf' });
+    let answered = 0;
+    const pending = answerer({ agent, toolName: 'bash', callId: 'c1', reason: 'rm -rf' }, () => { answered++; return new Promise(() => {}); });
+    mock.timers.tick(599_999); await settle();
+    assert.equal(answered, 1, 'the UI answerer was asked');
+    assert.ok(!h.audit.some((e) => e.event === 'approval-timeout'));
+    mock.timers.tick(1); await settle();
+    assert.equal(await pending, 'rejected');
+    assert.ok(h.audit.some((e) => e.event === 'approval-timeout' && e.tool === 'bash' && e.waitedMs === 600000));
+    for (let i = 0; i < 5; i++) await settle();
+    assert.match(h.sent.at(-1).text, /bash 的审批 10 分钟没人点，过期了/);
+    // dsh's denial is rewritten for that call only
+    const post = h.hooks['tools/post-execute'];
+    const res = await post({ callId: 'c1', name: 'bash', agent }, { isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "bash"' }] }, async () => ({ kind: 'accept' }));
+    assert.deepEqual(res, { kind: 'block', feedback: [{ type: 'text', text: prompt('dot.approval-timeout', { minutes: 10 }) }] });
+    assert.equal(prompt('dot.approval-timeout', { minutes: 10 }), '没人批（等了 10 分钟没人点），这步先放下：换别的办法，或者以后再说。');
+    assert.deepEqual(await post({ callId: 'c1', name: 'bash' }, {}, async () => ({ kind: 'accept' })), { kind: 'accept' }, 'once');
+    // withdrawn (the turn was stopped): 'cancelled', no expiry message
+    const ac = new AbortController();
+    const sentBefore = h.sent.length;
+    const p2 = answerer({ agent, toolName: 'bash', callId: 'c2', signal: ac.signal }, () => new Promise(() => {}));
+    ac.abort();
+    assert.equal(await p2, 'cancelled');
+    mock.timers.tick(600_000); await settle();
+    assert.equal(h.audit.filter((e) => e.event === 'approval-timeout').length, 1);
+    for (let i = 0; i < 5; i++) await settle();
+    assert.equal(h.sent.length, sentBefore + 1, 'only the ask itself');
+    stop(h);
+  } finally { mock.timers.reset(); }
 });
 
 test('budget block and unblock are announced once', async () => {
