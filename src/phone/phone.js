@@ -737,6 +737,8 @@ export function apply(ctx, config = {}, deps = {}) {
   const waiting = new Set();
   const lapse = () => { audit({ kind: 'phone-lease', event: 'expired', session: lease.holder, holder: lease.holder }); lease.holder = ''; };
   phone.setPriority = (id) => { lease.priority = id || ''; };
+  /** For hooks that answer a phone call ahead of this one (interlude's observation allow): null, or why it is refused. */
+  phone.lease = (id, tool) => (id ? takeLease(id, tool) : null);
   async function takeLease(id, tool) {
     const until = Date.now() + cfg.leaseWaitMs;
     for (;;) {

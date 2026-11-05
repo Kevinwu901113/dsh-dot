@@ -603,7 +603,9 @@ export function apply(ctx, config = {}) {
     const phoneTool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool)) || exec.name === PHONE_ZOOM_TOOL) {
       if (deviceOf(exec.name)) looked.set(sessionId, deviceOf(exec.name));
-      return { kind: 'allow' };
+      // Answering here skips the phone's own hook: take its lease (one session drives the phone at a time).
+      const busy = phoneTool || exec.name === PHONE_ZOOM_TOOL ? await ctx.get('dshPhone')?.lease?.(sessionId, phoneTool || exec.name) : null;
+      return busy ? { kind: 'deny', reason: busy } : { kind: 'allow' };
     }
     audit('observation-refused', { session: sessionId, tool: exec.name });
     return { kind: 'deny', reason: `dsh-interlude: this is an observation — looking only, nothing to approve. "${exec.name}" is not available here; look with ${cfg.vmObservationTools.slice(0, 2).join(', ')}, ${cfg.phoneObservationTools.slice(5, 7).join(', ')}… or write down what you saw.` };
