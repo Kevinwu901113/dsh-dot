@@ -406,7 +406,7 @@ export function apply(ctx, config = {}) {
     const controller = ctx.get('sessionController');
     if (!id || !controller) return;
     try {
-      const found = await controller.resolveAgent(id);
+      const found = await resolveLive(id);
       if (!found || 'error' in found || typeof found.agent.inject !== 'function') return;
       found.agent.inject(createUserMessage({ content: [{ type: 'text', text: errandNote(origin, text) }], source: ERRAND_NOTE_SOURCE }));
       audit('errand-noted', { session: id, origin });
@@ -562,6 +562,16 @@ export function apply(ctx, config = {}) {
   let deliverTracked; let phoneCheckNow; // assigned below (phone check), used by flush/releaseHeld
   // Conversations (the owner, QQ, WeChat) wake her conversation; every other app's notification is an errand.
   const isConversation = (n) => n.fromOwner || cfg.conversationApps.includes(n.pkg);
+  /**
+   * Her agent for a session: the live agent loop from ctx.agents (steer/inject/cancel) when it is
+   * running; otherwise the session controller's resolveAgent — the client API layer, whose handle on
+   * the desktop host only offers followup — which also loads a session that is not live.
+   */
+  const resolveLive = async (id) => {
+    const live = ctx.get('agents')?.get?.(id);
+    if (typeof live?.followup === 'function') return { agent: live };
+    return ctx.get('sessionController')?.resolveAgent(id);
+  };
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
     const id = target ?? lastSession;
@@ -570,7 +580,10 @@ export function apply(ctx, config = {}) {
     const fromOwner = all.filter((n) => n.fromOwner);
     const items = all.filter((n) => !n.fromOwner);
     waking = waking.then(async () => {
-      const found = await controller.resolveAgent(id);
+      // The live agent loop (ctx.agents) has steer/inject/cancel; the session controller's
+      // resolveAgent is the client API layer and hands back a thinner handle (followup only on the
+      // desktop host) — it is the fallback that also loads a session that is not live.
+      const found = await resolveLive(id);
       if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
       // The owner's words, exactly as typed (several messages → several lines), as human input.
       if (fromOwner.length) toOwnerAgent(found.agent, id, fromOwner);
@@ -597,6 +610,7 @@ export function apply(ctx, config = {}) {
       agentShapeLogged = true;
       const methods = [...new Set([...Object.keys(agent), ...Object.getOwnPropertyNames(Object.getPrototypeOf(agent) ?? {})])].filter((k) => typeof agent[k] === 'function');
       logger.info(`her agent handle offers: ${methods.join(', ')} (busy now: ${busy}, open turns: ${[...turns.keys()].map((k) => k.slice(0, 16)).join(' ') || 'none'})`);
+      audit('agent-handle', { methods, busy, openTurns: turns.size });
     }
     const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via !== 'followup' }), items), source: ownerSource() });
     try {
@@ -749,11 +763,11 @@ export function apply(ctx, config = {}) {
     if (!controller) return;
     lastWakeAt = Date.now();
     waking = waking.then(async () => {
-      const main = await controller.resolveAgent(lastSession);
+      const main = await resolveLive(lastSession);
       // She is on a long task: the goal driver brings her back round after round; don't cut in.
       if (main && !('error' in main) && goalActive(main.agent)) { audit('phone-check-skipped', { why: 'goal active' }); return; }
       const target = (await ensureErrand()) || lastSession;
-      const found = target === lastSession ? main : await controller.resolveAgent(target);
+      const found = target === lastSession ? main : await resolveLive(target);
       if (!found || 'error' in found) return;
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: phoneCheckText() }], source: PHONE_CHECK_SOURCE }));
       audit('phone-check', { session: target, errand: target !== lastSession });
