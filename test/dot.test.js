@@ -866,3 +866,44 @@ test('turn watchdog: a stalled errand is cancelled keeping its inbox, held items
     stop(h);
   } finally { mock.timers.reset(); }
 });
+
+test('visible: dshDot.turn says approval → timed-out → running; /dot lists the approval waiting and the stalled turn', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+  try {
+    const h = harness();
+    const services = {};
+    let cmd;
+    h.ctx.get = ((orig) => (n) => (n === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : services[n] ?? orig(n)))(h.ctx.get);
+    h.ctx.provide = (n, v) => { services[n] = v; };
+    apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0 });
+    const dot = services.dshDot;
+    h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
+    h.emit(h.home, 'turn/start', { turn: 2 });
+    assert.equal(dot.turn('s1').state, 'running');
+    assert.equal(dot.turn('nope'), null);
+    h.emit(h.home, 'approval/asked', { id: 'ap1', toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' });
+    const pending = h.hooks['approval/request']({ agent: { session: { id: 's1', header: { cwd: h.home } } }, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' }, () => new Promise(() => {}));
+    for (let m = 0; m < 3; m++) { mock.timers.tick(60_000); await settle(); }
+    const t = dot.turn('s1');
+    assert.equal(t.state, 'approval'); assert.equal(Math.floor(t.waitMs / 60000), 3); assert.equal(t.doing, '等 browser_click 的审批');
+    assert.deepEqual(dot.approvals().map((a) => [a.session, a.tool]), [['s1', 'mcp__dot-vm__browser_click']]);
+    let out = (await cmd.handler({ rawInput: '' })).text;
+    assert.match(out, /approval waiting: browser_click in her conversation s1 · 3 min of 10 min/);
+    for (let m = 0; m < 7; m++) { mock.timers.tick(60_000); await settle(); }
+    assert.equal(await pending, 'rejected');
+    h.emit(h.home, 'approval/decided', { id: 'ap1', outcome: 'rejected' });
+    assert.deepEqual(dot.approvals(), []);
+    assert.equal(dot.turn('s1').state, 'running', 'the decision is an event: not stalled yet');
+    for (let m = 0; m < 6; m++) { mock.timers.tick(60_000); await settle(); }
+    assert.equal(dot.turn('s1').state, 'timed-out', 'no event since the approval expired');
+    out = (await cmd.handler({ rawInput: '' })).text;
+    assert.match(out, /stalled turn: her conversation s1 · no event for 6 min · after an approval timed out · last: browser_click（审批过期）/);
+    assert.match(out, /not cancelled/);
+    assert.equal(dot.turns().length, 1);
+    h.emit(h.home, 'assistant/message', msg('好了'));
+    assert.equal(dot.turn('s1').state, 'running');
+    h.emit(h.home, 'turn/end', { turn: 2 });
+    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: no approval waiting, no stalled turn \(approval wait 10 min, stalled after 5 min, errand given up after 10 min\)/);
+    stop(h);
+  } finally { mock.timers.reset(); }
+});

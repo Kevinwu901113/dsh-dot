@@ -63,12 +63,14 @@ const PHASE = { advance: 'advance', 'follow-up': 'follow-up', intent: 'intent', 
 /**
  * Turn the records into scenes, newest first.
  * @param {object} src - parsed records: audit (computer+phone audit), qq, transcript, interludeCalls, script, memoryCalls, diary.
- * @param {object} opts - now, limit, days, busy(session) → bool, isErrand(session) → bool.
- * Each scene: { at, end, session, source: { kind, name? }, status: 'running'|'done'|'failed', trigger?,
+ * @param {object} opts - now, limit, days, busy(session) → bool, isErrand(session) → bool,
+ *   turnOf(session) → { state: 'running'|'stalled'|'approval'|'timed-out', idleMs, waitMs? } for an open turn.
+ * Each scene: { at, end, session, source: { kind, name? }, status: 'running'|'stalled'|'approval'|'timed-out'|'done'|'failed',
+ *   minutes? (stalled: since the last event; approval: waiting), trigger?,
  *   actions: [{ k, text, via? }], stats: { tools, model, in, out } }. Action and source kinds are keys;
  *   the page words them (zh/en).
  */
-export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, days = 3, busy = () => false, isErrand = () => false } = {}) {
+export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, days = 3, busy = () => false, isErrand = () => false, turnOf = () => null } = {}) {
   const since = now - days * DAY;
   const ev = [];
   const push = (t, type, e) => { if (t >= since && t <= now + 60000) ev.push({ t, type, e }); };
@@ -206,9 +208,12 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
   for (const s of scenes) {
     if (s.status === 'failed') continue;
     if (s.round ? s.roundOpen && now - s.at < 15 * 60000 : s.session && latest.get(s.session) === s && busy(s.session)) s.status = 'running';
+    // Her open turn as the watchdog sees it: stalled, waiting on an approval, or stalled after one expired.
+    const t = s.status === 'running' && !s.round ? turnOf(s.session) : null;
+    if (t && t.state !== 'running') { s.status = t.state; s.minutes = Math.floor((t.state === 'approval' ? t.waitMs : t.idleMs) / 60000); }
   }
-  return scenes.slice(-limit).reverse().map(({ at, end, session, source, status, trigger, actions, stats, quiet, count }) => ({
-    at, end, session, source, status, ...(trigger ? { trigger } : {}), ...(quiet && !actions.length ? { quiet: true } : {}), ...(count ? { count } : {}),
+  return scenes.slice(-limit).reverse().map(({ at, end, session, source, status, minutes, trigger, actions, stats, quiet, count }) => ({
+    at, end, session, source, status, ...(minutes !== undefined ? { minutes } : {}), ...(trigger ? { trigger } : {}), ...(quiet && !actions.length ? { quiet: true } : {}), ...(count ? { count } : {}),
     actions: actions.slice(0, 20).map(({ key, ...a }) => { void key; return a; }), stats,
   }));
 }

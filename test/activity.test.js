@@ -117,6 +117,14 @@ test('activity: one scene per wake, with what she did in her own words and what 
   assert.equal(last.trigger, '晚安');
   assert.equal(last.status, 'running', 'her conversation is in a turn and this is its latest scene');
   assert.ok(scenes.every((s, i) => i === 0 || s.at <= scenes[i - 1].at), 'newest first');
+  // The watchdog's view of that open turn: stalled, waiting on an approval, timed out; only the running scene changes.
+  const as = (t) => act.scenes({ busy: (id) => id === 's1', isErrand: (id) => id === 'e1', turnOf: (id) => (id === 's1' ? t : null) });
+  assert.deepEqual([as({ state: 'stalled', idleMs: 7 * 60000 + 5 })[0].status, as({ state: 'stalled', idleMs: 7 * 60000 + 5 })[0].minutes], ['stalled', 7]);
+  assert.deepEqual([as({ state: 'approval', idleMs: 0, waitMs: 3 * 60000 })[0].status, as({ state: 'approval', idleMs: 0, waitMs: 3 * 60000 })[0].minutes], ['approval', 3]);
+  assert.equal(as({ state: 'timed-out', idleMs: 11 * 60000 })[0].status, 'timed-out');
+  assert.equal(as({ state: 'running', idleMs: 1000 })[0].status, 'running');
+  assert.equal(as({ state: 'running', idleMs: 1000 })[0].minutes, undefined);
+  assert.equal(as({ state: 'stalled', idleMs: 7 * 60000 })[1].status, scenes[1].status, 'scenes that are not running are left alone');
 });
 
 test('activity: quotes are cut at ~80 characters; limit and day window hold', () => {
@@ -164,10 +172,12 @@ test('panel state carries the scenes; the page has the section in both languages
     const ctx = { get: (n) => (n === 'dshDot' ? { home, busy: () => false, isErrand: (id) => id === 'e1', session: () => 's1', stats: () => null } : undefined) };
     const s = await collectState(ctx, { scenes: '5' });
     assert.equal(s.activity.scenes.length, 5);
+    assert.deepEqual([s.dot.turns, s.dot.approvals], [[], []], 'without the liveness view: empty');
     assert.equal(s.activity.scenes[0].trigger, '晚安');
   } finally { process.env.DSH_HOME = prev; }
   const page = pageHtml();
   assert.match(page, /最近 '\+n\+' 场/);
   assert.match(page, /Last '\+n\+' scenes/);
   assert.match(page, /api\/state\?scenes=/);
+  assert.match(page, /卡住 '\+m\+' 分钟/); assert.match(page, /等审批 '\+m\+' 分钟/); assert.match(page, /已超时/);
 });

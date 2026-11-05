@@ -563,7 +563,7 @@ export function apply(ctx, config = {}) {
       if (out !== EXPIRED) return out;
       a.timedOutAt = Date.now();
       const t = turns.get(id);
-      if (t) t.approvalTimedOutAt = a.timedOutAt;
+      if (t) { t.approvalTimedOutAt = a.timedOutAt; t.doing = `${shortTool(req.toolName)}（审批过期）`; }
       if (req.callId !== undefined) expiredCalls.set(req.callId, minutes);
       audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, errand: isErrand(id) });
       void im.send(`⌛ dot: ${req.toolName} 的审批 ${minutes} 分钟没人点，过期了，当拒绝处理——她放下了这步。`, 'plain');
@@ -881,6 +881,12 @@ export function apply(ctx, config = {}) {
     const r = setTimeout(() => { void releaseHeld(id); }, 50); r.unref?.();
     void noteToConversation(noteOrigin(t.origin), errandStalledText(doing, Math.round(idle / 60000)));
   };
+  const turnInfo = (id, now = Date.now()) => {
+    const t = turns.get(id);
+    if (!t) return null;
+    const a = pendingApproval(id);
+    return { session: id, errand: isErrand(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t, a), ...turnState(t, { now, turnStallMs: cfg.turnStallMs, approval: a }) };
+  };
   const watchTurns = (now = Date.now()) => {
     if (!(cfg.turnStallMs > 0)) return;
     for (const [id, t] of [...turns]) {
@@ -908,6 +914,18 @@ export function apply(ctx, config = {}) {
 
   const prompts = promptsPage({ home, port: Number(cfg.promptsPort) || 7870 });
   ctx.effect(() => () => { void prompts.stop(); }, 'dsh-dot: prompts page');
+
+  // /dot: what is waiting and what is stuck, one line each.
+  const mins = (ms) => `${Math.floor(ms / 60000)} min`;
+  const statusLiveness = (now = Date.now()) => {
+    const who = (id) => `${isErrand(id) ? 'errand' : id === lastSession ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
+    const out = [...approvals.values()].map((a) => `approval waiting: ${shortTool(a.tool)} in ${who(a.session)} · ${mins(now - a.since)}${cfg.approvalWaitMs > 0 ? ` of ${mins(cfg.approvalWaitMs)}` : ''}${a.timedOutAt ? ' · timed out' : ''}`);
+    for (const id of turns.keys()) {
+      const t = turnInfo(id, now);
+      if (t && (t.state === 'stalled' || t.state === 'timed-out')) out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · ${t.state === 'timed-out' ? 'after an approval timed out · ' : ''}last: ${t.doing}${t.errand ? ` · given up at ${mins(cfg.errandStallMs)}` : ' · not cancelled'}`);
+    }
+    return out.length ? out : [`liveness: no approval waiting, no stalled turn (approval wait ${cfg.approvalWaitMs > 0 ? mins(cfg.approvalWaitMs) : 'unlimited'}, stalled after ${mins(cfg.turnStallMs)}, errand given up after ${mins(cfg.errandStallMs)})`];
+  };
 
   // /dot
   // The command registry can come up after dot, so register through a child that waits for it.
@@ -940,6 +958,7 @@ export function apply(ctx, config = {}) {
           // Where his next message goes: when she "does not answer", look here first.
           `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'} · errand: ${errandId || '(none)'}`,
           `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · qq_send to him held ≤${cfg.ownerDenyMax}×/turn while unread${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
+          ...statusLiveness(),
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];
@@ -958,6 +977,12 @@ export function apply(ctx, config = {}) {
     stats,
     isErrand,
     busy: (id) => turns.has(id),
+    /** One open turn as the watchdog sees it (turnState + who and what), or null. */
+    turn: (id) => turnInfo(id),
+    /** Every open turn of hers. */
+    turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
+    /** Approvals waiting in her sessions. */
+    approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, errand: isErrand(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => ownerBatch.length,
     flushOwner: () => flushOwner(),
