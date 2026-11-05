@@ -103,7 +103,7 @@ test('prompts render: system prompt (working rules, phone only)', async () => {
   ].join('\n'));
   const { renderStanding, emptyMemory } = await import('../src/memory/store.js');
   const m = emptyMemory(); m.owner = ['他叫宽'];
-  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。\n## 关于他\n- 他叫宽\n</memory>');
+  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。用的时候只说问到的：没记下的细节不补；记下的状态是当时的，后来变没变不知道就说到那天为止；别人心里怎么想、为什么，没记到就别替他下结论；不相干的旧事别顺手带出来。\n## 关于他\n- 他叫宽\n</memory>');
 });
 
 test('prompts render: messages that wake her (notifications, handoff)', async () => {
