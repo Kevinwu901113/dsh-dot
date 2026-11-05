@@ -18,7 +18,7 @@
 //            of each persona's home after every question, so --resume continues after a crash.
 //
 // node bench/chat-memory-benchmark.mjs --dataset <…/datasets/natural-timegrid-20261101-v2> --out <dir>
-//   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--save-prompts]
+//   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--only ids.txt] [--save-prompts]
 // env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-flash),
 //      DSH_BENCH_EXTRA_BODY (JSON merged into every request), DSH_BENCH_MAX_TOKENS_CAP (8192),
 //      DSH_BENCH_PRICE_RMB ("0.2,2,3": per 1M tokens, input cache hit, input cache miss, output)
@@ -183,7 +183,7 @@ async function main() {
     options: {
       dataset: { type: 'string' }, persona: { type: 'string', multiple: true }, out: { type: 'string' }, resume: { type: 'boolean', default: false },
       'fake-llm': { type: 'boolean', default: false }, recall: { type: 'string', default: 'local' }, window: { type: 'string', default: '6' },
-      'max-questions': { type: 'string' }, 'save-prompts': { type: 'boolean', default: false }, tz: { type: 'string', default: 'Asia/Shanghai' }, 'session-base-tokens': { type: 'string', default: '10000' },
+      'max-questions': { type: 'string' }, only: { type: 'string' }, 'save-prompts': { type: 'boolean', default: false }, tz: { type: 'string', default: 'Asia/Shanghai' }, 'session-base-tokens': { type: 'string', default: '10000' },
       help: { type: 'boolean', short: 'h', default: false },
     },
   });
@@ -195,6 +195,9 @@ async function main() {
   const WINDOW = Number(o.window);
   const SESSION_BASE = Number(o['session-base-tokens']);
   const maxQ = o['max-questions'] ? Number(o['max-questions']) : Infinity;
+  // --only: answer just these question ids (one per line, or JSONL with "id"). History is still replayed
+  // in full up to the last of them, so memory is built exactly as in a full run; only the exams are skipped.
+  const only = o.only ? new Set(readFileSync(o.only, 'utf8').split('\n').map((l) => l.trim()).filter(Boolean).map((l) => (l.startsWith('{') ? JSON.parse(l).id : l))) : null;
   process.env.TZ = o.tz; // the dataset's times are +08:00; daily maintenance runs at 23:30 local
   const out = resolve(o.out);
   const dataset = resolve(o.dataset);
@@ -282,7 +285,8 @@ async function main() {
   ].join('\n');
 
   for (const persona of personas) {
-    const qs = exams.filter((e) => e.persona === persona).map((e, i) => ({ ...e, i })).sort((a, b) => RealDate.parse(a.now) - RealDate.parse(b.now) || a.i - b.i);
+    const qs = exams.filter((e) => e.persona === persona && (!only || only.has(e.id))).map((e, i) => ({ ...e, i })).sort((a, b) => RealDate.parse(a.now) - RealDate.parse(b.now) || a.i - b.i);
+    if (!qs.length) { console.log(`[${persona}] no questions selected`); continue; }
     const histPath = join(dataset, qs[0].history_file);
     const histBuf = readFileSync(histPath);
     if (qs.some((q) => q.history_sha256 !== sha256(histBuf))) throw new Error(`${persona}: history SHA mismatch`);
