@@ -15,7 +15,7 @@ Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) i
 - **Live view inside dsh**: a monitor button in the session header opens a Computer tab in the right sidebar. Watch, click, type, or take over for a QR login or CAPTCHA.
 - **Audit log**: every command, VM tool call, approval and folder change is appended to `~/.dsh/dsh-computer-audit.jsonl`.
 - **Phone-friendly live view**: the desktop is served on dsh's own web server behind dsh's login (`/dsh-dot/computer/`); the VM gateway port is keyed (`SANDBOX_API_KEY`, generated per machine). Expose dsh itself (e.g. `tailscale serve`), set `publicUrl`, and approval messages — including IM approval cards — link to it.
-- **Approval gates** for risky actions (`sudo`, `rm -rf`, `curl | sh`, `git push`, payment/login/delete clicks), with a link to the live view.
+- **Approval gates by territory**, with a link to the live view: the VM is the agent's own machine, so using it runs (scripts, `python -c`, cron, services, `rm -rf` in its own folders); leaving it or fetching code to run (`curl | sh`, `ssh`/`scp`, `git push`), wrecking the disk (`dd`, `mkfs`, `shred`), `sudo`, protected locations, destructive commands (`rm`, `mv`, `truncate`, `chmod`/`chown`, `>`) on a folder shared with your machine or on the agent's whole home, and payment/login/delete clicks ask.
 - **Always there**: the VM keeps running after dsh quits and dsh reconnects to the same machine on next start.
 - **Lightweight**: a bundled [microsandbox](https://github.com/microsandbox/microsandbox) microVM (Hypervisor.framework on Apple silicon, WHP on Windows, KVM on Linux); Intel Macs fall back to Docker.
 
@@ -43,7 +43,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 - agent 的 bash 命令在虚拟机里执行，不碰你的系统。
 - agent 的浏览器（`mcp__dot-vm__browser_*` 工具）在虚拟机里，登录态长期保留。
 - 你随时可以打开实时画面观看或接手操作（扫码、验证码）。
-- 虚拟机的每个工具都有分类，审批信息附实时画面链接：只读工具（截图、取文本、看目录）不问；shell（dsh 的 `bash`、虚拟机的 `sandbox_execute_bash` / `sandbox_execute_code`）按命令文本判——`sudo`、`rm -rf`、`curl | sh`、`base64 -d | sh`、`python -c`、`eval`、`git push`、`crontab` 等问；文件工具（`sandbox_file_operations`、`sandbox_str_replace_editor`）删除/移动问，普通读写不问；浏览器动作按页面内容判（支付、登录、删除等问）；`browser_evaluate`（在登录态页面里跑任意 JS）和 `browser_gui_execute_action`（绕过浏览器工具的桌面级输入）**总是问**；任何工具的参数里出现受保护位置（`~/.ssh`、浏览器 profile/Cookies、`.aws`、`.env`、`/etc/shadow`、NapCat 配置等）**总是问**；镜像以后新增的、这里没见过的工具按浏览器动作对待并记一条审计。
+- 虚拟机的每个工具都有分类，审批信息附实时画面链接：只读工具（截图、取文本、看目录）不问；shell（dsh 的 `bash`、虚拟机的 `sandbox_execute_bash` / `sandbox_execute_code`）**按地盘判**：虚拟机是她自己的电脑，在里面正常用电脑的都不问（`python -c`、`node -e`、`eval`、`nohup`、`chmod +x`、`crontab`、`systemctl`、在她自己目录里 `rm -rf`）；问的是离开这台机器或拿远程代码来跑（`curl | sh`、`curl | python`、`base64 -d | sh`、`ssh`、`scp`、`git push`）、毁盘（`dd if=`、`mkfs`、`shred`/`wipe`、`> /dev/sd*`）、`sudo`，以及对**和你的电脑共享的文件夹**的破坏性操作——`rm`、`mv`、`truncate`、`chmod`/`chown`、`find -delete`、`>` 覆盖写（`>>` 追加不算），按当时真实的共享路径判（换绑后新加的文件夹立刻算），跟着 `cd` 走；dsh 的 `bash` 在会话文件夹里跑（就是共享的那个），所以相对路径也算你的文件；一下删掉她整个家目录（`rm -rf ~`）或 `/` 也问。她虚拟机里的东西不是一次性的（装的软件、QQ 和浏览器登录态都在磁盘上，删了要重新装、重新登录），但那是她自己的，删坏了是她的事；你的文件不一样。文件工具（`sandbox_file_operations`、`sandbox_str_replace_editor`）删除/移动问，普通读写不问；浏览器动作按页面内容判（支付、登录、删除等问）；`browser_evaluate`（在登录态页面里跑任意 JS）和 `browser_gui_execute_action`（绕过浏览器工具的桌面级输入）**总是问**；任何工具的参数里出现受保护位置（`~/.ssh`、浏览器 profile/Cookies、`.aws`、`.env`、`/etc/shadow`、NapCat 配置等）**总是问**；镜像以后新增的、这里没见过的工具按浏览器动作对待并记一条审计。
 - 会话所在的工作区文件夹自动共享进虚拟机，路径不变。
 - dsh 退出后虚拟机继续运行；下次启动自动连回同一台。
 
@@ -143,7 +143,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 | `DSH_COMPUTER_PORT` | `18080` | 虚拟机网关在本机的端口（仅监听 127.0.0.1，需要密钥）；只能用环境变量设置 |
 | `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |
-| `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 按上面的分类拦；`browser` 另外每个浏览器动作都审批。分类表（`readOnlyTools`、`alwaysAskTools`、`fileTools`、`protectedPaths`、`shellPatterns`…）可在 `dot-gate` 的 config 里覆盖 |
+| `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 按上面的分类拦；`browser` 另外每个浏览器动作都审批。分类表（`readOnlyTools`、`alwaysAskTools`、`fileTools`、`protectedPaths`、`shellPatterns`、`vmHome`…）可在 `dot-gate` 的 config 里覆盖 |
 | `DSH_COMPUTER_PRESET` | `computer` | `computer-auto` 关闭审批，只建议在虚拟机里没有重要登录态时用 |
 
 ## 六、维护
