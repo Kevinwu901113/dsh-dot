@@ -96,6 +96,29 @@ export function nowText(now = Date.now(), lastAt = 0) {
 
 const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 
+const appName = (pkg) => APP_NAMES[pkg] ?? pkg;
+
+/**
+ * What an app notification (not a conversation) does, by the first matching rule (`dot.notifyRules`;
+ * `pkg` exact, `title` / `text` regexes): 'ignore' (only recorded), 'direct' (about her: wakes after
+ * notifyBatchMs), else 'batch' (merged per thread for threadBatchMs).
+ */
+export const NOTIFY_RULES = [
+  { pkg: 'com.max.xiaoheihe', title: '黑盒今日热点订阅|签到提醒|今日未签到', action: 'ignore' },
+  { title: '点击查看>>', action: 'ignore' }, // store promos (来自《…》)
+  { title: '@了你|回复了你|关注了你|私信', action: 'direct' },
+];
+export function notifyAction(n, rules = NOTIFY_RULES) {
+  const hit = (re, s) => !re || new RegExp(re).test(String(s ?? ''));
+  return rules.find((r) => (!r.pkg || r.pkg === n.pkg) && hit(r.title, n.title) && hit(r.text, n.text))?.action ?? 'batch';
+}
+/** The post an app notification quotes (小黑盒: 来自“<post title>”), or ''. */
+const sourceOf = (n) => /来自[“"「](.+?)[”"」]/.exec(String(n.text ?? ''))?.[1] ?? '';
+/** Thread of an app notification: its app, plus the post it quotes when there is one. */
+export const threadOf = (n) => (sourceOf(n) ? `${n.pkg}|${sourceOf(n)}` : String(n.pkg));
+/** One call as loop detection sees it: tool + arguments, spacing collapsed and digits stripped. */
+export const loopKey = (name, args) => `${name} ${(typeof args === 'string' ? args : JSON.stringify(args ?? {})).replace(/\d+/g, '').replace(/\s+/g, ' ').trim()}`;
+
 /** Conversation title without the counters chat apps append ("宽(2条新消息)" → "宽"). */
 export const conversationTitle = (title) => String(title ?? '').replace(/\s*[（(]\d+\s*条(新消息)?[)）]\s*$/, '').trim();
 
@@ -122,9 +145,8 @@ export function groupNotifications(items) {
 export function notificationText(list, { whileBusy = false, now = Date.now() } = {}) {
   const items = Array.isArray(list) ? list : [list];
   const groups = groupNotifications(items);
-  const app = (pkg) => APP_NAMES[pkg] ?? pkg;
   const render = (g) => {
-    const who = `${app(g.pkg)}${g.title ? ` · ${g.title}` : ''}`;
+    const who = `${appName(g.pkg)}${g.title ? ` · ${g.title}` : ''}`;
     if (g.texts.length <= 1) return `${who}：${g.texts[0] || '（无内容）'}`;
     return `${who}：\n${g.texts.map((t) => `- ${t}`).join('\n')}`;
   };
@@ -174,6 +196,10 @@ export const defaults = {
   errandMaxTokens: 60000, // the errand session is archived and a fresh one started past this
   // Notifications from these apps are conversations: they wake her conversation, not the errand.
   conversationApps: ['qq', 'com.tencent.mobileqq', 'com.tencent.mm'],
+  notifyRules: NOTIFY_RULES, // every other app's notifications: ignore / direct / batch (see notifyAction)
+  threadBatchMs: 20000, // 'batch' notifications of one thread arriving within this window wake her errand once
+  heldMaxMs: 600000,    // held this long for a busy errand: delivered to a fresh errand instead
+  loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
   // (0 = wait for ever). A turn with no session event for turnStallMs is stalled; an errand stalled
@@ -187,10 +213,10 @@ export const defaults = {
 export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
 /** The note a stalled errand leaves in her conversation: what it was doing when it was given up. */
 export const errandStalledText = (doing, minutes) => prompt('dot.errand-stalled', { doing, minutes });
-/** The owner's message for an approval she is waiting on. */
-export function approvalNotice({ tool, reason = '', link = '', minutes = 0 }) {
+/** The owner's one message per turn for the approvals she is waiting on (the first one's details). */
+export function approvalNotice({ tool, reason = '', link = '', minutes = 0, count = 1 }) {
   const r = String(reason ?? '').trim();
-  const lines = [`🔐 dot 需要你审批：${tool || '工具调用'}`, r, `在 DeepSeek Harness 里批准或拒绝${minutes ? `；${minutes} 分钟没人点就当拒绝` : ''}。`];
+  const lines = [`🔐 她在等你批 ${count} 件事，在 DeepSeek Harness 里处理${minutes ? `；${minutes} 分钟没人点就当拒绝` : ''}。`, `${tool || '工具调用'}${r ? `：${r}` : ''}`];
   if (link && !r.includes(link)) lines.push(`实时画面：${link}`);
   return lines.filter(Boolean).join('\n');
 }
@@ -208,6 +234,8 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
   return { state: 'running', idleMs };
 }
 
+/** Errand turns whose conclusion is noted in her conversation (observations hand theirs to the interlude). */
+const NOTED = ['phone-check', 'phone-notification', 'play'];
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 /** The note an errand leaves in her conversation: what she did on her phone, in her own words. */
@@ -370,6 +398,8 @@ export function apply(ctx, config = {}) {
   // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
   const imSessions = new Set();
   let lastSession = store.get('lastSession') || ''; // her most recent session: where phone notifications wake her (remembered across restarts)
+  // Every change goes through here; the phone puts her conversation first (dshPhone.setPriority, when it has one).
+  const setLast = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   const isDotSession = (id, cwd) => cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id));
@@ -397,7 +427,7 @@ export function apply(ctx, config = {}) {
     if (!why) return;
     audit('last-session-cleared', { session: lastSession, why });
     logger.warn(`her remembered conversation ${lastSession} is ${why === 'archived' ? 'archived' : 'an errand'}: cleared (the next message to her picks a new one)`);
-    lastSession = ''; store.set('lastSession', '');
+    setLast('');
   };
   selfCheck();
   // The registry can come up after dot: look again once it is there.
@@ -419,6 +449,11 @@ export function apply(ctx, config = {}) {
     })();
     return errandCreating;
   }
+  /** This errand takes no new work (the next one gets a fresh session); it stays an errand. */
+  const retire = (id) => {
+    if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
+    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
+  };
   async function rotateErrandIfLarge(id) {
     const agent = ctx.get('agents')?.get?.(id);
     const meter = ctx.get('tokenMeter');
@@ -426,9 +461,8 @@ export function apply(ctx, config = {}) {
     let tokens = 0;
     try { tokens = Number(meter.measure(agent.session)?.totalTokens ?? 0); } catch (error) { void error; return; }
     if (tokens < cfg.errandMaxTokens) return;
-    if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
-    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
-    if (lastSession === id) { lastSession = ''; store.set('lastSession', ''); }
+    retire(id);
+    if (lastSession === id) setLast('');
     try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.warn(`errand archive failed: ${err.message}`); }
     audit('errand-rotated', { session: id, tokens });
   }
@@ -455,6 +489,8 @@ export function apply(ctx, config = {}) {
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
+  const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
+  const flight = new Map(); // errand id → app notifications delivered to it, until its turn ends (what is in flight, per thread)
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
@@ -475,16 +511,19 @@ export function apply(ctx, config = {}) {
       if (key) approvals.get(key).eventId = event.data?.id;
     }
     if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
-    if (event.type === 'turn/end' && lastSession !== id && !isErrand(id)) { lastSession = id; store.set('lastSession', id); }
+    if (event.type === 'turn/end' && !isErrand(id)) setLast(id);
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
       if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule')) incoming.add(id);
+      const from = (event.data?.inserted ?? []).find((m) => ['dsh-dot', 'dsh-interlude'].includes(m?.source?.kind));
+      if (from) origins.set(id, from.source.form);
       return;
     }
     if (event.type === 'turn/start') {
       ownerDenies.delete(id);
-      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
+      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), origin: origins.get(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
+      origins.delete(id);
       return;
     }
     const t = turns.get(id);
@@ -495,6 +534,7 @@ export function apply(ctx, config = {}) {
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
+      flight.delete(id);
       if (id === lastSession || isErrand(id)) setTimeout(() => releaseHeld(id), 50); // after this event settles, so the followup starts a fresh turn
     }
     // An errand turn: its conclusion (unless DOT_SILENT) goes to her conversation as a note.
@@ -505,7 +545,7 @@ export function apply(ctx, config = {}) {
       if (ended) {
         const text = stripSilent(t.text.trim());
         // Observations hand their text to the interlude themselves; only her own doings are noted.
-        if (text && !isSilent(t.text.trim()) && ['phone-check', 'phone-notification', 'play'].includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
+        if (text && !isSilent(t.text.trim()) && NOTED.includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
         void rotateErrandIfLarge(id);
       }
       return;
@@ -548,8 +588,13 @@ export function apply(ctx, config = {}) {
     const wait = Number(cfg.approvalWaitMs) || 0;
     const minutes = wait > 0 ? Math.max(1, Math.round(wait / 60000)) : 0;
     a.notified = true;
-    void im.send(approvalNotice({ tool: req.toolName, reason: req.reason, link: liveLink(req.toolName), minutes }), 'plain');
-    audit('approval-notified', { session: id, tool: req.toolName, errand: isErrand(id) });
+    // One message per turn (16 in 7 minutes on 11-04): the first ask; later ones only count.
+    const t = turns.get(id);
+    const count = t ? (t.approvalsAsked = (t.approvalsAsked ?? 0) + 1) : 1;
+    if (count === 1) {
+      void im.send(approvalNotice({ tool: req.toolName, reason: req.reason, link: liveLink(req.toolName), minutes, count: [...approvals.values()].filter((x) => x.session === id).length }), 'plain');
+      audit('approval-notified', { session: id, tool: req.toolName, errand: isErrand(id) });
+    } else audit('approval-merged', { session: id, tool: req.toolName, count });
     if (!wait) { try { return await next(); } finally { approvals.delete(key); } }
     let timer, onAbort;
     const expired = new Promise((r) => {
@@ -562,7 +607,6 @@ export function apply(ctx, config = {}) {
       if (out === WITHDRAWN) return 'cancelled';
       if (out !== EXPIRED) return out;
       a.timedOutAt = Date.now();
-      const t = turns.get(id);
       if (t) { t.approvalTimedOutAt = a.timedOutAt; t.doing = `${shortTool(req.toolName)}（审批过期）`; }
       if (req.callId !== undefined) expiredCalls.set(req.callId, minutes);
       audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, errand: isErrand(id) });
@@ -608,7 +652,28 @@ export function apply(ctx, config = {}) {
       order: 900,
       text: (c) => (turns.get(c.agent?.session?.id)?.scheduled ? scheduledRule() : ''),
     });
+    // One voice: an errand turn reports back (it never talks to him); her conversation knows what is still in flight.
+    scope.systemPrompt.context({
+      name: 'dot:errand',
+      order: 901,
+      text: (c) => {
+        const id = c.agent?.session?.id;
+        if (isErrand(id)) return NOTED.includes(turns.get(id)?.origin) ? prompt('dot.errand-report', { silent: SILENT }) : '';
+        return id && id === lastSession ? inFlightText() : '';
+      },
+    });
   });
+
+  /** One line for her conversation: what her errands are doing right now, per thread (they have not reported yet). */
+  const inFlightText = () => {
+    const t = table('dot.errand-inflight');
+    const doing = [...turns.keys()].filter(isErrand).map((id) => {
+      const threads = Map.groupBy(flight.get(id) ?? [], threadOf);
+      if (!threads.size) return t.other;
+      return [...threads.values()].map((ns) => fill(t.thread, { app: appName(ns[0].pkg), source: sourceOf(ns[0]) ? `《${sourceOf(ns[0])}》` : '', count: ns.length })).join('、');
+    });
+    return doing.length ? fill(t.line, { doing: doing.join('；') }) : '';
+  };
 
   // 3. Budget.
   let blocked = store.get('blocked') ?? []; // persisted so a standing block is not re-announced after a restart
@@ -644,8 +709,10 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
-  let batch = [], batchTimer = null;
-  const held = new Map(); // session id → items that arrived while it was running a turn; delivered as one message when it ends
+  let lastWakeAt = 0; // a notification or his words arrived (or a phone check ran): no phone check for a while
+  let batch = [], batchTimer = null; // conversations (his, QQ, WeChat): one wake for what arrives within notifyBatchMs
+  const threads = new Map(); // thread → { items, due, timer }: app notifications waiting for their thread's wake
+  const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; let phoneCheckNow; // assigned below (phone check), used by flush/releaseHeld
   // Conversations (the owner, QQ, WeChat) wake her conversation; every other app's notification is an errand.
   const isConversation = (n) => n.fromOwner || cfg.conversationApps.includes(n.pkg);
@@ -728,18 +795,38 @@ export function apply(ctx, config = {}) {
     if (frozen && id === lastSession) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
     // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
     // (His own words never come this way: they have their own buffer and are steered in, see flushOwner.)
-    if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items]); audit('notification-held', { count: items.length, why: 'turn running', errand: isErrand(id) }); return; }
+    if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', errand: isErrand(id) }); return; }
     deliverTracked(items, false, id);
   };
-  const flush = async () => {
-    const items = batch; batch = []; batchTimer = null;
-    if (!items.length) return;
-    const errands = items.filter((n) => !isConversation(n));
-    const e = errands.length ? await ensureErrand() : '';
-    // No errand session (errands off, or it cannot be created): everything wakes her conversation, together.
-    if (!e) { send(lastSession, items); return; }
-    send(lastSession, items.filter(isConversation));
-    send(e, errands);
+  const flush = () => { const items = batch; batch = []; batchTimer = null; send(lastSession, items); };
+  // One batch per thread at a time: to the errand already handling that thread while its turn runs
+  // (held there), else to the errand (her conversation when there is none).
+  const handler = (k) => [...flight].find(([id, ns]) => turns.has(id) && ns.some((n) => threadOf(n) === k))?.[0];
+  const flushThread = async (k) => {
+    const { items } = threads.get(k); threads.delete(k);
+    send(handler(k) ?? ((await ensureErrand()) || lastSession), items);
+  };
+  const queueThread = (n, ms) => {
+    const k = threadOf(n), th = threads.get(k) ?? { items: [] }, due = Date.now() + ms;
+    th.items.push(n); threads.set(k, th);
+    if (th.due <= due) return;
+    clearTimeout(th.timer); th.due = due;
+    th.timer = setTimeout(() => { void flushThread(k).catch((err) => logger.warn(`thread wake failed: ${err.message}`)); }, ms); th.timer.unref?.();
+  };
+  // Held too long for a busy errand (an approval nobody answers, a long turn): a fresh errand takes them,
+  // except what belongs to a thread that errand is handling (never two errands on one thread).
+  const rerouteHeld = async (now = Date.now()) => {
+    for (const [id, items] of [...held]) {
+      if (!isErrand(id) || !turns.has(id) || !(cfg.heldMaxMs > 0)) continue;
+      const mine = new Set((flight.get(id) ?? []).map(threadOf));
+      const late = items.filter((n) => now - n.heldAt >= cfg.heldMaxMs && !mine.has(threadOf(n)));
+      if (!late.length) continue;
+      held.set(id, items.filter((n) => !late.includes(n)));
+      retire(id);
+      const e = (await ensureErrand()) || lastSession;
+      audit('notification-rerouted', { from: id, to: e, count: late.length, heldMs: now - late[0].heldAt });
+      deliverTracked(late, true, e);
+    }
   };
   // Items held for an errand that was rotated meanwhile go to the current errand, not the archived one.
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, pastErrands.has(id) ? (await ensureErrand()) || lastSession : id); };
@@ -799,15 +886,19 @@ export function apply(ctx, config = {}) {
     }
     if (n.fromOwner) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
-      ownerBatch.push(n); ownerTyping = false; // he pressed send
+      ownerBatch.push(n); ownerTyping = false; lastWakeAt = Date.now(); // he pressed send
       armOwner();
       return;
     }
+    const action = isConversation(n) ? 'conversation' : notifyAction(n, cfg.notifyRules);
+    if (action === 'ignore') { audit('notification-ignored', { pkg: n.pkg, title: n.title }); return; }
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
+    lastWakeAt = Date.now();
+    if (action !== 'conversation') { queueThread(n, action === 'direct' ? cfg.notifyBatchMs : cfg.threadBatchMs); return; }
     batch.push(n);
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
-  ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(wake) ?? (() => {}), 'dsh-dot: phone notifications'));
+  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(lastSession); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
@@ -818,11 +909,18 @@ export function apply(ctx, config = {}) {
   // Read before you speak: a qq_send to him while he has said something she has not read yet (still in
   // the buffer, or steered but not reached by the model) is held back once or twice per turn; the
   // buffer goes in right away, so her next step has it.
+  // Also: a loop (the same call over and over in one turn) is stopped, and an errand never talks to him.
   ctx.on('tools/pre-execute', async (exec, next) => {
-    if (exec.name !== 'qq_send') return next();
-    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
-    if (!isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
     const id = exec.agent?.session?.id;
+    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
+    const t = turns.get(id);
+    if (t && cfg.loopRepeat > 0) {
+      const key = loopKey(exec.name, args), times = (t.calls ??= new Map()).get(key) ?? 0;
+      if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return { kind: 'deny', reason: prompt('dot.loop-stopped', { times }) }; }
+      t.calls.set(key, times + 1);
+    }
+    if (exec.name !== 'qq_send' || !isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
+    if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return { kind: 'deny', reason: prompt('dot.errand-no-owner') }; }
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return next();
     const n = ownerDenies.get(id) ?? 0;
@@ -834,15 +932,18 @@ export function apply(ctx, config = {}) {
   });
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
-  let lastWakeAt = 0;
   const goalActive = (agent) => { try { return ctx.get('goals')?.get(agent)?.phase === 'active'; } catch { return false; } };
   const wakeOriginal = deliver;
-  deliverTracked = (items, whileBusy, id) => { lastWakeAt = Date.now(); wakeOriginal(items, whileBusy, id); };
+  deliverTracked = (items, whileBusy, id) => {
+    lastWakeAt = Date.now();
+    if (isErrand(id)) flight.set(id, [...(flight.get(id) ?? []), ...items]);
+    wakeOriginal(items, whileBusy, id);
+  };
   const phoneCheck = () => {
     const every = cfg.phoneCheckEveryMinutes * 60000;
     // The phone is one device: not while her conversation is running a turn (she may be using it).
     if (!every || !phone()?.isReady || !lastSession || turns.has(lastSession)) return;
-    if (errandId && turns.has(errandId)) return;
+    if ([...turns.keys()].some(isErrand)) return; // never beside another errand turn
     if (frozen) return;
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
     if (Date.now() - lastWakeAt < every) return;
@@ -875,8 +976,7 @@ export function apply(ctx, config = {}) {
       if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'hook', reason: 'dot-watchdog' }, { keepInbox: true }); cancelled = true; }
     } catch (err) { logger.warn(`errand cancel failed: ${err.message}`); }
     turns.delete(id);
-    if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
-    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
+    retire(id);
     audit('errand-cancelled', { session: id, idleMs: idle, cancelled, doing });
     const r = setTimeout(() => { void releaseHeld(id); }, 50); r.unref?.();
     void noteToConversation(noteOrigin(t.origin), errandStalledText(doing, Math.round(idle / 60000)));
@@ -905,7 +1005,7 @@ export function apply(ctx, config = {}) {
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); phoneCheck(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); void rerouteHeld(); phoneCheck(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
   phoneCheckNow = phoneCheck;
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
@@ -973,7 +1073,7 @@ export function apply(ctx, config = {}) {
   ctx.provide?.('dshDot', {
     home,
     session: () => lastSession,
-    setSession: (id) => { if (id && id !== lastSession) { lastSession = id; store.set('lastSession', id); } },
+    setSession: (id) => { if (id) setLast(id); },
     errand: ensureErrand,
     errandId: () => errandId,
     stats,

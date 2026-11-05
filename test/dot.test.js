@@ -34,7 +34,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, threadBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -88,8 +88,9 @@ test('an approval in her session is announced to him at once, with the live view
   const out = await answerer({ agent, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'dsh-computer: sensitive browser action browser_click' }, async () => 'allowed-once');
   assert.equal(out, 'allowed-once', 'his answer goes through as it is');
   await wait(20);
-  assert.match(h.sent[0].text, /审批：mcp__dot-vm__browser_click[\s\S]*sensitive browser action[\s\S]*10 分钟没人点就当拒绝[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
-  // The gate already includes the link in its reason: not repeated.
+  assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理；10 分钟没人点就当拒绝。\nmcp__dot-vm__browser_click：dsh-computer: sensitive browser action[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
+  // The gate already includes the link in its reason: not repeated (a new turn: a new notice).
+  h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 });
   await answerer({ agent, toolName: 'bash', callId: 'c2', reason: 'risky\n实时画面 / live view: https://mac.ts.net/vnc' }, async () => 'rejected');
   await wait(20);
   assert.equal((h.sent[1].text.match(/mac\.ts\.net\/vnc/g) || []).length, 1);
@@ -129,6 +130,7 @@ test('an approval nobody answers within approvalWaitMs is rejected; he hears it 
     assert.deepEqual(await post({ callId: 'c1', name: 'bash' }, {}, async () => ({ kind: 'accept' })), { kind: 'accept' }, 'once');
     // withdrawn (the turn was stopped): 'cancelled', no expiry message
     const ac = new AbortController();
+    h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 }); // a new turn: a new notice
     const sentBefore = h.sent.length;
     const p2 = answerer({ agent, toolName: 'bash', callId: 'c2', signal: ac.signal }, () => new Promise(() => {}));
     ac.abort();
@@ -231,15 +233,15 @@ test('a phone notification wakes her latest session with the notification text; 
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
   onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '你关注的游戏更新了' });
   await wait(40);
-  assert.equal(followups.length, 1, 'a burst wakes her once');
+  assert.equal(followups.length, 2, 'conversations wake together; an app notification wakes with its thread (no errand: in her conversation)');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
   assert.match(followups[0].m.content[0].text, STAMP);
-  assert.match(unstamp(followups[0].m.content[0].text), /^\[手机通知\] 2 个对话\n· QQ · 宽：你会主动给我发消息吗\n· 小黑盒 · 小黑盒：你关注的游戏更新了/);
+  assert.deepEqual(followups.map((f) => unstamp(f.m.content[0].text).split('\n')[0]).sort(), ['[手机通知] QQ · 宽：你会主动给我发消息吗', '[手机通知] 小黑盒 · 小黑盒：你关注的游戏更新了']);
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
   await wait(40);
-  assert.equal(followups.length, 2);
-  assert.match(unstamp(followups[1].m.content[0].text), /^\[手机通知\] QQ · 宽：在吗/);
+  assert.equal(followups.length, 3);
+  assert.match(unstamp(followups[2].m.content[0].text), /^\[手机通知\] QQ · 宽：在吗/);
   // she is busy: what arrives during her turn is held, then delivered once, grouped by conversation, in order
   h.emit(h.home, 'turn/start', { turn: 2 });
   h.emit(h.home, 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' } });
@@ -248,13 +250,13 @@ test('a phone notification wakes her latest session with the notification text; 
   onNotification({ key: 'k1', pkg: 'com.tencent.mobileqq', title: '宽(2条新消息)', text: '刚刚在帮你测试延迟' });
   onNotification({ key: 'k2', pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '有人回复了你' });
   await wait(30);
-  assert.equal(followups.length, 2, 'nothing while the turn runs');
+  assert.equal(followups.length, 3, 'nothing while the turn runs');
   assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'turn running'));
   h.emit(h.home, 'assistant/message', msg('DOT_SILENT'));
   h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
   await wait(120);
-  assert.equal(followups.length, 3);
-  assert.equal(unstamp(followups[2].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
+  assert.equal(followups.length, 4);
+  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);
@@ -906,4 +908,137 @@ test('visible: dshDot.turn says approval → timed-out → running; /dot lists t
     assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: no approval waiting, no stalled turn \(approval wait 10 min, stalled after 5 min, errand given up after 10 min\)/);
     stop(h);
   } finally { mock.timers.reset(); }
+});
+
+test('notification rules, threads, loop keys', async () => {
+  const { notifyAction, threadOf, loopKey } = await import('../src/dot/core.js');
+  const hbx = 'com.max.xiaoheihe';
+  for (const title of ['黑盒今日热点订阅', '签到提醒', '今日未签到']) assert.equal(notifyAction({ pkg: hbx, title, text: 'x' }), 'ignore', title);
+  assert.equal(notifyAction({ pkg: 'com.x', title: '双十一大促 点击查看>>', text: '来自《某店》' }), 'ignore');
+  for (const title of ['阿宽@了你', '阿宽回复了你', '阿宽关注了你', '私信']) assert.equal(notifyAction({ pkg: hbx, title, text: '' }), 'direct', title);
+  assert.equal(notifyAction({ pkg: hbx, title: '你关注的游戏更新了' }), 'batch');
+  assert.equal(notifyAction({ pkg: 'a', title: '签到提醒' }), 'batch', 'the 小黑盒 rule is for 小黑盒 only');
+  assert.equal(notifyAction({ pkg: 'a', title: 't' }, [{ pkg: 'a', action: 'ignore' }]), 'ignore', 'dot.notifyRules replaces the table');
+  assert.equal(threadOf({ pkg: hbx, text: '好耶 来自“艾尔登法环 DLC 评测”' }), `${hbx}|艾尔登法环 DLC 评测`);
+  assert.equal(threadOf({ pkg: hbx, text: '你好' }), hbx);
+  assert.equal(loopKey('bash', { command: 'convert a.png  -crop 100x200+3+4 b.png' }), loopKey('bash', { command: 'convert a.png -crop 120x260+30+4 b.png' }));
+  assert.notEqual(loopKey('bash', { command: 'ls a' }), loopKey('bash', { command: 'ls b' }));
+});
+
+/** Her conversation s1, an errand per create(), the phone; followups / injections recorded. */
+function errandHarness(config = {}) {
+  const h = harness();
+  const followups = [], injected = [];
+  let onNotification, n = 0;
+  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }) });
+  const controller = { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) };
+  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : orig(name))(h.ctx.get);
+  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0, ...config });
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
+  return { h, followups, injected, notify: (x) => onNotification({ pkg: 'com.max.xiaoheihe', at: new Date().toISOString(), ...x }) };
+}
+
+test('app notifications: ignored ones only recorded; one wake per thread per window; a thread being handled stays with its errand', async () => {
+  const { h, followups, notify } = errandHarness({ threadBatchMs: 40 });
+  notify({ title: '黑盒今日热点订阅', text: '今天的热点' });
+  notify({ title: '签到提醒', text: '快来签到' });
+  notify({ title: '甲回复了你', text: '好 来自“帖子A”' });
+  notify({ title: '乙回复了你', text: '对 来自“帖子A”' });
+  notify({ title: '有新动态', text: '丙 来自“帖子B”' });
+  await wait(20);
+  assert.deepEqual(followups.map((f) => f.id), ['errand-1'], 'direct: after notifyBatchMs, both of thread A together');
+  assert.match(followups[0].m.content[0].text, /好[\s\S]*对/);
+  assert.equal(h.audit.filter((e) => e.event === 'notification-ignored').length, 2);
+  await wait(60);
+  assert.equal(followups.length, 2, 'thread B: after threadBatchMs');
+  // errand-1 runs a turn on thread A: more of thread A is held for it, nothing goes elsewhere
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  notify({ title: '丁回复了你', text: '嗯 来自“帖子A”' });
+  await wait(30);
+  assert.equal(followups.length, 2);
+  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.errand));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1 });
+  await wait(80);
+  assert.deepEqual(followups.map((f) => f.id), ['errand-1', 'errand-1', 'errand-1']);
+  assert.match(followups[2].m.content[0].text, /嗯/);
+  stop(h);
+});
+
+test('one voice: an errand cannot qq_send him; it is told to report; her conversation knows what is in flight; the note says relay only what is reported', async () => {
+  const { prompt } = await import('../src/prompts.js');
+  const { h, injected, notify } = errandHarness();
+  h.ctx.get = ((orig) => (name) => (name === 'dshQq' ? { owner: '10001', connected: true } : orig(name)))(h.ctx.get);
+  notify({ title: '甲回复了你', text: '1 来自“帖子A”' }); notify({ title: '乙回复了你', text: '2 来自“帖子A”' }); notify({ title: '丙回复了你', text: '3 来自“帖子A”' });
+  await wait(30);
+  h.emitAs('errand-1', h.home, 'agent/inbox/spliced', { inserted: [{ source: { kind: 'dsh-dot', form: 'phone-notification' } }] });
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  const pre = h.hooks['tools/pre-execute'];
+  const errand = { session: { id: 'errand-1', header: { cwd: h.home } } };
+  for (const to of ['owner', '10001']) assert.deepEqual(await pre({ name: 'qq_send', input: { to, text: '回过了' }, agent: errand }, async () => 'ran'), { kind: 'deny', reason: '跑腿里不直接找他：要告诉他的写进最后的汇报，由你的对话转告。' });
+  assert.equal(await pre({ name: 'qq_send', input: { to: 'group:5', text: 'hi' }, agent: errand }, async () => 'ran'), 'ran', 'others are fine');
+  assert.ok(h.audit.some((e) => e.event === 'errand-owner-refused'));
+  const ctxOf = (id) => h.ctx.prompts.find((c) => c.name === 'dot:errand').text({ agent: { session: { id, header: { cwd: h.home } } } });
+  assert.equal(ctxOf('errand-1'), prompt('dot.errand-report', { silent: 'DOT_SILENT' }));
+  assert.match(ctxOf('errand-1'), /做了：[\s\S]*结果：[\s\S]*找他：/);
+  assert.equal(ctxOf('s1'), '另一个你正在：看小黑盒《帖子A》的 3 条。还没交回汇报，别说已经办好了。');
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('做了：回了帖子A的三条\n结果：都回了\n找他：不用'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1 });
+  await wait(20);
+  assert.equal(ctxOf('s1'), '', 'nothing in flight any more');
+  assert.match(injected[0].m.content[0].text, /做了：回了帖子A的三条\n结果：都回了\n找他：不用\n（[^\n]*别说已经做完了/);
+  stop(h);
+});
+
+test('held too long for a busy errand: rerouted to a fresh errand, except what belongs to the thread it is handling', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+  try {
+    const { h, followups, notify } = errandHarness({ heldMaxMs: 120_000, errandStallMs: 0, turnStallMs: 0 });
+    const flushAll = async () => { mock.timers.tick(10); for (let i = 0; i < 10; i++) await settle(); };
+    notify({ title: '甲回复了你', text: '1 来自“帖子A”' }); await flushAll();
+    h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+    notify({ title: '乙回复了你', text: '2 来自“帖子A”' }); notify({ title: '丙回复了你', text: '3 来自“帖子B”' }); await flushAll();
+    assert.deepEqual(followups.map((f) => f.id), ['errand-1']);
+    mock.timers.tick(60_000); await flushAll();
+    assert.equal(followups.length, 1, 'not yet');
+    mock.timers.tick(120_000); await flushAll();
+    assert.deepEqual(followups.map((f) => f.id), ['errand-1', 'errand-2']);
+    assert.match(followups[1].m.content[0].text, /3 来自/); assert.doesNotMatch(followups[1].m.content[0].text, /2 来自/);
+    assert.ok(h.audit.some((e) => e.event === 'notification-rerouted' && e.from === 'errand-1' && e.to === 'errand-2' && e.count === 1));
+    h.emitAs('errand-1', h.home, 'turn/end', { turn: 1 }); await flushAll(); mock.timers.tick(100); await flushAll();
+    assert.equal(followups.length, 3, 'thread A, held for errand-1, goes on when its turn ends');
+    assert.match(followups[2].m.content[0].text, /2 来自/);
+    stop(h);
+  } finally { mock.timers.reset(); }
+});
+
+test('loop: the same call (digits aside) loopRepeat times in a turn; further ones are refused, others pass', async () => {
+  const h = harness();
+  apply(h.ctx, { ...h.config, loopRepeat: 3 });
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  const pre = h.hooks['tools/pre-execute'];
+  const agent = { session: { id: 's1', header: { cwd: h.home } } };
+  const call = (cmd) => pre({ name: 'bash', input: { command: cmd }, agent }, async () => 'ran');
+  for (let i = 0; i < 3; i++) assert.equal(await call(`crop ${i * 10}x${i}`), 'ran');
+  assert.deepEqual(await call('crop 99x9'), { kind: 'deny', reason: '同一件事已经试了 3 次，换个办法或停下来说明卡在哪。' });
+  assert.equal(await call('ls'), 'ran');
+  assert.ok(h.audit.some((e) => e.event === 'loop-stopped' && e.times === 3));
+  h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 });
+  assert.equal(await call('crop 1x1'), 'ran', 'a new turn starts over');
+  stop(h);
+});
+
+test('approvals: one message to him per turn, later ones only counted', async () => {
+  const h = harness();
+  apply(h.ctx, h.config);
+  const answerer = h.hooks['approval/request'];
+  const agent = { session: { id: 's1', header: { cwd: h.home } } };
+  h.emit(h.home, 'turn/start', { turn: 1 });
+  for (let i = 0; i < 4; i++) await answerer({ agent, toolName: 'bash', callId: `c${i}`, reason: 'r' }, async () => 'allowed-once');
+  h.emit(h.home, 'turn/end', { turn: 1 });
+  await wait(20);
+  assert.equal(h.sent.length, 1);
+  assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理/);
+  assert.equal(h.audit.filter((e) => e.event === 'approval-merged').length, 3);
+  assert.equal(h.audit.filter((e) => e.event === 'approval-merged').at(-1).count, 4);
+  stop(h);
 });
