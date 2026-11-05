@@ -4,7 +4,7 @@ import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../src/memory/memory.js';
-import { SPECS, chunkTurns, contrastCut, createRecall, libDir, openIndex, queryLength, settingsFile } from '../src/memory/recall.js';
+import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, lexTokens, libDir, namesIn, openIndex, queryLength, rrf, settingsFile } from '../src/memory/recall.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -387,4 +387,38 @@ test('prompt assembly waits (bounded) for a query still running, and puts its te
   // Nothing pending (another agent, or already done): straight through.
   const other = { contexts: [] };
   assert.equal(await h.assemble[0](other, { agent: { session: { id: 'x' } } }, async () => other), other);
+});
+
+test('lexical: bigram tokens, BM25 weighs the rare word, names with aliases, RRF', () => {
+  assert.deepEqual(lexTokens('阿兰修 OK 好'), ['阿', '阿兰', '兰', '兰修', '修', 'ok', '好']);
+  const bm = createBm25();
+  // A real transcript: many turns of chat, 咋样了 / 那事 in a few of them, the name in one.
+  const topics = ['面试', '猫', '天气', '饭', '腰', '稿子', '车', '房子', '工作', '周末'];
+  const docs = ['他：周末拿伞给楼下的阿兰换伞骨，伞布不用动', ...Array.from({ length: 40 }, (_, i) => `他：今天${topics[i % 10]}的事说了好多，${i % 7 === 0 ? `${topics[(i + 3) % 10]}咋样了` : '先这样吧'}，${i % 9 === 0 ? '那事再说' : '晚点聊'}`)];
+  for (const t of docs) bm.add(t);
+  const sc = bm.score('阿兰那事咋样了');
+  assert.equal(sc.indexOf(Math.max(...sc)), 0, 'the rare name outweighs the common words');
+  assert.deepEqual(namesIn('小秦那块牌子呢', [['秦渡', '小秦'], ['阿兰'], ['他']]), [['秦渡', '小秦']]);
+  assert.deepEqual(rrf([['a', 'b'], ['b', 'c']], 60).map(([k]) => k), ['b', 'a', 'c']);
+});
+
+test('lexical + names: a turn the vectors miss is recalled by its rare word, or by a known alias', async () => {
+  // Vectors that know nothing: every turn scores the same, so the vector list alone is the oldest ones.
+  const flat = () => ({ async embed(texts) { return texts.map(() => Float32Array.from([1, 0, 0, 0])); }, rerank: null });
+  const dir = mkdtempSync(join(tmpdir(), 'mem-'));
+  let at = new Date(2026, 4, 1, 10, 0).getTime();
+  const lines = [];
+  const say = (who, text) => lines.push({ at: (at += 60000), who, text, session: 'old' });
+  for (let i = 0; i < 12; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', '嗯嗯'); }
+  say('owner', '周末拿伞给楼下的阿兰换伞骨'); say('her', '记得带伞');
+  say('owner', '签名牌上写的是秦渡'); say('her', '好');
+  const cfg = { recallTopK: 3, recallMaxTokens: 1500, recallContrast: 0, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 40, recallWindowTurns: 0, recallBackend: 'local' };
+  const logger = { info() {}, warn() {} };
+  const mk = (extra = {}, names = () => [['秦渡', '小秦']]) => createRecall({ cfg: { ...cfg, ...extra }, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger, embedder: flat, names });
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  let r = mk(); r.turnEnded(); await r.warm();
+  assert.ok((await r.query('阿兰那事咋样了', { session: 'now' })).hits.some((h) => /阿兰/.test(h.text)));
+  assert.ok((await r.query('小秦那块牌子呢', { session: 'now' })).hits.some((h) => /秦渡/.test(h.text)), 'an alias finds the turn that uses the other name');
+  r = mk({ recallLexical: false, recallNames: false }); r.turnEnded(); await r.warm();
+  assert.ok(!(await r.query('阿兰那事咋样了', { session: 'now' })).hits.some((h) => /阿兰/.test(h.text)), 'vectors alone miss it');
 });

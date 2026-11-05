@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
+  bankOp, closeFragment, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, dayMark,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt } from '../src/memory/memory.js';
@@ -424,4 +424,29 @@ test('persona lives only in the Canon: the consolidation prompt keeps persona an
   const text = extractPrompt({ text: '我：照着星野那版学', self: ['拼出来的人设：蓝发'] });
   assert.match(text, /self：[^\n]*人设、说话风格、「照着某某学」都不是关于她的事实，不写进 self；她的人设只在 Canon 里。/);
   assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
+});
+
+test('还没了的事: open plan / promise fragments shown on their own, newest first, closed by consolidation, kept past the cap', () => {
+  const m = emptyMemory();
+  const r = applyExtraction(m, { fragments: [
+    { text: '05-17 他说旧书店名单先搁着回头再说', kind: 'plan', tag: 1, open: true, who: ['旧书店'] },
+    { text: '06-22 他答应下周三前把画册寄给老贺', kind: 'promise', tag: 2, open: true, who: ['老贺', '他'] },
+    { text: '05-20 他吃了碗面', kind: 'event', tag: 0, open: true },
+  ] }, { now: 1000 });
+  assert.equal(r.fragments, 3);
+  const [list, promise, meal] = m.fragments;
+  assert.equal(list.open, true); assert.equal(meal.open, undefined, 'an event is never open');
+  assert.deepEqual(promise.who, ['老贺'], 'one-character names are dropped');
+  promise.createdAt = 2000;
+  const s = renderStanding(m, { now: 1000 });
+  assert.match(s, /## 还没了的事[^\n]*\n- 06-22 他答应[^\n]*\n- 05-17 他说旧书店/);
+  assert.equal((s.match(/旧书店名单/g) ?? []).length, 1, 'not shown twice');
+  assert.match(extractPrompt({ open: `${list.id} | ${list.text}` }), /=== 还没了的事（open 的碎片）===\nf0001 \| 05-17/);
+  applyExtraction(m, { closed: [promise.id, 'f9999'] }, { now: 3000 });
+  assert.equal(promise.open, false); assert.equal(promise.closedAt, 3000);
+  assert.equal(closeFragment(m, promise.id), false, 'closing twice does nothing');
+  assert.doesNotMatch(renderStanding(m, { now: 1000 }), /老贺[\s\S]*## 最近的事|还没了的事[^#]*老贺/);
+  m.gen = 20; list.importance = 0; list.lastSeenGen = 0;
+  ageFragments(m, 20);
+  assert.ok(m.fragments.includes(list), 'aging keeps an open one');
 });

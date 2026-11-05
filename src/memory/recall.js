@@ -15,6 +15,13 @@
 //            recallMinQueryLength distinct content tokens (好的 / 哈哈哈哈 / ok thanks) recalls nothing,
 //            and a hit must stand out from the whole index (contrast, below). recallMinScore is an
 //            optional absolute floor on top.
+//   lexical  next to the vectors, two channels that read words, not meaning (0.19): BM25 over characters
+//            and character bigrams (CJK) and words (the rest) of the same chunks — a rare name (阿兰, 签名牌) outweighs
+//            the rest of a question, which one sentence vector cannot do — and names: a person or a
+//            name her memory knows (people cards with their aliases, fragments' who) that the message
+//            mentions pulls in the turns that mention any name of theirs. The channels are fused by
+//            reciprocal rank (RRF), so their scores never need to be on one scale. recallLexical /
+//            recallNames turn them off.
 //   backends local  — multilingual-e5-small (ONNX q8) via transformers.js on the CPU, no key; the
 //                     same 85/108 as bge-small-zh-v1.5 on the Chinese benchmark, plus English and ~100
 //                     other languages, for 129 MB / ~0.4 GB RSS instead of 23 MB / ~0.13 GB (bge-small-zh
@@ -75,6 +82,70 @@ export function contrastCut(scores, k) {
   const mid = s.length >> 1;
   const median = s.length % 2 ? s[mid] : (s[mid - 1] + s[mid]) / 2;
   return median + k * (s[s.length - 1] - median);
+}
+
+/**
+ * What BM25 counts in a text: characters and character bigrams inside each CJK / kana / hangul run,
+ * whole words elsewhere (case-folded). No tokenizer, so a made-up name splits no worse
+ * than a common word.
+ */
+const RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[\p{L}\p{N}]+/gu;
+const CJK1 = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
+export function lexTokens(text) {
+  const out = [];
+  for (const m of String(text ?? '').toLowerCase().matchAll(RUN)) {
+    const r = m[0];
+    if (!CJK1.test(r[0])) { out.push(r); continue; }
+    // Characters and bigrams both: a two-character name is one bigram, which two common bigrams
+    // (咋样 + 样了) would outweigh; its two rare characters tip it back.
+    for (let i = 0; i < r.length; i++) { out.push(r[i]); if (i + 2 <= r.length) out.push(r.slice(i, i + 2)); }
+  }
+  return out;
+}
+
+/** An incremental Okapi BM25 index (k1 1.2, b 0.75) over lexTokens. */
+export function createBm25({ k1 = 1.2, b = 0.75 } = {}) {
+  const docs = []; const df = new Map(); let total = 0;
+  return {
+    get size() { return docs.length; },
+    add(text) {
+      const toks = lexTokens(text); const tf = new Map();
+      for (const t of toks) tf.set(t, (tf.get(t) ?? 0) + 1);
+      for (const t of tf.keys()) df.set(t, (df.get(t) ?? 0) + 1);
+      docs.push({ tf, len: toks.length }); total += toks.length;
+    },
+    /** Scores for the documents `ids` (all when omitted). */
+    score(query, ids = docs.map((_, i) => i)) {
+      const n = docs.length; const avg = total / (n || 1);
+      const terms = [...new Set(lexTokens(query))].map((t) => { const d = df.get(t) ?? 0; return { t, idf: d ? Math.log(1 + (n - d + 0.5) / (d + 0.5)) : 0 }; }).filter((x) => x.idf > 0);
+      return ids.map((i) => {
+        const d = docs[i]; let s = 0;
+        for (const { t, idf } of terms) { const f = d.tf.get(t); if (f) s += idf * (f * (k1 + 1)) / (f + k1 * (1 - b + b * d.len / avg)); }
+        return s;
+      });
+    },
+  };
+}
+
+/**
+ * Name groups (one person's names, or one name) the message mentions. A name counts from 2
+ * characters on, so 他 / 阿 never match everything.
+ */
+export function namesIn(query, groups) {
+  const q = String(query ?? '').toLowerCase();
+  const out = [];
+  for (const g of groups ?? []) {
+    const names = [...new Set([].concat(g ?? []).map((n) => String(n ?? '').trim().toLowerCase()).filter((n) => [...n].length >= 2))];
+    if (names.some((n) => q.includes(n))) out.push(names);
+  }
+  return out;
+}
+
+/** Reciprocal rank fusion: lists of keys, best first → [[key, score]] best first. */
+export function rrf(lists, k = 60) {
+  const m = new Map();
+  for (const l of lists) l.forEach((key, r) => m.set(key, (m.get(key) ?? 0) + 1 / (k + r + 1)));
+  return [...m].sort((a, b) => b[1] - a[1]);
 }
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -272,9 +343,10 @@ async function localEmbedder({ model, mirror, install, version, log, onPhase }) 
 
 /**
  * opts: { cfg (memory config: recall* keys), dir (<home>/memory), lines () → in-memory transcript
- * lines, transcriptFile, logger, audit, embedder? (backend, spec) → { embed, rerank } — tests/hosts }
+ * lines, transcriptFile, logger, audit, embedder? (backend, spec) → { embed, rerank } — tests/hosts,
+ * names? () → name groups her memory knows ([[name, alias…], …]) for the names channel }
  */
-export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = () => {}, embedder: makeEmbedder }) {
+export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = () => {}, embedder: makeEmbedder, names = () => [] }) {
   const saved = () => readSettings().recall ?? {};
   // Command-set values (dsh-memory.json) win over plugin config, so switching needs no restart or file edit.
   const backend = () => { const b = saved().backend ?? cfg.recallBackend; return BACKENDS.includes(b) ? b : 'local'; };
@@ -344,6 +416,39 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     return chain;
   }
 
+  // BM25 over an index's chunks, caught up incrementally (rebuilt when the index was cleared or switched).
+  let lexCache = null;
+  function bm25For(ix) {
+    const meta = ix.meta();
+    if (!lexCache || lexCache.dir !== ix.dir || lexCache.n > meta.length) lexCache = { dir: ix.dir, n: 0, bm: createBm25() };
+    for (; lexCache.n < meta.length; lexCache.n++) lexCache.bm.add(meta[lexCache.n].text);
+    return lexCache.bm;
+  }
+  const LEX_TOP = 20;
+  /**
+   * The word channels over `pool` (chunks with .i into `bm`): BM25 hits that stand out (the same
+   * contrast rule as the vectors), and turns that mention a name the message mentions. Lists of
+   * pool positions, best first.
+   */
+  function wordLists(q, pool, bm) {
+    const lists = [];
+    if (cfg.recallLexical !== false && pool.length) {
+      const sc = bm.score(q, pool.map((c) => c.i));
+      const cut = Math.max(contrastCut(sc, Number(cfg.recallContrast) || 0), 1e-9);
+      lists.push(sc.map((s, j) => ({ j, s })).filter((x) => x.s >= cut).sort((a, b) => b.s - a.s).slice(0, LEX_TOP).map((x) => x.j));
+    }
+    if (cfg.recallNames !== false && pool.length) {
+      let groups = [];
+      try { groups = namesIn(q, names()); } catch { groups = []; }
+      if (groups.length) {
+        const hit = pool.map((c, j) => ({ j, n: groups.filter((g) => g.some((n) => c.text.toLowerCase().includes(n))).length, at: c.at })).filter((x) => x.n > 0);
+        lists.push(hit.sort((a, b) => b.n - a.n || b.at - a.at).slice(0, LEX_TOP).map((x) => x.j));
+      }
+    }
+    return lists.filter((l) => l.length);
+  }
+  const rrfK = () => Number(cfg.recallRrfK) || 60;
+
   /** What to inject for `query` in `session`: { text, hits, mode, ms } (text '' when nothing). */
   let last = null;
   async function query(q, { session = '', record = true } = {}) {
@@ -374,23 +479,30 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
         if (pool.length) {
           const [qv] = (await impl.embed([q], 'query')).map(norm);
           const vecs = ix.vecs();
-          let cand = pool.map((c) => ({ c, s: dot(qv, vecs[c.i]) }));
+          let cand = pool.map((c, j) => ({ c, j, s: dot(qv, vecs[c.i]) }));
           const cut = impl.rerank ? -Infinity : contrastCut(cand.map((x) => x.s), Number(cfg.recallContrast) || 0);
+          const floor = Number(cfg.recallMinScore) || -Infinity;
           cand.sort((x, y) => y.s - x.s);
+          const words = wordLists(q, pool, bm25For(ix));
           if (impl.rerank) {
-            cand = cand.slice(0, cfg.recallCandidates);
-            const r = await impl.rerank(q, cand.map((x) => x.c.text), Math.min(cfg.recallTopK, cand.length));
-            picked = r.map((x) => ({ c: cand[x.index].c, s: x.score }));
-          } else picked = cand.slice(0, cfg.recallTopK).filter((x) => x.s >= cut);
-          picked = picked.filter((x) => x.s >= (Number(cfg.recallMinScore) || -Infinity));
+            // The reranker reads every channel's candidates; its score decides.
+            const keys = rrf([cand.slice(0, cfg.recallCandidates).map((x) => x.j), ...words], rrfK()).slice(0, cfg.recallCandidates).map(([j]) => j);
+            const r = await impl.rerank(q, keys.map((j) => pool[j].text), Math.min(cfg.recallTopK, keys.length));
+            picked = r.map((x) => ({ c: pool[keys[x.index]], s: x.score })).filter((x) => x.s >= floor);
+          } else {
+            const vec = cand.filter((x) => x.s >= cut && x.s >= floor).slice(0, words.length ? LEX_TOP : cfg.recallTopK).map((x) => x.j);
+            picked = words.length ? rrf([vec, ...words], rrfK()).slice(0, cfg.recallTopK).map(([j, s]) => ({ c: pool[j], s })) : vec.map((j) => ({ c: pool[j], s: cand.find((x) => x.j === j).s }));
+          }
         }
       } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; }
     }
     if (!picked) {
       // Not ready (installing, downloading, no key, failed, a cloud hiccup): the same turns, found by words.
       res.mode = `${b}→lexical`;
-      const all = outside(chunkTurns(lines(), cfg.recallChunkChars));
-      picked = search(all, q, cfg.recallTopK).map((c, i) => ({ c, s: 1 - i / 100 }));
+      const all = outside(chunkTurns(lines(), cfg.recallChunkChars)).map((c, i) => ({ ...c, i }));
+      const bm = createBm25(); for (const c of all) bm.add(c.text);
+      const words = wordLists(q, all, bm);
+      picked = words.length ? rrf(words, rrfK()).slice(0, cfg.recallTopK).map(([j, s]) => ({ c: all[j], s })) : search(all, q, cfg.recallTopK).map((c, i) => ({ c, s: 1 - i / 100 }));
     }
     // Fit the budget by dropping the weakest, then show in time order.
     const budget = Number(cfg.recallMaxTokens) || Infinity;

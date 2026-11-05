@@ -392,7 +392,14 @@ export const FRAGMENT_KINDS = ['event', 'plan', 'promise', 'preference', 'fact']
 const MAX_IMPORTANCE = 9;
 
 /** Add a fragment, or count it again when it is already there (refs + 1, importance + tag). */
-export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now = Date.now() }) {
+/** Names a fragment is about (fragments' who): up to 4, each 2–12 characters. */
+export function cleanWho(who) {
+  return [...new Set([].concat(who ?? []).map((n) => String(n ?? '').trim()).filter((n) => [...n].length >= 2 && [...n].length <= 12))].slice(0, 4);
+}
+/** Kinds that can be left open (还没了的事): something planned, promised, or put off. */
+export const OPENABLE = ['plan', 'promise'];
+
+export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now = Date.now(), open, who }) {
   const body = String(text ?? '').trim();
   const t = Number(tag);
   if (!body || !Number.isInteger(t) || t < 0 || t > 2 || rejectReason(body)) return { action: 'dropped' };
@@ -410,20 +417,37 @@ export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now =
     hit.importance = Math.min(MAX_IMPORTANCE, hit.importance + t);
     hit.lastSeenAt = now; hit.lastSeenGen = gen;
     if (body.length > hit.text.length) { hit.text = body; hit.hash = hash; }
+    const names = cleanWho([...(hit.who ?? []), ...cleanWho(who)]);
+    if (names.length) hit.who = names;
+    if (open === false && hit.open) { hit.open = false; hit.closedAt = now; }
+    else if (open === true && OPENABLE.includes(hit.kind)) { hit.open = true; delete hit.closedAt; }
     return { action: 'dup', id: hit.id };
   }
   const id = `f${String((memory.fseq = (memory.fseq ?? 0) + 1)).padStart(4, '0')}`;
-  list.push({ id, text: body, hash, kind: FRAGMENT_KINDS.includes(kind) ? kind : 'event', importance: t, refs: 1, pinned: false, createdAt: now, lastSeenAt: now, lastSeenGen: gen });
+  const k = FRAGMENT_KINDS.includes(kind) ? kind : 'event';
+  const f = { id, text: body, hash, kind: k, importance: t, refs: 1, pinned: false, createdAt: now, lastSeenAt: now, lastSeenGen: gen };
+  const names = cleanWho(who);
+  if (names.length) f.who = names;
+  if (open === true && OPENABLE.includes(k)) f.open = true;
+  list.push(f);
   return { action: 'new', id };
 }
 
-/** Every `every` generations: unpinned fragments not seen for 5 lose 1 importance; 0/1-ref ones unseen for 10 go. */
+/** An open fragment is done, called off or no longer his concern: it leaves 还没了的事. */
+export function closeFragment(memory, id, now = Date.now()) {
+  const f = memory.fragments.find((x) => x.id === String(id ?? '').trim());
+  if (!f || !f.open) return false;
+  f.open = false; f.closedAt = now;
+  return true;
+}
+
+/** Every `every` generations: unpinned fragments not seen for 5 lose 1 importance; 0/1-ref ones unseen for 10 go (open ones stay). */
 export function ageFragments(memory, gen, every = 5) {
   if (gen <= 0 || gen % Math.max(1, every) !== 0) return { decayed: 0, dropped: 0 };
   let decayed = 0;
   for (const f of memory.fragments) if (!f.pinned && f.importance > 0 && (f.lastSeenGen ?? 0) <= gen - 5) { f.importance--; decayed++; }
   const before = memory.fragments.length;
-  memory.fragments = memory.fragments.filter((f) => f.pinned || !(f.importance === 0 && f.refs === 1 && (f.lastSeenGen ?? 0) <= gen - 10));
+  memory.fragments = memory.fragments.filter((f) => f.pinned || f.open || !(f.importance === 0 && f.refs === 1 && (f.lastSeenGen ?? 0) <= gen - 10));
   return { decayed, dropped: before - memory.fragments.length };
 }
 
@@ -440,6 +464,18 @@ export function selectFragments(fragments, budgetTokens) {
   const picked = [];
   let used = 0;
   for (const f of [...fragments].sort(compareFragments)) {
+    const cost = estimateTokens(f.text);
+    if (used + cost > budgetTokens) break;
+    picked.push(f); used += cost;
+  }
+  return picked;
+}
+
+/** 还没了的事: open fragments, newest first (by when they were first said, then id: byte-stable), under a budget. */
+export function selectOpen(fragments, budgetTokens) {
+  const picked = [];
+  let used = 0;
+  for (const f of fragments.filter((x) => x.open).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || b.id.localeCompare(a.id))) {
     const cost = estimateTokens(f.text);
     if (used + cost > budgetTokens) break;
     picked.push(f); used += cost;
@@ -473,13 +509,16 @@ const oldYear = (at, now) => (at && new Date(at).getFullYear() !== new Date(now)
  * when its text changes. A fragment recorded in another year carries that date, since its own text
  * was written with MM-DD dates.
  */
-export function renderStanding(memory, { budgetTokens = 600, banks = true, now = Date.now() } = {}) {
+export function renderStanding(memory, { budgetTokens = 600, openBudgetTokens = 200, banks = true, now = Date.now() } = {}) {
   const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
   if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
   if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
-  const picked = selectFragments(memory.fragments, budgetTokens);
+  const open = selectOpen(memory.fragments, openBudgetTokens);
+  if (open.length) parts.push(`${t.open}\n${open.map((f) => `- ${oldYear(f.createdAt, now)}${f.text}`).join('\n')}`);
+  const shown = new Set(open.map((f) => f.id));
+  const picked = selectFragments(memory.fragments.filter((f) => !shown.has(f.id)), budgetTokens);
   if (picked.length) parts.push(`${t.recent}\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${oldYear(f.createdAt, now)}${f.text}`).join('\n')}`);
   if (!parts.length) return '';
   return ['<memory>', t.intro, ...parts, '</memory>'].join('\n');

@@ -7,6 +7,7 @@
 | **画像**（[Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)，经 dsh-hermes-memory） | `owner`：关于你（1375 字以内）；`self`：她自己的笔记——学会了什么、习惯、看法（2200 字以内）。满了要合并或删旧的 | 整理时由模型写；她自己用 `memory` 工具改 | 是 |
 | **人物卡**（一张身份表，所有 App 共用） | 每个人一张卡，卡上有多个「把手」：`qq:919231551`（有号码时）、`qq:name:宽`（手机通知只显示名字时）、`xiaoheihe:name:暮看云`……不管从电脑 QQ、手机 QQ、小黑盒还是以后任何 App 来，都先在这张表里认人。「主人」是这张表里某个人身上的标记，不是单独的配置。档位：你 / 说过话 / 只在帖子里打过交道（只有次数和一句印象）/ 好友列表里但没说过话 | 互动次数、最后出现时间、名字、把手由**代码**按真实事件记；印象和事由模型写。关于别人的事先进**待核实** | 只在这个人叫醒她的那条消息后面附上 |
 | **碎片**（[dsh-whale-inurqq](https://github.com/FABAGV/dsh-whale-inurqq)） | 发生过的具体的事，60 字以内，带 tag（0 知道就行 / 1 影响接下来怎么说话 / 2 不记住就会出错）。同一件事再被说起：被提到次数 +1、重要度 + tag；每 5 段老化一次；可以钉住 | 整理时由模型写 | 按重要度取，约 600 token |
+| **还没了的事**（0.19） | plan / promise 碎片里还没结果的（他说要做、她答应了、"先搁着回头再说"、在等别人回）：整理时标 `open`，办完、取消、他说不用了就在 `closed` 里填 id 关掉。碎片还可以带 `who`（里面的人名、昵称、店名，最多 4 个），给召回的人名通道用 | 整理时由模型写 | 单独一栏「还没了的事」，新的在前，约 200 token（`openBudgetTokens`），不和「最近的事」重复；老化和 300 条上限都不删没了的 |
 
 ## 不记的东西
 
@@ -66,6 +67,10 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
   - **话太少不查**（`recallMinQueryLength` 4）：叫醒她的那句话去掉标点后，不同的汉字 / 假名 / 谚文个数 + 其他文字里不同的词数，少于 4 就不召回（连关键词也不翻）。`好的`、`哈哈哈哈`、`在吗？`、`ok thanks` 都不查；`我回来了`、`阿岑会修什么？`、`What did Caroline research?` 照查。
   - **要比大多数高出一截**（`recallContrast` 0.35）：一条命中的余弦要 ≥ 中位数 + 0.35 ×（最高分 − 中位数），中位数和最高分按她整个索引（当前会话之外）算。真问题总有几轮明显高出其他；含糊的话和什么都差不多像，留不下几条。索引不到 20 轮时不用这条。云端重排之后不用这条（重排分本身就是相关度）。
   - `recallMinScore`：可选的绝对下限，默认 0（不用）。它和模型绑死：bge-small-zh 的 0.45 到 e5 上等于不过滤，e5 上要 0.87 才有同样效果，可那样英文问题一条都留不下。
+- **三条通道，按名次合并**（0.19）：向量之外再查两次字面——
+  - **BM25**（`recallLexical`）：同一批块按汉字和相邻两字（其他文字按词）算 BM25，不用分词器，生造的名字也切得开。一个少见的名字（阿兰、签名牌）在 BM25 里分量很重，一句话的向量里却会被其他字冲淡。同样用「高出一截」那条过滤（对 BM25 分数算），取前 20。
+  - **人名**（`recallNames`）：她认识的人的名字（人物卡，别名算一组）和碎片 `who` 里记下的名字，消息里提到哪个（2 个字起），就把提到这一组任何一个名字的轮次拉进来，提到的组越多、越新越靠前，取前 20。问"小秦"也能找到写着"秦渡"的那轮。
+  - 三张名单用 **RRF**（每条得 1/(`recallRrfK` 60 + 名次)，各通道相加）合成一张，取前 `recallTopK`，不用把余弦和 BM25 分数换成同一个刻度。云端重排时，三条通道的候选一起交给重排模型打分。两个开关都关掉就和 0.18 一样只看向量。
 - **只给她的对话**：作为动态 context 注入（dsh 放在历史之后，不破坏前缀缓存）；跑腿会话看不到。
 - **密码 / key 不进**：和碎片同一个过滤，含密码、API key 的那行不入索引、不发给云端、不注入；问话本身像密钥时不查。
 - **后端**：
@@ -133,9 +138,9 @@ dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `openBudgetTokens` 200 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
-自动召回：`recallBackend` local · `recallModel` ''（后端默认；本机是 `Xenova/multilingual-e5-small`）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinQueryLength` 4（0 关掉）· `recallContrast` 0.35（0 关掉）· `recallMinScore` 0（可选的绝对下限：本机余弦 / 云端重排分）· `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
+自动召回：`recallBackend` local · `recallModel` ''（后端默认；本机是 `Xenova/multilingual-e5-small`）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinQueryLength` 4（0 关掉）· `recallContrast` 0.35（0 关掉）· `recallMinScore` 0（可选的绝对下限：本机余弦 / 云端重排分）· `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallLexical` true · `recallNames` true · `recallRrfK` 60 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 
