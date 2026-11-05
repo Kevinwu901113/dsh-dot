@@ -199,7 +199,7 @@ setx DSH_DOT_COMPUTER off
 | `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
 | `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
-| `notifyRules` | 见下 | 非聊天 App 的通知先过这张表（按顺序，第一条命中的算）：每条 `{ "pkg": 包名（可省）, "title": 正则, "text": 正则（可省）, "action": "ignore" / "direct" }`。`ignore` 只记一笔 `notification-ignored`，不叫醒她；`direct`（@、回复、私信、关注她的）`notifyBatchMs` 后就叫醒；都没命中的按话题合并（见下一项）。默认：小黑盒的「黑盒今日热点订阅」「签到提醒」「今日未签到」和标题带「点击查看>>」的推广忽略，标题含「@了你 / 回复了你 / 关注了你 / 私信」的算 `direct`。写了就整张替换默认 |
+| `notifyRules` | 见下 | 非聊天 App 的通知先过这张表（按顺序，第一条命中的算）：每条 `{ "pkg": 包名（可省）, "title": 正则, "text": 正则（可省）, "action": "ignore" / "direct" }`。`ignore` 只记一笔 `notification-ignored`，不叫醒她；`direct`（@、回复、私信、关注她的）`notifyBatchMs` 后就叫醒；都没命中的按话题合并（见下一项）。默认：小黑盒的「黑盒今日热点订阅」「签到提醒」「今日未签到」和正文是「来自《…》，点击查看>>」的推广、资讯忽略，标题含「@了你 / 回复了你 / 关注了你 / 私信」的算 `direct`。写了就整张替换默认 |
 | `threadBatchMs` | `20000` | 同一话题（App + 通知里引用的帖子「来自“…”」，没有就只按 App）这么多毫秒内来的通知合并成一次叫醒；跑腿正在处理某个话题时，这个话题新来的都留给同一个跑腿，不另开 |
 | `heldMaxMs` | `600000` | 通知等忙着的跑腿等了这么久，就交给一个新的跑腿会话（记 `notification-rerouted`）；那个跑腿正在处理的话题除外 |
 | `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |

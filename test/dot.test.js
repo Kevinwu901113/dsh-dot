@@ -914,7 +914,7 @@ test('notification rules, threads, loop keys', async () => {
   const { notifyAction, threadOf, loopKey } = await import('../src/dot/core.js');
   const hbx = 'com.max.xiaoheihe';
   for (const title of ['黑盒今日热点订阅', '签到提醒', '今日未签到']) assert.equal(notifyAction({ pkg: hbx, title, text: 'x' }), 'ignore', title);
-  assert.equal(notifyAction({ pkg: 'com.x', title: '双十一大促 点击查看>>', text: '来自《某店》' }), 'ignore');
+  assert.equal(notifyAction({ pkg: 'com.x', title: '双十一大促', text: '来自《某店》，点击查看>>' }), 'ignore');
   for (const title of ['阿宽@了你', '阿宽回复了你', '阿宽关注了你', '私信']) assert.equal(notifyAction({ pkg: hbx, title, text: '' }), 'direct', title);
   assert.equal(notifyAction({ pkg: hbx, title: '你关注的游戏更新了' }), 'batch');
   assert.equal(notifyAction({ pkg: 'a', title: '签到提醒' }), 'batch', 'the 小黑盒 rule is for 小黑盒 only');

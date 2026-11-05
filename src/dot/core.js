@@ -105,7 +105,7 @@ const appName = (pkg) => APP_NAMES[pkg] ?? pkg;
  */
 export const NOTIFY_RULES = [
   { pkg: 'com.max.xiaoheihe', title: '黑盒今日热点订阅|签到提醒|今日未签到', action: 'ignore' },
-  { title: '点击查看>>', action: 'ignore' }, // store promos (来自《…》)
+  { text: '来自《.+》，点击查看', action: 'ignore' }, // promos and news digests: text 来自《…》，点击查看>>
   { title: '@了你|回复了你|关注了你|私信', action: 'direct' },
 ];
 export function notifyAction(n, rules = NOTIFY_RULES) {
