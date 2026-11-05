@@ -7,7 +7,7 @@ import {
   bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, dayMark,
 } from '../src/memory/store.js';
-import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk } from '../src/memory/memory.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt } from '../src/memory/memory.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -418,4 +418,10 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   const found = await h.tools.recall.execute({ query: '好吃' });
   assert.match(found.found, /我：那家店我去过 \/ 还挺好吃的 \/ 下次带你去/);
   for (const d of h.effects) if (typeof d === 'function') d();
+});
+
+test('persona lives only in the Canon: the consolidation prompt keeps persona and 「照着某某学」 out of self', () => {
+  const text = extractPrompt({ text: '我：照着星野那版学', self: ['拼出来的人设：蓝发'] });
+  assert.match(text, /self：[^\n]*人设、说话风格、「照着某某学」都不是关于她的事实，不写进 self；她的人设只在 Canon 里。/);
+  assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
 });

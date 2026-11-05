@@ -611,7 +611,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人），self=你自己的笔记（学会的事、习惯、看法），person=某个你认识的人（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；寒暄和一次性的小事不用记，系统会自己整理。',
+      description: '你自己的长期记忆。target：owner=关于他（你的人），self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里），person=某个你认识的人（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；寒暄和一次性的小事不用记，系统会自己整理。',
       parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove'] }, content: { type: 'string' }, oldText: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
@@ -654,6 +654,8 @@ export function apply(ctx, config = {}) {
     touch(e) { const p = touchPerson(memory, e); if (p) save(); return p; },
     /** Who is this ({ handles, platform, name }), without recording anything. */
     resolve(e) { return resolvePerson(memory.people, e); },
+    /** Whether anyone she really knows goes by this name (any platform). */
+    knows(name) { return Object.values(memory.people).some((p) => p.names.includes(name)); },
     card(ref) { return renderPerson(findPerson(memory.people, ref)); },
     setOwner(handle, name) { const p = setOwner(memory, handle, name); save(); return p; },
     /** When the last thing was said in her conversation (his words or hers) before `before`; 0 when nothing. */
