@@ -439,6 +439,8 @@ export function openOp(memory, op, { now = Date.now() } = {}) {
     if (f.error) return { ok: false, error: f.error };
     const [x] = memory.shelved.splice(f.index, 1);
     delete x.shelvedAt;
+    // Back in front of her as of now: otherwise, the oldest, it would be the first moved back to the shelf.
+    x.at = now;
     memory.open.push(x);
     return { ok: true };
   }
@@ -464,7 +466,7 @@ export function emptyMemory() {
  * came from are still in the transcript and the recall index), with a `report` of where each went.
  */
 export function migrateV1(m, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const frags = [...(m.fragments ?? [])];
+  const frags = (m.fragments ?? []).filter((f) => f && typeof f.text === 'string' && f.text.trim());
   const report = { open: [], shelved: [], toOwner: [], archived: 0, facts: 0, pending: 0 };
   const archive = { from: 'dsh-dot memory v1 (0.19)', at: new Date(now).toISOString(), fragments: [], facts: {}, pending: [...(m.pending ?? [])] };
   const out = { ...m, version: MEMORY_VERSION, open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])] };

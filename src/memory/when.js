@@ -27,8 +27,9 @@ export function dayHeading(ms, now = Date.now()) {
 
 const DAYWORD = { 大前天: -3, 前天: -2, 昨天: -1, 昨晚: -1, 昨儿: -1, 明天: 1, 明早: 1, 明晚: 1, 明儿: 1, 后天: 2, 大后天: 3 };
 const WD = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
-// Longest first, so 大后天 is not read as 后天, 下个周三 not as 周三.
-const EXPR = new RegExp(`(${Object.keys(DAYWORD).sort((a, b) => b.length - a.length).join('|')})|(这个?|本|下个?|上个?)(?:周|星期|礼拜)([一二三四五六日天])`, 'g');
+// Longest first, so 大后天 is not read as 后天, 下个周三 not as 周三. Not 上上周 / 下下周 (two weeks
+// off), and not the words that only start like a day: 下周天气, 这周一直, 下周一起, 后天性.
+const EXPR = new RegExp(`(${Object.keys(DAYWORD).sort((a, b) => b.length - a.length).join('|')})(?!性)|(?<![上下])(这个?|本|下个?|上个?)(?:周|星期|礼拜)(天(?![气空])|一(?![直起下样些共点])|[二三四五六日])`, 'g');
 const QUOTES = { '“': '”', '「': '」', '『': '』', '"': '"', '‘': '’' };
 // A clause that reports or imagines: its dates are not the speaker's.
 const REPORTED = /(说|讲|听说|据说|告诉我|问我|写着|提到|以为|如果|假如|要是|万一|假设|梦到|梦见|的话)/;

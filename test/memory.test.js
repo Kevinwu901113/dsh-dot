@@ -507,3 +507,36 @@ test('0.19 memory migrates: open fragments become 还没了的事 (a promise is 
   assert.match(readFileSync(join(dir, 'memory-migration.md'), 'utf8'), /放不下，先搁着[\s\S]*搁着：/);
   assert.ok(h.audit.some((e) => e.event === 'migrated'));
 });
+
+test('review fixes: a restored item is not shelved again at once; an unreadable or unmigratable memory.json is copied aside, never overwritten', async () => {
+  const m = emptyMemory();
+  const limits = { owner: 1375, self: 2200, open: 40, impression: 80, shelved: 200 };
+  openOp(m, { action: 'add', content: '06-01 他说想换个机械键盘' }, { now: 1 });
+  openOp(m, { action: 'add', content: '06-02 他说想去看海' }, { now: 2 });
+  openOp(m, { action: 'add', content: '06-03 他说想学吉他' }, { now: 3 });
+  fitOpen(m, { limits, now: 4 });
+  assert.equal(m.shelved[0].text, '06-01 他说想换个机械键盘');
+  openOp(m, { action: 'restore', oldText: '键盘' }, { now: 5 });
+  fitOpen(m, { limits, now: 6 });
+  assert.ok(m.open.some((x) => x.text.includes('键盘')), 'restored: it stays in front of her');
+  // an old file the migration cannot read: kept aside, the rest of memory starts empty
+  const { mkdirSync, readdirSync } = await import('node:fs');
+  for (const bad of ['{ not json', JSON.stringify({ version: 1, fragments: [{ id: 'f1' }, null], people: 7 })]) {
+    const h = harness();
+    const dir = join(h.home, 'memory'); mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, 'memory.json'), bad);
+    apply(h.ctx, { home: h.home });
+    h.services.dotMemory.touch({ handles: ['qq:42'], platform: 'qq', name: '阿满', kind: 'dm' }); // a save
+    const aside = readdirSync(dir).filter((f) => f.startsWith('memory.json.broken-'));
+    if (bad.startsWith('{ not')) { assert.equal(aside.length, 1); assert.equal(readFileSync(join(dir, aside[0]), 'utf8'), bad); }
+    else assert.equal(JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8')).version, 2, 'a fragment without text is skipped, not fatal');
+  }
+  // a second migration never overwrites the first archive
+  const h = harness();
+  const dir = join(h.home, 'memory'); mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'memory.v019.json'), '{"first":true}');
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify({ version: 1, fragments: [{ id: 'f1', text: '他吃了碗面', kind: 'event' }] }));
+  apply(h.ctx, { home: h.home });
+  assert.equal(readFileSync(join(dir, 'memory.v019.json'), 'utf8'), '{"first":true}');
+  assert.equal(readdirSync(dir).filter((f) => /^memory\.v019-\d+\.json$/.test(f)).length, 1);
+});

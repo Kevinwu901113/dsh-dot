@@ -497,7 +497,12 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
           const byScore = (sc) => sc.map((s, j) => ({ j, s })).filter((x) => x.s > 0 || sc === cos).sort((x, y) => y.s - x.s);
           const keys = [...new Set([...byScore(cos).slice(0, K), ...byScore(bm).slice(0, K)].map((x) => x.j))];
           res.candidates = keys.map((j) => pool[j].at);
-          const ranked = impl.rerank && keys.length ? await impl.rerank(q, keys.map((j) => pool[j].text), keys.length) : null;
+          let ranked = null;
+          if (impl.rerank && keys.length) {
+            // A reranker that fails (a cloud error after its retries, a bad reply): this query goes without it.
+            try { ranked = await impl.rerank(q, keys.map((j) => pool[j].text), keys.length); } catch (err) { logger.warn(`recall rerank failed (${err.message}); without it this time`); }
+            if (ranked && !Array.isArray(ranked)) ranked = null;
+          }
           if (ranked) {
             // The reranker decides; fewer than topK when fewer clear its bar, never padded.
             const min = Number(cfg.recallRerankMin) || -Infinity;

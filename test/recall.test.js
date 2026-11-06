@@ -440,6 +440,11 @@ test('candidates from both channels, then the reranker decides: a turn the vecto
   r = mk({ recallRerankMin: 0.2 }, reader); r.turnEnded(); await r.warm();
   q = await r.query('阿兰那事咋样了', { session: 'now' });
   assert.equal(q.hits.length, 1, 'not padded to topK');
+  // a reranker that throws: this query goes without it (both channels, contrast), not to the word-only fallback
+  r = mk({}, { ...flatVecs, async rerank() { throw new Error('HTTP 500'); } }); r.turnEnded(); await r.warm();
+  q = await r.query('阿兰那事咋样了', { session: 'now' });
+  assert.equal(q.mode, 'local');
+  assert.ok(q.candidates.length > 0 && q.hits.some((h) => /阿兰/.test(h.text)));
   r = mk({ recallRerankMin: 0.99 }, reader); r.turnEnded(); await r.warm();
   q = await r.query('阿兰那事咋样了', { session: 'now' });
   assert.deepEqual([q.hits.length, q.text], [0, ''], 'nothing relevant, nothing shown');
@@ -459,4 +464,5 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
   assert.equal(annotate('月底交，周三开会', mon), '月底交，周三开会', 'ambiguous: left as said');
   assert.equal(annotate('上周五和这周日', mon), '上周五（=07-03）和这周日（=07-12）');
   assert.equal(annotate('明天（07-07）去', mon), '明天（07-07）去', 'already written out');
+  for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
 });

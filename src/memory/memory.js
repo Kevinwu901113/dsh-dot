@@ -15,7 +15,7 @@
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
 // She edits her notes herself too (`memory`), and looks things up (`recall`).
-import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -274,9 +274,21 @@ export function apply(ctx, config = {}) {
   };
   const audit = (event, data = {}) => (ctx.get('dshComputer')?.audit ?? ctx.get('dshPhone')?.audit)?.({ kind: 'memory', event, ...data });
 
+  // A memory.json that cannot be read or migrated is copied aside before anything is saved over it.
   let memory;
-  try { memory = normalizeMemory(JSON.parse(readFileSync(files.memory, 'utf8')), { limits: cfg.limits }); } catch (error) { void error; memory = emptyMemory(); }
+  let frozen = false; // true: saving would destroy data no copy holds; nothing is written until a restart
+  const keepAside = (why) => {
+    const to = `${files.memory}.broken-${Date.now()}`;
+    try { copyFileSync(files.memory, to); logger.warn(`memory.json ${why}: kept as ${to}; starting empty`); return true; } catch (err) { logger.warn(`memory.json ${why}, and it could not be copied aside (${err.message}): not saving until this is fixed`); return false; }
+  };
+  if (existsSync(files.memory)) {
+    let raw = null;
+    try { raw = JSON.parse(readFileSync(files.memory, 'utf8')); } catch (err) { frozen = !keepAside(`is not readable (${err.message})`); }
+    if (raw) { try { memory = normalizeMemory(raw, { limits: cfg.limits }); } catch (err) { frozen = !keepAside(`could not be migrated (${err.message})`); } }
+  }
+  memory ??= emptyMemory();
   function save() {
+    if (frozen) return;
     try {
       writeFileSync(`${files.memory}.tmp`, JSON.stringify(memory, null, 2));
       renameSync(`${files.memory}.tmp`, files.memory);
@@ -302,14 +314,22 @@ export function apply(ctx, config = {}) {
   if (memory.migration) {
     const { archive, report } = memory.migration;
     delete memory.migration;
+    // The archive first, under a name never used before; the migrated memory is saved only once it is
+    // on disk (or the whole old file is copied aside) — otherwise what was archived would be lost.
+    let kept = '';
+    const target = existsSync(files.archive) ? files.archive.replace(/\.json$/, `-${Date.now()}.json`) : files.archive;
+    try { writeFileSync(target, JSON.stringify(archive, null, 2)); kept = target; } catch (err) {
+      logger.warn(`migration archive ${target}: ${err.message}`);
+      const copy = `${files.memory}.pre-0.20-${Date.now()}`;
+      try { copyFileSync(files.memory, copy); kept = copy; } catch (err2) { logger.warn(`could not copy the 0.19 memory aside either (${err2.message}): not saving until this is fixed`); frozen = true; }
+    }
     try {
-      if (!existsSync(files.archive)) writeFileSync(files.archive, JSON.stringify(archive, null, 2));
       writeFileSync(files.migration, [
         `# 记忆升级到 0.20（${new Date().toISOString()}）`, '',
         `- 还没了的事：${report.open.length} 件进了第三栏${report.shelved.length ? `，${report.shelved.length} 件放不下，先搁着（仍会被提起、可以 recall）` : ''}`,
         ...report.shelved.map((t) => `  - 搁着：${t}`),
         `- 钉住的碎片进了"关于他"：${report.toOwner.length} 条`, ...report.toOwner.map((t) => `  - ${t}`),
-        `- 不再保留、存进 memory.v019.json：碎片 ${report.archived} 条、人物卡上的事实 ${report.facts} 条、待核实 ${report.pending} 条（原话都还在，提到时会翻出来）`, '',
+        `- 不再保留、存进 ${kept || '（没能写出，memory.json 未改动）'}：碎片 ${report.archived} 条、人物卡上的事实 ${report.facts} 条、待核实 ${report.pending} 条（原话都还在，提到时会翻出来）`, '',
       ].join('\n'));
     } catch (err) { logger.warn(`migration files: ${err.message}`); }
     save();
