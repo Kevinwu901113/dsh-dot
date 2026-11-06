@@ -159,13 +159,17 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
 | `handoffTokens` | `150000` | 对话多长换新会话 |
-| `dailyAt` | `"23:30"` | 每天整理 + 写日记的时间 |
+| `consolidateEveryLines` | `40` | 新记录攒满多少行整理一次（交班前也整理一次） |
+| `dailyAt` | `"23:30"` | 每天写日记的时间（当天有记录才写） |
+| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` | 三栏笔记各多少字、人物印象多少字、先搁着的最多几件 |
 | `coexist` | `"auto"` | `auto` / `people-only` / `full` |
 | `recallBackend` | `"local"` | `local` / `siliconflow` / `dashscope` / `off`（建议用 `/dot memory recall backend`，命令设的值优先） |
 | `recallModel` | `""` | 本机默认 `Xenova/multilingual-e5-small`；只用中文可填 `BAAI/bge-small-zh-v1.5`（更轻，23 MB / 约 0.13 GB）。建议用 `/dot memory recall model` |
-| `recallTopK` / `recallMaxTokens` | `8` / `1500` | 每次叫醒注入多少旧对话 |
-| `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；命中要比整个索引的中位数高出一截；可选的绝对分数下限（和模型绑死，默认不用）。见 [memory.md](memory.md) |
-| `recallLexical` / `recallNames` / `recallRrfK` | `true` / `true` / `60` | 向量之外的两条字面通道：BM25（汉字 + 两字）和人名（人物卡别名、碎片 who），按名次（RRF）合并。见 [memory.md](memory.md) |
+| `recallRerankModel` | `""` | 本机默认 `Xenova/bge-reranker-base`（279 MB）；`BAAI/bge-reranker-v2-m3` 更强更慢（571 MB）；`none` 不重排。建议用 `/dot memory recall rerank` |
+| `recallCandidates` / `recallTopK` / `recallMaxTokens` | `20` / `10` / `1500` | 向量、BM25 各出多少候选；重排后最多注入几条、多少 token（可以更少，不凑数） |
+| `recallRerankMin` | `0` | 重排分（0–1）的可选门槛；0 = 只看重排的顺序 |
+| `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；不重排时，命中要比整个索引的中位数高出一截；不重排时可选的余弦下限。见 [memory.md](memory.md) |
+| `recallLexical` | `true` | BM25 那一路候选（汉字 + 两字）；`false` 只用向量 |
 | `recallMirror` | `""` | 本机模型下载镜像，默认 hf-mirror |
 
 ### `interlude`

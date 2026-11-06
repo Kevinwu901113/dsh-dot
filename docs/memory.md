@@ -1,148 +1,122 @@
 # dsh-dot/memory：她记得的
 
-她的记忆分三种，各自借自一个已经被用过的设计：
+一句话：**原话负责证据，三栏笔记负责长期状态。** 聊过的每一轮原样存着、带时间；她每次被叫醒，就用叫醒她的那句话把相关的原话翻出来给她看。一直要用的事（关于你、她自己、还没了的事）记在一份很小的常驻笔记里；认识的人记在一张身份表里。
 
-| | 是什么 | 谁写 | 每轮都看得到吗 |
+```
+真实事件 ──► 原话库 transcript.jsonl（每轮一条，带时间）
+               │
+               ├─ 每轮建索引 ─► 向量 + BM25 ─(每次叫醒)─► 合并候选 → 重排 → ≤10 条原话（按日期分组）
+               │
+               └─ 攒满 40 行 / 交班 ─► 一次整理 ─► 三栏笔记 + 人物卡 ─(她对话的每一轮)─► <memory>
+```
+
+| | 是什么 | 谁写 | 怎么到她面前 |
 |---|---|---|---|
-| **画像**（[Hermes](https://hermes-agent.nousresearch.com/docs/user-guide/features/memory)，经 dsh-hermes-memory） | `owner`：关于你（1375 字以内）；`self`：她自己的笔记——学会了什么、习惯、看法（2200 字以内）。满了要合并或删旧的 | 整理时由模型写；她自己用 `memory` 工具改 | 是 |
-| **人物卡**（一张身份表，所有 App 共用） | 每个人一张卡，卡上有多个「把手」：`qq:919231551`（有号码时）、`qq:name:宽`（手机通知只显示名字时）、`xiaoheihe:name:暮看云`……不管从电脑 QQ、手机 QQ、小黑盒还是以后任何 App 来，都先在这张表里认人。「主人」是这张表里某个人身上的标记，不是单独的配置。档位：你 / 说过话 / 只在帖子里打过交道（只有次数和一句印象）/ 好友列表里但没说过话 | 互动次数、最后出现时间、名字、把手由**代码**按真实事件记；印象和事由模型写。关于别人的事先进**待核实** | 只在这个人叫醒她的那条消息后面附上 |
-| **碎片**（[dsh-whale-inurqq](https://github.com/FABAGV/dsh-whale-inurqq)） | 发生过的具体的事，60 字以内，带 tag（0 知道就行 / 1 影响接下来怎么说话 / 2 不记住就会出错）。同一件事再被说起：被提到次数 +1、重要度 + tag；每 5 段老化一次；可以钉住 | 整理时由模型写 | 按重要度取，约 600 token |
-| **取代**（0.19） | 同一件事变了（新状态、改主意、改时间或数字、他更正了说法），整理时给新碎片填 `replaces`（旧碎片 id）：新文字替换旧的，旧文字留在 `was` 里（不给她看），新旧不再并存。改口和更正时，新文字里带上原来的说法。为了让模型找得到要替换的旧碎片，整理时除了最要紧的 40 条，还按这段记录（BM25）列出最相关的 20 条 | 整理时由模型写 | 同碎片 |
-| **还没了的事**（0.19） | plan / promise 碎片里还没结果的（他说要做、她答应了、"先搁着回头再说"、在等别人回）：整理时标 `open`，办完、取消、他说不用了就在 `closed` 里填 id 关掉。碎片还可以带 `who`（里面的人名、昵称、店名，最多 4 个），给召回的人名通道用 | 整理时由模型写 | 单独一栏「还没了的事」，新的在前，约 200 token（`openBudgetTokens`），不和「最近的事」重复；老化和 300 条上限都不删没了的 |
+| **原话库** | 她对话里真实发生的每一行：你的话、她真正发出去的 QQ、手机通知、跑腿的结论、定时任务 | 代码，入库不调模型 | 不直接给，召回从这里找 |
+| **自动召回** | 每轮一块（叫醒她的话 + 她回的话 + 日期）；向量和 BM25 各出候选，重排后最多 10 条 | 代码，每轮结束增量建索引 | 每次被叫醒，「你记得的相关原话」，按日期分组 |
+| **三栏笔记** | 关于他（1375 字以内）· 她自己（2200 字以内）· 还没了的事（800 字以内，外加「先搁着的」） | 整理时由模型写；她自己用 `memory` 工具改 | 她对话的每一轮，`<memory>` |
+| **人物卡** | 一张身份表，所有 App 共用；每人多个把手、档位、次数、一句印象 | 次数、时间、把手由代码按真实事件记；印象由模型写 | 这个人叫醒她时，跟在那条消息后面 |
+| **日记** | 每天一篇，她的口吻，40–120 字 | 每天 `dailyAt`（23:30）单独一次调用，当天有记录才写 | 不给她，给你看（面板、`diary.md`） |
 
-## 不记的东西
+0.20 起删掉了：碎片层（重要度、tag、老化、钉住、取代、`who`）、整理时附的日历和碎片清单、召回的人名通道和 RRF、交接文本、「安静 30 分钟就整理」。为什么删，见文末「数据」。
 
-密码和 API key / 密钥 / 令牌：哪一栏都不收（模型写了也会被丢掉），`recall` 的结果里也滤掉。手机号、验证码、账号这些照常记；提到「token 消耗」「上下文」「提示词」的普通句子也照常记（你的工作就是做 agent，这些词不算秘密、也不算系统话）。另外有质量闸门：太短、讲她自己的工具调用和交接的话、空话不收。
+## 原话库
 
-## 认人与合并
+`~/dot/memory/transcript.jsonl` 只记她对话里真实发生的：你说的话、她真正用 `qq_send` 发出去的话（发给谁；按工具结果记，记在调用的时刻：被拦下的一句不记，发到一半被他打断的只记发出去的几条，图片没发成的只记文字）、手机通知、跑腿留下的结论、定时任务。幕间写的虚构剧本不进这里，所以虚构的事不会变成「记忆」。叫醒她的消息开头带时间戳（`[11-04 04:51] …`，见 prompts.md），记进来时去掉——每行本来就有自己的时间。她对话里「现在」那行（`dot:now`）的「距上一条消息」也从这里算。
 
-同一个人第一次从两个地方出现，可能先有两张卡（比如手机通知里的「宽」和电脑 QQ 的 919231551）；认出是同一个人就合并（把手、名字、次数、事都并到一张上）：
+图：她发出去的图记成它的 ref，写法本身就能再发——`[表情包 sticker:<id>]`、`[图 phone:latest]`、`[图 <网址>]`。别人发来的图是消息里的文字：`[图片 <网址>]`。图本身（附件 id、字节）从不进原话库和索引。
 
-- **QQ 好友列表**（确定）：电脑 QQ 在线时每 6 小时同步一次 `get_friend_list`。她给好友的备注就是手机通知里显示的名字，所以「宽」就此和号码连上；两张卡就此合并。两个好友备注相同的，名字不当把手（宁可不认）。
-- **模型**（整理时）：记录里有证据说两张卡是同一个人，就写 `same`。不涉及你的直接合并；**涉及你的先进「待确认的合并」**，你 `/dot people approve m…` 才合（被认成你等于拿到最高信任）。
-- **你**：`/dot people merge <a> <b>`。
+## 自动召回
 
-认出是你的人，不管从哪条通道来，他的话都作为你本人的话交给她；从手机来、而电脑 QQ 不在线时，会提醒她去手机 QQ 里回。
+她每次被叫醒（你的消息、QQ 消息、手机通知、定时任务），在模型看到之前：
 
-## 素材：真实发生过的事
+1. **话太少不查**（`recallMinQueryLength` 4）：去掉标点后不同的汉字 / 假名 / 谚文个数 + 其他文字里不同的词数，少于 4 就不召回。`好的`、`哈哈哈哈`、`在吗？` 不查。
+2. **两路候选**：按余弦取前 `recallCandidates`（20）轮，再按 BM25 取前 20 轮（汉字和相邻两字、其他文字按词，不用分词器；一个少见的名字、数字在 BM25 里分量很重，一句话的向量里却会被冲淡）。她当前会话里的轮次本来就在上下文里，不取。
+3. **重排决定**：重排模型把每条候选和那句话一起读一遍打分，按分数取，最多 `recallTopK`（10）条、`recallMaxTokens`（1500）token。**可以少于 10 条，不凑数**；`recallRerankMin`（0–1，默认 0）是可选的门槛。没有重排模型（设成 `none`，或还在下载）时，两路各自只留「比大多数高出一截」的（对比度 `recallContrast` 0.35：分数 ≥ 中位数 + 0.35 ×（最高 − 中位数）），交替合并。
+4. **按日期给她看**：每天一个标题 `— 06-22 周一 · 15 天前`，下面是那天的原话；开头写明今天是哪天。原话里「明天、后天、昨天、前天、这周X、下周X、上周X」由**代码**按那句话说的日子换算，附在后面：`下周三（=07-15）`。「月底」「X 号」「周末」、单说「周三」不换算；在引号里的、转述的（他说…、听说…）、假设的（如果…、要是…）也不换算——算错的确定日期比原话更误导。
 
-`~/dot/memory/transcript.jsonl` 只记她对话里真实发生的：你说的话、她真正用 `qq_send` 发出去的话（发给谁；按工具结果记，记在调用的时刻：被拦下的一句不记，发到一半被他打断的只记发出去的几条，图片没发成的只记文字）、手机通知、跑腿留下的结论、定时任务。幕间写的虚构剧本不进这里，所以虚构的事不会变成「记忆」。`recall` 工具在这里、碎片和人物卡里找原话。叫醒她的消息开头带时间戳（`[11-04 04:51] …`、`[11-04 04:52 手机通知] …`，见 prompts.md），记进来时去掉——每行本来就有自己的时间，不记两遍。她对话里「现在」那行（`dot:now`）的「距上一条消息」也从这里算：上一条你说的或她说的话。
+只给她的对话（动态 context，dsh 放在历史之后，不破坏前缀缓存）；跑腿会话看不到。密码 / key 那行不入索引、不发云端、不注入。
 
-记录里的图（0.17.2）：她发出去的图记成它的 ref，写法本身就能再发——`[表情包 sticker:<id>]`、`[图 phone:screen]`、`[图 phone:latest]`、`[图 <网址>]`（`face:<n>`、手机/电脑路径同理），一行里跟在文字后面：`那家店我去过 / 下次带你去 [图 phone:latest]`。0.17.0 的结果只有张数，就取那次调用 `images` 里的前几张；以前的 `[图片×N]` 不再写。别人发给她的图照旧是消息里的文字：`[图片 <网址>]`、`[表情包 sticker:<id>]`。她看得到那些图（见 qq.md），但记录只取消息的文字部分，图本身（附件 id、字节）从不进 transcript、碎片、recall 索引。交接尾巴和 recall 读的就是这些行；`memory.handoff` 的尾巴说明告诉她方括号里的是什么。
-
-## 整理
-
-每天 `dailyAt`（23:30）固定一次：把这一天新的记录整理掉，并让她写日记。
-
-一次模型调用，读上次整理之后的记录（一次最多 `inputChars` 40000 字；积压更多就从最旧的开始分几次读，游标只走到真正读过的位置，不会跳过），输出画像的增删改、人物、碎片、待核实的确认。记录每行带时间：今年的写 `MM-DD HH:MM`，往年的写 `YYYY-MM-DD HH:MM`；碎片里写下的日期跟着记录走。往年记下的碎片在她面前前面会加上当时的日期（`[2025-05-08] …`），免得去年的「05-08」被读成今年；今年的照旧不加，平时的 prompt 不变长。日期（0.19）：整理输入里附一张日历（这段记录前 1 周到后 3 周，一行一周、周一开头），提示词要求把「明天」「下周三」「月底」这类说法换成具体日期写进碎片，例如「答应下周三（07-01）前寄出」，算不准就照原话。她每轮的「现在」那行也带上这周一的日期（`现在 2026-11-04 04:51 星期三 深夜（这周一是 11-02）`），问到「上周二」「前天」时有个锚点。触发：新记录满 `consolidateEveryLines`（20）条；或安静 `consolidateIdleMinutes`（30）分钟且有 3 条以上；或交班；或 `/dot memory now`。
-
-## 日记
-
-`~/dot/memory/diary.md`：每天 `dailyAt` 一篇，她自己的口吻、第一人称、40–120 字，素材只许是真实记录（transcript）和她自己记下的东西，不引幕间的虚构。`/dot memory diary` 立刻写一篇。这是给你看的：她这一天过了什么、学了什么。
-
-## 她的生活进幕间
-
-幕间（dsh-dot/interlude）每轮拿到两样：`memories`（关于你的事 + 最要紧的碎片，作为已确立的过去）和 `herLife`（self 栏原文：她现在真实在做的事、会的事、习惯）。幕间的契约要求她这一段的生活围着 `herLife` 展开，虚构只填空隙。self 栏因此也是她"玩多少、什么时候玩"的来源——整理时模型会把她在手机上做什么、多常做写进去。
-
-## 交班
-
-她的对话会话（dsh-dot 记为「她的对话」的那个）每轮结束量一次 token。超过 `handoffTokens`（15 万）且这一段至少涨了 4 万：
-
-1. 冻结投递（这期间来的消息排队）；
-2. 整理一次，并让模型写交接：她此刻在做什么、手上没做完的、答应过的、还没问清的；
-3. **先归档**旧会话（归档后的会话收到消息会静默丢弃，所以必须先归档、再切换）；
-4. 在 `~/dot` 里开新会话「dot · 第 N 段」，交接文本加最后 12 句原话注入进去（不叫醒她）；
-5. 解冻，排队的消息投进新会话。
-
-dsh 自己的压缩要到窗口的 80%（DeepSeek 是约 84 万 token）才发生，而且摘要模板是给编程助手写的；交班让这件事不会发生在她身上。dsh-im 机器人开的会话不交班（绑定在 dsh-im 手里）。
-
-## 自动召回（0.12 起）
-
-画像和碎片是"整理过的"记忆；问到"三周前他到底怎么说的"，整理时没写下来的细节就没了。自动召回补这一块：她每次被叫醒（你的消息、QQ 消息、手机通知、定时任务）之前，用叫醒她的那句话去她自己的 `transcript.jsonl` 里找最像的旧对话，按时间顺序作为「你记得的相关原话」放在她面前，每条带日期。画像 / 碎片 / 日记 / 交班照旧，`recall` 工具也还在（她自己按关键词翻）。
-
-> 0.15.2：本机默认模型从 `bge-small-zh-v1.5` 换成 `multilingual-e5-small`——中文基准同分（85 / 108，都不重排），多了英文和约 100 种别的语言；代价是模型 129 MB、常驻约 0.4 GB（原来 23 MB、约 0.13 GB）。没选过模型的升级后自动换，第一次用时下模型、从 transcript 重建索引，期间按关键词找；旧的 `local-Xenova_bge-small-zh-v1.5/` 索引原样留着，切回去不用重算。用 `/dot memory recall model …` 或 `recallModel` 选过模型的不变。
-
-- **一轮一块**：叫醒她的话 + 她回的话 + 日期。每轮结束增量建索引，向量存 `~/dot/memory/recall/<后端>-<模型>/`（`vectors.f32` + `meta.jsonl`，不用向量库）。每个后端 + 模型各存一份，来回切换不互相覆盖、不重算。
-- **不重复**：她当前会话里的轮次本来就在上下文里，不再取（`recallWindowTurns`）；取 top 8（`recallTopK`），最多 1500 token（`recallMaxTokens`，超了先丢最不像的）。
-- **哪些值得给她看**（两道过滤，都不看某个模型的分数刻度）：
-  - **话太少不查**（`recallMinQueryLength` 4）：叫醒她的那句话去掉标点后，不同的汉字 / 假名 / 谚文个数 + 其他文字里不同的词数，少于 4 就不召回（连关键词也不翻）。`好的`、`哈哈哈哈`、`在吗？`、`ok thanks` 都不查；`我回来了`、`阿岑会修什么？`、`What did Caroline research?` 照查。
-  - **要比大多数高出一截**（`recallContrast` 0.35）：一条命中的余弦要 ≥ 中位数 + 0.35 ×（最高分 − 中位数），中位数和最高分按她整个索引（当前会话之外）算。真问题总有几轮明显高出其他；含糊的话和什么都差不多像，留不下几条。索引不到 20 轮时不用这条。云端重排之后不用这条（重排分本身就是相关度）。
-  - `recallMinScore`：可选的绝对下限，默认 0（不用）。它和模型绑死：bge-small-zh 的 0.45 到 e5 上等于不过滤，e5 上要 0.87 才有同样效果，可那样英文问题一条都留不下。
-- **三条通道，按名次合并**（0.19）：向量之外再查两次字面——
-  - **BM25**（`recallLexical`）：同一批块按汉字和相邻两字（其他文字按词）算 BM25，不用分词器，生造的名字也切得开。一个少见的名字（阿兰、签名牌）在 BM25 里分量很重，一句话的向量里却会被其他字冲淡。同样用「高出一截」那条过滤（对 BM25 分数算），取前 20。
-  - **人名**（`recallNames`）：她认识的人的名字（人物卡，别名算一组）和碎片 `who` 里记下的名字，消息里提到哪个（2 个字起），就把提到这一组任何一个名字的轮次拉进来，提到的组越多、越新越靠前，取前 20。问"小秦"也能找到写着"秦渡"的那轮。
-  - 三张名单用 **RRF**（每条得 1/(`recallRrfK` 60 + 名次)，各通道相加）合成一张，取前 `recallTopK`，不用把余弦和 BM25 分数换成同一个刻度。云端重排时，三条通道的候选一起交给重排模型打分。两个开关都关掉就和 0.18 一样只看向量。
-- **只给她的对话**：作为动态 context 注入（dsh 放在历史之后，不破坏前缀缓存）；跑腿会话看不到。
-- **密码 / key 不进**：和碎片同一个过滤，含密码、API key 的那行不入索引、不发给云端、不注入；问话本身像密钥时不查。
-- **后端**：
+**后端**
 
 | 后端 | 模型 | 要什么 | 说明 |
 |---|---|---|---|
-| `local`（默认） | `intfloat/multilingual-e5-small`（ONNX q8，即 `Xenova/multilingual-e5-small`），不重排；中英文和约 100 种语言 | 不要 key | transformers.js 在 CPU 上跑；模型 129 MB，常驻约 0.4 GB 内存（实测 0.39–0.50 GB），一次查询约 2 ms。推理库 `@huggingface/transformers` 有 300–480 MB，不打进插件包：第一次用时装到 `$DSH_HOME/dsh-dot-recall/`（像 QQ / 手机按需 `npx` 拉 MCP 一样），模型从 `https://hf-mirror.com` 下（`recallMirror`，也认 `HF_ENDPOINT`），缓存在 `$DSH_HOME/dsh-dot-recall/models/`。第一次下模型时日志里有一行 `recall: downloading Xenova/multilingual-e5-small (~129 MB, once) from …`，`/dot memory recall` 显示 `downloading (~129 MB) 40%`；装好、下好之前按关键词找 |
-| `local` + `BAAI/bge-small-zh-v1.5` | `Xenova/bge-small-zh-v1.5`（ONNX q8），不重排；只用中文时更轻 | 不要 key | `/dot memory recall model BAAI/bge-small-zh-v1.5`（`default` 换回 e5）。模型 23 MB，常驻约 0.13 GB，一次查询约 1.5–1.9 ms；中文基准和 e5 同分。0.15.2 之前的默认 |
-| `siliconflow` | `BAAI/bge-m3` + `BAAI/bge-reranker-v2-m3` 重排 | key（免费档够用） | `SILICONFLOW_API_KEY` 或 `/dot memory recall key siliconflow <key>` |
-| `dashscope` | `qwen3.7-text-embedding` + `qwen3.7-text-rerank` 重排 | key | `DASHSCOPE_API_KEY` 或 `/dot memory recall key dashscope <key>`；工作空间域名填 `recallDashscopeUrl` |
+| `local`（默认） | 向量 `Xenova/multilingual-e5-small`（129 MB）+ 重排 `Xenova/bge-reranker-base`（279 MB），ONNX q8 | 不要 key | transformers.js 在 CPU 上跑。推理库 300–480 MB 不打进插件包，第一次用时装到 `$DSH_HOME/dsh-dot-recall/`；模型从 `https://hf-mirror.com` 下（`recallMirror`，也认 `HF_ENDPOINT`）。重排模型在向量模型之后下载，下好之前不重排 |
+| `local` + 别的模型 | `recall model BAAI/bge-small-zh-v1.5`（只用中文、更轻）；`recall rerank BAAI/bge-reranker-v2-m3`（571 MB，更强也更慢）或 `none` | 不要 key | BAAI 的名字自动换成它的 ONNX 版 |
+| `siliconflow` | `BAAI/bge-m3` + `BAAI/bge-reranker-v2-m3` | key（免费档够用） | `SILICONFLOW_API_KEY` 或 `/dot memory recall key siliconflow <key>` |
+| `dashscope` | `qwen3.7-text-embedding` + `qwen3.7-text-rerank` | key | `DASHSCOPE_API_KEY` 或 `/dot memory recall key dashscope <key>` |
 | `off` | — | — | 不自动召回 |
 
-- **命令**（不用改文件、不用重启；写进 `$DSH_HOME/dsh-memory.json`，权限 0600，优先于插件配置）：
-  - `/dot memory recall`：后端、模型、是否就绪、索引了几轮、上次查询耗时和条数、镜像、key 来源（打码）
-  - `/dot memory recall backend <local|siliconflow|dashscope|off>`
-  - `/dot memory recall key <siliconflow|dashscope> <key>`（`-` 删掉）
-  - `/dot memory recall model <名字|default>`、`/dot memory recall rerank <名字|none|default>`（云端）
-  - `/dot memory recall mirror <url|default>`
-  - `/dot memory recall rebuild`：清掉当前后端的索引重建
-  - `/dot memory recall test <一句话>`：看这句话会翻出什么（带分数）
-- 右侧 dot 面板「记忆」卡片里有一行「自动召回」。
+每个后端 + 向量模型各存一份索引（`~/dot/memory/recall/<后端>-<模型>/`），来回切换不重算；换重排模型不动索引。
 
-**数据**（[Ornn8/memory-system-benchmark](https://github.com/Ornn8/memory-system-benchmark) 公开示例 PUB01，108 题；答题和判分都是 deepseek-flash、关思考，判分是适配器自己的 LLM 判卷，不是基准作者的打分；适配器在 dsh-dot 仓库外）：
+**命令**（写进 `$DSH_HOME/dsh-memory.json`，0600，优先于插件配置，不用重启）：`/dot memory recall`（状态）· `backend <local|siliconflow|dashscope|off>` · `key <后端> <key>`（`-` 删掉）· `model <名字|default>` · `rerank <名字|none|default>` · `mirror <url|default>` · `rebuild` · `test <一句话>`（看会翻出什么、从几条候选里挑的）。
 
-| 配置 | 通过 |
-|---|---|
-| 0.11 现状（画像 + 碎片 + 交班 + `recall` 工具） | 74 / 108 |
-| 纯检索：本机 bge-small-zh，不重排 | 85 / 108 |
-| 纯检索：本机 multilingual-e5-small，不重排（0.15.2 起默认） | 85 / 108 |
-| 纯检索：云端 bge-m3 + bge-reranker-v2-m3（SiliconFlow） | 90 / 108 |
-| 纯检索：云端 qwen3.7 embedding + rerank（DashScope） | 89 / 108 |
-| 0.12：现状 + 自动召回（本机 bge-small-zh，真实代码路径） | 93 / 108（`recallMinScore` 0）· 95 / 108（0.45，当时的默认） |
-| **0.15.2：现状 + 自动召回（本机 multilingual-e5-small，真实代码路径，默认过滤：话太少不查 4 + 对比度 0.35）** | **96 / 108** |
-| 0.15.2：同上，换成 bge-small-zh | 91 / 108 |
+## 三栏笔记
 
-现状赢在"约定、改口、生日"这类题（整理过的事实），检索赢在原话细节；所以是加一层，不是换掉。
+- **关于他**：长期有效的事（他是谁、在做什么、喜好、雷点、称呼、长期计划）。
+- **她自己**：学会了什么、在做的事、习惯、看法。人设不在这里（在 Canon）。幕间拿这一栏作为她的生活（`herLife`）。
+- **还没了的事**：说过要做的、答应了的、说好先搁着的、在等别人回的。一事一条：谁、什么事、哪天说的；有明确日子就带 `due`；有人答应了别人就标「答应过」。
+  - **只在办完时删**：原话里看到办完了、取消了、对方说不用了，整理时 `done`；只是没再提不算。
+  - **满了不截断**：先由模型合并、压缩；还超出 800 字，就把最不紧的挪到**先搁着的**（没答应过、没日子的先挪，同等的先挪最早的）。答应过的、有日子的留到最后。
+  - **先搁着的不会被忘**：栏尾常驻一行「另有 N 件先搁着的：…」（最近 8 件的前几个字）；整理时模型能看到它们、可以 `restore`；`recall` 工具也搜得到；相关的话一提起，原话会被召回。搁着的最多留 200 件。
 
-每行都只跑了一次，整理和答题是 LLM，同样的输入也会差几题：0.15.2 的 bge 那次比 0.12 的 95 少的 7 题里，3 题注入的旧对话和 0.12 那次一字不差，只有 2 题是对比度把命中从 8 条砍到 5 条；同时又多对了 3 题。所以 bge 的 91 和 95 之间主要是噪声，但也不是新过滤更好的证据。
+笔记每轮都在她面前，所以要小：只记一直要用的和还没了的；一次性的事不记，原话会留着。
 
-为什么换掉 `recallMinScore` 0.45（0.15.2）：它是按 bge-small-zh 的余弦定的。e5 的余弦挤在 0.78–0.94，0.45 等于不过滤；改成 0.87 中文上和原来一样，英文上却一条都不留——英文里寒暄的分甚至比真问题高，任何按分数的阈值都分不开。下表是每个问题 top 8 里留下几条、证据所在那一轮还在不在（中文：PUB01 的 27 个问题 + 25 句寒暄，360 轮；英文：LoCoMo 第 1 段对话 150 个问题 + 25 句寒暄，214 块）：
+## 认识的人
 
-| 过滤 | e5 中文 真问题 / 寒暄 | e5 英文 真问题（证据还在）/ 寒暄 | bge 中文 真问题 / 寒暄 |
-|---|---|---|---|
-| 不过滤 | 8 / 8 | 8（100%）/ 8 | 8 / 8 |
-| `recallMinScore` 0.45（0.12–0.15.1） | 8 / 8 | 8（100%）/ 8 | 6.4 / 2.3 |
-| `recallMinScore` 0.87 | 6.3 / 2.4 | 0.4（15%）/ 0 | 0 / 0 |
-| **话太少不查（4）+ 对比度 0.35（0.15.2 默认）** | **6.2 / 0.3** | **7.8（100%）/ 0** | **7.0 / 0.3** |
+一张身份表：每个人一张卡，卡上有多个「把手」——`qq:919231551`（有号码时）、`qq:name:宽`（手机通知只显示名字时）、`xiaoheihe:name:暮看云`……不管从哪个 App 来，都先在这张表里认人。档位：你 / 聊过 / 只在帖子里打过交道 / 好友列表里没说过话。卡上只有：名字、把手、档位、各类互动次数、上次出现、**一句印象**（80 字以内：她怎么认识的、对方是什么样的人）。对方说过什么、做过什么不抄在卡上——原话里有，提到时召回。
 
-只用对比度时寒暄几乎留满（它们彼此差不多像，最像的几条照样"高出一截"），所以寒暄靠第一道。按 z 分数或"离最高分不远"之类的办法也试过，英文真问题掉得比寒暄快。第一道在 108 道考题、177 个真问题、779 句真实对话里一句都没误拦；漏过去的寒暄只有 `我回来了`（4 个字）。
+认出是同一个人就合并：**QQ 好友列表**每 6 小时同步一次（她给好友的备注就是手机通知里的名字，「宽」就此和号码连上）；**模型**整理时有证据就写 `same`，不涉及你的直接合并，**涉及你的要你 `/dot people approve m…`**（被认成你等于拿到最高信任）；**你** `/dot people merge <a> <b>`。
 
-本机模型的代价（q8，Mac VM 4 核 arm64 / 容器 2 核 x64）：
+## 整理
 
-| 模型 | 磁盘 | 加载后常驻 | 建 299 轮索引 | 一次查询 embed |
-|---|---|---|---|---|
-| `multilingual-e5-small`（默认） | 129 MB | 0.39–0.50 GB | 1.0–1.4 s | 1.8–2.3 ms |
-| `bge-small-zh-v1.5` | 23 MB | 0.12–0.13 GB | 0.55–0.68 s | 1.5–1.9 ms |
-| `bge-m3` | 560 MB | 0.9–1.25 GB | 7–11 s | 12–24 ms |
+一次模型调用，读上次整理之后的记录（一次最多 `inputChars` 40000 字；积压更多就从最旧的分几次读，游标只走到真正读过的位置），输出三栏笔记的增删改、人物的印象和合并。只在两种时候发生：**新记录攒满 `consolidateEveryLines`（40）行**，或**交班**之前。`/dot memory now` 立刻整理。
+
+提示词的顺序是：规则（每次一字不差，命中服务商的前缀缓存）→ 她已有的三栏和认识的人 → 这段时间的记录。记录每行带时间（今年 `MM-DD HH:MM`，往年 `YYYY-MM-DD HH:MM`），「明天」「下周三」同样由代码换算好日期写在后面，模型照抄，不自己推算。
+
+## 日记
+
+`~/dot/memory/diary.md`：每天 `dailyAt`（23:30）一篇，单独一次小调用，只读当天的记录；当天什么都没有就不写、不调用。她的口吻、第一人称、40–120 字，只写真实发生的。`/dot memory diary` 立刻写一篇。日记是给你看的，不进她的提示词，也不进召回。
+
+## 交班
+
+她的对话会话每轮结束量一次 token。超过 `handoffTokens`（15 万）且这一段至少涨了 4 万：
+
+1. 冻结投递（这期间来的消息排队）；
+2. 把还没整理的记录整理掉（三栏笔记先是最新的）；
+3. **先归档**旧会话（归档后的会话收到消息会静默丢弃）；
+4. 在 `~/dot` 里开新会话「dot · 第 N 段」，注入上一段最后 12 句原话（不叫醒她）；她的笔记照常在 `<memory>` 里，更早的原话提到时召回；
+5. 解冻，排队的消息投进新会话。
+
+dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编程助手写的；交班让这件事不会发生在她身上。dsh-im 机器人开的会话不交班。
+
+## 从 0.19 升级
+
+第一次加载旧的 `memory.json` 时自动迁移：
+
+- 「还没了」的碎片 → 第三栏（`promise` 记为答应过）；放不下的挪到先搁着的。
+- 钉住的碎片 → 「关于他」，放得下的话。
+- 其余碎片、人物卡上的事实、待核实 → 不再保留，原样存进 `~/dot/memory/memory.v019.json`（只写一次，不覆盖）。它们来自的原话都还在原话库里，提到时会被召回。
+- `~/dot/memory/memory-migration.md` 写明每样去了哪里，尤其是**没放进第三栏、被搁着的事**。
+
+召回索引不用重建。
 
 ## 文件和命令
 
-- `~/dot/memory/memory.md`：给你看的版本；`diary.md`：她的日记；`memory.json`：数据；`handoffs.jsonl`：每次交班；`calls.jsonl`：每次整理的原始回复和 token 用量。
-- `/dot memory`：状态（第几段、当前 token、今天整理花了多少 token、距离下次整理还有几条、上次日记）；`/dot memory now`：立刻整理；`/dot memory diary`：立刻整理并写日记；`/dot memory handoff`：立刻交班。
-- `/dot memory recall …`：自动召回，见上一节。
-- `/dot people`：认识的人、待核实、待确认的合并；`approve <p…|m…>` / `drop <p…>`：处理待核实和合并；`merge <a> <b>`：手动合并两张卡；`forget <名字>`：删掉一个人。
+- `~/dot/memory/memory.md`：给你看的版本；`memory.json`：数据；`diary.md`：日记；`transcript.jsonl`：原话库；`recall/`：索引；`handoffs.jsonl`：每次交班；`calls.jsonl`：每次整理 / 日记的原始回复和 token 用量。
+- `/dot memory`：状态；`now`：立刻整理；`diary`：立刻写日记；`handoff`：立刻交班；`recall …`：自动召回。
+- `/dot people`：认识的人、待确认的合并；`approve <m…>` · `merge <a> <b>` · `forget <名字>`。
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 20 · `consolidateIdleMinutes` 30 · `dailyAt` 23:30 · `fragmentBudgetTokens` 600 · `openBudgetTokens` 200 · `agingEveryGens` 5 · `maxFragments` 300 · `handoffTailLines` 12 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, person: 400, impression: 40 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
-自动召回：`recallBackend` local · `recallModel` ''（后端默认；本机是 `Xenova/multilingual-e5-small`）· `recallRerankModel` ''（云端默认；`none` 不重排）· `recallMirror` ''（`HF_ENDPOINT`，否则 hf-mirror.com）· `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallTopK` 8 · `recallMaxTokens` 1500 · `recallMinQueryLength` 4（0 关掉）· `recallContrast` 0.35（0 关掉）· `recallMinScore` 0（可选的绝对下限：本机余弦 / 云端重排分）· `recallCandidates` 40 · `recallWindowTurns` 0（整个当前会话不取）· `recallChunkChars` 1200 · `recallLexical` true · `recallNames` true · `recallRrfK` 60 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。
+自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（后端默认；`none` 不重排）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路）· `recallTopK` 10 · `recallMaxTokens` 1500 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35（不重排时）· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 
-**和别的记忆插件共存**（`coexist`，环境变量 `DSH_DOT_MEMORY_COEXIST`）：`auto` 时，`otherMemoryServices` 里任何一个服务存在（每次用到时用 `ctx.get` 查，所以晚启动的插件也算；cordis 没有公开的服务枚举，只能按名单）就打一行 info 日志，进入 `people-only`：人物卡、碎片、日记、交班照旧，画像的 `owner` / `self` 两栏不再进系统提示，整理时模型给的这两栏改动也丢掉，交给那个插件。`full` 强制全开；`people-only` 强制只留人物。
+**和别的记忆插件共存**（`coexist`，环境变量 `DSH_DOT_MEMORY_COEXIST`）：`auto` 时，`otherMemoryServices` 里任何一个服务存在（用到时用 `ctx.get` 查）就进入 `people-only`：人物卡、还没了的事、日记、交班、召回照旧，「关于他」「她自己」两栏不进系统提示，整理时这两栏的改动也丢掉，交给那个插件。`full` 强制全开；`people-only` 强制只留人物。
+
+## 数据
+
+<!-- filled in below -->

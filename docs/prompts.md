@@ -34,7 +34,8 @@
 | | 交接 | `memory.handoff` |
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |
 | | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `.verbs` `.parts` `interlude.play-rules` |
-| 独立模型调用 | 整理记忆 | `memory.extract`（规则）`memory.extract.input` `.banks` `.banks.off` `.earlier` `.handoff-yes/no` `.diary-yes/no` |
+| 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
+| | 日记 | `memory.diary` |
 | | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 

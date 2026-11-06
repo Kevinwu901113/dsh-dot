@@ -5,13 +5,12 @@
 //   ingest   each persona gets its own dot home; every history turn is replayed in logical-time order
 //            as the session events dot's memory listens to (turn/start, his user/message, her
 //            assistant/message, turn/end) with a fake clock at the turn's time. What follows from that
-//            is the plugin's own code: transcript lines, consolidation every 20 lines, handoff past
-//            handoffTokens, the recall index. Between turns the plugin's own 60-second maintenance
-//            timer is fired at every minute where it can act (idle consolidation 30 min after the last
-//            line, the daily consolidation + diary at 23:30).
+//            is the plugin's own code: transcript lines, consolidation every consolidateEveryLines
+//            lines, handoff past handoffTokens, the recall index. Between turns the plugin's own
+//            60-second timer is fired at every minute where it can act (the diary at dailyAt).
 //   exam     at each question's exam time (after the maintenance due by then) a fresh, independent
 //            session is assembled: the dot:now line, the dot:memory context the plugin injects, the
-//            auto-recall hits for the question (recall.prepare → dot:recall, default filters), and the
+//            auto-recall hits for the question (recall.prepare → dot:recall, default settings), and the
 //            last WINDOW turns as chat messages. One completion, no tools. The question and the answer
 //            never reach the transcript, the memory or the recall index.
 //   output   answers.jsonl ({"id","answer"} for grading/grade.py), run.jsonl, meta.json; a checkpoint
@@ -20,6 +19,8 @@
 // node bench/chat-memory-benchmark.mjs --dataset <…/datasets/natural-timegrid-20261101-v2> --out <dir>
 //   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--only ids.txt] [--save-prompts]
 // env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-flash),
+//      DSH_BENCH_EMBED / DSH_BENCH_RERANK (local recall models; 'none' = no reranker), DSH_BENCH_MEMORY
+//      (JSON for the memory section of the bench's own dsh-dot.json, e.g. '{"recallLexical":false}'),
 //      DSH_BENCH_EXTRA_BODY (JSON merged into every request), DSH_BENCH_MAX_TOKENS_CAP (8192),
 //      DSH_BENCH_PRICE_RMB ("0.2,2,3": per 1M tokens, input cache hit, input cache miss, output)
 import { appendFileSync, cpSync, existsSync, lstatSync, mkdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -30,7 +31,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-export const ADAPTER_VERSION = '1.0.0';
+export const ADAPTER_VERSION = '2.0.0'; // 0.20 memory: no idle consolidation, the diary is its own call
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ── fake clock: Date.now() and new Date() are the logical time; everything else is the real one ──
@@ -94,11 +95,13 @@ export function createModel({ fake = false, baseUrl, apiKey, model, extraBody = 
     }
     const said = [...all.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
     const last = said.at(-1) ?? '';
+    if (purpose === 'diary' || /写今天的日记/.test(all)) {
+      const text = '今天和他聊了几句。';
+      return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
+    }
     const out = {
-      owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [], confirm: [],
-      fragments: said.slice(-3).map((s, i) => ({ text: clip(s, 60), kind: 'event', tag: i % 3, mergeWith: null })),
-      handoff: { now: '在和他聊天', inFlight: [], promises: [], openQuestions: [] },
-      diary: '今天和他聊了几句。',
+      owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [],
+      open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null, owed: false })),
     };
     const text = JSON.stringify(out);
     return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
@@ -173,7 +176,7 @@ function hostFor({ apply, home, model, modelName, state, sessionBaseTokens, esti
   };
   apply(ctx, { home });
   const emit = (id, type, data, extra = {}) => { for (const fn of listeners) fn({ id, header: { cwd: home } }, { type, data, ...extra }); };
-  const tick = timers.find((t) => t.kind === 'interval' && /idle consolidation/.test(t.label));
+  const tick = timers.find((t) => t.kind === 'interval' && /daily diary/.test(t.label));
   if (!tick) throw new Error('dsh-dot/memory maintenance timer not found (memory.js changed?)');
   return { services, contexts, emit, tick: tick.cb, notes, api: services.dotMemory };
 }
@@ -233,7 +236,10 @@ async function main() {
   if (!existsSync(link) && !(() => { try { return lstatSync(link).isSymbolicLink(); } catch { return false; } })()) symlinkSync(realLib, link, process.platform === 'win32' ? 'junction' : 'dir');
   let savedRecall = {};
   try { savedRecall = JSON.parse(readFileSync(join(realDsh, 'dsh-memory.json'), 'utf8')).recall ?? {}; } catch { /* none */ }
-  writeFileSync(join(benchDsh, 'dsh-memory.json'), JSON.stringify({ recall: { backend: o.recall, ...(savedRecall.mirror ? { mirror: savedRecall.mirror } : {}) } }, null, 2));
+  // DSH_BENCH_EMBED / DSH_BENCH_RERANK pick the local models (a model name, or 'none' for no reranker).
+  writeFileSync(join(benchDsh, 'dsh-memory.json'), JSON.stringify({ recall: { backend: o.recall, ...(savedRecall.mirror ? { mirror: savedRecall.mirror } : {}), ...(process.env.DSH_BENCH_EMBED ? { model: { local: process.env.DSH_BENCH_EMBED } } : {}), ...(process.env.DSH_BENCH_RERANK ? { rerank: { local: process.env.DSH_BENCH_RERANK } } : {}) } }, null, 2));
+  // DSH_BENCH_MEMORY: JSON merged into the memory section of the bench's own dsh-dot.json (a variant to measure).
+  writeFileSync(join(benchDsh, 'dsh-dot.json'), JSON.stringify({ memory: process.env.DSH_BENCH_MEMORY ? JSON.parse(process.env.DSH_BENCH_MEMORY) : {} }, null, 2));
   process.env.DSH_HOME = benchDsh;
 
   globalThis.Date = LogicalDate;
@@ -261,8 +267,8 @@ async function main() {
     model: o['fake-llm'] ? 'fake-llm' : modelName, baseUrl: o['fake-llm'] ? null : baseUrl, extraBody, thinking: 'off (non-thinking model; extraBody can add a provider switch)',
     usedFor: 'consolidation (memory.js via ctx.llm.stream) and answering, same model',
     window: { turns: WINDOW, why: 'the last 6 complete turns as chat messages, as Soul/ROFM/Qwen/OpenViking/Hindsight/Suzu were tested (docs/tested-configurations.md)' },
-    recall: { backend: o.recall, model: o.recall === 'local' ? 'Xenova/multilingual-e5-small' : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, names: defaults.recallNames, rrfK: defaults.recallRrfK, openBudgetTokens: defaults.openBudgetTokens, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
-    memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, consolidateIdleMinutes: defaults.consolidateIdleMinutes, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, sessionBaseTokens: SESSION_BASE, tz: o.tz },
+    recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'Xenova/bge-reranker-base') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
+    memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, limits: defaults.limits, sessionBaseTokens: SESSION_BASE, tz: o.tz },
     pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-flash (assumption; override DSH_BENCH_PRICE_RMB)' },
     personas: oldMeta?.personas ?? {},
     usage: null, costRmb: null, startedAt: oldMeta?.startedAt ?? new RealDate().toISOString(), updatedAt: null,
@@ -320,10 +326,8 @@ async function main() {
     }
 
     // The plugin's 60-second timer (on whole minutes), fired at every minute where it can do something
-    // before `until`: idle consolidation once the last line is consolidateIdleMinutes old (with ≥ 3
-    // new lines), the daily consolidation + diary from dailyAt on. Work that stays due (a failed or
-    // unparsed consolidation, a daily run that found idle consolidation in flight) is tried again a
-    // minute later, as the real timer does — at most 4 times per piece of work here, to bound cost.
+    // before `until`: the diary from dailyAt on. Work that stays due (a failed diary call) is tried
+    // again a minute later, as the real timer does — at most 4 times per day here, to bound cost.
     const minute = (ms) => Math.ceil(ms / 60000) * 60000;
     const [dailyH, dailyM] = String(defaults.dailyAt).split(':').map(Number);
     const lastDiary = () => { try { return JSON.parse(readFileSync(join(home, 'memory', 'memory.json'), 'utf8')).lastDiary ?? null; } catch { return null; } };
@@ -332,9 +336,6 @@ async function main() {
       for (;;) {
         const next = minute(clockMs + 1);
         const cands = [];
-        const st = api.status();
-        const lastAt = api.lastSaidAt(Infinity);
-        if (st.sinceCursor >= 3 && lastAt) cands.push({ t: Math.max(next, minute(lastAt + defaults.consolidateIdleMinutes * 60000)), key: `idle:${lastAt}:${st.sinceCursor}` });
         const d = new LogicalDate(clockMs);
         const at = (days) => new RealDate(d.getFullYear(), d.getMonth(), d.getDate() + days, dailyH, dailyM).getTime();
         const today = dayLabel(d).slice(0, 10);
@@ -379,7 +380,7 @@ async function main() {
     }
 
     function maintenanceCounts() {
-      const c = { lines: 0, idle: 0, daily: 0, handoff: 0, chunks: 0, failed: 0 };
+      const c = { lines: 0, daily: 0, handoff: 0, chunks: 0, failed: 0 };
       try { for (const r of rows(join(home, 'memory', 'calls.jsonl'))) { const [base, more] = String(r.reason).split('+'); if (more) c.chunks++; else c[base] = (c[base] ?? 0) + 1; } } catch { /* none yet */ }
       c.failed = model.usage.consolidate.errors;
       let handoffs = 0; try { handoffs = rows(join(home, 'memory', 'handoffs.jsonl')).length; } catch { /* none */ }
@@ -428,7 +429,7 @@ async function main() {
         ...win.flatMap((h) => [{ role: 'user', content: prompt('dot.owner-words', { stamp: stamp(h.at, now), text: h.user, busy: '' }) }, { role: 'assistant', content: h.assistant }]),
         { role: 'user', content: prompt('dot.owner-words', { stamp: stamp(now, now), text: q.question, busy: '' }) },
       ];
-      if (o['save-prompts']) appendFileSync(files.prompts, `${JSON.stringify({ id: q.id, messages })}\n`);
+      if (o['save-prompts']) appendFileSync(files.prompts, `${JSON.stringify({ id: q.id, messages, recall: { hits: (r?.hits ?? []).map((h) => h.at), candidates: r?.candidates ?? [], mode: r?.mode ?? '' } })}\n`);
       const row = { id: q.id, persona, cutoff_turn: q.cutoff_turn, now: q.now, recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', memory_chars: memoryText.length, window: win.length, sessions: state.sessions };
       try {
         const a = await model.complete(messages, { maxTokens: 2048, purpose: 'answer' });
@@ -442,7 +443,7 @@ async function main() {
       checkpoint();
       recordPersona('running');
       const mc = maintenanceCounts().consolidations;
-      console.log(`[${persona}] ${asked}/${qs.length} ${q.id} · turn ${q.cutoff_turn} · recall ${row.recall_hits} (${row.recall_mode}) · consolidations ${mc.lines + mc.idle + mc.daily + mc.handoff + mc.chunks}${row.error ? ` · ERROR ${row.error}` : ''} · ${Math.round((RealDate.now() - t0) / 1000)} s`);
+      console.log(`[${persona}] ${asked}/${qs.length} ${q.id} · turn ${q.cutoff_turn} · recall ${row.recall_hits} (${row.recall_mode}) · consolidations ${mc.lines + mc.handoff + mc.chunks} · diary ${mc.daily}${row.error ? ` · ERROR ${row.error}` : ''} · ${Math.round((RealDate.now() - t0) / 1000)} s`);
     }
     checkpoint();
     recordPersona(asked >= qs.length ? 'done' : 'partial');

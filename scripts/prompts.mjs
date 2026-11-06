@@ -53,9 +53,10 @@ function sampleMemory() {
   const m = S.emptyMemory();
   m.owner = ['他叫宽，在广州做 AI agent 开发', '不喜欢被叫"亲"'];
   m.self = ['装了小黑盒，常在晚上逛', '学会了在 B 站发弹幕'];
-  m.pending = [{ id: 'p0001', person: '阿满', text: '阿满下个月搬去深圳' }];
-  S.observeFragment(m, { text: '10-31 他说这周要赶一个 benchmark，周五前交', tag: 2, kind: 'plan', gen: 1 });
-  S.observeFragment(m, { text: '11-02 他感冒了，嗓子疼，说话很少', tag: 1, kind: 'event', gen: 1 });
+  S.openOp(m, { action: 'add', content: '10-31 他说这周要赶一个 benchmark，周五前交', due: '11-01' }, { now: T0 });
+  S.openOp(m, { action: 'add', content: '10-29 她答应周末陪他看新番', owed: true }, { now: T0 + 1 });
+  S.openOp(m, { action: 'add', content: '10-20 他说想换个机械键盘，先搁着' }, { now: T0 - 9 * 864e5 });
+  S.openOp(m, { action: 'shelve', oldText: '机械键盘' }, { now: T0 });
   return m;
 }
 let recallDir = '';
@@ -64,7 +65,7 @@ async function recallText() {
   const r = createRecall({ cfg: { recallBackend: 'local', recallTopK: 3, recallChunkChars: 1200, recallMaxTokens: 800, recallWindowTurns: 0 }, dir: recallDir, lines: () => LINES, logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('preview')) });
   return (await r.query('你 benchmark 跑完了吗', { session: 's1', record: false })).text;
 }
-const standing = () => S.renderStanding(sampleMemory(), { budgetTokens: 600 });
+const standing = () => S.renderStanding(sampleMemory());
 const context = () => I.renderContext({ state: STATE, entries: ['11-03 14:00：她把窗帘拉开一半，靠在床头改简历，咖啡放凉了。'], intents: [{ at: new Date(Date.now() + 3 * 36e5).toISOString(), kind: 'contact', text: '问他感冒好点没' }], cursor: Date.now() - 90 * 6e4, restarted: false });
 
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
@@ -79,8 +80,8 @@ export const entries = [
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
     render: () => variant([['隔了一阵', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)], ['刚说过话（不到一分钟，或者从没说过）', D.nowText(Date.now(), 0)]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
-  { id: 'memory', group: 'system', name: '记忆', note: '每一轮都带着：关于他、她自己记下的、最近的事', files: ['memory.standing'], render: standing },
-  { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
+  { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、还没了的事（加一行先搁着的）', files: ['memory.standing'], render: standing },
+  { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
 
   { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：等他停下（1.5 秒没新消息，最多 6 秒）一批盖一个时间戳，后面是他打的原话；她这轮还没做完时插进这一轮，多一行 dot.owner-words.busy', files: ['dot.owner-words', 'dot.owner-words.busy'],
     render: () => variant([['她空闲', D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }])], ['她这轮进行中', D.ownerWords([{ text: '算了' }, { text: '先别弄了' }], Date.now(), { whileBusy: true })]]) },
@@ -100,17 +101,20 @@ export const entries = [
   { id: 'onevoice', group: 'wake', name: '跑腿只汇报', note: '跑腿那一轮带着 dot.errand-report；跑腿给他发 qq_send 被拦下时的工具结果；跑腿还在做时她对话里的一行；一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果', files: ['dot.errand-report', 'dot.errand-no-owner', 'dot.errand-inflight', 'dot.loop-stopped'],
     render: () => { const t = P.table('dot.errand-inflight'); return variant([['跑腿那一轮', P.prompt('dot.errand-report', { silent: D.SILENT })], ['跑腿找他被拦', P.prompt('dot.errand-no-owner')], ['她对话里：还在做的', P.fill(t.line, { doing: `${P.fill(t.thread, { app: '小黑盒', source: '《耳机测评》', count: 3 })}；${t.other}` })], ['重复调用被拦', P.prompt('dot.loop-stopped', { times: 5 })]]); } },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],
-    render: () => M.renderHandoff({ now: '窝在床上改简历，有点困', inFlight: ['帮他查广州降温'], promises: ['周五提醒他交 benchmark'], openQuestions: ['他感冒好了没'] }, LINES.slice(-2), 3) },
+    render: () => M.renderHandoff(LINES.slice(-2), 3) },
   { id: 'observation', group: 'wake', name: '幕间：去看一眼', note: '她自己想去看看的时候，只看不动', files: ['interlude.observation', 'interlude.observation.where', 'interlude.observation.vm', 'interlude.observation.phone'],
     render: () => variant([['电脑浏览器里搜', I.observationPrompt({ mode: 'search', query: '广州 本周 降温', purpose: '他感冒了，看看天气' }, 'vm')], ['手机 App', I.observationPrompt({ mode: 'search', query: '新番', purpose: '看看有没有新番' }, 'phone', 'tv.danmaku.bili')]]) },
   { id: 'play', group: 'wake', name: '幕间：玩一会儿', note: '去 App 里点赞、评论、攒表情包', files: ['interlude.play', 'interlude.play.collect', 'interlude.play.verbs', 'interlude.play.parts', 'interlude.play-rules'],
     render: () => variant([['评论', I.playPrompt({ app: '小黑盒', action: 'comment', target: '那篇耳机测评', text: '低频确实糊', why: '她也用这副耳机' }, 'com.max.xiaoheihe')], ['攒表情包', I.playPrompt({ app: 'B站', action: 'collect', target: '表情包', why: '表情包太少了' }, 'tv.danmaku.bili')]]) },
 
-  { id: 'extract', group: 'call', name: '整理记忆', note: '把最近的记录整理进记忆，按要求写交接和日记', files: ['memory.extract.earlier', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off', 'memory.extract', 'memory.extract.handoff-yes', 'memory.extract.handoff-no', 'memory.extract.diary-yes', 'memory.extract.diary-no'],
+  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进三栏笔记和人物卡：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off'],
     render: () => {
       const m = sampleMemory();
-      return M.extractPrompt({ recent: LINES.slice(0, 2).map(M.transcriptLine).join('\n'), text: LINES.slice(2).map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked', frags: m.fragments.map((f) => `${f.id} | ${f.text}`).join('\n'), pending: m.pending.map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'), withHandoff: true, withDiary: true, day: M.dayLabel(new Date()) });
+      const item = (x) => `- ${S.renderItem(x)}${x.owed ? '（答应过）' : ''}`;
+      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map(item).join('\n'), shelved: m.shelved.map(item).join('\n') });
     } },
+  { id: 'diary', group: 'call', name: '日记', note: '每天 dailyAt（23:30），当天有记录才写，单独一次调用', files: ['memory.diary'],
+    render: () => M.diaryPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n') }) },
   { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活：interlude.round 是整段系统提示词（HDS-Interlude 的规则，译成中文），后面是按情况填进去的小段', files: ['interlude.round', 'interlude.round.canon', 'interlude.round.length', 'interlude.round.length.deepseek', 'interlude.round.length.claude', 'interlude.round.length.gemini-flash', 'interlude.round.length.gpt', 'interlude.round.phase.advance', 'interlude.round.phase.follow-up', 'interlude.round.phase.intent', 'interlude.round.her-life', 'interlude.round.returned', 'interlude.round.contact-rule', 'interlude.round.contact-rule.off', 'interlude.round.browsing.deferred', 'interlude.round.browsing.disabled', 'interlude.round.agency', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.glm', 'interlude.round.style.none', 'interlude.round.seed', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh'],
     render: () => {
       const r = I.buildPrompt({ phase: 'advance', identity: I.renderCanon(CANON), state: STATE, script: '11-03 14:00：她把窗帘拉开一半，靠在床头改简历。', cursor: Date.now() - 90 * 6e4, now: new Date(), speak: true, model: 'deepseek-chat', entries: [{ owner: 'user', at: '11-03 15:10', content: '在吗' }], browser: 'deferred', play: true, playApps: ['小黑盒', 'B站'], playActions: ['like', 'comment', 'follow', 'collect'], stickers: 2, memories: ['他叫宽，在广州做 AI agent 开发'], herLife: ['装了小黑盒，常在晚上逛'], returned: [{ kind: 'play', wanted: '小黑盒 like：那篇耳机测评', status: 'done', queuedAt: '2026-11-03 15:20 星期二 下午', busyWith: '看小黑盒《帖子A》的 3 条', startedAt: '2026-11-03 15:41 星期二 下午', doneAt: '2026-11-03 15:43 星期二 下午', report: '做了：点了赞\n结果：成了\n找他：不用' }] });

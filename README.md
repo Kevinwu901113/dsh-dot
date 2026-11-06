@@ -50,7 +50,7 @@ NapCat / SnowLuma（OneBot 11）和她手机上同一个账号。你发消息 **
 <td valign="top">
 
 ### 🧠 记得你，也记得她遇到的人
-画像 + 碎片 + 交班，每个人一张卡；0.12 起叫醒前自动召回最相关的旧对话。公开记忆基准 **74 → 96 / 108**。每天 23:30 写日记。
+原话负责证据，三栏笔记负责长期状态：每次被叫醒，相关的旧原话（向量 + BM25 候选，本机重排）按日期翻到她面前；关于你、她自己、还没了的事记在一份小笔记里；每个人一张卡。15 万 token 交班，每天 23:30 写日记。
 
 </td>
 </tr>
@@ -165,7 +165,7 @@ flowchart LR
     phone -->|通知叫醒| session
     qq -->|1–2 s 叫醒| session
     interlude -->|去看 · 玩 · 主动联系| session
-    memory -->|画像 + 召回注入| session
+    memory -->|笔记 + 召回注入| session
     session -->|mcp__dot-phone__*| phone
     session -->|mcp__dot-vm__*| computer
     qq -.运行在.-> computer
@@ -176,7 +176,7 @@ flowchart LR
 | **`phone`** 📱 | Android 模拟器，以 `mcp__dot-phone__*` 暴露（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）；任何 App 的通知都能叫醒她 · [文档](docs/phone.md) | 硬件虚拟化 | `DSH_DOT_PHONE=off` |
 | **`interlude`** 🌙 | 幕间：Canon 人设、剧本、连续性、打算、只读的「去看」、可选的主动联系 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
 | **`qq`** 💬 | 她电脑 VM 里的 QQ，和手机同号；`qq_send` 回复、表情包 · [文档](docs/qq.md) | computer | `DSH_DOT_QQ=off` |
-| **`memory`** 🧠 | 画像、人物卡、碎片、日记；15 万 token 交班；自动召回（默认本机 multilingual-e5-small，中英文都行；只用中文可换更轻的 bge-small-zh；可切 SiliconFlow / DashScope） · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
+| **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small + bge-reranker-base，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
 | **`dot`** ◎ | 定时结果 → IM、审批与设备提醒、工作规则、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 | **`computer`** 🖥️ | 自带 microVM：shell、浏览器、桌面、实时画面、审批、审计 · [文档](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker | `DSH_DOT_COMPUTER=off` |
 
@@ -236,7 +236,7 @@ flowchart LR
 
 - **电脑组件开着时会改全局设置**：subprocess provider 换成虚拟机里的、`sandbox-policy` 设为 `danger-full-access`（虚拟机才是隔离边界）、权限预设改写成 `computer` / `computer-auto`。所以不要同时装别的沙箱 / subprocess / 权限预设插件；要用就 `DSH_DOT_COMPUTER=off`。
 - **MCP 工具名有命名空间**：`mcp__dot-vm__*`、`mcp__dot-phone__*`，前缀定义在 `src/tool-prefixes.js`。
-- **记忆共存**：`DSH_DOT_MEMORY_COEXIST` 默认 `auto`，发现 `hermesMemory` / `autoMemory` / `dshMemory` / `memoryBank` 等就切到 `people-only`，只保留人物卡、碎片、日记，免得两个插件一起"讲记忆"。`full` / `people-only` 可强制。
+- **记忆共存**：`DSH_DOT_MEMORY_COEXIST` 默认 `auto`，发现 `hermesMemory` / `autoMemory` / `dshMemory` / `memoryBank` 等就切到 `people-only`，只保留人物卡、还没了的事、日记和召回，免得两个插件一起"讲记忆"。`full` / `people-only` 可强制。
 - **一个 QQ 号只能有一个应答者**：不要在她的号上再跑别的 OneBot 机器人。
 - **`bash` 也过电脑闸门**：别的插件再给 `bash` 加审批，同一条命令会弹两次。
 - **上下文压缩插件**：dsh-dot 注入的消息带固定 `source`，压缩时请保留、别当成用户原话：

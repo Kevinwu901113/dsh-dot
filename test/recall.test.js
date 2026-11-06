@@ -4,7 +4,8 @@ import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../src/memory/memory.js';
-import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, lexTokens, libDir, namesIn, openIndex, queryLength, rrf, settingsFile } from '../src/memory/recall.js';
+import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, lexTokens, libDir, openIndex, queryLength, renderTurns, settingsFile } from '../src/memory/recall.js';
+import { annotate, dayHeading } from '../src/memory/when.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -112,7 +113,7 @@ test('query: the waking message → top-k older turns in time order, minus her c
   await h.recall().pending('s1');
   const text = h.text('s1');
   assert.match(text, /^你记得的相关原话/);
-  assert.match(text, /\[2026-10-01 10:0\d\] 他：我家猫叫团子[\s\S]*团子今天又把杯子推下桌了/, 'chronological, dated');
+  assert.match(text, /— 10-01 周四 · \d+ 天前\n10:0\d 他：我家猫叫团子[\s\S]*\n10:0\d 他：团子今天又把杯子推下桌了/, 'chronological, under the day');
   assert.doesNotMatch(text, /不爱吃饭/, 'her current session is not repeated');
   assert.doesNotMatch(text, /成都/, 'top-k');
   assert.equal(h.text('errand'), '', 'errands are not her remembering');
@@ -165,7 +166,7 @@ test('backends: each backend+model keeps its own index; switching never mixes or
   h.turn('s0', '下周去成都', '好');
   await h.recall().sync();
   const r = await h.recall().query('团子', { session: 's1' });
-  assert.equal(r.mode, 'siliconflow');
+  assert.equal(r.mode, 'siliconflow+rerank');
   await h.api().command('memory recall backend local');
   await h.recall().sync();
   assert.equal(h.recall().status().turns, 2, 'local caught up with the turn it missed');
@@ -181,7 +182,7 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   h.turn('s0', '团子是橘猫', '嗯');
   await h.recall().sync();
   let out = await h.api().command('memory recall');
-  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · ready/, 'the default local model (0.15.2)');
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small \+ Xenova\/bge-reranker-base \([^)]*\) · ready/, 'the default local models (0.20: + reranker)');
   assert.match(out, /index: 1 turn\(s\) through 2026-10-01/);
   assert.match(out, /mirror https:\/\/hf-mirror\.com/);
   assert.match(await h.api().command('memory'), /recall: local/, '/dot memory shows it too');
@@ -192,23 +193,24 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   assert.equal(JSON.parse(readFileSync(settingsFile(), 'utf8')).recall.keys.siliconflow, 'sk-1234567890abcdef');
   await h.api().command('memory recall backend siliconflow');
   assert.match(await h.api().command('memory recall'), /key sk-…cdef \(dsh-memory\.json\)/);
-  assert.match(await h.api().command('memory recall rerank none'), /recall: siliconflow · BAAI\/bge-m3 · /);
+  assert.match(await h.api().command('memory recall rerank none'), /recall: siliconflow · BAAI\/bge-m3 · no reranker · /);
   await h.api().command('memory recall backend local');
-  assert.match(await h.api().command('memory recall rerank x'), /local has no reranker/);
+  assert.match(await h.api().command('memory recall rerank BAAI/bge-reranker-v2-m3'), /\+ onnx-community\/bge-reranker-v2-m3-ONNX[\s\S]*the index stays as it is/, 'the BAAI name maps to its ONNX export');
+  await h.api().command('memory recall rerank default');
   assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
   out = await h.api().command('memory recall model BAAI/bge-small-zh-v1.5');
-  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 · /, 'the BAAI name maps to its ONNX export');
+  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 \+ /, 'the BAAI name maps to its ONNX export');
   await h.recall().sync();
   assert.match(h.recall().status().dir, /local-Xenova_bge-small-zh-v1\.5$/);
   assert.equal(h.recall().status().turns, 1);
   out = await h.api().command('memory recall model intfloat/multilingual-e5-small');
-  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · /, 'so does the intfloat name');
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small \+ /, 'so does the intfloat name');
   assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
   await h.api().command('memory recall model default');
   assert.match(await h.api().command('memory recall mirror https://huggingface.co'), /mirror: https:\/\/huggingface\.co/);
   assert.match(await h.api().command('memory recall mirror ftp://x'), /http\(s\) URL/);
   assert.match(await h.api().command('memory recall rebuild'), /rebuilt[\s\S]*index: 1 turn/);
-  assert.match(await h.api().command('memory recall test 团子什么颜色'), /^local · \d+ ms · 1 hit\(s\)[\s\S]*他：团子是橘猫/);
+  assert.match(await h.api().command('memory recall test 团子什么颜色'), /^local\+rerank · \d+ ms · 1 hit\(s\) of 1 candidate\(s\)[\s\S]*他：团子是橘猫/);
   assert.match(await h.api().command('memory recall backend nope'), /one of local, siliconflow, dashscope, off/);
   const panel = await h.api().panel();
   assert.equal(panel.recall.backend, 'local');
@@ -301,9 +303,12 @@ export async function pipeline(task, model, opts) {
   if (opts.progress_callback) { opts.progress_callback({ status: 'progress_total', progress: 40.6 }); await t.gate; opts.progress_callback({ status: 'progress_total', progress: 100 }); opts.progress_callback({ status: 'ready', model }); }
   return async (text, o) => { t.embeds.push({ model, text, ...o }); const v = new Float32Array(8); for (const ch of text) v[ch.codePointAt(0) % 8] += 1; return { data: v }; };
 }
+// A cross-encoder: the share of the query's characters found in the passage.
+export const AutoTokenizer = { from_pretrained: async (model) => { globalThis.__fakeTf.rerankers.push(model); return (qs, o) => ({ pairs: qs.map((q, i) => [q, o.text_pair[i]]) }); } };
+export const AutoModelForSequenceClassification = { from_pretrained: async () => async ({ pairs }) => ({ logits: { sigmoid: () => ({ tolist: () => pairs.map(([q, d]) => [[...new Set(q)].filter((c) => d.includes(c)).length / new Set(q).size]) }) } }) };
 `);
   let release;
-  globalThis.__fakeTf = { pipelines: [], embeds: [], gate: new Promise((r) => { release = r; }) };
+  globalThis.__fakeTf = { pipelines: [], embeds: [], rerankers: [], gate: new Promise((r) => { release = r; }) };
   return { t: globalThis.__fakeTf, release };
 }
 
@@ -318,7 +323,7 @@ test('first use: the model download is logged and shown in status (phase, %), re
     const lines = [{ at, session: 's0', who: 'owner', text: '团子是橘猫' }, { at: at + 1, session: 's0', who: 'her', text: '嗯' }];
     const logs = [];
     const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m) };
-    const cfg = { recallBackend: 'local', recallModel: '', recallMirror: '', recallMinScore: 0.45, recallInstall: false, recallTopK: 8, recallMaxTokens: 1500, recallChunkChars: 1200 };
+    const cfg = { recallBackend: 'local', recallModel: '', recallMirror: '', recallMinScore: 0.45, recallInstall: false, recallTopK: 8, recallMaxTokens: 1500, recallChunkChars: 1200, recallCandidates: 20 };
     const r = createRecall({ cfg, dir, lines: () => lines, transcriptFile: join(dir, 'transcript.jsonl'), logger });
     assert.equal(r.status().state, 'not started');
     const q = await r.query('团子什么颜色', { session: 's1' });
@@ -327,9 +332,9 @@ test('first use: the model download is logged and shown in status (phase, %), re
     const s = r.status();
     assert.equal(s.model, 'Xenova/multilingual-e5-small');
     assert.equal(s.mirror, 'https://hf-mirror.com', 'recallMirror default unchanged');
-    assert.equal(s.state, 'downloading (~129 MB) 40% → lexical fallback meanwhile');
-    assert.match(await r.command([]), /recall: local · Xenova\/multilingual-e5-small · downloading \(~129 MB\) 40% → lexical fallback meanwhile[\s\S]*mirror https:\/\/hf-mirror\.com/);
-    assert.ok(logs.some((m) => m === `recall: downloading Xenova/multilingual-e5-small (~129 MB, once) from https://hf-mirror.com into ${join(libDir(), 'models')}; lexical recall until it is done`), logs.join('\n'));
+    assert.equal(s.state, 'downloading multilingual-e5-small (~129 MB) 40% → lexical fallback meanwhile');
+    assert.match(await r.command([]), /recall: local · Xenova\/multilingual-e5-small \+ Xenova\/bge-reranker-base \(not loaded\) · downloading multilingual-e5-small \(~129 MB\) 40% → lexical fallback meanwhile[\s\S]*mirror https:\/\/hf-mirror\.com/);
+    assert.ok(logs.some((m) => m === `recall: downloading Xenova/multilingual-e5-small (~129 MB, once) from https://hf-mirror.com into ${join(libDir(), 'models')}`), logs.join('\n'));
     assert.equal(t.pipelines[0].model, 'Xenova/multilingual-e5-small');
     assert.deepEqual(t.pipelines[0].opts, { dtype: 'q8', device: 'cpu', progress_callback: true });
     release();
@@ -337,8 +342,12 @@ test('first use: the model download is logged and shown in status (phase, %), re
     assert.equal(r.status().state, 'ready');
     assert.ok(logs.some((m) => /^recall: Xenova\/multilingual-e5-small downloaded in \d+ s$/.test(m)));
     assert.deepEqual(t.embeds.map((e) => [e.text, e.pooling, e.normalize]), [['passage: [2026-10-01 10:00] 他：团子是橘猫\n我：嗯', 'mean', true]]);
-    await r.query('团子什么颜色', { session: 's1' });
+    assert.deepEqual(t.rerankers, ['Xenova/bge-reranker-base'], 'the reranker loads after the embedder');
+    assert.match(await r.command([]), /\+ Xenova\/bge-reranker-base \(ready\)/);
+    const q2 = await r.query('团子什么颜色', { session: 's1' });
     assert.deepEqual(t.embeds.at(-1).text, 'query: 团子什么颜色');
+    assert.equal(q2.mode, 'local+rerank');
+    assert.equal(q2.hits[0].score, 0.333, 'scored by the cross-encoder');
     // bge-small-zh, already in the cache: loaded, not downloaded; its own pooling and prefix.
     mkdirSync(join(libDir(), 'models', 'Xenova', 'bge-small-zh-v1.5', 'onnx'), { recursive: true });
     writeFileSync(join(libDir(), 'models', 'Xenova', 'bge-small-zh-v1.5', 'onnx', 'model_quantized.onnx'), '');
@@ -347,7 +356,7 @@ test('first use: the model download is logged and shown in status (phase, %), re
     assert.equal(await r.warm(), true);
     assert.equal(t.pipelines.at(-1).model, 'Xenova/bge-small-zh-v1.5');
     assert.equal(t.pipelines.at(-1).opts.progress_callback, false);
-    assert.ok(!logs.some((m) => /downloading/.test(m)), logs.join('\n'));
+    assert.ok(!logs.some((m) => /downloading Xenova\/bge-small-zh/.test(m)), logs.join('\n'));
     await r.query('团子什么颜色', { session: 's1' });
     assert.deepEqual([t.embeds.at(-1).text, t.embeds.at(-1).pooling], ['为这个句子生成表示以用于检索相关文章：团子什么颜色', 'cls']);
   } finally { clearInterval(alive); if (savedEndpoint) process.env.HF_ENDPOINT = savedEndpoint; delete globalThis.__fakeTf; }
@@ -389,7 +398,7 @@ test('prompt assembly waits (bounded) for a query still running, and puts its te
   assert.equal(await h.assemble[0](other, { agent: { session: { id: 'x' } } }, async () => other), other);
 });
 
-test('lexical: bigram tokens, BM25 weighs the rare word, names with aliases, RRF', () => {
+test('lexical: bigram tokens; BM25 weighs the rare word', () => {
   assert.deepEqual(lexTokens('阿兰修 OK 好'), ['阿', '阿兰', '兰', '兰修', '修', 'ok', '好']);
   const bm = createBm25();
   // A real transcript: many turns of chat, 咋样了 / 那事 in a few of them, the name in one.
@@ -398,27 +407,56 @@ test('lexical: bigram tokens, BM25 weighs the rare word, names with aliases, RRF
   for (const t of docs) bm.add(t);
   const sc = bm.score('阿兰那事咋样了');
   assert.equal(sc.indexOf(Math.max(...sc)), 0, 'the rare name outweighs the common words');
-  assert.deepEqual(namesIn('小秦那块牌子呢', [['秦渡', '小秦'], ['阿兰'], ['他']]), [['秦渡', '小秦']]);
-  assert.deepEqual(rrf([['a', 'b'], ['b', 'c']], 60).map(([k]) => k), ['b', 'a', 'c']);
 });
 
-test('lexical + names: a turn the vectors miss is recalled by its rare word, or by a known alias', async () => {
+test('candidates from both channels, then the reranker decides: a turn the vectors miss is found by its rare word; fewer than topK when fewer clear the bar, never padded', async () => {
   // Vectors that know nothing: every turn scores the same, so the vector list alone is the oldest ones.
-  const flat = () => ({ async embed(texts) { return texts.map(() => Float32Array.from([1, 0, 0, 0])); }, rerank: null });
+  const flatVecs = { async embed(texts) { return texts.map(() => Float32Array.from([1, 0, 0, 0])); } };
+  // A reranker that reads: the share of the query's characters in the turn.
+  const reader = { ...flatVecs, async rerank(q, docs, n) { return docs.map((d, index) => ({ index, score: [...new Set(q)].filter((c) => d.includes(c)).length / new Set(q).size })).sort((a, b) => b.score - a.score).slice(0, n); } };
   const dir = mkdtempSync(join(tmpdir(), 'mem-'));
   let at = new Date(2026, 4, 1, 10, 0).getTime();
   const lines = [];
   const say = (who, text) => lines.push({ at: (at += 60000), who, text, session: 'old' });
-  for (let i = 0; i < 12; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', '嗯嗯'); }
+  for (let i = 0; i < 30; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', '嗯嗯'); }
   say('owner', '周末拿伞给楼下的阿兰换伞骨'); say('her', '记得带伞');
-  say('owner', '签名牌上写的是秦渡'); say('her', '好');
-  const cfg = { recallTopK: 3, recallMaxTokens: 1500, recallContrast: 0, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 40, recallWindowTurns: 0, recallBackend: 'local' };
+  const cfg = { recallTopK: 5, recallMaxTokens: 1500, recallContrast: 0.35, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 5, recallWindowTurns: 0, recallBackend: 'local' };
   const logger = { info() {}, warn() {} };
-  const mk = (extra = {}, names = () => [['秦渡', '小秦']]) => createRecall({ cfg: { ...cfg, ...extra }, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger, embedder: flat, names });
+  const mk = (extra, emb) => createRecall({ cfg: { ...cfg, ...extra }, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger, embedder: () => emb });
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
-  let r = mk(); r.turnEnded(); await r.warm();
-  assert.ok((await r.query('阿兰那事咋样了', { session: 'now' })).hits.some((h) => /阿兰/.test(h.text)));
-  assert.ok((await r.query('小秦那块牌子呢', { session: 'now' })).hits.some((h) => /秦渡/.test(h.text)), 'an alias finds the turn that uses the other name');
-  r = mk({ recallLexical: false, recallNames: false }); r.turnEnded(); await r.warm();
+  // no reranker: the BM25 channel brings it in
+  let r = mk({}, flatVecs); r.turnEnded(); await r.warm();
+  let q = await r.query('阿兰那事咋样了', { session: 'now' });
+  assert.ok(q.hits.some((h) => /阿兰/.test(h.text)));
+  r = mk({ recallLexical: false }, flatVecs); r.turnEnded(); await r.warm();
   assert.ok(!(await r.query('阿兰那事咋样了', { session: 'now' })).hits.some((h) => /阿兰/.test(h.text)), 'vectors alone miss it');
+  // with a reranker: candidates are both lists (5 + 5), the reranker's order decides
+  r = mk({}, reader); r.turnEnded(); await r.warm();
+  q = await r.query('阿兰那事咋样了', { session: 'now' });
+  assert.equal(q.mode, 'local+rerank');
+  assert.ok(q.candidates.length > 5 && q.candidates.length <= 10, 'vector candidates plus BM25 candidates');
+  assert.match(q.hits.sort((x, y) => y.score - x.score)[0].text, /阿兰/);
+  // a bar: only what clears it, even if that is one turn
+  r = mk({ recallRerankMin: 0.2 }, reader); r.turnEnded(); await r.warm();
+  q = await r.query('阿兰那事咋样了', { session: 'now' });
+  assert.equal(q.hits.length, 1, 'not padded to topK');
+  r = mk({ recallRerankMin: 0.99 }, reader); r.turnEnded(); await r.warm();
+  q = await r.query('阿兰那事咋样了', { session: 'now' });
+  assert.deepEqual([q.hits.length, q.text], [0, ''], 'nothing relevant, nothing shown');
+});
+
+test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes or reported speech', () => {
+  const mon = new Date(2026, 6, 6, 20, 15).getTime(); // a Monday
+  const now = mon + 15 * 86400000;
+  const out = renderTurns([
+    { at: mon + 3600000, text: '[2026-07-06 21:15] 他：下周三（我记得是）之前寄\n我：好' },
+    { at: mon, text: '[2026-07-06 20:15] 他：明天去，他说后天也行' },
+    { at: mon - 86400000, text: '[2026-07-05 09:00] 他：“明天见”她写的' },
+  ], now);
+  assert.equal(out, ['— 07-05 周日 · 16 天前', '09:00 他：“明天见”她写的', '— 07-06 周一 · 15 天前', '20:15 他：明天（=07-07）去，他说后天也行', '21:15 他：下周三（=07-15）（我记得是）之前寄', '我：好'].join('\n'));
+  assert.equal(dayHeading(now, now), '07-21 周二 · 今天');
+  assert.equal(annotate('如果明天下雨就算了', mon), '如果明天下雨就算了', 'hypothetical');
+  assert.equal(annotate('月底交，周三开会', mon), '月底交，周三开会', 'ambiguous: left as said');
+  assert.equal(annotate('上周五和这周日', mon), '上周五（=07-03）和这周日（=07-12）');
+  assert.equal(annotate('明天（07-07）去', mon), '明天（07-07）去', 'already written out');
 });

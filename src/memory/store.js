@@ -1,25 +1,27 @@
 // dsh-dot/memory/store: what she remembers, as plain data and pure rules (no ctx, no model).
 //
-// Three kinds of memory, after three projects:
-//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): two bounded
-//                lists of short entries, `owner` (what she knows about you) and `self` (her own notes),
-//                edited by add / replace / remove under a character budget.
-//   people     — one registry for everyone she meets in any app; a person has many handles. Counts and "last seen"
-//                are written by code from real events; impressions and facts by the model. Three
-//                tiers: owner, talked (exchanged messages), seen (only interacted with their posts:
-//                counts and a one-line impression, no facts). Facts about anyone but you wait in
-//                `pending` until they are said again or approved.
-//   fragments  — dsh-whale-inurqq (FABAGV, MIT): small events with a tag (0/1/2), refs that grow
-//                each time the same thing is said again, pinning, aging per generation, and a
-//                byte-stable selection under a token budget.
-// Text similarity is whale's: normalised characters, 3-gram Jaccard (works for Chinese without a
-// tokenizer).
+// The words she said and heard are the evidence (transcript + recall.js); what is kept here is only
+// what stays true, small enough to be in front of her every turn:
+//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): bounded lists
+//                of short entries edited by add / replace / remove under a character budget.
+//                `owner` (what she knows about you) and `self` (her own notes).
+//   open       — 还没了的事: things planned, promised or put off that have no outcome yet. One item
+//                each (what, when it was said, a due date, whether it is owed to someone). Done or
+//                called off → removed. Over the budget, items are never cut: the least pressing move
+//                to `shelved`, which stays searchable and is counted on her last line.
+//   people     — one registry for everyone she meets in any app; a person has many handles. Counts
+//                and "last seen" are written by code from real events, a one-line impression by the
+//                model. Tiers: owner, talked (exchanged messages), seen (only their posts), contact
+//                (on a friend list, never talked to). What someone said or did is in the words, not
+//                on the card.
+// Text similarity is whale's (dsh-whale-inurqq, FABAGV, MIT): normalised characters, 3-gram Jaccard.
 import { table } from '../prompts.js';
 import { dayMark } from '../clock.js';
 
-export const MEMORY_VERSION = 1;
+export const MEMORY_VERSION = 2;
 
-export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, person: 400, impression: 40 });
+// Characters per bank; `open` is 还没了的事, `impression` one person's line; `shelved` is a count.
+export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 });
 
 // ── text ─────────────────────────────────────────────────────────────────────
 
@@ -59,12 +61,6 @@ export function similar2(a, b) {
 
 /** Chinese runs ~1.4–1.6 characters per token; estimate conservatively. */
 export const estimateTokens = (text) => Math.ceil(String(text ?? '').length / 1.5);
-
-function fnv1a(text) {
-  let h = 0x811c9dc5;
-  for (const ch of String(text ?? '')) { h ^= ch.codePointAt(0); h = Math.imul(h, 16777619) >>> 0; }
-  return h.toString(16).padStart(8, '0');
-}
 
 // ── quality gate (after molly-qq-whale's memory gate, the rules that matter here) ──────────────
 
@@ -136,7 +132,8 @@ export const bankUsage = (entries, limit) => `${bankSize(entries ?? [])}/${limit
 // same person reaching her by QQ on her computer, QQ on her phone, or a post on 小黑盒 lands on one
 // card. A person first met twice under different handles may get two cards; they are merged once
 // anything shows they are the same person (a friend list, the model noticing, or you).
-// "Owner" is a tier on a person, not a separate notion.
+// "Owner" is a tier on a person, not a separate notion. A card says who someone is and how she knows
+// them; what they said or did is found in the words (recall).
 
 const TIER_RANK = { contact: 0, seen: 1, talked: 2, owner: 3 };
 const higherTier = (a, b) => ((TIER_RANK[a] ?? 0) >= (TIER_RANK[b] ?? 0) ? a : b);
@@ -161,7 +158,7 @@ export function migratePeople(memory) {
   for (const [key, p] of Object.entries(memory.people ?? {})) {
     if (Array.isArray(p.handles)) { out[p.id ?? key] = p; continue; }
     const id = `u${String((memory.useq = (memory.useq ?? 0) + 1)).padStart(4, '0')}`;
-    out[id] = { ...p, id, handles: [p.id ?? key], names: [...(p.names ?? [])], counts: { ...(p.counts ?? {}) }, facts: [...(p.facts ?? [])] };
+    out[id] = { ...p, id, handles: [p.id ?? key], names: [...(p.names ?? [])], counts: { ...(p.counts ?? {}) } };
     for (const x of memory.pending ?? []) if (x.person === key) x.person = id;
   }
   memory.people = out;
@@ -205,7 +202,7 @@ export const ownerOf = (people) => Object.values(people).find((p) => p.tier === 
 function newPerson(memory, { handles, name, tier, at }) {
   const id = `u${String((memory.useq = (memory.useq ?? 0) + 1)).padStart(4, '0')}`;
   const names = [...new Set([String(name ?? '').trim(), ...handles.map(nameOfHandle)].filter(Boolean))];
-  return (memory.people[id] = { id, handles: [...new Set(handles)], names, tier, firstSeen: at, lastSeen: at, counts: {}, impression: '', facts: [] });
+  return (memory.people[id] = { id, handles: [...new Set(handles)], names, tier, firstSeen: at, lastSeen: at, counts: {}, impression: '' });
 }
 
 /** Give a person another handle; a handle held by someone else is not taken (that is a merge). */
@@ -247,10 +244,10 @@ export function setOwner(memory, handle, name = '') {
 }
 
 /**
- * Two cards are one person: everything moves onto `keep` (handles, names, counts, facts within
- * the limit, the earlier first-seen, the later last-seen, the higher tier); `drop` is removed.
+ * Two cards are one person: everything moves onto `keep` (handles, names, counts, the impression
+ * when it has none, the earlier first-seen, the later last-seen, the higher tier); `drop` is removed.
  */
-export function mergePeople(memory, keepRef, dropRef, { limits = DEFAULT_LIMITS, why = '' } = {}) {
+export function mergePeople(memory, keepRef, dropRef, { why = '' } = {}) {
   let keep = findPerson(memory.people, keepRef), drop = findPerson(memory.people, dropRef);
   if (!keep || !drop) return { ok: false, error: `no such person: ${!keep ? keepRef : dropRef}` };
   if (keep === drop) return { ok: true, id: keep.id, noop: true };
@@ -258,13 +255,11 @@ export function mergePeople(memory, keepRef, dropRef, { limits = DEFAULT_LIMITS,
   keep.handles = [...new Set([...keep.handles, ...drop.handles])];
   keep.names = [...new Set([...keep.names, ...drop.names])].slice(0, 8);
   for (const [k, v] of Object.entries(drop.counts)) keep.counts[k] = (keep.counts[k] ?? 0) + v;
-  for (const f of drop.facts) if (!keep.facts.some((x) => similar2(x, f) >= 0.6) && bankSize([...keep.facts, f]) <= limits.person) keep.facts.push(f);
   keep.impression ||= drop.impression;
   keep.firstSeen = Math.min(keep.firstSeen ?? Infinity, drop.firstSeen ?? Infinity);
   keep.lastSeen = Math.max(keep.lastSeen ?? 0, drop.lastSeen ?? 0);
   keep.tier = higherTier(keep.tier, drop.tier);
   keep.mergedFrom = [...(keep.mergedFrom ?? []), { id: drop.id, handles: drop.handles, why, at: Date.now() }];
-  for (const x of memory.pending) if (x.person === drop.id) x.person = keep.id;
   delete memory.people[drop.id];
   return { ok: true, id: keep.id, dropped: drop.id };
 }
@@ -273,7 +268,7 @@ export function mergePeople(memory, keepRef, dropRef, { limits = DEFAULT_LIMITS,
  * Someone thinks two cards are one person. Merges that would touch the owner wait for your
  * approval (being taken for the owner is the most trusted thing there is); others apply at once.
  */
-export function proposeMerge(memory, a, b, { why = '', limits = DEFAULT_LIMITS } = {}) {
+export function proposeMerge(memory, a, b, { why = '' } = {}) {
   const pa = findPerson(memory.people, a), pb = findPerson(memory.people, b);
   if (!pa || !pb || pa === pb) return { ok: false, error: 'nothing to merge' };
   if (pa.tier === 'owner' || pb.tier === 'owner') {
@@ -283,14 +278,14 @@ export function proposeMerge(memory, a, b, { why = '', limits = DEFAULT_LIMITS }
     memory.merges.push({ id, a: pa.id, b: pb.id, why: String(why).slice(0, 120), at: Date.now() });
     return { ok: true, pending: id };
   }
-  return mergePeople(memory, pa.id, pb.id, { why, limits });
+  return mergePeople(memory, pa.id, pb.id, { why });
 }
 
-export function approveMerge(memory, id, limits = DEFAULT_LIMITS) {
+export function approveMerge(memory, id) {
   const i = memory.merges.findIndex((m) => m.id === id);
   if (i < 0) return { ok: false, error: `no pending merge ${id}` };
   const [m] = memory.merges.splice(i, 1);
-  return mergePeople(memory, m.a, m.b, { why: m.why, limits });
+  return mergePeople(memory, m.a, m.b, { why: m.why });
 }
 
 /**
@@ -299,7 +294,7 @@ export function approveMerge(memory, id, limits = DEFAULT_LIMITS) {
  * "宽" to QQ 919231551. Friends become contact-tier cards (no counts); cards already made from
  * a name alone get the number, and two cards that turn out to be one friend are merged.
  */
-export function syncFriends(memory, platform, friends, { limits = DEFAULT_LIMITS, at = Date.now() } = {}) {
+export function syncFriends(memory, platform, friends, { at = Date.now() } = {}) {
   let merged = 0, linked = 0;
   for (const f of friends ?? []) {
     const uid = String(f?.uid ?? f?.user_id ?? '').trim();
@@ -309,7 +304,7 @@ export function syncFriends(memory, platform, friends, { limits = DEFAULT_LIMITS
     const nameHandles = shown.map((n) => handleOf(platform, { name: n }));
     const byId = byHandle(memory.people, idHandle);
     const byName = nameHandles.map((h) => byHandle(memory.people, h)).find(Boolean) ?? null;
-    if (byId && byName && byId !== byName) { mergePeople(memory, byId.id, byName.id, { why: `${platform} 好友列表：${shown.join('/')} 就是 ${uid}`, limits }); merged++; }
+    if (byId && byName && byId !== byName) { mergePeople(memory, byId.id, byName.id, { why: `${platform} 好友列表：${shown.join('/')} 就是 ${uid}` }); merged++; }
     const p = byHandle(memory.people, idHandle) ?? byName ?? newPerson(memory, { handles: [idHandle], name: shown[0], tier: 'contact', at });
     if (!p.handles.includes(idHandle)) { addHandle(memory, p, idHandle); linked++; }
     // Name handles only when unambiguous within this list (two friends both remarked "小王" share none).
@@ -339,203 +334,198 @@ export function renderPerson(p, now = Date.now()) {
   const counts = Object.entries(p.counts).filter(([, v]) => v > 0).map(([k, v]) => `${COUNT_LABEL[k] ?? k} ${v} 次`).join('，');
   const also = p.names.length > 1 ? `，也叫 ${p.names.slice(1).join('/')}` : '';
   const head = `${name}（${p.handles.join('、')}${also}）：${TIER_LABEL[p.tier] ?? p.tier}${counts ? `；${counts}` : ''}${p.lastSeen ? `；上次 ${ago(now - p.lastSeen)}` : ''}`;
-  const lines = [head];
-  if (p.impression) lines.push(`  印象：${p.impression}`);
-  for (const f of p.tier === 'seen' ? [] : p.facts) lines.push(`  - ${f}`);
-  return lines.join('\n');
+  return p.impression ? `${head}\n  印象：${p.impression}` : head;
 }
 
-/**
- * The model's view of a person after a consolidation: an impression, facts. Owner facts go to the
- * owner bank instead. Facts about others are held in `pending` until restated or approved.
- */
-export function updatePerson(memory, u, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const p = findPerson(memory.people, u?.id) ?? findPerson(memory.people, u?.name);
-  if (!p || p.tier === 'owner') return { applied: 0, pending: 0 };
-  let applied = 0, pending = 0;
-  const imp = String(u?.impression ?? '').trim();
-  if (imp && !rejectReason(imp)) { p.impression = imp.slice(0, limits.impression); applied++; }
-  if (p.tier === 'seen') return { applied, pending };
-  for (const raw of [].concat(u?.facts ?? [])) {
-    const fact = String(raw ?? '').trim();
-    if (!fact || rejectReason(fact)) continue;
-    if (p.facts.some((f) => similar2(f, fact) >= 0.6)) continue;
-    const again = memory.pending.findIndex((x) => x.person === p.id && similar2(x.text, fact) >= 0.3);
-    if (again >= 0) {
-      // Said a second time: it is kept.
-      memory.pending.splice(again, 1);
-      if (bankSize([...p.facts, fact]) <= limits.person) { p.facts.push(fact); applied++; }
-      continue;
-    }
-    memory.pending.push({ id: `p${(memory.seq = (memory.seq ?? 0) + 1)}`, person: p.id, text: fact, at: now });
-    pending++;
-  }
-  memory.pending = memory.pending.slice(-200);
-  return { applied, pending };
-}
-
-/** Approve a pending fact (by its id): it joins the person's card if there is room. */
-export function approvePending(memory, id, limits = DEFAULT_LIMITS) {
-  const i = memory.pending.findIndex((x) => x.id === id);
-  if (i < 0) return { ok: false, error: `no pending ${id}` };
-  const [item] = memory.pending.splice(i, 1);
-  const p = memory.people[item.person];
-  if (!p) return { ok: false, error: `no person ${item.person}` };
-  if (bankSize([...p.facts, item.text]) > limits.person) { memory.pending.splice(i, 0, item); return { ok: false, error: `${p.names[0] ?? p.id}'s card is full (${limits.person} chars)` }; }
-  p.facts.push(item.text);
-  return { ok: true, person: p.id };
-}
-
-// ── fragments (whale) ─────────────────────────────────────────────────────────
-
-export const FRAGMENT_KINDS = ['event', 'plan', 'promise', 'preference', 'fact'];
-const MAX_IMPORTANCE = 9;
-
-/** Add a fragment, or count it again when it is already there (refs + 1, importance + tag). */
-/** Names a fragment is about (fragments' who): up to 4, each 2–12 characters. */
-export function cleanWho(who) {
-  return [...new Set([].concat(who ?? []).map((n) => String(n ?? '').trim()).filter((n) => [...n].length >= 2 && [...n].length <= 12))].slice(0, 4);
-}
-/** Kinds that can be left open (还没了的事): something planned, promised, or put off. */
-export const OPENABLE = ['plan', 'promise'];
-
-export function observeFragment(memory, { text, tag, kind, mergeWith, gen, now = Date.now(), open, who, replaces }) {
-  const body = String(text ?? '').trim();
-  const t = Number(tag);
-  if (!body || !Number.isInteger(t) || t < 0 || t > 2 || rejectReason(body)) return { action: 'dropped' };
-  const norm = normText(body);
-  const hash = fnv1a(norm);
-  const list = memory.fragments;
-  // The same thing, changed (a new state, a change of mind, a correction): the new text takes the
-  // old one's place; the old text is kept as `was` (not shown) so the change can still be traced.
-  const old = replaces ? list.find((f) => f.id === String(replaces).trim()) : null;
-  if (old && old.hash !== hash) {
-    old.was = old.text;
-    old.text = body; old.hash = hash;
-    if (FRAGMENT_KINDS.includes(kind)) old.kind = kind;
-    old.refs += 1;
-    old.importance = Math.min(MAX_IMPORTANCE, Math.max(old.importance, t));
-    old.lastSeenAt = now; old.lastSeenGen = gen; old.updatedAt = now;
-    const names = cleanWho([...(old.who ?? []), ...cleanWho(who)]);
-    if (names.length) old.who = names;
-    if (open === true && OPENABLE.includes(old.kind)) { old.open = true; delete old.closedAt; }
-    else if (old.open && (open === false || !OPENABLE.includes(old.kind))) { old.open = false; old.closedAt = now; }
-    return { action: 'replaced', id: old.id };
-  }
-  let hit = list.find((f) => f.hash === hash) ?? (mergeWith ? list.find((f) => f.id === mergeWith) : null);
-  if (!hit) {
-    let best = null, sim = 0;
-    for (const f of list) { const s = jaccard(f.text, body); if (s > sim) { sim = s; best = f; } }
-    if (best && sim >= 0.82) hit = best;
-  }
-  if (hit) {
-    hit.refs += 1;
-    hit.importance = Math.min(MAX_IMPORTANCE, hit.importance + t);
-    hit.lastSeenAt = now; hit.lastSeenGen = gen;
-    if (body.length > hit.text.length) { hit.text = body; hit.hash = hash; }
-    const names = cleanWho([...(hit.who ?? []), ...cleanWho(who)]);
-    if (names.length) hit.who = names;
-    if (open === false && hit.open) { hit.open = false; hit.closedAt = now; }
-    else if (open === true && OPENABLE.includes(hit.kind)) { hit.open = true; delete hit.closedAt; }
-    return { action: 'dup', id: hit.id };
-  }
-  const id = `f${String((memory.fseq = (memory.fseq ?? 0) + 1)).padStart(4, '0')}`;
-  const k = FRAGMENT_KINDS.includes(kind) ? kind : 'event';
-  const f = { id, text: body, hash, kind: k, importance: t, refs: 1, pinned: false, createdAt: now, lastSeenAt: now, lastSeenGen: gen };
-  const names = cleanWho(who);
-  if (names.length) f.who = names;
-  if (open === true && OPENABLE.includes(k)) f.open = true;
-  list.push(f);
-  return { action: 'new', id };
-}
-
-/** An open fragment is done, called off or no longer his concern: it leaves 还没了的事. */
-export function closeFragment(memory, id, now = Date.now()) {
-  const f = memory.fragments.find((x) => x.id === String(id ?? '').trim());
-  if (!f || !f.open) return false;
-  f.open = false; f.closedAt = now;
+/** The model's (or her own) one line about a person. The owner has no card line: he has his bank. */
+export function setImpression(memory, ref, text, { limits = DEFAULT_LIMITS } = {}) {
+  const p = findPerson(memory.people, ref);
+  if (!p || p.tier === 'owner') return false;
+  const imp = String(text ?? '').trim();
+  if (!imp) { p.impression = ''; return true; }
+  if (rejectReason(imp)) return false;
+  p.impression = imp.slice(0, limits.impression);
   return true;
 }
 
-/** Every `every` generations: unpinned fragments not seen for 5 lose 1 importance; 0/1-ref ones unseen for 10 go (open ones stay). */
-export function ageFragments(memory, gen, every = 5) {
-  if (gen <= 0 || gen % Math.max(1, every) !== 0) return { decayed: 0, dropped: 0 };
-  let decayed = 0;
-  for (const f of memory.fragments) if (!f.pinned && f.importance > 0 && (f.lastSeenGen ?? 0) <= gen - 5) { f.importance--; decayed++; }
-  const before = memory.fragments.length;
-  memory.fragments = memory.fragments.filter((f) => f.pinned || f.open || !(f.importance === 0 && f.refs === 1 && (f.lastSeenGen ?? 0) <= gen - 10));
-  return { decayed, dropped: before - memory.fragments.length };
-}
+// ── 还没了的事 ────────────────────────────────────────────────────────────────
 
-/** pinned → importance → refs → lastSeenAt → id: a total order, so the rendered text is byte-stable. */
-export function compareFragments(a, b) {
-  if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
-  if (b.importance !== a.importance) return b.importance - a.importance;
-  if (b.refs !== a.refs) return b.refs - a.refs;
-  if ((b.lastSeenAt ?? 0) !== (a.lastSeenAt ?? 0)) return (b.lastSeenAt ?? 0) - (a.lastSeenAt ?? 0);
-  return a.id.localeCompare(b.id);
+const openSize = (items) => items.reduce((n, x) => n + x.text.length + 1, 0);
+/** "2026-07-15" from "2026-07-15" / "07-15" / "7-15" (the year of `now`); '' when it is not a date. */
+export function cleanDue(due, now = Date.now()) {
+  const m = /^\s*(?:(\d{4})[-/.年])?(\d{1,2})[-/.月](\d{1,2})日?\s*$/.exec(String(due ?? ''));
+  if (!m) return '';
+  const y = Number(m[1] ?? new Date(now).getFullYear()), mo = Number(m[2]), d = Number(m[3]);
+  const t = new Date(y, mo - 1, d);
+  if (t.getMonth() !== mo - 1 || t.getDate() !== d) return '';
+  return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
+/** The item in `list` whose text contains `old` uniquely: { index } or { error }. */
+function findItem(list, old) {
+  const o = String(old ?? '').trim();
+  if (!o) return { error: 'oldText is required' };
+  const hits = list.map((x, i) => (x.text.includes(o) ? i : -1)).filter((i) => i >= 0);
+  if (!hits.length) return { error: `no item contains "${o}"` };
+  if (hits.length > 1) return { error: `"${o}" matches ${hits.length} items; use a longer piece` };
+  return { index: hits[0] };
+}
+// How pressing an item is, for the shelf: owed to someone counts most, then a due date; then the newest.
+const urgency = (x) => (x.owed ? 2 : 0) + (x.due ? 1 : 0);
+const shelfOrder = (a, b) => urgency(a) - urgency(b) || (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id);
 
-export function selectFragments(fragments, budgetTokens) {
-  const picked = [];
-  let used = 0;
-  for (const f of [...fragments].sort(compareFragments)) {
-    const cost = estimateTokens(f.text);
-    if (used + cost > budgetTokens) break;
-    picked.push(f); used += cost;
+/**
+ * Over the budget, the least pressing items move to the shelf, one at a time (never cut). Returns
+ * the moved items. The shelf keeps the newest `limits.shelved`; older ones drop off it (the words
+ * stay in the transcript and the recall index).
+ */
+export function fitOpen(memory, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
+  const moved = [];
+  while (memory.open.length > 1 && openSize(memory.open) > limits.open) {
+    const victim = [...memory.open].sort(shelfOrder)[0];
+    memory.open = memory.open.filter((x) => x !== victim);
+    memory.shelved.push({ ...victim, shelvedAt: now });
+    moved.push(victim);
   }
-  return picked;
+  if (memory.shelved.length > limits.shelved) memory.shelved = memory.shelved.slice(-limits.shelved);
+  return moved;
 }
 
-/** 还没了的事: open fragments, newest first (by when they were first said, then id: byte-stable), under a budget. */
-export function selectOpen(fragments, budgetTokens) {
-  const picked = [];
-  let used = 0;
-  for (const f of fragments.filter((x) => x.open).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0) || b.id.localeCompare(a.id))) {
-    const cost = estimateTokens(f.text);
-    if (used + cost > budgetTokens) break;
-    picked.push(f); used += cost;
+/**
+ * One operation on 还没了的事: add { content, due, owed } · replace { oldText, content, due, owed } ·
+ * done { oldText } (finished, called off, no longer wanted: it goes; shelved items too) ·
+ * shelve { oldText } · restore { oldText } (back from the shelf). Returns { ok, error?, note? }.
+ */
+export function openOp(memory, op, { now = Date.now() } = {}) {
+  const action = String(op?.action ?? '');
+  const content = String(op?.content ?? '').trim();
+  const due = op?.due === undefined ? undefined : cleanDue(op.due, now);
+  if (action === 'add') {
+    if (!content) return { ok: false, error: 'content is required' };
+    const why = rejectReason(content);
+    if (why) return { ok: false, error: `not kept (${why})` };
+    const same = [...memory.open, ...memory.shelved].find((x) => normText(x.text) === normText(content) || jaccard(x.text, content) >= 0.82);
+    if (same) return { ok: true, note: 'already there' };
+    memory.open.push({ id: `o${String((memory.oseq = (memory.oseq ?? 0) + 1)).padStart(4, '0')}`, text: content, at: now, due: due || '', owed: op?.owed === true });
+    return { ok: true };
   }
-  return picked;
+  if (action === 'replace') {
+    const f = findItem(memory.open, op?.oldText);
+    if (f.error) return { ok: false, error: f.error };
+    if (!content) return { ok: false, error: 'content is required (use done when it is over)' };
+    if (rejectReason(content)) return { ok: false, error: `not kept (${rejectReason(content)})` };
+    const x = memory.open[f.index];
+    x.text = content;
+    if (due !== undefined) x.due = due;
+    if (typeof op?.owed === 'boolean') x.owed = op.owed;
+    return { ok: true };
+  }
+  if (action === 'done' || action === 'remove') {
+    const f = findItem(memory.open, op?.oldText);
+    if (!f.error) { memory.open.splice(f.index, 1); return { ok: true }; }
+    const g = findItem(memory.shelved, op?.oldText);
+    if (g.error) return { ok: false, error: f.error };
+    memory.shelved.splice(g.index, 1);
+    return { ok: true };
+  }
+  if (action === 'shelve') {
+    const f = findItem(memory.open, op?.oldText);
+    if (f.error) return { ok: false, error: f.error };
+    const [x] = memory.open.splice(f.index, 1);
+    memory.shelved.push({ ...x, shelvedAt: now });
+    return { ok: true };
+  }
+  if (action === 'restore') {
+    const f = findItem(memory.shelved, op?.oldText);
+    if (f.error) return { ok: false, error: f.error };
+    const [x] = memory.shelved.splice(f.index, 1);
+    delete x.shelvedAt;
+    memory.open.push(x);
+    return { ok: true };
+  }
+  return { ok: false, error: `unknown action ${action}` };
 }
+
+/** One item as she reads it: its words, and the due date when it has one. */
+export const renderItem = (x, now = Date.now()) => `${x.text}${x.due ? `（到 ${dayMark(new Date(`${x.due}T00:00:00`).getTime(), now)}）` : ''}`;
+/** A shelved item as a short title, for the line that says what is on the shelf. */
+export const shelfTitle = (x) => { const t = x.text.replace(/\s+/g, ' '); return t.length > 14 ? `${t.slice(0, 14)}…` : t; };
 
 // ── the whole thing ───────────────────────────────────────────────────────────
 
 export function emptyMemory() {
-  return { version: MEMORY_VERSION, gen: 1, seq: 0, fseq: 0, owner: [], self: [], people: {}, pending: [], merges: [], fragments: [], cursor: 0, consolidations: 0, useq: 0 };
+  return { version: MEMORY_VERSION, gen: 1, seq: 0, oseq: 0, owner: [], self: [], open: [], shelved: [], people: {}, merges: [], cursor: 0, consolidations: 0, useq: 0 };
 }
 
-export function normalizeMemory(m) {
+/**
+ * 0.19 memory (fragments, facts on cards, pending facts) → 0.20. Open fragments become 还没了的事
+ * (a promise is owed); what does not fit goes to the shelf. Pinned fragments join the owner bank
+ * while there is room. Everything else that is no longer kept — the other fragments, the facts on
+ * cards, pending facts — is returned as `archive` for the caller to write to a file (the words they
+ * came from are still in the transcript and the recall index), with a `report` of where each went.
+ */
+export function migrateV1(m, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
+  const frags = [...(m.fragments ?? [])];
+  const report = { open: [], shelved: [], toOwner: [], archived: 0, facts: 0, pending: 0 };
+  const archive = { from: 'dsh-dot memory v1 (0.19)', at: new Date(now).toISOString(), fragments: [], facts: {}, pending: [...(m.pending ?? [])] };
+  const out = { ...m, version: MEMORY_VERSION, open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])] };
+  for (const f of frags.filter((x) => x.open).sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
+    out.open.push({ id: `o${String((out.oseq = (out.oseq ?? 0) + 1)).padStart(4, '0')}`, text: f.text, at: f.createdAt ?? now, due: '', owed: f.kind === 'promise' });
+  }
+  for (const f of frags.filter((x) => !x.open)) {
+    if (f.pinned && bankSize([...(out.owner ?? []), f.text]) <= limits.owner) { out.owner = [...(out.owner ?? []), f.text]; report.toOwner.push(f.text); continue; }
+    archive.fragments.push(f);
+  }
+  const moved = fitOpen(out, { limits, now });
+  report.shelved = moved.map((x) => x.text);
+  report.open = out.open.map((x) => x.text);
+  report.archived = archive.fragments.length;
+  for (const p of Object.values(out.people ?? {})) {
+    if (p.facts?.length) { archive.facts[p.id] = { names: p.names, facts: p.facts }; report.facts += p.facts.length; }
+    delete p.facts;
+    if (p.impression && p.impression.length > limits.impression) p.impression = p.impression.slice(0, limits.impression);
+  }
+  report.pending = archive.pending.length;
+  for (const k of ['fragments', 'pending', 'fseq']) delete out[k];
+  return { memory: out, archive, report };
+}
+
+/**
+ * Memory as loaded from disk, brought to the current shape. A 0.19 file is migrated on the way; the
+ * migration's archive and report ride along as `migration` (not saved: the caller writes them out
+ * and deletes the key).
+ */
+export function normalizeMemory(m, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
   const e = emptyMemory();
   if (!m || typeof m !== 'object') return e;
-  return migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], people: { ...(m.people ?? {}) }, pending: [...(m.pending ?? [])], merges: [...(m.merges ?? [])], fragments: [...(m.fragments ?? [])] });
+  let migration = null;
+  if (Array.isArray(m.fragments) || Array.isArray(m.pending) || (m.version ?? 1) < MEMORY_VERSION) {
+    const r = migrateV1(migratePeople({ ...m, people: { ...(m.people ?? {}) } }), { limits, now });
+    m = r.memory;
+    migration = { archive: r.archive, report: r.report };
+  }
+  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])], people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
+  if (migration) out.migration = migration;
+  return out;
 }
 
 /**
- * A day as she reads it: MM-DD in the current year, YYYY-MM-DD otherwise — a "05-08" written last
- * year must not read as this May, and the common case stays as short as it was.
+ * What every turn of hers sees: you, her own notes, what is not over yet, and a line naming what is
+ * on the shelf. Byte-stable for the same memory (no counters; the clock only through the year in a
+ * date), because a context snapshot is re-sent only when its text changes.
  */
-export { dayMark };
-
-const oldYear = (at, now) => (at && new Date(at).getFullYear() !== new Date(now).getFullYear() ? `[${dayMark(at, now)}] ` : '');
-
-/**
- * What every turn of hers sees: you, her own notes, what still matters. Byte-stable for the same
- * memory (no counters; the clock only through the year), because a context snapshot is re-sent only
- * when its text changes. A fragment recorded in another year carries that date, since its own text
- * was written with MM-DD dates.
- */
-export function renderStanding(memory, { budgetTokens = 600, openBudgetTokens = 200, banks = true, now = Date.now() } = {}) {
-  const t = table('memory.standing');
+export function renderStanding(memory, { banks = true, now = Date.now() } = {}) {
+  const open = [...memory.open].sort((a, b) => (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id));
+  const shelf = [...memory.shelved].sort((a, b) => (b.shelvedAt ?? 0) - (a.shelvedAt ?? 0) || b.id.localeCompare(a.id));
+  const t = table('memory.standing', { n: shelf.length, titles: shelf.slice(0, 8).map(shelfTitle).join('、') + (shelf.length > 8 ? '…' : '') });
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
   if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
   if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
-  const open = selectOpen(memory.fragments, openBudgetTokens);
-  if (open.length) parts.push(`${t.open}\n${open.map((f) => `- ${oldYear(f.createdAt, now)}${f.text}`).join('\n')}`);
-  const shown = new Set(open.map((f) => f.id));
-  const picked = selectFragments(memory.fragments.filter((f) => !shown.has(f.id)), budgetTokens);
-  if (picked.length) parts.push(`${t.recent}\n${picked.map((f) => `- ${f.pinned ? '📌' : ''}${oldYear(f.createdAt, now)}${f.text}`).join('\n')}`);
+  if (open.length || shelf.length) {
+    const lines = open.map((x) => `- ${renderItem(x, now)}`);
+    if (shelf.length) lines.push(t.shelved);
+    parts.push(`${t.open}\n${lines.join('\n')}`);
+  }
   if (!parts.length) return '';
   return ['<memory>', t.intro, ...parts, '</memory>'].join('\n');
 }

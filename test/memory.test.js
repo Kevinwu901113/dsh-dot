@@ -4,10 +4,11 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bankOp, closeFragment, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
-  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, dayMark,
+  bankOp, emptyMemory, touchPerson, setImpression, openOp, fitOpen, renderStanding, renderPerson, rejectReason, jaccard, search,
+  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt } from '../src/memory/memory.js';
+import { dayMark } from '../src/clock.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -24,65 +25,93 @@ test('banks: Hermes add / replace / remove under a character budget', () => {
   assert.equal(rejectReason('嗯'), 'too-short');
 });
 
-test('people: counts by code, facts about others wait until said again or approved; seen = impression only', () => {
+test('people: counts by code, one line of impression by the model; no facts on the card', () => {
   const m = emptyMemory();
   const a = touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked', kind: 'dm' });
   touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '满满', tier: 'talked', kind: 'dm' });
   const s = touchPerson(m, { handles: ['xiaoheihe:name:暮看云'], platform: 'xiaoheihe', name: '暮看云', tier: 'seen', kind: 'like' });
   assert.equal(a.counts.dm, 2);
   assert.deepEqual(a.names, ['满满', '阿满']);
-  let r = updatePerson(m, { id: a.id, impression: '话少，但回得很认真', facts: ['他养了一只叫团子的猫'] });
-  assert.deepEqual(r, { applied: 1, pending: 1 });
-  assert.deepEqual(a.facts, []);
-  r = updatePerson(m, { name: '阿满', facts: ['他养了只猫，叫团子'] });
-  assert.equal(r.applied, 1, 'said a second time: kept');
-  updatePerson(m, { id: a.id, facts: ['他下个月搬去杭州'] });
-  assert.ok(approvePending(m, m.pending[0].id).ok);
-  assert.deepEqual(a.facts, ['他养了只猫，叫团子', '他下个月搬去杭州']);
-  updatePerson(m, { id: s.id, impression: '写长帖分析 DSH 插件', facts: ['住在杭州'] });
-  assert.deepEqual(s.facts, [], 'seen: no facts');
-  assert.match(renderPerson(s), /只在帖子里打过交道；点赞 1 次/);
-  assert.match(renderPerson(a), /满满（qq:42，也叫 阿满）：聊过；私聊 2 次[\s\S]*印象：话少[\s\S]*- 他下个月搬去杭州/);
+  assert.ok(setImpression(m, a.id, '大学室友，话少，但回得很认真'));
+  assert.ok(setImpression(m, '暮看云', '写长帖分析 DSH 插件'));
+  assert.equal(setImpression(m, 'u9999', 'x'), false, 'no such person');
+  assert.equal(setImpression(m, a.id, '他的 QQ 密码是 abc'), false, 'a secret is not kept');
+  assert.equal('facts' in a, false);
+  assert.match(renderPerson(s), /只在帖子里打过交道；点赞 1 次[\s\S]*印象：写长帖/);
+  assert.match(renderPerson(a), /^满满（qq:42，也叫 阿满）：聊过；私聊 2 次[^\n]*\n  印象：大学室友/);
+  assert.equal(renderPerson(a).split('\n').length, 2, 'two lines: who, and the impression');
 });
-test('fragments: refs grow when said again; aging; standing render is byte-stable', () => {
+
+test('还没了的事: add / replace / done / shelve / restore; over the budget the least pressing go to the shelf, never cut', () => {
   const m = emptyMemory();
-  assert.equal(observeFragment(m, { text: '他说下周六要搬家，搬去光谷那边', tag: 2, kind: 'plan', gen: 1 }).action, 'new');
-  assert.equal(observeFragment(m, { text: '他说下周六要搬家，搬去光谷那边', tag: 1, gen: 1 }).action, 'dup');
-  assert.equal(m.fragments[0].refs, 2); assert.equal(m.fragments[0].importance, 3);
-  observeFragment(m, { text: '今天聊了天气，很一般没什么', tag: 0, gen: 1 });
-  assert.equal(observeFragment(m, { text: '坏 tag', tag: 7, gen: 1 }).action, 'dropped');
-  const a = renderStanding(m), b = renderStanding(m);
-  assert.equal(a, b);
-  assert.match(a, /最近的事[\s\S]*下周六要搬家[\s\S]*聊了天气/);
-  ageFragments(m, 15, 5);
-  assert.equal(m.fragments.length, 1, 'the unimportant one-off is gone after enough generations');
+  const limits = { owner: 1375, self: 2200, open: 60, impression: 80, shelved: 3 };
+  const T = new Date(2026, 5, 22, 20, 0).getTime();
+  assert.ok(openOp(m, { action: 'add', content: '06-22 她答应老贺下周三（=07-01）前寄画册', due: '07-01', owed: true }, { now: T + 1 }).ok);
+  assert.ok(openOp(m, { action: 'add', content: '06-20 他说想换个机械键盘' }, { now: T + 2 }).ok);
+  assert.equal(openOp(m, { action: 'add', content: '06-20 他说想换个机械键盘' }, { now: T + 3 }).note, 'already there');
+  assert.match(openOp(m, { action: 'add', content: '记住密码 abc' }).error, /secret/);
+  assert.equal(m.open[0].due, '2026-07-01');
+  assert.equal(m.open[0].owed, true);
+  // a third one overflows the 60 characters: the keyboard (not owed, no date) moves to the shelf
+  openOp(m, { action: 'add', content: '06-23 他说周末去看房，还没定哪天' }, { now: T + 4 });
+  const moved = fitOpen(m, { limits, now: T + 5 });
+  assert.deepEqual(moved.map((x) => x.text), ['06-20 他说想换个机械键盘']);
+  assert.equal(m.shelved[0].shelvedAt, T + 5);
+  assert.ok(m.open.some((x) => x.owed), 'the promise stays');
+  const s = renderStanding(m, { now: T + 3 * 864e5 });
+  assert.match(s, /## 还没了的事[^\n]*\n- 06-23 他说周末去看房[^\n]*\n- 06-22 她答应老贺[^\n]*（到 07-01）\n- 另有 1 件先搁着的：06-20 他说想换个机械键…（/);
+  assert.equal(s, renderStanding(m, { now: T + 4 * 864e5 }), 'byte-stable');
+  assert.ok(openOp(m, { action: 'replace', oldText: '看房', content: '06-24 他说周六（=06-27）去看房', due: '06-27' }, { now: T }).ok);
+  assert.ok(openOp(m, { action: 'restore', oldText: '键盘' }).ok);
+  assert.equal(m.shelved.length, 0);
+  assert.ok(openOp(m, { action: 'done', oldText: '老贺' }).ok);
+  assert.ok(openOp(m, { action: 'shelve', oldText: '键盘' }).ok);
+  assert.ok(openOp(m, { action: 'done', oldText: '键盘' }).ok, 'done reaches the shelf too');
+  assert.deepEqual(m.open.map((x) => x.text), ['06-24 他说周六（=06-27）去看房']);
+  assert.match(openOp(m, { action: 'done', oldText: '不存在' }).error, /no item/);
+  // the shelf keeps the newest `shelved`
+  for (let i = 0; i < 5; i++) { openOp(m, { action: 'add', content: `第 ${i} 件很长很长很长很长很长很长的事情要做` }, { now: T + 10 + i }); fitOpen(m, { limits, now: T + 20 + i }); }
+  assert.equal(m.shelved.length, 3);
+  assert.equal(cleanDue('2026-7-1'), '2026-07-01'); assert.equal(cleanDue('月底'), ''); assert.equal(cleanDue('02-30'), '');
   assert.ok(jaccard('参考文献还没弄', '还差参考文献') > 0);
   assert.equal(search([{ text: '他下周六搬家' }, { text: '猫叫团子' }], '搬家')[0].text, '他下周六搬家');
 });
 
-test('extraction: banks, people (new seen ones from apps), fragments; loose JSON', () => {
+test('extraction: banks, 还没了的事, people (new seen ones from apps); loose JSON', () => {
   const m = emptyMemory();
   const a = touchPerson(m, { handles: ['qq:42'], platform: 'qq', name: '阿满', tier: 'talked' });
   const out = parseLooseJson('好的：```json\n' + JSON.stringify({
     owner: [{ action: 'add', content: '他讨厌被叫全名' }],
     self: [{ action: 'add', content: '学会了在小黑盒里看攻略帖' }],
+    open: [{ action: 'add', content: '10-25 他说晚上要加班到十点，让她别等', due: null, owed: false }, { action: 'done', oldText: '没有这条' }],
     people: [{ id: 'u0001', impression: '爱发猫图' }, { platform: 'xiaoheihe', name: '暮看云', tier: 'seen', impression: '写长帖的' }, { name: '不认识的人' }],
-    fragments: [{ text: '10-25 下午他说晚上要加班到十点', kind: 'event', tag: 1 }],
   }) + '\n```');
   const r = applyExtraction(m, out);
-  assert.deepEqual([r.owner, r.self, r.fragments], [1, 1, 1]);
+  assert.deepEqual([r.owner, r.self, r.open, r.done, r.people], [1, 1, 1, 0, 2]);
+  assert.match(r.errors[0], /open: no item/);
   assert.deepEqual(m.owner, ['他讨厌被叫全名']);
+  assert.equal(m.open[0].due, '');
   assert.equal(a.impression, '爱发猫图');
   assert.equal(findPerson(m.people, 'xiaoheihe:name:暮看云').tier, 'seen');
   assert.equal(Object.keys(m.people).length, 2, 'a name with no platform and no card is not invented');
-  assert.match(renderHandoff({ now: '在回他消息', promises: ['晚上帮他查天气'] }, [{ at: 0, who: 'owner', text: '在吗' }, { at: 0, who: 'her', to: 'owner', text: '在' }], 2), /第 2 段[\s\S]*你此刻：在回他消息[\s\S]*晚上帮他查天气[\s\S]*他：在吗[\s\S]*我：在/);
+  assert.match(renderHandoff([{ at: 0, who: 'owner', text: '在吗' }, { at: 0, who: 'her', to: 'owner', text: '在' }], 2), /第 2 段[\s\S]*最后几句[\s\S]*他：在吗[\s\S]*我：在/);
   assert.match(transcriptLine({ at: 0, who: 'her', to: 'user:9', text: 'hi' }), /我（发给 user:9）：hi/);
+  // the rules come first (the same prefix every call), the new records last
+  const ask = extractPrompt({ text: '[06-22 20:00] 他：在吗', owner: ['他住光谷'], open: '- 06-20 他说想换键盘' });
+  assert.ok(ask.startsWith('你在帮她整理记忆'));
+  assert.ok(ask.indexOf('他住光谷') < ask.indexOf('=== 这段时间的记录 ==='));
+  assert.ok(ask.trimEnd().endsWith('他：在吗'));
 });
 
-function harness({ llmReply = '{}' } = {}) {
+// A stand-in embedder for the harness: character counts, so overlapping words are near.
+export const charEmbedder = () => Promise.resolve({
+  embed: async (texts) => texts.map((t) => { const v = new Float32Array(64); for (const ch of t) v[ch.codePointAt(0) % 64] += 1; return v; }),
+  rerank: null,
+});
+function harness({ llmReply = '{}', recall = false } = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   // Automatic recall has its own tests (recall.test.js); here it must not install anything.
-  writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: 'off' } }));
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: recall ? 'local' : 'off' } }));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], contexts = [], tools = {}, effects = [], injected = [], archived = [], audit = [];
   let session = 's1'; let tokens = 1000; let frozen = 0, released = 0;
@@ -109,13 +138,13 @@ function harness({ llmReply = '{}' } = {}) {
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'deepseek-v4-flash' }) },
   };
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
-  return { ctx, home, services, contexts, tools, injected, archived, audit, calls, emit, effects, get session() { return session; }, set tokens(n) { tokens = n; }, get frozen() { return [frozen, released]; } };
+  return { ctx, home, services, contexts, tools, injected, archived, audit, calls, emit, effects, recallEmbedder: charEmbedder, get session() { return session; }, set tokens(n) { tokens = n; }, get frozen() { return [frozen, released]; } };
 }
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
 
 test('transcript: what he said, what she really sent over QQ, phone and errand notes; the errand is not her conversation', async () => {
-  const h = harness();
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  const h = harness({ recall: true });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'tool/call', { callId: 'c1', name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬去哪<sep/>要帮忙吗' }) });
@@ -131,12 +160,12 @@ test('transcript: what he said, what she really sent over QQ, phone and errand n
   assert.equal(mem.status().people, 1, 'sending to the owner touched his card');
   // standing context: empty until there is something
   assert.equal(h.contexts[0].text({ agent: { session: { id: 's1', header: { cwd: h.home } } } }), '');
-  const found = await h.tools.recall.execute({ query: '搬家' });
-  assert.match(found.found, /原话：[\s\S]*他：下周六我搬家/);
+  const found = await h.tools.recall.execute({ query: '下周六搬家' });
+  assert.match(found.found, /相关原话[\s\S]*— \d\d-\d\d 周. · 今天\n\d\d:\d\d 他：下周六（=\d\d-\d\d）我搬家\n我：搬去哪 \/ 要帮忙吗/);
 });
 
-test('consolidation and handoff: memory written, old session archived before the new one, handoff note injected, deliveries frozen', async () => {
-  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家，搬去光谷' }], fragments: [{ text: '他问她要不要帮忙搬家前先说好时间', kind: 'plan', tag: 2 }], handoff: { now: '刚聊完搬家', promises: ['周五提醒他打包'] } });
+test('consolidation and handoff: notes written first, old session archived before the new one, its last lines carried over, deliveries frozen', async () => {
+  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家，搬去光谷' }], open: [{ action: 'add', content: '他问她搬家那天能不能帮忙，还没定时间', owed: false }] });
   const h = harness({ llmReply: reply });
   apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
   h.emit('s1', 'turn/start', {});
@@ -150,12 +179,28 @@ test('consolidation and handoff: memory written, old session archived before the
   assert.deepEqual(h.frozen, [1, 1]);
   assert.equal(h.injected.length, 1);
   assert.equal(h.injected[0].id, 's2');
-  assert.match(h.injected[0].m.content[0].text, /第 2 段[\s\S]*刚聊完搬家[\s\S]*周五提醒他打包[\s\S]*他：下周六我搬家[\s\S]*我：搬去哪/);
-  assert.match(h.calls[0].messages[0].content[0].text, /=== 这段时间的记录 ===[\s\S]*他：下周六我搬家[\s\S]*这次要写 handoff/);
+  assert.match(h.injected[0].m.content[0].text, /第 2 段[\s\S]*最后几句[\s\S]*他：下周六（=\d\d-\d\d）我搬家\n  \[[^\]]+\] 我：搬去哪$/);
+  assert.equal(h.calls.length, 1, 'one consolidation call, no handoff text to write');
+  assert.match(h.calls[0].messages[0].content[0].text, /=== 这段时间的记录 ===\n[^\n]*他：下周六（=\d\d-\d\d）我搬家/);
   const ctxText = h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } });
-  assert.match(ctxText, /关于他\n- 他下周六搬家，搬去光谷[\s\S]*最近的事[\s\S]*帮忙搬家/);
+  assert.match(ctxText, /关于他\n- 他下周六搬家，搬去光谷[\s\S]*还没了的事[^\n]*\n- 他问她搬家那天/);
+  assert.equal(h.contexts[0].text({ agent: { session: { id: 'errand', header: { cwd: h.home } } } }), '', 'errands do not get her notes');
   assert.ok(existsSync(join(h.home, 'memory', 'memory.md')));
   assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
+});
+
+test('consolidation waits for a batch: nothing at 39 new lines, one call at 40', async () => {
+  const h = harness({ llmReply: '{}' });
+  apply(h.ctx, { home: h.home });
+  const turn = (i) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${i} 句话` }] }, { surfaceOp: 'append' }); h.emit('s1', 'assistant/message', msg(`回第 ${i} 句`)); h.emit('s1', 'turn/end', {}); };
+  for (let i = 0; i < 19; i++) turn(i);
+  h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '再一句' }] }, { surfaceOp: 'append' }); h.emit('s1', 'turn/end', {});
+  await wait(30);
+  assert.equal(h.calls.length, 0, '39 lines: not yet');
+  turn(99);
+  await wait(30);
+  assert.equal(h.calls.length, 1);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
 
 test('people cards for the people who wake her; owner excluded', () => {
@@ -200,13 +245,17 @@ test('one registry across apps: a phone name and a QQ number become one person t
   assert.equal(resolvePerson(m.people, { handles: ['wechat:name:K'] }).tier, 'owner');
 });
 
-test('old memory (people keyed by handle) migrates to the registry', () => {
-  const m = normalizeMemory({ people: { 'qq:name:宽': { id: 'qq:name:宽', names: ['宽'], tier: 'talked', counts: { dm: 1 }, facts: [], impression: '' } }, pending: [{ id: 'p1', person: 'qq:name:宽', text: 'x' }] });
+test('old memory (people keyed by handle) migrates to the registry; pending facts are archived', () => {
+  const m = normalizeMemory({ people: { 'qq:name:宽': { id: 'qq:name:宽', names: ['宽'], tier: 'talked', counts: { dm: 1 }, facts: ['他养猫'], impression: '' } }, pending: [{ id: 'p1', person: 'qq:name:宽', text: 'x' }] });
   const p = Object.values(m.people)[0];
   assert.match(p.id, /^u\d{4}$/);
   assert.deepEqual(p.handles, ['qq:name:宽']);
-  assert.equal(m.pending[0].person, p.id);
+  assert.equal('pending' in m, false);
+  assert.equal(m.migration.archive.pending[0].person, p.id);
+  assert.deepEqual(m.migration.archive.facts[p.id].facts, ['他养猫']);
+  assert.equal('facts' in p, false);
 });
+
 test('backfill: the conversation from before memory was installed is read once from the session log', async () => {
   const { transcriptFromEvents } = await import('../src/memory/memory.js');
   const events = [
@@ -234,9 +283,9 @@ test('passwords and keys never enter memory; phone numbers and verification code
   for (const t of ['他的 access token 是 abc', 'bot token 换了', '密钥在 .env 里是 xyz', 'ghp_abcdefgh12345']) assert.equal(rejectReason(t), 'secret', t);
   assert.equal(rejectReason('这轮我调用了 phone 工具看了一眼'), 'meta');
   const m = emptyMemory();
-  const r = applyExtraction(m, { self: [{ action: 'add', content: 'QQ 密码是 abc123，记住' }], fragments: [{ text: '他给了验证码 4321，登录成功了', tag: 1 }] });
+  const r = applyExtraction(m, { self: [{ action: 'add', content: 'QQ 密码是 abc123，记住' }], open: [{ action: 'add', content: '他给了验证码 4321，等他说登录成功没' }] });
   assert.equal(m.self.length, 0);
-  assert.equal(m.fragments.length, 1);
+  assert.equal(m.open.length, 1);
   assert.match(r.errors[0], /secret/);
 });
 
@@ -250,30 +299,31 @@ test('a backlog is consolidated oldest-first in chunks; the cursor never jumps p
   assert.equal(takeChunk(fresh, 1e9).length, 50);
 });
 
-test('daily diary: `/dot memory diary` consolidates with a diary; the entry is her own words, headed by the day; herLife is the self bank', async () => {
-  const reply = JSON.stringify({ self: [{ action: 'add', content: '每天晚上刷一会儿小黑盒，看角色卡帖' }], diary: '今天没什么事。晚上在小黑盒看了几个角色卡帖，有一个写记忆的挺细，记下了。他没来。', handoff: null });
-  const h = harness({ llmReply: reply });
+test('daily diary: its own call about today, only when anything happened; headed by the day; herLife is the self bank', async () => {
+  const h = harness({ llmReply: '今天没什么事。晚上在小黑盒看了几个角色卡帖，有一个写记忆的挺细，记下了。他没来。' });
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, dailyAt: '23:30' });
+  assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing happened today/);
+  assert.equal(h.calls.length, 0, 'no call for an empty day');
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'assistant/message', msg('在'));
   h.emit('s1', 'turn/end', {});
   await wait(20);
   const r = await h.services.dotMemory.command('memory diary');
-  assert.match(r, /"diary":true/);
-  assert.match(h.calls[0].messages[0].content[0].text, /这次要写 diary：今天是 \d{4}-\d{2}-\d{2} 周./);
+  assert.match(r, /diary →[\s\S]*今天没什么事/);
+  assert.match(h.calls[0].messages[0].content[0].text, /^今天是 \d{4}-\d{2}-\d{2} 周.[\s\S]*=== 今天的记录 ===\n[^\n]*他：在吗/);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 2, 'the diary is not a consolidation');
   const diary = readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8');
   assert.match(diary, /^## \d{4}-\d{2}-\d{2} 周.\n今天没什么事。/);
-  assert.deepEqual(h.services.dotMemory.herLife(), ['每天晚上刷一会儿小黑盒，看角色卡帖']);
-  assert.ok(!h.services.dotMemory.forInterlude().some((x) => x.startsWith('她自己')), 'self notes travel as herLife, not among memories');
-  const again = await h.services.dotMemory.command('memory diary');
-  assert.match(again, /not run|consolidated/, 'a second diary the same day is not an error');
+  h.services.dotMemory.consolidate = undefined;
+  const m = emptyMemory(); m.self.push('每天晚上刷一会儿小黑盒');
   const status = await h.services.dotMemory.command('memory');
   assert.match(status, /diary \d{4}-\d{2}-\d{2} \(daily at 23:30\)/);
+  assert.deepEqual(h.services.dotMemory.forInterlude(), [], 'the interlude gets what she knows about him; nothing yet');
 });
 
-test('coexist auto: another memory service present → owner/self banks neither consolidated nor in the prompt; people and fragments kept', async () => {
-  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }], fragments: [{ text: '他问她要不要帮忙搬家', kind: 'plan', tag: 2 }] });
+test('coexist auto: another memory service present → owner/self notes neither consolidated nor in the prompt; people and 还没了的事 kept', async () => {
+  const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }], open: [{ action: 'add', content: '他问她要不要帮忙搬家' }] });
   const h = harness({ llmReply: reply });
   h.services.hermesMemory = {};
   apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
@@ -287,7 +337,7 @@ test('coexist auto: another memory service present → owner/self banks neither 
   const md = readFileSync(join(h.home, 'memory', 'memory.md'), 'utf8');
   assert.doesNotMatch(md, /他下周六搬家|我喜欢猫/);
   const ctxText = h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } });
-  assert.match(ctxText, /最近的事[\s\S]*帮忙搬家/);
+  assert.match(ctxText, /还没了的事[\s\S]*帮忙搬家/);
   assert.doesNotMatch(ctxText, /关于他|你自己记下的/);
   // full forces the banks back on even with the other service there
   const m = emptyMemory(); m.owner.push('他住光谷');
@@ -307,7 +357,7 @@ test('coexist full: banks on even next to another memory service', async () => {
   assert.match(h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } }), /关于他\n- 他下周六搬家/);
 });
 
-test('dates: MM-DD within the current year, YYYY-MM-DD from another (transcript lines and standing fragments)', () => {
+test('dates: MM-DD within the current year, YYYY-MM-DD from another; 明天 / 下周三 in the records dated by code', () => {
   const now = new Date(2026, 4, 20, 12, 0).getTime();
   const thisYear = new Date(2026, 4, 8, 9, 5).getTime(), lastYear = new Date(2025, 4, 8, 9, 5).getTime();
   assert.equal(dayMark(thisYear, now), '05-08');
@@ -316,13 +366,8 @@ test('dates: MM-DD within the current year, YYYY-MM-DD from another (transcript 
   assert.equal(transcriptLine({ at: lastYear, who: 'owner', text: '在吗' }, { now }), '[2025-05-08 09:05] 他：在吗');
   // as a .map callback the index must not be taken for `now`
   assert.deepEqual([{ at: Date.now(), who: 'owner', text: 'x' }].map(transcriptLine)[0].match(/^\[(\d\d-\d\d) /)?.length, 2);
-  const m = emptyMemory();
-  observeFragment(m, { text: '05-08 他去体检', tag: 2, kind: 'event', gen: 1, now: lastYear });
-  observeFragment(m, { text: '05-08 他换了工作', tag: 1, kind: 'event', gen: 1, now: thisYear });
-  const s = renderStanding(m, { now });
-  assert.match(s, /- \[2025-05-08\] 05-08 他去体检/);
-  assert.match(s, /- 05-08 他换了工作/);
-  assert.equal(s, renderStanding(m, { now: now + 86400000 }), 'byte-stable within the year');
+  // 05-08 2026 is a Friday: 明天 05-09, 下周三 05-13; what he says she said is left as said
+  assert.equal(transcriptLine({ at: thisYear, who: 'owner', text: '明天去，下周三回，她说后天也行' }, { now }), '[05-08 09:05] 他：明天（=05-09）去，下周三（=05-13）回，她说后天也行');
 });
 
 test('stamps: wake messages are stamped, the transcript is not stamped twice; lastSaidAt is the last line before a moment', async () => {
@@ -398,8 +443,8 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   const said = transcriptFromEvents([call('a', 1), res('a', 2, denied), call('b', 3), ev('user/message', 5, { source: { kind: 'user' }, content: [{ type: 'text', text: '等下' }] }), res('b', 6, cut), call('c', 7), res('c', 8, imageFailed)], 's');
   assert.deepEqual(said.map((l) => [l.at, l.who, l.text]), [[3, 'her', '那家店我去过'], [5, 'owner', '等下'], [7, 'her', '那家店我去过 / 还挺好吃的 / 下次带你去']]);
   // live: recorded at the result, placed at the call's time; the handoff tail and recall read the same lines
-  const h = harness();
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  const h = harness({ recall: true });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'tool/call', { callId: 'a', name: 'qq_send', arguments: JSON.stringify(args) });
   h.emit('s1', 'tool/result', denied.message ? { ...denied, message: { ...denied.message, toolCallId: 'a' } } : denied);
@@ -415,7 +460,7 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   assert.deepEqual(lines.filter((l) => l.who === 'her').map((l) => l.text), ['那家店我去过', '那家店我去过 / 还挺好吃的 / 下次带你去']);
   assert.ok(!lines.some((l) => l.text.includes('[图')), 'the face never went out');
   assert.deepEqual(lines.sort((a, b) => a.at - b.at).map((l) => [l.who, l.text]), [['her', '那家店我去过'], ['owner', '等下'], ['her', '那家店我去过 / 还挺好吃的 / 下次带你去']], 'in time order: the cut send came before his interruption');
-  const found = await h.tools.recall.execute({ query: '好吃' });
+  const found = await h.tools.recall.execute({ query: '那家店好吃吗' });
   assert.match(found.found, /我：那家店我去过 \/ 还挺好吃的 \/ 下次带你去/);
   for (const d of h.effects) if (typeof d === 'function') d();
 });
@@ -426,49 +471,39 @@ test('persona lives only in the Canon: the consolidation prompt keeps persona an
   assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
 });
 
-test('还没了的事: open plan / promise fragments shown on their own, newest first, closed by consolidation, kept past the cap', () => {
-  const m = emptyMemory();
-  const r = applyExtraction(m, { fragments: [
-    { text: '05-17 他说旧书店名单先搁着回头再说', kind: 'plan', tag: 1, open: true, who: ['旧书店'] },
-    { text: '06-22 他答应下周三前把画册寄给老贺', kind: 'promise', tag: 2, open: true, who: ['老贺', '他'] },
-    { text: '05-20 他吃了碗面', kind: 'event', tag: 0, open: true },
-  ] }, { now: 1000 });
-  assert.equal(r.fragments, 3);
-  const [list, promise, meal] = m.fragments;
-  assert.equal(list.open, true); assert.equal(meal.open, undefined, 'an event is never open');
-  assert.deepEqual(promise.who, ['老贺'], 'one-character names are dropped');
-  promise.createdAt = 2000;
-  const s = renderStanding(m, { now: 1000 });
-  assert.match(s, /## 还没了的事[^\n]*\n- 06-22 他答应[^\n]*\n- 05-17 他说旧书店/);
-  assert.equal((s.match(/旧书店名单/g) ?? []).length, 1, 'not shown twice');
-  assert.match(extractPrompt({ open: `${list.id} | ${list.text}` }), /=== 还没了的事（open 的碎片）===\nf0001 \| 05-17/);
-  applyExtraction(m, { closed: [promise.id, 'f9999'] }, { now: 3000 });
-  assert.equal(promise.open, false); assert.equal(promise.closedAt, 3000);
-  assert.equal(closeFragment(m, promise.id), false, 'closing twice does nothing');
-  assert.doesNotMatch(renderStanding(m, { now: 1000 }), /老贺[\s\S]*## 最近的事|还没了的事[^#]*老贺/);
-  m.gen = 20; list.importance = 0; list.lastSeenGen = 0;
-  ageFragments(m, 20);
-  assert.ok(m.fragments.includes(list), 'aging keeps an open one');
-});
-
-test('取代: a changed state replaces the old fragment (old text kept as was); the calendar for dates', async () => {
-  const m = emptyMemory();
-  applyExtraction(m, { fragments: [{ text: '05-28 门口灯箱：师傅量了尺寸，还没报价', kind: 'plan', tag: 1, open: true }] }, { now: 1000 });
-  const [f] = m.fragments;
-  const r = applyExtraction(m, { fragments: [{ text: '05-29 灯箱报价到了，他让师傅先别排制作（05-28 时还没报价）', kind: 'plan', tag: 1, open: true, replaces: f.id }] }, { now: 2000 });
-  assert.equal(r.replaced, 1);
-  assert.equal(m.fragments.length, 1, 'no second fragment: old and new do not sit side by side');
-  assert.match(f.text, /报价到了/); assert.match(f.was, /还没报价/); assert.equal(f.refs, 2); assert.equal(f.updatedAt, 2000);
-  assert.equal(f.open, true);
-  applyExtraction(m, { fragments: [{ text: '06-02 灯箱不做了', kind: 'event', tag: 1, replaces: f.id }] }, { now: 3000 });
-  assert.equal(f.kind, 'event'); assert.equal(f.open, false, 'became an event: no longer open');
-  // An unknown id: an ordinary new fragment.
-  applyExtraction(m, { fragments: [{ text: '06-03 他换了新的门牌', kind: 'event', tag: 0, replaces: 'f9999' }] }, { now: 4000 });
-  assert.equal(m.fragments.length, 2);
-  const { calendar } = await import('../src/clock.js');
-  const at = new Date(2026, 5, 22, 18, 31).getTime();
-  const cal = calendar(at, at);
-  assert.match(cal, /^06-15一 06-16二 [^\n]* 06-21日\n06-22一 /);
-  assert.match(cal, /\n06-29一 06-30二 07-01三 /, 'next Wednesday from 06-22 is on the line after');
-  assert.match(extractPrompt({ text: 'x', cal }), /=== 日历（这段记录前后，一行一周，周一开头）===\n06-15一/);
+test('0.19 memory migrates: open fragments become 还没了的事 (a promise is owed), overflow is shelved and reported, pinned ones join the owner bank, the rest archived', async () => {
+  const frag = (id, text, extra = {}) => ({ id, text, hash: id, kind: 'event', importance: 1, refs: 1, pinned: false, createdAt: Number(id.slice(1)), ...extra });
+  const old = {
+    version: 1, gen: 3, owner: ['他住光谷'], self: [], people: {}, merges: [], pending: [{ id: 'p1', person: 'u0001', text: '阿满下个月搬家' }], cursor: 5, consolidations: 9,
+    fragments: [
+      frag('f0001', '05-17 他说旧书店名单先搁着回头再说', { kind: 'plan', open: true }),
+      frag('f0002', '06-22 他答应下周三前把画册寄给老贺', { kind: 'promise', open: true }),
+      frag('f0003', '他的生日是 3 月 14 日', { pinned: true }),
+      frag('f0004', '05-20 他吃了碗面'),
+      ...Array.from({ length: 60 }, (_, i) => frag(`f1${String(i).padStart(3, '0')}`, `${i} 号要做的一件挺长挺长挺长的事情，还没有结果`, { kind: 'plan', open: true })),
+    ],
+  };
+  const m = normalizeMemory(old);
+  assert.equal(m.version, 2);
+  assert.deepEqual(m.owner, ['他住光谷', '他的生日是 3 月 14 日']);
+  assert.ok(m.open.length > 0 && m.shelved.length > 0, 'over the budget: some shelved, none cut');
+  assert.equal(m.open.length + m.shelved.length, 62);
+  assert.ok(m.open.some((x) => x.text.includes('老贺') && x.owed), 'the promise is owed and stays in front of her');
+  const { report, archive } = m.migration;
+  assert.equal(report.shelved.length, m.shelved.length);
+  assert.deepEqual(archive.fragments.map((f) => f.id), ['f0004']);
+  assert.equal(archive.pending.length, 1);
+  assert.equal(m.gen, 3); assert.equal(m.cursor, 5);
+  // apply() writes the archive and the report, once
+  const h = harness();
+  const dir = join(h.home, 'memory');
+  const { mkdirSync } = await import('node:fs');
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify(old));
+  apply(h.ctx, { home: h.home });
+  const saved = JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8'));
+  assert.equal(saved.version, 2); assert.equal('migration' in saved, false); assert.equal('fragments' in saved, false);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'memory.v019.json'), 'utf8')).fragments.length, 1);
+  assert.match(readFileSync(join(dir, 'memory-migration.md'), 'utf8'), /放不下，先搁着[\s\S]*搁着：/);
+  assert.ok(h.audit.some((e) => e.event === 'migrated'));
 });

@@ -1,32 +1,32 @@
-// dsh-dot/memory: she remembers you, herself, the people she meets, and what happened — and her
-// conversation is handed over to a fresh session long before it gets heavy.
+// dsh-dot/memory: she remembers you, herself, what is not over yet, and the people she meets — and
+// her conversation is handed over to a fresh session long before it gets heavy.
 //
 //   transcript  <home>/memory/transcript.jsonl — what really happened in her conversation: what you
 //               said, what she actually sent (qq_send), what her phone showed her, what her errands
-//               found. The source for every consolidation and for the `recall` tool.
-//   memory      <home>/memory/memory.json (+ memory.md for reading) — banks, people, fragments
-//               (see store.js). Shown to every turn of hers as one byte-stable context.
-//   consolidate one model call over the transcript since the last one: bank edits, people,
-//               fragments. Every `consolidateEveryLines` lines, or after `consolidateIdleMinutes`
-//               of quiet, or at a handoff.
-//   recall      before each turn, the old turns most like the message that woke her (RAG over the
-//               transcript, recall.js): local multilingual-e5-small by default, cloud or off by one command.
+//               found. The evidence: recall finds in it, consolidation reads it.
+//   recall      before each turn, the old turns that bear on the message that woke her (recall.js):
+//               vector + BM25 candidates, reranked, shown by day with exact dates.
+//   memory      <home>/memory/memory.json (+ memory.md for reading) — three notes (about him, her own,
+//               还没了的事 with its shelf) and the people (store.js). In front of her every turn.
+//   consolidate one model call over the transcript since the last one: note edits and people. When
+//               `consolidateEveryLines` new lines have piled up, and before a handoff.
+//   diary       once a day at `dailyAt`, when there was anything that day: one short call.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
-//               archive it, open a new one in <home>, and inject a handoff note (what she is doing,
-//               what she promised, the last lines verbatim). Deliveries wait meanwhile.
-// She edits her memory herself too: `memory` (Hermes-style add/replace/remove) and `recall`.
-import { appendFileSync, mkdirSync, readdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+//               archive it, open a new one in <home>, and start it with the last lines verbatim
+//               (her notes are in <memory>; older words come back through recall).
+// She edits her notes herself too (`memory`), and looks things up (`recall`).
+import { appendFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
-  observeFragment, closeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
-  resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends, dayMark,
+  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, fitOpen, renderItem, setImpression,
+  handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason,
+  resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
-import { createBm25, createRecall } from './recall.js';
-import { calendar, unstamp } from '../clock.js';
+import { createRecall } from './recall.js';
+import { annotate } from './when.js';
+import { dayMark, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
@@ -37,48 +37,40 @@ export const defaults = {
   home: '',
   handoffTokens: 150000,        // her conversation is handed over to a fresh session past this
   minTokensBetweenHandoffs: 40000,
-  consolidateEveryLines: 20,    // transcript lines since the last consolidation that trigger one
-  consolidateIdleMinutes: 30,   // …or this long quiet with at least 3 new lines
-  fragmentBudgetTokens: 600,    // fragments shown to every turn
-  openBudgetTokens: 200,        // …plus 还没了的事 (open plan / promise fragments, newest first) on top of them
-  agingEveryGens: 5,
-  maxFragments: 300,
+  consolidateEveryLines: 40,    // transcript lines since the last consolidation that trigger one (and every handoff)
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
-  dailyAt: '23:30',             // once a day, after her active hours: consolidate whatever is new and write her diary
+  dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
   maxTokens: 16384,
   limits: DEFAULT_LIMITS,
-  // Living next to another memory plugin. full: everything on. people-only: keep people, fragments
-  // and the diary, but leave the owner/self banks (prompt text and consolidation) to the other one,
+  // Living next to another memory plugin. full: everything on. people-only: keep people, 还没了的事
+  // and the diary, but leave the owner/self notes (prompt text and consolidation) to the other one,
   // so two plugins do not both narrate what she knows about him. auto: people-only when one of
   // otherMemoryServices is provided (cordis has no public way to list services, so it is a list).
   coexist: 'auto',
   // Names other memory plugins provide. A bare 'memory' is deliberately not here: too generic a name
-  // to risk silencing her own banks because something unrelated provides it. Add names as you meet them.
-  // Most memory plugins provide no service at all (dsh-auto-memory and friends), so the packages
-  // installed next to this one are looked at too: any whose name says "memory" counts.
+  // to risk silencing her own notes because something unrelated provides it. Add names as you meet them.
   otherMemoryServices: ['hermesMemory', 'autoMemory', 'dshMemory', 'memoryBank'],
   // Automatic recall (recall.js). Everything here can also be changed at runtime with
   // /dot memory recall … (saved to $DSH_HOME/dsh-memory.json, which wins over this config).
-  recallBackend: 'local',       // local (multilingual-e5-small on this machine, no key) | siliconflow | dashscope | off
+  recallBackend: 'local',       // local (on this machine, no key) | siliconflow | dashscope | off
   recallModel: '',              // embedding model; '' = the backend's own (local Xenova/multilingual-e5-small · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding); BAAI/bge-small-zh-v1.5 is the lighter Chinese-only local one
-  recallRerankModel: '',        // cloud only; '' = BAAI/bge-reranker-v2-m3 · qwen3.7-text-rerank; 'none' = cosine only
+  recallRerankModel: '',        // '' = the backend's own (local Xenova/bge-reranker-base · siliconflow BAAI/bge-reranker-v2-m3 · dashscope qwen3.7-text-rerank); 'none' = no reranker
   recallMirror: '',             // where local models download from; '' = $HF_ENDPOINT, else https://hf-mirror.com
   recallInstall: true,          // install @huggingface/transformers into $DSH_HOME/dsh-dot-recall on first use (300–480 MB; not a package dependency)
   recallTransformersVersion: '4.3.2',
-  recallTopK: 8,                // turns injected per wake
+  recallCandidates: 20,         // turns each channel (vector, BM25) hands to the reranker
+  recallTopK: 10,               // at most this many turns injected per wake — fewer when fewer are relevant
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
-  // Which hits are worth showing her. Cosines are on a different scale for every model (bge-small-zh
-  // 0.35–0.77, multilingual-e5-small 0.78–0.94) and every language, so the defaults are scale-free:
+  recallRerankMin: 0,           // a reranked turn needs at least this score (0–1); 0 = the reranker's order alone decides
   recallMinQueryLength: 4,      // a waking message with fewer distinct content tokens (CJK characters, other words) recalls nothing: 好的 / 哈哈哈哈 / ok thanks. 0 = off
-  recallContrast: 0.35,         // keep a cosine hit only if ≥ median + k·(best − median) over the whole index; 0 = off. Not applied after a reranker
-  recallMinScore: 0,            // optional absolute floor (local: cosine; cloud: rerank score); 0 = none. Model-specific: 0.45 suited bge-small-zh, e5 needs ~0.87 and then drops English
-  recallCandidates: 40,         // cosine candidates handed to a reranker
+  // Without a reranker (none set, or still downloading): a hit must stand out from the whole index —
+  // score ≥ median + k·(best − median), per channel, scale-free. 0 = off.
+  recallContrast: 0.35,
+  recallMinScore: 0,            // optional absolute cosine floor, without a reranker; 0 = none
+  recallLexical: true,          // the BM25 channel (characters + character bigrams); false = vectors only
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
-  recallLexical: true,          // BM25 over character bigrams of the same turns, fused with the vectors by rank (RRF)
-  recallNames: true,            // a name she knows (people + aliases, fragments' who) in the message pulls in the turns that mention it
-  recallRrfK: 60,               // RRF constant: 1/(k + rank) per channel
   recallWaitMs: 3000,           // prompt assembly waits this long for a query still running, then goes on without it
   recallSiliconflowUrl: 'https://api.siliconflow.cn/v1',
   recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
@@ -97,11 +89,14 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 /** "2026-10-27 周一" — a day as the diary heads it (local time). */
 export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${'周日周一周二周三周四周五周六'.slice(d.getDay() * 2, d.getDay() * 2 + 2)}`; };
 
-/** One transcript line as the consolidation reads it: [MM-DD HH:MM], or [YYYY-MM-DD HH:MM] from another year. */
+/**
+ * One transcript line as the consolidation reads it: [MM-DD HH:MM] (or [YYYY-MM-DD HH:MM] from
+ * another year), with 明天 / 下周三 given their date by code (when.js).
+ */
 export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
   const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]' }[l.who] ?? l.who;
   const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : '';
-  return `[${stamp(l.at, now)}] ${who}${to}：${l.text}`;
+  return `[${stamp(l.at, now)}] ${who}${to}：${annotate(l.text, l.at, now)}`;
 }
 
 /**
@@ -122,21 +117,24 @@ export function takeChunk(fresh, maxChars) {
 /** What the consolidation call is asked to do (the JSON it returns, field by field). */
 export const extractRules = () => prompt('memory.extract');
 
-/** The whole consolidation prompt: the records, what she already has, the rules, and whether to write a handoff / diary. */
-export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', open = '', pending = '', cal = '', withHandoff = false, withDiary = false, day = '' }) {
+/**
+ * The whole consolidation prompt. The rules come first and never change, so every call shares that
+ * prefix (the provider's cache); what she already has comes next; the new records last.
+ */
+export function extractPrompt({ text = '', bankless = false, owner = [], self = [], known = '', open = '', shelved = '' }) {
   return [
-    ...(recent ? [prompt('memory.extract.earlier'), recent, ''] : []),
+    extractRules(),
+    '',
     prompt('memory.extract.input', {
       records: text || '（这段时间没有新记录）',
       banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', fragments: frags || '（还没有）', open: open || '（没有）', pending: pending || '（没有）', calendar: cal || '（无）',
+      people: known || '（还没有）', open: open || '（没有）', shelved: shelved || '（没有）',
     }),
-    '',
-    extractRules(),
-    `\n${prompt(withHandoff ? 'memory.extract.handoff-yes' : 'memory.extract.handoff-no')}`,
-    `\n${withDiary ? prompt('memory.extract.diary-yes', { day }) : prompt('memory.extract.diary-no')}`,
   ].join('\n');
 }
+
+/** The diary prompt: today's records, and the day as the diary heads it. */
+export const diaryPrompt = ({ day, text }) => prompt('memory.diary', { day, records: text || '（今天没有记录）' });
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
 export function parseLooseJson(raw) {
@@ -152,13 +150,21 @@ export function parseLooseJson(raw) {
 
 /** Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory). */
 export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const report = { owner: 0, self: 0, people: 0, pending: 0, fragments: 0, errors: [] };
+  const report = { owner: 0, self: 0, open: 0, done: 0, shelved: 0, people: 0, errors: [] };
   for (const bank of ['owner', 'self']) {
     for (const op of [].concat(out?.[bank] ?? [])) {
       const r = bankOp(memory[bank], op, limits[bank]);
       if (r.ok) { if (!r.note) report[bank]++; memory[bank] = r.entries; } else report.errors.push(`${bank}: ${r.error}`);
     }
   }
+  for (const op of [].concat(out?.open ?? [])) {
+    if (!op || typeof op !== 'object') continue;
+    const r = openOp(memory, { ...op, due: op.due ?? undefined }, { now });
+    if (!r.ok) { report.errors.push(`open: ${r.error}`); continue; }
+    if (r.note) continue;
+    if (op.action === 'done' || op.action === 'remove') report.done++; else report.open++;
+  }
+  report.shelved = fitOpen(memory, { limits, now }).length;
   for (const u of [].concat(out?.people ?? [])) {
     if (!u || typeof u !== 'object') continue;
     let p = findPerson(memory.people, u.id) ?? resolvePerson(memory.people, { platform: u.platform, name: u.name });
@@ -168,21 +174,12 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
       p = touchPerson(memory, { handles: [handleOf(u.platform, { name: u.name })], platform: u.platform, name: u.name, tier, kind: tier === 'seen' ? 'comment' : 'mention', at: now });
     }
     if (!p) continue;
-    const r = updatePerson(memory, { ...u, id: p.id }, { limits, now });
-    report.people += r.applied; report.pending += r.pending;
+    if (u.impression && setImpression(memory, p.id, u.impression, { limits })) report.people++;
   }
-  for (const id of [].concat(out?.confirm ?? [])) { if (approvePending(memory, String(id), limits).ok) report.people++; }
   for (const m of [].concat(out?.same ?? [])) {
-    const r = proposeMerge(memory, m?.a, m?.b, { why: m?.why, limits });
+    const r = proposeMerge(memory, m?.a, m?.b, { why: m?.why });
     if (r.ok && !r.noop) report.merges = (report.merges ?? 0) + 1;
   }
-  for (const f of [].concat(out?.fragments ?? [])) {
-    if (!f || typeof f !== 'object') continue;
-    const r = observeFragment(memory, { ...f, open: f.open === true ? true : f.open === false ? false : undefined, replaces: typeof f.replaces === 'string' ? f.replaces : null, gen: memory.gen, now });
-    if (r.action === 'new' || r.action === 'dup' || r.action === 'replaced') report.fragments++;
-    if (r.action === 'replaced') report.replaced = (report.replaced ?? 0) + 1;
-  }
-  for (const id of [].concat(out?.closed ?? [])) { if (closeFragment(memory, typeof id === 'object' ? id?.id : id, now)) report.closed = (report.closed ?? 0) + 1; }
   return report;
 }
 
@@ -246,15 +243,10 @@ export function transcriptFromEvents(events, session) {
   return out.sort(byTime).filter((l) => String(l.text ?? '').trim()).map((l) => ({ ...l, text: clip(String(l.text).trim(), 2000) }));
 }
 
-/** The note a new session opens with after a handoff. */
-export function renderHandoff(h, tail, gen) {
-  const t = table('memory.handoff', { gen, now: h?.now ?? '' });
+/** The note a new session opens with after a handoff: the last lines of the old one, verbatim. */
+export function renderHandoff(tail, gen) {
+  const t = table('memory.handoff', { gen });
   const lines = [t.head];
-  if (h?.now) lines.push(t.now);
-  const list = (title, xs) => { if (xs?.length) { lines.push(title); for (const x of xs) lines.push(`  - ${x}`); } };
-  list(t.inFlight, h?.inFlight);
-  list(t.promises, h?.promises);
-  list(t.openQuestions, h?.openQuestions);
   if (tail.length) { lines.push(t.tail); for (const l of tail) lines.push(`  ${clip(transcriptLine(l).replace(/\s*\n+\s*/g, ' / '), 240)}`); }
   return lines.join('\n');
 }
@@ -268,7 +260,7 @@ export function apply(ctx, config = {}) {
   const home = cfg.home || join(homedir(), 'dot');
   configurePrompts({ home });
   const dir = join(home, 'memory');
-  const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md') };
+  const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md'), archive: join(dir, 'memory.v019.json'), migration: join(dir, 'memory-migration.md') };
   mkdirSync(dir, { recursive: true });
   const dot = () => ctx.get('dshDot');
   // Checked when used, not once at boot: the other plugin may start after this one.
@@ -276,38 +268,16 @@ export function apply(ctx, config = {}) {
   const peopleOnly = () => {
     if (cfg.coexist === 'people-only') return true;
     if (cfg.coexist !== 'auto') return false;
-    const other = [].concat(cfg.otherMemoryServices ?? []).find((n) => { try { return ctx.get(n) != null; } catch { return false; } }) || installedMemoryPlugin();
-    if (other && !coexistLogged) { coexistLogged = true; logger.info(`another memory service (${other}) is present: people-only mode (owner/self banks left to it)`); }
+    const other = [].concat(cfg.otherMemoryServices ?? []).find((n) => { try { return ctx.get(n) != null; } catch { return false; } });
+    if (other && !coexistLogged) { coexistLogged = true; logger.info(`another memory service (${other}) is present: people-only mode (owner/self notes left to it)`); }
     return Boolean(other);
   };
   const audit = (event, data = {}) => (ctx.get('dshComputer')?.audit ?? ctx.get('dshPhone')?.audit)?.({ kind: 'memory', event, ...data });
-  /** A memory plugin installed in the same profile (a package next to ours whose name says "memory"), or ''. Looked up once. */
-  let installedMemory;
-  function installedMemoryPlugin() {
-    if (installedMemory !== undefined) return installedMemory;
-    installedMemory = '';
-    try {
-      const here = fileURLToPath(import.meta.url);
-      const nm = here.slice(0, here.lastIndexOf(`${sep}node_modules${sep}`) + 14);
-      if (!nm.endsWith('node_modules')) return installedMemory;
-      const names = [];
-      for (const n of readdirSync(nm)) { if (n.startsWith('@')) { try { for (const m of readdirSync(join(nm, n))) names.push(`${n}/${m}`); } catch {} } else names.push(n); }
-      installedMemory = names.find((n) => /memory/i.test(n) && !/^dsh-dot(-|$)/.test(n) && !n.includes('/dsh-dot')) ?? '';
-    } catch {}
-    return installedMemory;
-  }
 
   let memory;
-  try { memory = normalizeMemory(JSON.parse(readFileSync(files.memory, 'utf8'))); } catch (error) { void error; memory = emptyMemory(); }
+  try { memory = normalizeMemory(JSON.parse(readFileSync(files.memory, 'utf8')), { limits: cfg.limits }); } catch (error) { void error; memory = emptyMemory(); }
   function save() {
     try {
-      // Over the cap the least important go — never one still open (还没了的事).
-      memory.fragments.sort(compareFragments);
-      if (memory.fragments.length > cfg.maxFragments) {
-        const open = memory.fragments.filter((f) => f.open);
-        const keep = new Set([...open, ...memory.fragments.filter((f) => !f.open).slice(0, Math.max(0, cfg.maxFragments - open.length))]);
-        memory.fragments = memory.fragments.filter((f) => keep.has(f));
-      }
       writeFileSync(`${files.memory}.tmp`, JSON.stringify(memory, null, 2));
       renameSync(`${files.memory}.tmp`, files.memory);
       writeFileSync(files.md, renderMarkdown());
@@ -315,15 +285,36 @@ export function apply(ctx, config = {}) {
   }
   function renderMarkdown() {
     const people = Object.values(memory.people).sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
+    const usage = (items, limit) => `${items.reduce((n, x) => n + x.text.length + 1, 0)}/${limit} chars`;
     return [
       `# 她记得的（第 ${memory.gen} 段，整理过 ${memory.consolidations} 次）`, '',
       `## 关于你（${bankUsage(memory.owner, cfg.limits.owner)}）`, ...memory.owner.map((e) => `- ${e}`), '',
       `## 她自己记下的（${bankUsage(memory.self, cfg.limits.self)}）`, ...memory.self.map((e) => `- ${e}`), '',
+      `## 还没了的事（${usage(memory.open, cfg.limits.open)}）`, ...memory.open.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
+      `## 先搁着的（${memory.shelved.length}）`, ...memory.shelved.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
       `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
-      `## 待核实（${memory.pending.length}）`, ...memory.pending.map((x) => `- ${x.id} · ${x.person}：${x.text}`), '',
-      `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}${f.open ? '/未了' : ''}${f.was ? '/改过' : ''}${f.who?.length ? `/${f.who.join('、')}` : ''}] ${f.text}`), '',
     ].join('\n');
+  }
+  // A 0.19 memory was migrated on load: what is no longer kept goes to memory.v019.json (never
+  // overwritten), and memory-migration.md says where everything went — above all, the open items
+  // that did not fit and were shelved.
+  if (memory.migration) {
+    const { archive, report } = memory.migration;
+    delete memory.migration;
+    try {
+      if (!existsSync(files.archive)) writeFileSync(files.archive, JSON.stringify(archive, null, 2));
+      writeFileSync(files.migration, [
+        `# 记忆升级到 0.20（${new Date().toISOString()}）`, '',
+        `- 还没了的事：${report.open.length} 件进了第三栏${report.shelved.length ? `，${report.shelved.length} 件放不下，先搁着（仍会被提起、可以 recall）` : ''}`,
+        ...report.shelved.map((t) => `  - 搁着：${t}`),
+        `- 钉住的碎片进了"关于他"：${report.toOwner.length} 条`, ...report.toOwner.map((t) => `  - ${t}`),
+        `- 不再保留、存进 memory.v019.json：碎片 ${report.archived} 条、人物卡上的事实 ${report.facts} 条、待核实 ${report.pending} 条（原话都还在，提到时会翻出来）`, '',
+      ].join('\n'));
+    } catch (err) { logger.warn(`migration files: ${err.message}`); }
+    save();
+    audit('migrated', { open: report.open.length, shelved: report.shelved.length, toOwner: report.toOwner.length, archived: report.archived, facts: report.facts, pending: report.pending });
+    logger.info(`memory migrated to 0.20: ${report.open.length} open, ${report.shelved.length} shelved, ${report.archived} fragment(s) archived → ${files.migration}`);
   }
 
   // ── transcript ──
@@ -341,12 +332,7 @@ export function apply(ctx, config = {}) {
     try { appendFileSync(files.transcript, `${JSON.stringify(line)}\n`); } catch (err) { logger.warn(`transcript write failed: ${err.message}`); }
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
-  // The names channel: every person's names (aliases together) and the names fragments are about.
-  const nameGroups = () => [
-    ...Object.values(memory.people).map((p) => p.names ?? []).filter((n) => n.length),
-    ...[...new Set(memory.fragments.flatMap((f) => f.who ?? []))].map((n) => [n]),
-  ];
-  const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder, names: nameGroups });
+  const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
   // Catch the index up with what happened while dsh was down (the local backend installs on first use).
   ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
@@ -384,6 +370,7 @@ export function apply(ctx, config = {}) {
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     return hhmm >= cfg.dailyAt && memory.lastDiary !== today;
   };
+  const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
   // ── her conversation, as it happens ──
   const isConversation = (id, cwd) => {
@@ -449,87 +436,95 @@ export function apply(ctx, config = {}) {
     }
   });
 
+  // ── model calls ──
+  /** One completion with her default model: { raw, spent } or { error }. Every call is counted in the day's ledger. */
+  async function complete(text, reason) {
+    const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
+    if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
+    let raw = '';
+    let usage = null;
+    try {
+      let finish = null;
+      for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] })) {
+        if (chunk.type === 'text-delta') raw += chunk.text;
+        if (chunk.type === 'usage') usage = chunk.usage ?? null;
+        if (chunk.type === 'finish') finish = chunk.reason;
+      }
+      if (finish && (finish.kind === 'error' || finish.kind === 'aborted')) throw new Error(`model call ended with ${finish.kind}: ${finish.failure?.message ?? ''}`);
+    } catch (err) {
+      logger.warn(`${reason} failed: ${err.message}`); audit('consolidate-failed', { reason, error: clip(err.message, 200) });
+      return { error: err.message };
+    }
+    const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), cached: Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
+    if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
+    return { raw, spent };
+  }
+
   // ── consolidation ──
   // A backlog larger than one call reads (consolidations that failed, a long backfill) is consolidated
   // oldest-first in chunks: the cursor only ever moves past lines the model has actually read, so
-  // nothing is skipped. The handoff, when asked for, is written with the last chunk.
+  // nothing is skipped.
   let consolidating = null;
-  async function consolidate({ withHandoff = false, withDiary = false, reason = 'lines' } = {}) {
-    // A handoff needs its own run (it writes the handoff); it waits for one already going.
-    if (consolidating && withHandoff) { try { await consolidating; } catch (error) { void error; } }
+  async function consolidate({ reason = 'lines' } = {}) {
     if (consolidating) return consolidating;
     consolidating = (async () => {
       await backfill();
       let result = { skipped: 'nothing new' };
       for (let round = 0; round < 20; round++) {
         const all = sinceCursor();
-        if (!all.length && !withHandoff && !withDiary) return round ? result : { skipped: 'nothing new' };
+        if (!all.length) return result;
         const fresh = takeChunk(all, cfg.inputChars);
-        const last = fresh.length === all.length;
-        result = await consolidateOnce(fresh, { withHandoff: withHandoff && last, withDiary: withDiary && last, reason: round ? `${reason}+${round}` : reason });
-        if (!result.ok || last) return result;
+        result = await consolidateOnce(fresh, { reason: round ? `${reason}+${round}` : reason });
+        if (!result.ok || fresh.length === all.length) return result;
       }
       return result;
     })();
     try { return await consolidating; } finally { consolidating = null; }
   }
-  async function consolidateOnce(fresh, { withHandoff, reason, withDiary = false }) {
-    {
-      const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
-      if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
-      const text = fresh.map(transcriptLine).join('\n');
-      const bankless = peopleOnly();
-      // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
-      const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
-      const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
-      // The most important ones, plus the ones these records are about (BM25 of the records against
-      // every fragment), so an old state the records change can be found and replaced by id.
-      const closed = memory.fragments.filter((f) => !f.open);
-      const top = [...closed].sort(compareFragments).slice(0, 40);
-      const bm = createBm25(); for (const f of closed) bm.add(f.text);
-      const sc = bm.score(text);
-      const related = closed.map((f, i) => ({ f, s: sc[i] })).filter((x) => x.s > 0 && !top.includes(x.f)).sort((a, b) => b.s - a.s).slice(0, 20).map((x) => x.f);
-      const frags = [...top, ...related].map((f) => `${f.id} | ${f.text}`).join('\n');
-      const cal = fresh.length ? calendar(fresh[0].at, fresh.at(-1).at) : '';
-      const open = memory.fragments.filter((f) => f.open).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
-      const ask = extractPrompt({
-        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags, open, cal,
-        pending: memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'),
-        withHandoff, withDiary, day: withDiary ? dayLabel(new Date()) : '',
-      });
-      let raw = '';
-      let usage = null;
-      try {
-        let finish = null;
-        for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: ask }], source: { kind: 'dsh-dot-memory' } })] })) {
-          if (chunk.type === 'text-delta') raw += chunk.text;
-          if (chunk.type === 'usage') usage = chunk.usage ?? null;
-          if (chunk.type === 'finish') finish = chunk.reason;
-        }
-        if (finish && (finish.kind === 'error' || finish.kind === 'aborted')) throw new Error(`model call ended with ${finish.kind}: ${finish.failure?.message ?? ''}`);
-      } catch (err) {
-        logger.warn(`consolidation failed: ${err.message}`); audit('consolidate-failed', { reason, error: clip(err.message, 200) });
-        return { error: err.message };
-      }
-      const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
-      if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
-      try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: spent, reply: clip(raw, 4000) })}\n`); } catch (error) { void error; }
-      const out = parseLooseJson(raw);
-      if (!out) { audit('consolidate-unparsed', { reason }); return { error: 'reply was not JSON' }; }
-      if (bankless) { delete out.owner; delete out.self; }
-      const report = applyExtraction(memory, out, { limits: cfg.limits });
-      memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
-      memory.consolidations++;
-      if (withDiary) {
-        memory.lastDiary = dayLabel(new Date()).slice(0, 10);
-        const entry = String(out.diary ?? '').trim();
-        if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${dayLabel(new Date())}\n${entry}\n\n`); report.diary = true; } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
-      }
+  async function consolidateOnce(fresh, { reason }) {
+    const text = fresh.map(transcriptLine).join('\n');
+    const bankless = peopleOnly();
+    const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
+    const item = (x) => `- ${renderItem(x)}${x.owed ? '（答应过）' : ''}`;
+    const ask = extractPrompt({
+      text, bankless, owner: memory.owner, self: memory.self, known,
+      open: memory.open.map(item).join('\n'),
+      shelved: memory.shelved.slice(-30).map(item).join('\n'),
+    });
+    const r = await complete(ask, 'consolidation');
+    if (!r.raw && r.raw !== '') return r;
+    try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+    const out = parseLooseJson(r.raw);
+    if (!out) { audit('consolidate-unparsed', { reason }); return { error: 'reply was not JSON' }; }
+    if (bankless) { delete out.owner; delete out.self; }
+    const report = applyExtraction(memory, out, { limits: cfg.limits });
+    memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
+    memory.consolidations++;
+    save();
+    audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
+    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, open +${report.open} / done ${report.done} / shelved ${report.shelved}, people ${report.people}`);
+    return { ok: true, report };
+  }
+
+  // ── diary: once a day, about that day, when anything happened ──
+  let writingDiary = null;
+  async function diary({ reason = 'daily' } = {}) {
+    if (writingDiary) return writingDiary;
+    writingDiary = (async () => {
+      const day = dayLabel(new Date());
+      const today = lines.filter((l) => l.at >= startOfToday() && rejectReason(l.text) !== 'secret');
+      if (!today.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      const r = await complete(diaryPrompt({ day, text: takeChunk([...today].reverse(), cfg.inputChars).reverse().map(transcriptLine).join('\n') }), 'diary');
+      if (r.raw === undefined) return r;
+      try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: today.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+      memory.lastDiary = day.slice(0, 10);
+      const entry = r.raw.trim().replace(/^["“「]|["”」]$/g, '');
+      if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${day}\n${entry}\n\n`); } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
       save();
-      audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
-      logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, people ${report.people} (+${report.pending} pending), fragments ${report.fragments}`);
-      return { ok: true, report, handoff: out.handoff ?? null };
-    }
+      audit('diary', { reason, lines: today.length, written: Boolean(entry) });
+      return { ok: true, diary: entry };
+    })();
+    try { return await writingDiary; } finally { writingDiary = null; }
   }
 
   // ── handoff ──
@@ -551,9 +546,10 @@ export function apply(ctx, config = {}) {
     const release = d.freeze?.() ?? (() => {});
     const t0 = Date.now();
     try {
-      const c = await consolidate({ withHandoff: true, reason: 'handoff' });
+      // Whatever is new is consolidated first: her notes must be up to date before the old session goes.
+      if (consolidating) { try { await consolidating; } catch (error) { void error; } }
+      const c = await consolidate({ reason: 'handoff' });
       memory.gen++;
-      const aged = ageFragments(memory, memory.gen, cfg.agingEveryGens);
       save();
       // Archive first: a wake that reaches an archived session is dropped without a word.
       try { await ctx.get('workspaceRegistry')?.archiveSession?.(fromId); } catch (err) { logger.warn(`archive of ${fromId} failed: ${err.message}`); }
@@ -561,10 +557,10 @@ export function apply(ctx, config = {}) {
       try { await controller.rename?.({ sessionId, title: `dot · 第 ${memory.gen} 段` }); } catch (error) { void error; }
       d.setSession?.(sessionId);
       const tail = lines.filter((l) => l.session === fromId && ['owner', 'her'].includes(l.who)).slice(-cfg.handoffTailLines);
-      const note = renderHandoff(c?.handoff ?? null, tail, memory.gen);
+      const note = renderHandoff(tail, memory.gen);
       const found = await controller.resolveAgent(sessionId);
       if (found && !('error' in found)) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: note }], source: { ...HANDOFF_SOURCE, generation: memory.gen } }));
-      appendFileSync(files.handoffs, `${JSON.stringify({ at: new Date().toISOString(), from: fromId, to: sessionId, gen: memory.gen, tokens, ms: Date.now() - t0, consolidated: Boolean(c?.ok), aged, note })}\n`);
+      appendFileSync(files.handoffs, `${JSON.stringify({ at: new Date().toISOString(), from: fromId, to: sessionId, gen: memory.gen, tokens, ms: Date.now() - t0, consolidated: Boolean(c?.ok), tail: tail.length })}\n`);
       audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens });
       logger.info(`handoff: ${fromId} → ${sessionId} (第 ${memory.gen} 段, ${tokens} tokens)`);
       return { ok: true, sessionId };
@@ -587,30 +583,27 @@ export function apply(ctx, config = {}) {
     }
     if (sinceCursor().length >= cfg.consolidateEveryLines) void consolidate({ reason: 'lines' });
   }
+  // Once a minute: the diary, from dailyAt on, once a day (a failed one is tried again next minute).
   ctx.effect(() => {
-    const timer = setInterval(() => {
-      const fresh = sinceCursor();
-      if (fresh.length >= 3 && Date.now() - lastLineAt >= cfg.consolidateIdleMinutes * 60000) void consolidate({ reason: 'idle' });
-      // Once a day at dailyAt: whatever is new is consolidated, and she writes her diary.
-      if (dailyDue()) void consolidate({ reason: 'daily', withDiary: true });
-    }, 60000);
+    const timer = setInterval(() => { if (dailyDue()) void diary({ reason: 'daily' }); }, 60000);
     timer.unref?.();
     return () => clearInterval(timer);
-  }, 'dsh-dot/memory: idle consolidation');
+  }, 'dsh-dot/memory: daily diary');
 
   // ── what every turn of hers sees ──
   ctx.inject(['systemPrompt'], (scope) => {
+    // Her notes: her conversation only — errands do a job and report, they are not her remembering.
     scope.systemPrompt.context({
       name: 'dot:memory',
       order: 904,
       text: (c) => {
         const s = c.agent?.session;
-        if (!s || !(dot()?.isErrand?.(s.id) || isConversation(s.id, s.header?.cwd))) return '';
-        return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens, openBudgetTokens: cfg.openBudgetTokens, banks: !peopleOnly() });
+        if (!s || dot()?.isErrand?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
+        return renderStanding(memory, { banks: !peopleOnly() });
       },
     });
     // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
-    // cached prefix holds. Her conversation only — errands are not her remembering.
+    // cached prefix holds.
     scope.systemPrompt.context({
       name: 'dot:recall',
       order: 905,
@@ -637,21 +630,26 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人），self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里），person=某个你认识的人（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；寒暄和一次性的小事不用记，系统会自己整理。',
-      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove'] }, content: { type: 'string' }, oldText: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条）、shelve（先搁着）、restore（搁着的又要办了），add/replace 时可带 due（MM-DD）和 owed（答应过别人填 true）。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done', 'shelve', 'restore'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' }, owed: { type: 'boolean' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
         if (args.target === 'person') {
           const p = findPerson(memory.people, args.person);
           if (!p) return { ok: false, error: `不认识 ${args.person}（先和对方打过交道才会有这张卡）` };
           if (p.tier === 'owner') return { ok: false, error: '他的事写在 target=owner' };
-          if (p.tier === 'seen') { if (args.action === 'remove') p.impression = ''; else p.impression = String(args.content ?? '').slice(0, cfg.limits.impression); save(); return { ok: true, usage: 'impression' }; }
-          const r = bankOp(p.facts, args, cfg.limits.person);
-          if (!r.ok) return { ok: false, error: r.error };
-          p.facts = r.entries; save();
-          return { ok: true, usage: bankUsage(p.facts, cfg.limits.person) };
+          if (!setImpression(memory, p.id, args.action === 'remove' ? '' : args.content, { limits: cfg.limits })) return { ok: false, error: 'not kept' };
+          save(); return { ok: true, usage: 'impression' };
+        }
+        if (args.target === 'open') {
+          const r = openOp(memory, { ...args, action: args.action === 'remove' ? 'done' : args.action });
+          if (!r.ok) return { ok: false, error: r.error, items: memory.open.map((x) => x.text) };
+          const moved = fitOpen(memory, { limits: cfg.limits });
+          save(); audit('memory-tool', { target: 'open', action: args.action });
+          return { ok: true, usage: `${memory.open.length} open, ${memory.shelved.length} shelved`, note: r.note ?? (moved.length ? `满了，先搁着：${moved.map((x) => x.text).join('；')}` : undefined) };
         }
         const bank = args.target === 'owner' ? 'owner' : 'self';
+        if (!['add', 'replace', 'remove'].includes(args.action)) return { ok: false, error: `${args.action} is for target=open` };
         const r = bankOp(memory[bank], args, cfg.limits[bank]);
         if (!r.ok) return { ok: false, error: r.error, entries: memory[bank] };
         memory[bank] = r.entries; save();
@@ -661,14 +659,15 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot/memory: memory tool');
     scope.effect(() => scope.tools.register({
       name: 'recall',
-      description: '想不起来的时候翻一翻：在你记得的事、认识的人、和以前真实聊过的原话里找。query 写关键词（人名、地点、事情）。',
+      description: '想不起来的时候翻一翻：在认识的人、还没了的事（含先搁着的）、和以前真实聊过的原话里找。query 写想找的事或关键词（人名、地点、事情）。',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { found: { type: 'string' } }, required: ['found'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.found ?? '' }] },
       async execute({ query }) {
-        const people = search(Object.values(memory.people).map((p) => ({ text: `${p.names.join(' ')} ${p.impression} ${p.facts.join(' ')}`, p })), query, 3).map((x) => renderPerson(x.p));
-        const frags = search(memory.fragments, query, 5).map((f) => `- ${f.text}`);
-        const said = search(lines.filter((l) => rejectReason(l.text) !== 'secret'), query, 8).map(transcriptLine);
-        const found = [people.length ? `认识的人：\n${people.join('\n')}` : '', frags.length ? `记得的事：\n${frags.join('\n')}` : '', said.length ? `原话：\n${said.join('\n')}` : ''].filter(Boolean).join('\n\n');
+        const people = search(Object.values(memory.people).map((p) => ({ text: `${p.names.join(' ')} ${p.impression}`, p })), query, 3).map((x) => renderPerson(x.p));
+        const items = search([...memory.open, ...memory.shelved], query, 5).map((x) => `- ${renderItem(x)}${memory.shelved.includes(x) ? '（先搁着的）' : ''}`);
+        let said = '';
+        try { said = (await recall.find(query)).text; } catch (err) { logger.warn(`recall tool: ${err.message}`); }
+        const found = [people.length ? `认识的人：\n${people.join('\n')}` : '', items.length ? `还没了的事：\n${items.join('\n')}` : '', said].filter(Boolean).join('\n\n');
         return { found: found || '没翻到。' };
       },
     }), 'dsh-dot/memory: recall tool');
@@ -686,34 +685,35 @@ export function apply(ctx, config = {}) {
     setOwner(handle, name) { const p = setOwner(memory, handle, name); save(); return p; },
     /** When the last thing was said in her conversation (his words or hers) before `before`; 0 when nothing. */
     lastSaidAt(before = Date.now()) { for (let i = lines.length - 1; i >= 0; i--) { const l = lines[i]; if (l.at < before && (l.who === 'owner' || l.who === 'her')) return l.at; } return 0; },
-    syncFriends(platform, friends) { const r = syncFriends(memory, platform, friends, { limits: cfg.limits }); save(); audit('friends-synced', { platform, friends: friends?.length ?? 0, ...r }); return r; },
+    syncFriends(platform, friends) { const r = syncFriends(memory, platform, friends); save(); audit('friends-synced', { platform, friends: friends?.length ?? 0, ...r }); return r; },
     /** Cards for the people in a batch of wake items (their `handles`), deduplicated; the owner is left out. */
     cardsFor(items) {
       const seen = new Set();
       return [].concat(items ?? []).map((n) => resolvePerson(memory.people, { handles: n?.handles ?? (n?.from ? [n.from] : []), platform: n?.platform, name: n?.name }))
         .filter((p) => p && p.tier !== 'owner' && !seen.has(p.id) && seen.add(p.id)).map((p) => renderPerson(p)).join('\n');
     },
-    /** For the interlude: what she knows to be true (memories, in HDSI's payload terms). */
-    forInterlude() { return [...memory.owner.map((e) => `关于他：${e}`), ...[...memory.fragments].sort(compareFragments).slice(0, 12).map((f) => f.text)]; },
+    /** For the interlude: what she knows to be true about him (memories, in HDSI's payload terms). */
+    forInterlude() { return memory.owner.map((e) => `关于他：${e}`); },
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    consolidate, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, people: Object.keys(memory.people).length, pending: memory.pending.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length }),
-    /** For the panel: banks with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
+    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, shelved: memory.shelved.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();
       const d = dayLabel(new Date()).slice(0, 10);
-      let diary = [];
-      try { diary = readFileSync(files.diary, 'utf8').split(/^## /m).filter((x) => x.trim()).map((x) => { const [head, ...body] = x.split('\n'); return { day: head.trim(), text: body.join('\n').trim() }; }).reverse().slice(0, 14); } catch (error) { void error; }
+      let entries = [];
+      try { entries = readFileSync(files.diary, 'utf8').split(/^## /m).filter((x) => x.trim()).map((x) => { const [head, ...body] = x.split('\n'); return { day: head.trim(), text: body.join('\n').trim() }; }).reverse().slice(0, 14); } catch (error) { void error; }
       return {
         gen: memory.gen, consolidations: memory.consolidations,
         owner: { entries: memory.owner, chars: memory.owner.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.owner },
         self: { entries: memory.self, chars: memory.self.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.self },
+        open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open, shelved: memory.shelved.length },
         people: Object.values(memory.people).filter((p) => p.tier !== 'contact').length, contacts: Object.values(memory.people).filter((p) => p.tier === 'contact').length,
-        pending: memory.pending.length, merges: memory.merges.length, fragments: memory.fragments.length, sinceCursor: sinceCursor().length,
+        merges: memory.merges.length, sinceCursor: sinceCursor().length, consolidateEvery: cfg.consolidateEveryLines,
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
         conversation: { session: id || '', tokens: id ? await measure(id) : 0, handoffAt: cfg.handoffTokens },
-        diary, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
+        diary: entries, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
         recall: recall.status(),
       };
     },
@@ -721,26 +721,25 @@ export function apply(ctx, config = {}) {
     async command(arg) {
       const [verb, sub, ...rest] = String(arg ?? '').trim().split(/\s+/);
       if (verb === 'people') {
-        if (sub === 'approve' && rest[0]) { const r = /^m\d+$/.test(rest[0]) ? approveMerge(memory, rest[0], cfg.limits) : approvePending(memory, rest[0], cfg.limits); if (r.ok) save(); return r.ok ? `approved → ${r.person ?? r.id}` : r.error; }
-        if (sub === 'merge' && rest[1]) { const r = mergePeople(memory, rest[0], rest[1], { why: 'manual', limits: cfg.limits }); if (r.ok) save(); return r.ok ? `merged → ${r.id}` : r.error; }
-        if (sub === 'drop' && rest[0]) { const n = memory.pending.length; memory.pending = memory.pending.filter((x) => x.id !== rest[0]); save(); return n !== memory.pending.length ? `dropped ${rest[0]}` : `no pending ${rest[0]}`; }
-        if (sub === 'forget' && rest[0]) { const p = findPerson(memory.people, [rest[0], ...rest.slice(1)].join(' ')); if (!p || p.tier === 'owner') return 'no such person (or it is you)'; delete memory.people[p.id]; memory.pending = memory.pending.filter((x) => x.person !== p.id); save(); return `forgot ${p.id}`; }
+        if (sub === 'approve' && rest[0]) { const r = approveMerge(memory, rest[0]); if (r.ok) save(); return r.ok ? `merged → ${r.id}` : r.error; }
+        if (sub === 'merge' && rest[1]) { const r = mergePeople(memory, rest[0], rest[1], { why: 'manual' }); if (r.ok) save(); return r.ok ? `merged → ${r.id}` : r.error; }
+        if (sub === 'forget' && rest[0]) { const p = findPerson(memory.people, [rest[0], ...rest.slice(1)].join(' ')); if (!p || p.tier === 'owner') return 'no such person (or it is you)'; delete memory.people[p.id]; save(); return `forgot ${p.id}`; }
         const all = Object.values(memory.people);
         const people = all.filter((p) => p.tier !== 'contact').sort((a, b) => (b.lastSeen ?? 0) - (a.lastSeen ?? 0));
-        return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · pending: ${memory.pending.length} · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : []), ...(memory.pending.length ? ['pending (/dot people approve <id> | drop <id>):', ...memory.pending.slice(-20).map((x) => `  ${x.id} · ${x.person}：${x.text}`)] : [])].join('\n');
+        return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : [])].join('\n');
       }
       if (sub === 'recall') return recall.command(rest);
       if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
-      if (sub === 'diary') { const r = await consolidate({ reason: 'manual-diary', withDiary: true }); return r.ok ? `consolidated: ${JSON.stringify(r.report)} → ${files.diary}` : `not run: ${r.skipped ?? r.error}`; }
+      if (sub === 'diary') { const r = await diary({ reason: 'manual' }); return r.ok ? `diary → ${files.diary}\n${r.diary}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
       const s = api.status();
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · people ${s.people} (+${s.pending} pending) · fragments ${s.fragments} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
-        `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines}, or ${cfg.consolidateIdleMinutes} min quiet)`,
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} (+${s.shelved} shelved) · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
+        `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
-        `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <id> | drop <id> | merge <a> <b> | forget <name>]'].join('\n');
+        `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');
     },
   };
   // Her QQ (dsh-dot/qq): the owner's number makes his card the owner's, and the friend list — the
