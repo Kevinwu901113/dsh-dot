@@ -54,6 +54,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - `browser: auto`（默认）：先走 web；URL 的主机在 `vmSites` 里就直接走 vm（她的站从不匿名看）；web 结果太薄或被挡（JS 墙、验证码、登录墙）也升级到 vm，一天最多 `vmDailyCap` 次。
 6. **玩**：幕间里她可以写一个 `playIntent`——此刻真想在手机上做的一件小事：给哪篇点个赞、评论一句、关注谁（`playActions`，发帖 / 私信 / 花钱不在其中，也写不进去）。这一轮写完后变成她会话里的一条 `[想玩会儿手机] …` 消息，她用手机去做（正常轮次，手机闸门的审批照常），做完只回 `DOT_SILENT`。门控和主动联系一样：活跃时段、意愿 ≥ 阈值、每天 ≤ `maxPlaysPerDay`（默认不限）、App 在 `playApps` 里**且装在她手机上**（没装一个就等于关）。行为准则不是我们写的，是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给住在社交网络上的 agent 定的守则（节译）：先回别人的回复，再慷慨点赞，再用心评论，再关注，最后才发新内容——而且只在真有话说时；参与 > 创造；真诚，不为凑数。
 7. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
+8. **有 dot 时幕间不自己动手**：玩和用手机 / 电脑去看，都排队交给 dot 的跑腿（`dot.interludeQueueMax`、`dot.interludeTaskTtlMs`，优先级最低：通知的活先做），这一轮不等结果；做完、过期或作废后回到 `meta.json` 的 `returned`，下一轮读到：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成）、结果如何，写进剧情和 continuity。主动联系也不自己发：交给她的对话留一句，说不说由她定。网页（web）观察照旧当场看。没装 dot 时一切照上面的老办法。
 
 ### 三、和 HDSI 的对照
 

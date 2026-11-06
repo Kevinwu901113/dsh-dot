@@ -74,6 +74,23 @@ test('shade watch: polling alone also catches changes; one read at a time', asyn
   assert.ok(reads >= 2 && reads < 12, `reads serialize (${reads})`);
 });
 
+test('shade watch: with a saved map, the first snapshot posts keys it lacks that arrived within catchUpMs; the map is saved', async () => {
+  const fresh = record({ pkg: 'com.tencent.mobileqq', id: 7, title: '宽', text: '睡了吗', updatedMs: Date.now() - 60_000 });
+  const stale = record({ pkg: 'com.tencent.mobileqq', id: 8, title: '群', text: '昨天的', updatedMs: Date.now() - 13 * 3600_000 });
+  const dumps = { current: shade([SYSTEM, QQ_KUAN('早就在'), fresh, stale]) };
+  const run = async (load) => {
+    const changes = [], saves = [];
+    const w = createShadeWatch({ readShade: async () => dumps.current, pollMs: 0, wanted: (n) => !SYSTEM_PKG.test(n.pkg), onChange: (k, n) => changes.push([k, n.text]), load, save: (m) => saves.push(m), catchUpMs: 12 * 3600_000, saveEveryMs: 10 });
+    w.start(); await tick(); w.stop();
+    return { changes, saves };
+  };
+  const { changes, saves } = await run(() => ({ '0|com.tencent.mobileqq|1|null|10171': { pkg: 'com.tencent.mobileqq', title: '宽', text: '早就在' } }));
+  assert.deepEqual(changes, [['posted', '睡了吗']], 'only the recent one missing from the saved map');
+  assert.equal(Object.keys(saves.at(-1)).length, 4);
+  assert.deepEqual(Object.keys(saves.at(-1)['0|com.tencent.mobileqq|7|null|10171']).sort(), ['pkg', 'postedAt', 'text', 'title']);
+  assert.deepEqual((await run(() => null)).changes, [], 'no saved map (missing / corrupt file): nothing on the shade at start is news');
+});
+
 test('policy: every non-system app unless muted; `only` narrows; apps seen are counted', () => {
   const p = createPolicy();
   assert.ok(p.wanted({ pkg: 'com.tencent.mobileqq' }));

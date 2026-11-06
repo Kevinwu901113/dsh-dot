@@ -107,6 +107,10 @@ setx DSH_DOT_COMPUTER off
 | `window` | `true` | 显示模拟器窗口 |
 | `gpu` | `"auto"` | 模拟器 GPU 模式。`auto` 在 API 35 上可能被强制成 CPU 软件渲染（`emulator.log` 里有 `forcing software rendering`），长时间跑会被模拟器的卡死检测杀掉；Mac 上可试 `"host"`（用 Mac 显卡），见 [phone.md](phone.md) |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
+| `notifyCatchUpMs` | `43200000`（12 小时） | dsh 没开时到的通知，重启后这么久以内的照样叫醒她；更早的不叫 |
+| `leaseIdleMs` | `120000` | 同一时间只有一件事在用手机：占着的那件事这么久没碰手机（或它这一轮结束）就让出来 |
+| `leaseWaitMs` | `60000` | 别的事要用手机时最多等这么久，等不到就告诉她稍后再试；和你的对话排在最前 |
+| `qqSendOnPhone` | `false` | `false` = 手机 QQ 里只看不发（打字、回车会被拦下），发 QQ 用 `qq_send` |
 | `keepAppsAlive` | `true` | 不让后台 App 被冻结（聊天 App 收消息靠它） |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址，用于实时画面链接 |
 
@@ -161,6 +165,7 @@ setx DSH_DOT_COMPUTER off
 | `recallModel` | `""` | 本机默认 `Xenova/multilingual-e5-small`；只用中文可填 `BAAI/bge-small-zh-v1.5`（更轻，23 MB / 约 0.13 GB）。建议用 `/dot memory recall model` |
 | `recallTopK` / `recallMaxTokens` | `8` / `1500` | 每次叫醒注入多少旧对话 |
 | `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；命中要比整个索引的中位数高出一截；可选的绝对分数下限（和模型绑死，默认不用）。见 [memory.md](memory.md) |
+| `recallLexical` / `recallNames` / `recallRrfK` | `true` / `true` / `60` | 向量之外的两条字面通道：BM25（汉字 + 两字）和人名（人物卡别名、碎片 who），按名次（RRF）合并。见 [memory.md](memory.md) |
 | `recallMirror` | `""` | 本机模型下载镜像，默认 hf-mirror |
 
 ### `interlude`
@@ -177,7 +182,7 @@ setx DSH_DOT_COMPUTER off
 | `vmSites` | `[]` | 用电脑浏览器看的网站（她登录过的） |
 | `phoneApps` / `playApps` | 内置表 | 逛 / 玩的 App |
 | `play` | `true` | 「玩」（点赞、评论、关注） |
-| `speak` | `false` | 主动找你 |
+| `speak` | `false` | 主动找你；有 dot 时不自己发，交给她的对话（留一句「想跟他说的」），合不合适由她定，交过去才算一次 |
 | `maxContactsPerDay` / `willingnessThreshold` | `2` / `0.6` | 主动联系的上限和门槛 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
 
@@ -195,10 +200,16 @@ setx DSH_DOT_COMPUTER off
 | `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
 | `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
+| `notifyRules` | 见下 | 非聊天 App 的通知先过这张表（按顺序，第一条命中的算）：每条 `{ "pkg": 包名（可省）, "title": 正则, "text": 正则（可省）, "action": "ignore" / "direct" }`。`ignore` 只记一笔 `notification-ignored`，不叫醒她；`direct`（@、回复、私信、关注她的）`notifyBatchMs` 后就叫醒；都没命中的按话题合并（见下一项）。默认：小黑盒的「黑盒今日热点订阅」「签到提醒」「今日未签到」和正文是「来自《…》，点击查看>>」的推广、资讯忽略，标题含「@了你 / 回复了你 / 关注了你 / 私信」的算 `direct`。写了就整张替换默认 |
+| `threadBatchMs` | `20000` | 同一话题（App + 通知里引用的帖子「来自“…”」，没有就只按 App）这么多毫秒内来的通知合并成一次叫醒；跑腿正在处理某个话题时，这个话题新来的都留给同一个跑腿，不另开 |
+| `heldMaxMs` | `600000` | 通知等忙着的跑腿等了这么久，就交给一个新的跑腿会话（记 `notification-rerouted`）；那个跑腿正在处理的话题除外 |
+| `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |
 | `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
+| `interludeQueueMax` | `3` | 幕间想做的事（玩、用手机 / 电脑去看）不自己动手，排队交给跑腿：优先级最低，没有通知在排、在等，也没有跑腿在跑时才做，一次一件；同一件事再来只刷新过期时间；排满这么多件，最早的作废（`dropped`） |
+| `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`）。做完、过期、作废都回给幕间：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成），下一轮写进剧情 |
 | `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
 | `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
-| `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
+| `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 
 ## 优先级和旧文件

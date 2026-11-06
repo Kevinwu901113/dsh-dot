@@ -1,2 +1,2 @@
-line=现在 {now}{since}
+line=现在 {now}（这周一是 {monday}）{since}
 since= · 距上一条消息 {ago}

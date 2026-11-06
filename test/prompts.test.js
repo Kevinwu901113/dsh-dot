@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, readdirSync, rmSync, utimesSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { configure, prompt, table, list, raw, fill, overridePath } from '../src/prompts.js';
+import { configure, prompt, table, list, raw, fill, overridePath, stamp, rebase, overrideNotes } from '../src/prompts.js';
 
 const HOME = mkdtempSync(join(tmpdir(), 'dot-prompts-test-'));
 configure({ home: HOME });
@@ -48,6 +48,32 @@ test('prompts loader: an override in <home>/prompts wins, edits show without a r
   assert.throws(() => prompt('../package'), /unknown prompt/);
 });
 
+test('prompts overrides: a `# base:` line is not part of the text; a changed built-in shows as stale, a missing base as unbased; rebase stamps or resets', () => {
+  const id = 'dot.notification.busy', at = () => list().find((x) => x.id === id);
+  mkdirSync(join(HOME, 'prompts'), { recursive: true });
+  const touch = () => utimesSync(overridePath(id), new Date(), new Date(Date.now() + Math.random() * 1e6));
+  writeFileSync(overridePath(id), stamp(id, '你忙的时候来的。'));
+  assert.match(readFileSync(overridePath(id), 'utf8'), /^# base: [0-9a-f]{12}\n你忙的时候来的。\n$/);
+  assert.equal(raw(id), '你忙的时候来的。');
+  assert.equal(at().stale, undefined); assert.equal(at().unbased, undefined);
+  assert.deepEqual(overrideNotes(), []);
+  writeFileSync(overridePath(id), '# base: 000000000000\n你忙的时候来的。\n'); touch();
+  assert.equal(raw(id), '你忙的时候来的。');
+  assert.equal(at().stale, true);
+  assert.deepEqual(overrideNotes(), [`默认已更新：${id}`]);
+  writeFileSync(overridePath(id), '你忙的时候来的。\n'); touch();
+  assert.equal(at().unbased, true);
+  assert.deepEqual(overrideNotes(), [`未记录基线：${id}`]);
+  const shown = rebase(id);
+  assert.match(shown, /- 你忙的时候来的。\n\+ 你上一轮期间来的。/);
+  assert.equal(readFileSync(overridePath(id), 'utf8'), stamp(id, '你忙的时候来的。'));
+  assert.equal(at().unbased, undefined); assert.equal(at().stale, undefined);
+  assert.match(rebase(id, true), /已删除/);
+  assert.equal(at().override, null);
+  assert.equal(raw(id), '你上一轮期间来的。');
+  assert.match(rebase(id), /没有覆盖/);
+});
+
 test('prompts loader: placeholders, a missing one left as written and warned once, empty placeholder lines dropped, tables', () => {
   const warns = [];
   configure({ logger: { warn: (m) => warns.push(m) } });
@@ -77,7 +103,7 @@ test('prompts render: system prompt (working rules, phone only)', async () => {
   ].join('\n'));
   const { renderStanding, emptyMemory } = await import('../src/memory/store.js');
   const m = emptyMemory(); m.owner = ['他叫宽'];
-  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。\n## 关于他\n- 他叫宽\n</memory>');
+  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。用的时候只说问到的：没记下的细节不补；记下的状态是当时的，后来变没变不知道就说到那天为止；别人心里怎么想、为什么，没记到就别替他下结论；不相干的旧事别顺手带出来。\n## 关于他\n- 他叫宽\n</memory>');
 });
 
 test('prompts render: messages that wake her (notifications, handoff)', async () => {
@@ -100,7 +126,7 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   });
   const { extractPrompt, extractRules } = await import('../src/memory/memory.js');
   assert.equal(extractPrompt({ text: '他：在吗', bankless: true, withDiary: true, day: '2026-11-03 周二' }),
-    `=== 这段时间的记录 ===\n他：在吗\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已认识的人 ===\n（还没有）\n=== 已有碎片 ===\n（还没有）\n=== 待核实（关于别人的事，说过一次）===\n（没有）\n\n${extractRules()}\n\nhandoff 给 null。\n\n这次要写 diary：今天是 2026-11-03 周二，写今天的日记。`);
+    `=== 这段时间的记录 ===\n他：在吗\n\n=== 日历（这段记录前后，一行一周，周一开头）===\n（无）\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已认识的人 ===\n（还没有）\n=== 已有碎片 ===\n（还没有）\n=== 还没了的事（open 的碎片）===\n（没有）\n=== 待核实（关于别人的事，说过一次）===\n（没有）\n\n${extractRules()}\n\nhandoff 给 null。\n\n这次要写 diary：今天是 2026-11-03 周二，写今天的日记。`);
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
 });
 

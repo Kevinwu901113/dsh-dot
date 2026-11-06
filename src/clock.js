@@ -3,6 +3,8 @@
 //   stamp     MM-DD HH:MM (year rule as dayMark) — the stamp every message that wakes her carries
 //   describeNow  YYYY-MM-DD HH:MM 星期X 时段 (the interlude's nowLocal; her `dot:now` line)
 //   ago       "3 小时 12 分" since a moment; '' under a minute
+//   calendar  whole weeks around a span, one line per week (Monday first), for turning 下周三 into a date
+//   mondayOf  MM-DD of the Monday of a moment's week
 //   unstamp   a stamped wake line back to what it said (the transcript keeps its own time)
 
 const p2 = (n) => String(n).padStart(2, '0');
@@ -43,3 +45,31 @@ export function ago(ms, now = Date.now()) {
 const STAMP = String.raw`(?:\d{4}-)?\d{2}-\d{2} \d{2}:\d{2}`;
 /** "[11-04 04:51] 在吗" → "在吗"; "[11-04 04:52 手机通知] …" → "[手机通知] …"; anything else as is. */
 export const unstamp = (text) => String(text ?? '').replace(new RegExp(`^\\[${STAMP}\\] `), '').replace(new RegExp(`^\\[${STAMP} `), '[');
+
+const WEEKDAY = '日一二三四五六';
+const DAY = 86400000;
+const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
+/** Midnight of the Monday of `ms`'s week (local time). */
+export function mondayMs(ms) {
+  const d = new Date(startOfDay(ms));
+  d.setDate(d.getDate() - ((d.getDay() + 6) % 7));
+  return d.getTime();
+}
+/** "06-29" (dayMark rule) of the Monday of `ms`'s week. */
+export const mondayOf = (ms, now = ms) => dayMark(mondayMs(ms), now);
+/**
+ * Whole weeks from `before` days before `from` to `after` days after `to`, a line per week, Monday
+ * first: "06-29一 06-30二 07-01三 … 07-05日". Dates follow dayMark (another year → YYYY-MM-DD).
+ */
+export function calendar(from, to, { before = 7, after = 21, now = to } = {}) {
+  if (!Number.isFinite(from) || !Number.isFinite(to)) return '';
+  const lines = [];
+  // Step by calendar days (setDate), not by 24 h, so a DST change never skips or repeats a day.
+  const end = startOfDay(to + after * DAY);
+  for (let d = new Date(mondayMs(from - before * DAY)); d.getTime() <= end;) {
+    const week = [];
+    for (let i = 0; i < 7; i++) { week.push(`${dayMark(d.getTime(), now)}${WEEKDAY[d.getDay()]}`); d.setDate(d.getDate() + 1); }
+    lines.push(week.join(' '));
+  }
+  return lines.join('\n');
+}

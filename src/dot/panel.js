@@ -9,6 +9,7 @@
 
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { overrideNotes } from '../prompts.js';
 import { rejectUnlessOwner } from '../web-auth.js';
 import { createActivity, DEFAULT_SCENES } from './activity.js';
 
@@ -51,6 +52,7 @@ export async function collectState(ctx, opts = {}) {
     memory: memory ? await safe(() => memory.panel()) : null,
     // The last N scenes (one wake until its turn ended), read back from the records that exist.
     activity: await safe(() => ({ scenes: activityOf(dot, opts) })),
+    prompts: await safe(() => overrideNotes()),
   };
 }
 
@@ -155,6 +157,7 @@ function render(s){
   if(d.computer&&(d.computer.gatewayOpen||d.computer.portRelayOpen)) b+=badge('bad','电脑网关',d.computer.gatewayOpen?'无密钥开放':'端口转发未关');
   if(m&&m.conversation) b+=badge(m.conversation.session?'ok':'warn','她的对话','第 '+m.gen+' 段 · '+fmt(m.conversation.tokens)+' / '+fmt(m.conversation.handoffAt)+' token');
   for(const t of (dot&&dot.turns)||[]){if(t.state==='running')continue;const who=t.errand?'跑腿':t.conversation?'她的对话':'会话';const mins=Math.floor((t.state==='approval'?t.waitMs:t.idleMs)/60000);b+=badge(t.state==='approval'?'warn':'bad',who,t.state==='approval'?'等审批 '+mins+' 分钟 · '+(t.tool||''):t.state==='timed-out'?'审批已超时，卡住 '+mins+' 分钟':'卡住 '+mins+' 分钟 · '+(t.doing||''));}
+  for(const n of Array.isArray(s.prompts)?s.prompts:[])b+=badge('warn','提示词覆盖',n);
   $('badges').innerHTML=b||'<span class="mute">没有组件在线</span>';
   if(it){
     const st=it.state||{};

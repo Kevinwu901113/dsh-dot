@@ -1,9 +1,10 @@
 import { test } from 'node:test';
+import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../src/tool-prefixes.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE } from '../src/interlude/core.js';
+import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE, castNames } from '../src/interlude/core.js';
 
 function fakeStream(text) {
   // A reply starting with "TOOL:" is streamed as an `interval` tool call (arguments in deltas), as dsh-llm does.
@@ -430,6 +431,23 @@ test('vm observation: her sites go to the VM, a thin web result upgrades to it; 
   assert.equal(seen.length, 1);
   assert.equal(seen[0].via, 'vm');
   assert.match(seen[0].content, /秋天/);
+  // the device logged is the one she really looked with: phone wanted, refused, computer used → vm
+  const p = harness({ reply: visit, web, vm: {}, config: { vmSites: ['bilibili.com'], phonePreferred: true } });
+  p.ctx.get = ((get) => (n) => (n === 'dshPhone' ? { isReady: true, apps: async () => [] } : get(n)))(p.ctx.get);
+  p.act('s1', 'hi', 'hello');
+  const pp = p.cmd().handler({ rawInput: 'now' });
+  await new Promise((r) => setTimeout(r, 20));
+  assert.equal(p.followups.length, 1);
+  assert.match(p.followups[0].m.content[0].text, /dot-phone|手机/, 'she was sent to look on her phone');
+  assert.equal((await p.gate('s1', `${PHONE_TOOL_PREFIX}phone_tap`)).kind, 'deny');
+  assert.deepEqual(await p.gate('s1', `${VM_TOOL_PREFIX}browser_get_markdown`), { kind: 'allow' });
+  p.emit('s1', 'turn/start', { turn: 2 });
+  p.emit('s1', 'user/message', { content: p.followups[0].m.content, source: OBSERVATION_SOURCE }, { surfaceOp: 'append' });
+  p.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '看到了。' }] } });
+  p.emit('s1', 'turn/end', { turn: 2 });
+  await pp;
+  assert.equal(JSON.parse(readFileSync(join(p.home, 'interlude', 'web-context.jsonl'), 'utf8').trim()).via, 'vm');
+  p.stop();
   assert.equal((await h.gate('s1', 'mcp__dot-vm__browser_click')).via, 'next', 'gate released after the turn');
   assert.equal(readFileSync(join(h.home, 'interlude', 'pending.jsonl'), 'utf8').trim(), '', 'the observation turn is not an act');
   // vm cap reached: a second intent on her site is held, not read anonymously
@@ -513,6 +531,7 @@ test('contact marker: what really went out, or her deleting it; the prompt forbi
   assert.equal(fillContact(s, { text: '睡了没' }, false).script, '她点开 QQ。（打了几个字，最后没发出去）\n发完把手机扣在桌上。');
   assert.equal(fillContact(s, null, false).script, '她点开 QQ。（想了想，没发）\n发完把手机扣在桌上。');
   assert.equal(fillContact('没有标记', { text: 'x' }, true).marked, false);
+  assert.equal(fillContact(s, { text: '睡了没' }, 'handed').script, '她点开 QQ。（想跟他说「睡了没」，等聊天那边看合不合适再说）\n发完把手机扣在桌上。');
   const off = buildPrompt({ phase: 'advance', speak: false, now: Date.now() }).system;
   assert.ok(off.includes(prompt('interlude.round.contact-rule.off')) && !off.includes(prompt('interlude.round.contact-rule')));
   assert.match(off, /^观察到的账本：/m);
@@ -520,4 +539,69 @@ test('contact marker: what really went out, or her deleting it; the prompt forbi
   const on = buildPrompt({ phase: 'advance', speak: true, now: Date.now() }).system;
   assert.ok(on.includes(prompt('interlude.round.contact-rule')) && /给用户的消息只写 <contact\/> 标记/.test(on));
   assert.match(on, /^先写主角的生活；/m, 'agency outside follow-up when contact is on');
+});
+
+test('fiction follows reality: the round sees what she really did in the last half hour, and on which device', async () => {
+  const h = harness({ reply: GOOD });
+  h.emit('s1', 'turn/start', { turn: 1 });
+  h.emit('s1', 'user/message', { content: [{ type: 'text', text: '[小黑盒] 有人回复了你' }], source: { kind: 'dsh-dot', form: 'phone-notification' } }, { surfaceOp: 'append' });
+  h.emit('s1', 'tool/call', { name: `${PHONE_TOOL_PREFIX}phone_tap` });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '回了一句' }] } });
+  h.emit('s1', 'turn/end', { turn: 1 });
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.match(h.calls[0].messages[0].content[0].text, /"owner": "character",\s*"on": "phone",\s*"content": "回了一句"/);
+  assert.match(h.calls[0].system, /真实操作手机、回帖时，她就是在拿着手机[\s\S]*对外（评论、QQ、给用户的消息）不要拿虚构生活当事实讲/);
+  assert.match(h.calls[0].system, /虚构的人（只在 Canon 里的配角）只在叙述里出现：不给他们发真实消息，不为他们定 intents/);
+  await h.cmd().handler({ rawInput: 'advance' });
+  assert.match(h.calls[1].messages[0].content[0].text, /"lastHalfHour": \[\s*\{\s*"at": "[^"]+",\s*"on": "phone",\s*"did": "\[小黑盒\] 有人回复了你 → 回了一句"/);
+  h.stop();
+});
+
+test('fictional people cause no real actions: an intent about someone only in the Canon is dropped and audited', async () => {
+  assert.deepEqual(castNames({ storyDefaults: { supportingCast: '主角的父母，工作早出晚归；主角的一位好友，名叫希绘（Nozomi），比较外向。' } }), ['希绘']);
+  assert.deepEqual(castNames({ storyDefaults: { supportingCast: '希绘、小林' } }), ['希绘', '小林']);
+  assert.deepEqual(castNames({ storyDefaults: { supportingCast: '阿青：邻居\n老周：房东' } }), ['阿青', '老周']);
+  assert.deepEqual(castNames({}), []);
+  const reply = GOOD.replace('"intents":[', `"intents":[{"at":"${soon}","kind":"reminder","text":"看一眼希绘回没回"},{"at":"${soon}","kind":"reminder","text":"问小林借书"},`);
+  const audits = [];
+  const h = harness({ reply, canon: { ...CANON, supportingCast: '希绘、小林' }, memory: { knows: (n) => n === '小林' } });
+  h.ctx.get = ((get) => (n) => (n === 'dshComputer' ? { audit: (e) => audits.push(e) } : get(n)))(h.ctx.get);
+  await h.cmd().handler({ rawInput: 'advance' });
+  const intents = JSON.parse(readFileSync(join(h.home, 'interlude', 'intents.json'), 'utf8')).map((i) => i.text);
+  assert.deepEqual(intents, ['问小林借书', '看看锁的修复合进去没有'], 'someone she really knows keeps the intent');
+  assert.deepEqual(audits.filter((e) => e.event === 'intent-dropped'), [{ kind: 'interlude', event: 'intent-dropped', why: 'fictional person', text: '看一眼希绘回没回' }]);
+  h.stop();
+});
+
+test('with dsh-dot: plays and device looks are posted as errand tasks (the round does not wait); what comes back, and the delay, is in the next round; contact goes through say()', async () => {
+  const reply = GOOD.replace('"contact":null', '"contact":{"text":"降温了<sep/>你那边冷不冷","willingness":0.9},"browserIntents":[{"mode":"visit","url":"https://www.bilibili.com/u/1","purpose":"看看她更新没"}],"playIntents":[{"app":"小黑盒","action":"like","target":"那篇耳机测评","willingness":0.8}]');
+  const h = harness({ reply, vm: {}, config: { speak: true } });
+  const tasks = [], said = [];
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, say: async (text) => { said.push(text); return true; }, isErrand: () => false } : n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe', 'tv.danmaku.bili'] } : get(n)))(h.ctx.get);
+  h.act('s1', 'hi', 'hello');
+  const r = await h.cmd().handler({ rawInput: 'now' });
+  assert.match(r.text, /\(sent\)/, 'handed over counts as a contact');
+  assert.deepEqual(said, ['降温了\n你那边冷不冷']);
+  assert.equal(h.sent.length, 0, 'interlude never sends herself');
+  assert.equal(h.followups.length, 0, 'nor acts herself');
+  assert.deepEqual(tasks.map((t) => [t.kind, t.source.form, Boolean(t.readOnly)]), [['look', 'observation', true], ['play', 'play', false]]);
+  // the look is read-only while the errand runs it
+  tasks[0].onStart('e1');
+  assert.equal((await h.gate('e1', `${VM_TOOL_PREFIX}browser_click`)).kind, 'deny');
+  const t0 = Date.now();
+  tasks[0].onDone({ status: 'done', queuedAt: t0, startedAt: t0 + 20 * 60000, doneAt: t0 + 22 * 60000, busyWith: '看小黑盒《帖子A》的 3 条', report: '她 10 月 20 日发了《秋天》' });
+  tasks[1].onDone({ status: 'expired', queuedAt: t0, startedAt: null, doneAt: t0 + 30 * 60000, busyWith: '在和他聊天', report: '' });
+  assert.equal((await h.gate('e1', `${VM_TOOL_PREFIX}browser_click`)).via, 'next', 'released');
+  assert.match(readFileSync(join(h.home, 'interlude', 'web-context.jsonl'), 'utf8'), /秋天/);
+  h.act('s1', 'again', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  const payload = JSON.parse(h.calls[1].messages[0].content[0].text);
+  assert.deepEqual(payload.returned.map((x) => [x.kind, x.status, x.busyWith, x.report]), [['look', 'done', '看小黑盒《帖子A》的 3 条', '她 10 月 20 日发了《秋天》'], ['play', 'expired', '在和他聊天', '']]);
+  assert.equal(payload.returned[1].startedAt, null);
+  assert.match(h.calls[1].system, /returned 是她早先想做[\s\S]*busyWith/);
+  h.act('s1', 'third', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.deepEqual(JSON.parse(h.calls[2].messages[0].content[0].text).returned, [], 'digested once');
+  assert.doesNotMatch(h.calls[2].system, /returned 是她早先想做/);
+  h.stop();
 });

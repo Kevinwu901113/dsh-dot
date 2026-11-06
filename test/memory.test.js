@@ -4,10 +4,10 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bankOp, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
+  bankOp, closeFragment, emptyMemory, touchPerson, updatePerson, approvePending, observeFragment, ageFragments, renderStanding, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, dayMark,
 } from '../src/memory/store.js';
-import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk } from '../src/memory/memory.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt } from '../src/memory/memory.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -418,4 +418,57 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   const found = await h.tools.recall.execute({ query: '好吃' });
   assert.match(found.found, /我：那家店我去过 \/ 还挺好吃的 \/ 下次带你去/);
   for (const d of h.effects) if (typeof d === 'function') d();
+});
+
+test('persona lives only in the Canon: the consolidation prompt keeps persona and 「照着某某学」 out of self', () => {
+  const text = extractPrompt({ text: '我：照着星野那版学', self: ['拼出来的人设：蓝发'] });
+  assert.match(text, /self：[^\n]*人设、说话风格、「照着某某学」都不是关于她的事实，不写进 self；她的人设只在 Canon 里。/);
+  assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
+});
+
+test('还没了的事: open plan / promise fragments shown on their own, newest first, closed by consolidation, kept past the cap', () => {
+  const m = emptyMemory();
+  const r = applyExtraction(m, { fragments: [
+    { text: '05-17 他说旧书店名单先搁着回头再说', kind: 'plan', tag: 1, open: true, who: ['旧书店'] },
+    { text: '06-22 他答应下周三前把画册寄给老贺', kind: 'promise', tag: 2, open: true, who: ['老贺', '他'] },
+    { text: '05-20 他吃了碗面', kind: 'event', tag: 0, open: true },
+  ] }, { now: 1000 });
+  assert.equal(r.fragments, 3);
+  const [list, promise, meal] = m.fragments;
+  assert.equal(list.open, true); assert.equal(meal.open, undefined, 'an event is never open');
+  assert.deepEqual(promise.who, ['老贺'], 'one-character names are dropped');
+  promise.createdAt = 2000;
+  const s = renderStanding(m, { now: 1000 });
+  assert.match(s, /## 还没了的事[^\n]*\n- 06-22 他答应[^\n]*\n- 05-17 他说旧书店/);
+  assert.equal((s.match(/旧书店名单/g) ?? []).length, 1, 'not shown twice');
+  assert.match(extractPrompt({ open: `${list.id} | ${list.text}` }), /=== 还没了的事（open 的碎片）===\nf0001 \| 05-17/);
+  applyExtraction(m, { closed: [promise.id, 'f9999'] }, { now: 3000 });
+  assert.equal(promise.open, false); assert.equal(promise.closedAt, 3000);
+  assert.equal(closeFragment(m, promise.id), false, 'closing twice does nothing');
+  assert.doesNotMatch(renderStanding(m, { now: 1000 }), /老贺[\s\S]*## 最近的事|还没了的事[^#]*老贺/);
+  m.gen = 20; list.importance = 0; list.lastSeenGen = 0;
+  ageFragments(m, 20);
+  assert.ok(m.fragments.includes(list), 'aging keeps an open one');
+});
+
+test('取代: a changed state replaces the old fragment (old text kept as was); the calendar for dates', async () => {
+  const m = emptyMemory();
+  applyExtraction(m, { fragments: [{ text: '05-28 门口灯箱：师傅量了尺寸，还没报价', kind: 'plan', tag: 1, open: true }] }, { now: 1000 });
+  const [f] = m.fragments;
+  const r = applyExtraction(m, { fragments: [{ text: '05-29 灯箱报价到了，他让师傅先别排制作（05-28 时还没报价）', kind: 'plan', tag: 1, open: true, replaces: f.id }] }, { now: 2000 });
+  assert.equal(r.replaced, 1);
+  assert.equal(m.fragments.length, 1, 'no second fragment: old and new do not sit side by side');
+  assert.match(f.text, /报价到了/); assert.match(f.was, /还没报价/); assert.equal(f.refs, 2); assert.equal(f.updatedAt, 2000);
+  assert.equal(f.open, true);
+  applyExtraction(m, { fragments: [{ text: '06-02 灯箱不做了', kind: 'event', tag: 1, replaces: f.id }] }, { now: 3000 });
+  assert.equal(f.kind, 'event'); assert.equal(f.open, false, 'became an event: no longer open');
+  // An unknown id: an ordinary new fragment.
+  applyExtraction(m, { fragments: [{ text: '06-03 他换了新的门牌', kind: 'event', tag: 0, replaces: 'f9999' }] }, { now: 4000 });
+  assert.equal(m.fragments.length, 2);
+  const { calendar } = await import('../src/clock.js');
+  const at = new Date(2026, 5, 22, 18, 31).getTime();
+  const cal = calendar(at, at);
+  assert.match(cal, /^06-15一 06-16二 [^\n]* 06-21日\n06-22一 /);
+  assert.match(cal, /\n06-29一 06-30二 07-01三 /, 'next Wednesday from 06-22 is on the line after');
+  assert.match(extractPrompt({ text: 'x', cal }), /=== 日历（这段记录前后，一行一周，周一开头）===\n06-15一/);
 });

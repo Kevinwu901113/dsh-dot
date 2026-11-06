@@ -13,7 +13,9 @@
 //   updated — a known key whose title or text changed (a chat app rewrites one notification per
 //             conversation as messages arrive; QQ shows "[2条]" and the latest line)
 //   removed — a key that disappeared
-// The first snapshot after start only fills the map: what was already there is not news.
+// The first snapshot after start only fills the map: what was already there is not news — except,
+// with a saved map from the last run (`load`), a key it lacks posted within catchUpMs: that arrived
+// while dsh was down. The map is saved (`save`) at most every saveEveryMs.
 // Policy (which packages count, which are muted) is applied by the caller through `wanted`.
 
 /** Packages whose notifications are the system talking to itself, never her life. */
@@ -57,11 +59,19 @@ export function parseShade(dump) {
  * @param {(kind: 'posted'|'updated'|'removed', n: object) => void} o.onChange
  * @param {{warn?: Function, debug?: Function}} [o.logger]
  * @param {number} [o.settleMs=150] - delay between an event and its snapshot, so the app has written.
+ * @param {() => object|null} [o.load] - the map saved by the last run (key → {pkg,title,text,postedAt}); null = none.
+ * @param {(known: object) => void} [o.save] - persist the map.
+ * @param {number} [o.catchUpMs=0] - how old a notification missed while down may be and still be posted.
  * @returns {{ start: () => void, stop: () => void, snapshot: () => Promise<void>, known: () => object[] }}
  */
-export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChange, logger = {}, settleMs = 150 }) {
+export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChange, logger = {}, settleMs = 150, load = () => null, save = () => {}, catchUpMs = 0, saveEveryMs = 5000 }) {
   const known = new Map(); // key → { pkg, title, text }
-  let primed = false, running = false, timer = null, soon = null, stopTail = null, inFlight = null;
+  let primed = false, running = false, timer = null, soon = null, stopTail = null, inFlight = null, saving = null, saved = '';
+  const flush = () => {
+    clearTimeout(saving); saving = null;
+    const m = Object.fromEntries([...known].map(([k, { pkg, title, text, postedAt }]) => [k, { pkg, title, text, postedAt }]));
+    if (JSON.stringify(m) !== saved) { saved = JSON.stringify(m); save(m); }
+  };
 
   async function snapshot() {
     if (!running) return;
@@ -70,15 +80,17 @@ export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChan
       let dump;
       try { dump = await readShade(); } catch (err) { logger.debug?.(`shade read failed: ${err.message}`); return; }
       const now = new Map(parseShade(dump).map((n) => [n.key, n]));
+      const last = primed ? null : load();
       for (const [key, n] of now) {
         const before = known.get(key);
         known.set(key, n);
-        if (!primed) continue;
+        if (!primed) { if (last && typeof last === 'object' && !last[key] && n.postedAt > Date.now() - catchUpMs && wanted(n)) emit('posted', n); continue; }
         if (!before) { if (wanted(n)) emit('posted', n); continue; }
         if (before.title !== n.title || before.text !== n.text || (n.postedAt && before.postedAt && n.postedAt !== before.postedAt)) { if (wanted(n)) emit('updated', n); }
       }
       for (const [key, n] of known) if (!now.has(key)) { known.delete(key); if (primed && wanted(n)) emit('removed', n); }
       primed = true;
+      if (!saving) { saving = setTimeout(flush, saveEveryMs); saving.unref?.(); }
     })().finally(() => { inFlight = null; });
     return inFlight;
   }
@@ -97,6 +109,7 @@ export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChan
       if (timer) clearInterval(timer); timer = null;
       if (soon) clearTimeout(soon); soon = null;
       stopTail?.(); stopTail = null;
+      if (saving) flush();
     },
     snapshot,
     known: () => [...known.values()],

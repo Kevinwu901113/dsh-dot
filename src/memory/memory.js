@@ -22,11 +22,11 @@ import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, approvePending, ageFragments, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory,
-  observeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
+  observeFragment, closeFragment, handleOf, renderPerson, renderStanding, search, touchPerson, updatePerson, compareFragments, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends, dayMark,
 } from './store.js';
-import { createRecall } from './recall.js';
-import { unstamp } from '../clock.js';
+import { createBm25, createRecall } from './recall.js';
+import { calendar, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
@@ -40,6 +40,7 @@ export const defaults = {
   consolidateEveryLines: 20,    // transcript lines since the last consolidation that trigger one
   consolidateIdleMinutes: 30,   // …or this long quiet with at least 3 new lines
   fragmentBudgetTokens: 600,    // fragments shown to every turn
+  openBudgetTokens: 200,        // …plus 还没了的事 (open plan / promise fragments, newest first) on top of them
   agingEveryGens: 5,
   maxFragments: 300,
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
@@ -75,6 +76,9 @@ export const defaults = {
   recallCandidates: 40,         // cosine candidates handed to a reranker
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
+  recallLexical: true,          // BM25 over character bigrams of the same turns, fused with the vectors by rank (RRF)
+  recallNames: true,            // a name she knows (people + aliases, fragments' who) in the message pulls in the turns that mention it
+  recallRrfK: 60,               // RRF constant: 1/(k + rank) per channel
   recallWaitMs: 3000,           // prompt assembly waits this long for a query still running, then goes on without it
   recallSiliconflowUrl: 'https://api.siliconflow.cn/v1',
   recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
@@ -119,13 +123,13 @@ export function takeChunk(fresh, maxChars) {
 export const extractRules = () => prompt('memory.extract');
 
 /** The whole consolidation prompt: the records, what she already has, the rules, and whether to write a handoff / diary. */
-export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', pending = '', withHandoff = false, withDiary = false, day = '' }) {
+export function extractPrompt({ recent = '', text = '', bankless = false, owner = [], self = [], known = '', frags = '', open = '', pending = '', cal = '', withHandoff = false, withDiary = false, day = '' }) {
   return [
     ...(recent ? [prompt('memory.extract.earlier'), recent, ''] : []),
     prompt('memory.extract.input', {
       records: text || '（这段时间没有新记录）',
       banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', fragments: frags || '（还没有）', pending: pending || '（没有）',
+      people: known || '（还没有）', fragments: frags || '（还没有）', open: open || '（没有）', pending: pending || '（没有）', calendar: cal || '（无）',
     }),
     '',
     extractRules(),
@@ -173,9 +177,12 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
     if (r.ok && !r.noop) report.merges = (report.merges ?? 0) + 1;
   }
   for (const f of [].concat(out?.fragments ?? [])) {
-    const r = observeFragment(memory, { ...f, gen: memory.gen, now });
-    if (r.action === 'new' || r.action === 'dup') report.fragments++;
+    if (!f || typeof f !== 'object') continue;
+    const r = observeFragment(memory, { ...f, open: f.open === true ? true : f.open === false ? false : undefined, replaces: typeof f.replaces === 'string' ? f.replaces : null, gen: memory.gen, now });
+    if (r.action === 'new' || r.action === 'dup' || r.action === 'replaced') report.fragments++;
+    if (r.action === 'replaced') report.replaced = (report.replaced ?? 0) + 1;
   }
+  for (const id of [].concat(out?.closed ?? [])) { if (closeFragment(memory, typeof id === 'object' ? id?.id : id, now)) report.closed = (report.closed ?? 0) + 1; }
   return report;
 }
 
@@ -294,8 +301,13 @@ export function apply(ctx, config = {}) {
   try { memory = normalizeMemory(JSON.parse(readFileSync(files.memory, 'utf8'))); } catch (error) { void error; memory = emptyMemory(); }
   function save() {
     try {
+      // Over the cap the least important go — never one still open (还没了的事).
       memory.fragments.sort(compareFragments);
-      memory.fragments = memory.fragments.slice(0, cfg.maxFragments);
+      if (memory.fragments.length > cfg.maxFragments) {
+        const open = memory.fragments.filter((f) => f.open);
+        const keep = new Set([...open, ...memory.fragments.filter((f) => !f.open).slice(0, Math.max(0, cfg.maxFragments - open.length))]);
+        memory.fragments = memory.fragments.filter((f) => keep.has(f));
+      }
       writeFileSync(`${files.memory}.tmp`, JSON.stringify(memory, null, 2));
       renameSync(`${files.memory}.tmp`, files.memory);
       writeFileSync(files.md, renderMarkdown());
@@ -310,7 +322,7 @@ export function apply(ctx, config = {}) {
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
       `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
       `## 待核实（${memory.pending.length}）`, ...memory.pending.map((x) => `- ${x.id} · ${x.person}：${x.text}`), '',
-      `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}] ${f.text}`), '',
+      `## 碎片（${memory.fragments.length}）`, ...memory.fragments.map((f) => `- ${f.id} [${f.kind}/重要度${f.importance}/${f.refs} 次${f.pinned ? '/📌' : ''}${f.open ? '/未了' : ''}${f.was ? '/改过' : ''}${f.who?.length ? `/${f.who.join('、')}` : ''}] ${f.text}`), '',
     ].join('\n');
   }
 
@@ -329,7 +341,12 @@ export function apply(ctx, config = {}) {
     try { appendFileSync(files.transcript, `${JSON.stringify(line)}\n`); } catch (err) { logger.warn(`transcript write failed: ${err.message}`); }
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
-  const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
+  // The names channel: every person's names (aliases together) and the names fragments are about.
+  const nameGroups = () => [
+    ...Object.values(memory.people).map((p) => p.names ?? []).filter((n) => n.length),
+    ...[...new Set(memory.fragments.flatMap((f) => f.who ?? []))].map((n) => [n]),
+  ];
+  const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder, names: nameGroups });
   // Catch the index up with what happened while dsh was down (the local backend installs on first use).
   ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
@@ -465,9 +482,18 @@ export function apply(ctx, config = {}) {
       // A handoff with little new: the last stretch of the conversation, so the handoff can be written.
       const recent = withHandoff && fresh.length < 30 ? lines.filter((l) => l.at <= memory.cursor).slice(-(30 - fresh.length)).map(transcriptLine).join('\n') : '';
       const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}`).join('\n');
-      const frags = [...memory.fragments].sort(compareFragments).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
+      // The most important ones, plus the ones these records are about (BM25 of the records against
+      // every fragment), so an old state the records change can be found and replaced by id.
+      const closed = memory.fragments.filter((f) => !f.open);
+      const top = [...closed].sort(compareFragments).slice(0, 40);
+      const bm = createBm25(); for (const f of closed) bm.add(f.text);
+      const sc = bm.score(text);
+      const related = closed.map((f, i) => ({ f, s: sc[i] })).filter((x) => x.s > 0 && !top.includes(x.f)).sort((a, b) => b.s - a.s).slice(0, 20).map((x) => x.f);
+      const frags = [...top, ...related].map((f) => `${f.id} | ${f.text}`).join('\n');
+      const cal = fresh.length ? calendar(fresh[0].at, fresh.at(-1).at) : '';
+      const open = memory.fragments.filter((f) => f.open).sort((a, b) => (b.createdAt ?? 0) - (a.createdAt ?? 0)).slice(0, 40).map((f) => `${f.id} | ${f.text}`).join('\n');
       const ask = extractPrompt({
-        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags,
+        recent: recent ? clip(recent, 12000) : '', text, bankless, owner: memory.owner, self: memory.self, known, frags, open, cal,
         pending: memory.pending.slice(-30).map((x) => `${x.id} | ${x.person} | ${x.text}`).join('\n'),
         withHandoff, withDiary, day: withDiary ? dayLabel(new Date()) : '',
       });
@@ -580,7 +606,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         const s = c.agent?.session;
         if (!s || !(dot()?.isErrand?.(s.id) || isConversation(s.id, s.header?.cwd))) return '';
-        return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens, banks: !peopleOnly() });
+        return renderStanding(memory, { budgetTokens: cfg.fragmentBudgetTokens, openBudgetTokens: cfg.openBudgetTokens, banks: !peopleOnly() });
       },
     });
     // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
@@ -611,7 +637,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人），self=你自己的笔记（学会的事、习惯、看法），person=某个你认识的人（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；寒暄和一次性的小事不用记，系统会自己整理。',
+      description: '你自己的长期记忆。target：owner=关于他（你的人），self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里），person=某个你认识的人（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；寒暄和一次性的小事不用记，系统会自己整理。',
       parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove'] }, content: { type: 'string' }, oldText: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
@@ -654,6 +680,8 @@ export function apply(ctx, config = {}) {
     touch(e) { const p = touchPerson(memory, e); if (p) save(); return p; },
     /** Who is this ({ handles, platform, name }), without recording anything. */
     resolve(e) { return resolvePerson(memory.people, e); },
+    /** Whether anyone she really knows goes by this name (any platform). */
+    knows(name) { return Object.values(memory.people).some((p) => p.names.includes(name)); },
     card(ref) { return renderPerson(findPerson(memory.people, ref)); },
     setOwner(handle, name) { const p = setOwner(memory, handle, name); save(); return p; },
     /** When the last thing was said in her conversation (his words or hers) before `before`; 0 when nothing. */

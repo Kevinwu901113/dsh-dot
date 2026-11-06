@@ -172,10 +172,10 @@ export { describeNow };
 // assembles them, with this plugin's own lines (the observed ledger, her own life, the <contact/>
 // marker, playing, the field list). What varies per round is a small file filled into a placeholder.
 
-/** What the <contact/> marker becomes once the host knows whether her message went out. */
+/** What the <contact/> marker becomes once the host knows whether her message went out ('handed': her conversation decides). */
 export function fillContact(script, contact, said) {
   const text = String(contact?.text ?? '').replace(/<sep\s*\/>/gi, ' / ').trim();
-  const sent = said && text ? `「${text}」` : '';
+  const sent = said && text ? (said === 'handed' ? `（想跟他说「${text}」，等聊天那边看合不合适再说）` : `「${text}」`) : '';
   const kept = text ? '（打了几个字，最后没发出去）' : '（想了想，没发）';
   const filled = String(script ?? '').replace(/<contact\s*\/>/gi, () => (sent || kept));
   return { script: filled, marked: filled !== String(script ?? '') };
@@ -194,13 +194,14 @@ export function lengthBlockFor(model = '') {
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [] }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [] }) {
   const playing = Boolean(play && playApps.length);
   const system = prompt('interlude.round', {
     canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
     length: lengthBlockFor(model),
     phase: prompt(PHASES[phase] ?? PHASES.advance), // seed writes like an advance round
     herLife: herLife.length ? prompt('interlude.round.her-life') : '',
+    returned: returned.length ? prompt('interlude.round.returned') : '',
     contactRule: speak ? prompt('interlude.round.contact-rule') : prompt('interlude.round.contact-rule.off'),
     browsing: browser === 'disabled' ? prompt('interlude.round.browsing.disabled') : prompt('interlude.round.browsing.deferred'),
     agency: speak && phase !== 'follow-up' ? prompt('interlude.round.agency') : '',
@@ -221,12 +222,16 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
       ...(script ? String(script).split('\n').filter(Boolean).map((line) => { const i = line.indexOf('：'); return i > 0 ? { owner: 'narrator', at: line.slice(0, i).replace(/ · \w[\w-]*$/, ''), content: line.slice(i + 1) } : { owner: 'narrator', content: line }; }) : []),
       ...entries,
     ],
+    // What she really did in the last half hour, already woven into earlier rounds: where she is now follows from it.
+    lastHalfHour,
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
     webContext,
     // What she knows to be true (dsh-dot/memory): established past, like recentScript.
     memories,
     // Her own notes (dsh-dot/memory's self bank): what she does these days and what she has learned.
     herLife,
+    // What she handed to her errands earlier, now back: what she wanted, what she was busy with, when it happened (or not).
+    returned,
     currentEvent: { type: 'none' },
     output: 'one `interval` tool call: script, continuity, intents, browserIntents, playIntents, contact',
   };
@@ -363,6 +368,17 @@ export async function collectText(stream) { return (await collectReply(stream)).
 /** Token usage of one call, as the ledger records it (dsh-llm's TokenUsage, or null when the provider gave none). */
 export const usageOf = (u) => (u ? { in: Number(u.inputTokens ?? 0), out: Number(u.outputTokens ?? 0), cached: Number(u.cacheReadTokens ?? 0) } : null);
 
+/** Which device a tool call uses: 'phone', 'vm' (her computer), or '' for neither. */
+export const deviceOf = (name = '') => (name.startsWith(PHONE_TOOL_PREFIX) ? 'phone' : name.startsWith(VM_TOOL_PREFIX) ? 'vm' : '');
+
+/** Names in the Canon's supporting cast, parsed conservatively: 「名叫X」「叫做X」, a segment opening with 「X：」, or a bare list of names. */
+export function castNames(canon) {
+  const cast = String(canon?.storyDefaults?.supportingCast ?? '').trim();
+  const name = '[\\u4e00-\\u9fff]{2,4}';
+  if (new RegExp(`^${name}([、，,\\s]+${name})*$`).test(cast)) return cast.split(/[、，,\s]+/);
+  return [...new Set([...cast.matchAll(new RegExp(`(?:名叫|叫做|名字是)(${name})|(?:^|[\\n；;。])\\s*(${name})\\s*[：:]`, 'g'))].map((m) => m[1] || m[2]))];
+}
+
 /** HDSI storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
 export function renderCanon(canon, { withStyle = false } = {}) {
   const sd = canon?.storyDefaults ?? canon ?? {};
@@ -435,6 +451,16 @@ export function apply(ctx, config = {}) {
   let running = 0;
   let lastActSession = meta.lastSession || ''; // the character's most recent act: where observations happen (remembered across restarts)
   const observing = new Map(); // session id → resolve(assistant text) while an observation turn runs
+  const looked = new Map(); // session id → the device ('phone' | 'vm') an observation turn really used
+  // With dsh-dot, plays and device looks are tasks its errands take when free; what comes back
+  // (and how long it waited, behind what) is plot for the next round.
+  const dshDot = () => ctx.get('dshDot');
+  const at = (ms) => (ms ? describeNow(new Date(ms)) : null);
+  const remember = (kind, wanted, r) => {
+    meta.returned = [...(meta.returned ?? []), { kind, wanted, status: r.status, queuedAt: at(r.queuedAt), busyWith: r.busyWith || '', startedAt: at(r.startedAt), doneAt: at(r.doneAt), report: clip(String(r.report ?? ''), 400) }].slice(-5);
+    saveMeta();
+    audit('task-returned', { kind, status: r.status });
+  };
   const errandSession = async () => { try { return (await ctx.get('dshDot')?.errand?.()) || ''; } catch (error) { void error; return ''; } };
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
@@ -457,7 +483,7 @@ export function apply(ctx, config = {}) {
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
         return;
       case 'assistant/message': { if (!t || event.data?.interrupted) return; const text = contentText(event.data?.message?.content); if (text.trim()) t.assistant = text; return; }
-      case 'tool/call': if (t) t.tools++; return;
+      case 'tool/call': if (t) { t.tools++; t.on = deviceOf(event.data?.name) || t.on; } return;
       case 'approval/asked': if (t) t.approvals++; return;
       case 'turn/end': {
         running = Math.max(0, running - 1);
@@ -469,7 +495,7 @@ export function apply(ctx, config = {}) {
         // Her errand session (dsh-dot) is not where she lives: it never becomes the act session.
         if (lastActSession !== id && !ctx.get('dshDot')?.isErrand?.(id)) { lastActSession = id; meta.lastSession = id; saveMeta(); }
         const quiet = ['schedule', 'phone-check', 'notification', 'play'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
-        const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet });
+        const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet, on: t.on || undefined });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
         return;
       }
@@ -532,6 +558,7 @@ export function apply(ctx, config = {}) {
       }
       const target = deviceFor(b);
       if (!target) { audit('browse-held', { phase, why: 'no device', route: 'vm' }); return false; }
+      if (dshDot()?.task) return lookLater(b, target, phase);
       const observed = await observeInVm(b, target);
       if (!observed) return false;
       record(phase, observed);
@@ -563,6 +590,7 @@ export function apply(ctx, config = {}) {
     if (observing.has(sessionId)) { audit('browse-held', { why: 'observation already running', route: 'vm' }); return null; }
     const controller = ctx.get('sessionController');
     const found = await controller.resolveAgent(sessionId);
+    looked.delete(sessionId);
     if (!found || 'error' in found) throw new Error(`session ${sessionId}: ${found?.error?.message ?? 'not found'}`);
     const { agent } = found;
     try { if (ctx.get('goals')?.get(agent)?.phase === 'active') { audit('browse-held', { why: 'goal active', route: 'vm' }); return null; } } catch (error) { void error; }
@@ -574,7 +602,26 @@ export function apply(ctx, config = {}) {
     });
     try { await ctx.get('sessions')?.flush?.(agent.session); } catch (error) { void error; }
     if (text === null) { audit('browse-failed', { route: 'vm', error: 'timed out' }); return null; }
-    return { via: device, app: app || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(text.trim(), 1200), session: sessionId };
+    // The device she really looked with (a refused phone call that ended on the computer is 'vm').
+    const via = looked.get(sessionId) || device;
+    return { via, app: (via === device && app) || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(text.trim(), 1200), session: sessionId };
+  }
+  /** The same look as a dsh-dot task: the round goes on; the observation lands in webContext and `returned` when it is done. */
+  function lookLater(b, { device, app }, phase) {
+    let sid = '';
+    const release = () => { if (sid) observing.delete(sid); };
+    dshDot().task({
+      kind: 'look', key: `look|${device}|${b.url || b.query}`, text: observationPrompt(b, device, app), source: OBSERVATION_SOURCE, readOnly: true,
+      onStart: (id) => { sid = id; looked.delete(id); observing.set(id, release); },
+      onDone: (r) => {
+        const via = looked.get(sid) || device;
+        release();
+        if (r.status === 'done' && r.report) record(phase, { via, app: (via === device && app) || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(r.report, 1200), session: sid });
+        remember('look', b.purpose || b.query || b.url, r);
+      },
+    });
+    audit('browse-queued', { phase, device, query: b.query || b.url });
+    return true;
   }
   // Observation turns: read-only, and nothing to approve. Registered ahead of dsh-computer's gate
   // so no `ask` is ever produced; everything the allowlist does not name is refused with a reason
@@ -584,7 +631,12 @@ export function apply(ctx, config = {}) {
     if (!sessionId || !observing.has(sessionId)) return next();
     const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
     const phoneTool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
-    if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool)) || exec.name === PHONE_ZOOM_TOOL) return { kind: 'allow' };
+    if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool)) || exec.name === PHONE_ZOOM_TOOL) {
+      if (deviceOf(exec.name)) looked.set(sessionId, deviceOf(exec.name));
+      // Answering here skips the phone's own hook: take its lease (one session drives the phone at a time).
+      const busy = phoneTool || exec.name === PHONE_ZOOM_TOOL ? await ctx.get('dshPhone')?.lease?.(sessionId, phoneTool || exec.name) : null;
+      return busy ? { kind: 'deny', reason: busy } : { kind: 'allow' };
+    }
     audit('observation-refused', { session: sessionId, tool: exec.name });
     return { kind: 'deny', reason: `dsh-interlude: this is an observation — looking only, nothing to approve. "${exec.name}" is not available here; look with ${cfg.vmObservationTools.slice(0, 2).join(', ')}, ${cfg.phoneObservationTools.slice(5, 7).join(', ')}… or write down what you saw.` };
   }, { prepend: true });
@@ -615,8 +667,10 @@ export function apply(ctx, config = {}) {
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
         i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
-        i.assistant ? { owner: 'character', content: i.assistant } : null,
+        i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
       ]).filter(Boolean);
+      const back = meta.returned ?? [];
+      const lastHalfHour = (meta.recentActs ?? []).filter((a) => Date.parse(a.ts) >= now - 30 * 60000);
       const mem = ctx.get('dotMemory');
       // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
       const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
@@ -624,9 +678,10 @@ export function apply(ctx, config = {}) {
       const { system, user, tools } = buildPrompt({
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
+        lastHalfHour: lastHalfHour.map((a) => ({ at: a.ts.slice(5, 16).replace('T', ' '), on: a.on, did: a.did })),
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
         play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
-        memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [],
+        memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
@@ -669,7 +724,7 @@ export function apply(ctx, config = {}) {
       if (parsed?.contact) said = await contact(parsed.contact, phase);
       if (phase !== 'seed') {
         const filled = fillContact(script, parsed?.contact, said);
-        const sentLine = said && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
+        const sentLine = said === true && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
         appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${filled.script}\n\n${sentLine}`);
       }
       if (parsed?.truncated) logger.warn('interlude reply was cut off; kept the script only (raise maxTokens?)');
@@ -679,13 +734,20 @@ export function apply(ctx, config = {}) {
         if (intent) intents = intents.filter((i) => i.id !== intent.id);
         // An intent round settles the intent that woke it; it does not plant the next one, or the
         // character keeps waking herself all day. New intents come from follow-up and advance rounds.
-        if (phase !== 'intent') for (const i of parsed.intents) intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
+        // People who live only in the Canon never wake her for something no real app can show.
+        const fictional = castNames(canon).filter((n) => !mem?.knows?.(n));
+        if (phase !== 'intent') for (const i of parsed.intents) {
+          if (fictional.some((n) => i.text.includes(n))) { audit('intent-dropped', { why: 'fictional person', text: i.text }); continue; }
+          intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
+        }
         intents = intents.slice(-20);
         saveIntents();
       }
       try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date(now).toISOString(), phase, acts: items.length, model: `${sel.provider}/${sel.model}`, usage: spent[0], viaTool: Boolean(r1.args), reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
       writeFileSync(files.pending, '');
       meta.cursor = now; meta.count++; meta.dayRounds++;
+      meta.returned = (meta.returned ?? []).filter((r) => !back.includes(r)); // digested; what came back meanwhile waits for the next round
+      meta.recentActs = [...lastHalfHour, ...items.map((i) => ({ ts: i.ts, on: i.on, did: clip([i.user, i.assistant].filter(Boolean).join(' → '), 160) }))];
       // The ledger: tokens this round, added to today's count (/interlude shows it).
       for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
       if (phase === 'advance') meta.lastAdvance = now;
@@ -721,6 +783,12 @@ export function apply(ctx, config = {}) {
     const phone = ctx.get('dshPhone');
     if (!phone?.isReady) return held('phone not ready');
     if (!(await phone.apps?.().catch(() => []) ?? []).includes(pkg)) return held(`${p.app} is not on her phone`);
+    if (dshDot()?.task) {
+      dshDot().task({ kind: 'play', key: `play|${p.app}|${p.action}|${p.target}`, text: playPrompt(p, pkg), source: PLAY_SOURCE, onDone: (r) => remember('play', `${p.app} ${p.action}：${p.target}`, r) });
+      meta.dayPlays++; saveMeta();
+      audit('play-queued', { phase, app: p.app, action: p.action, target: p.target });
+      return true;
+    }
     // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
     const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
     const controller = ctx.get('sessionController');
@@ -742,6 +810,13 @@ export function apply(ctx, config = {}) {
     if (!inHours(cfg.activeHours)) { audit('contact-held', { phase, why: 'outside active hours' }); return false; }
     if (c.willingness < cfg.willingnessThreshold) { audit('contact-held', { phase, why: 'willingness' }); return false; }
     if (meta.dayContacts >= cfg.maxContactsPerDay) { audit('contact-held', { phase, why: 'daily cap' }); return false; }
+    // One voice: with dsh-dot her conversation says it (or not), in its own words.
+    if (dshDot()?.say) {
+      const handed = await dshDot().say(c.text.replace(/<sep\s*\/>/gi, '\n'));
+      if (handed) { meta.dayContacts++; saveMeta(); }
+      audit(handed ? 'contact-handed' : 'contact-held', { phase, ...(handed ? {} : { why: 'not handed over' }) });
+      return handed ? 'handed' : false;
+    }
     const q = ctx.get('dshQq');
     if (q?.connected && q.owner) {
       try {

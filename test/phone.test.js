@@ -93,7 +93,7 @@ test('phoneGate: installs and sensitive typing ask; looking does not', () => {
   assert.ok(OBSERVATION_TOOLS.includes('mobile_take_screenshot') && !OBSERVATION_TOOLS.includes('mobile_type_keys'));
 });
 
-function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false, files = {} } = {}) {
+function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false, files = {}, config = {} } = {}) {
   const state = { running, foreign };
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
@@ -104,7 +104,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     mkdirSync(join(home, 'emulator', 'resources'), { recursive: true });
     writeFileSync(join(home, 'emulator', 'resources', 'Toren1BD.posters'), 'poster wall\nsize 2 2\nposition -0.807 0.320 5.316\nrotation 0 -150 0\ndefault poster.png\n\nposter table\nsize 1 1\nposition -2.205 -0.077 3.949\nrotation -90 0 120\n');
   }
-  const spawned = [], execs = [], effects = [], gates = [], sections = [], plugins = [], logcats = [], tools = [];
+  const spawned = [], execs = [], effects = [], gates = [], events = [], sections = [], plugins = [], logcats = [], tools = [];
   let cmd, child;
   let polls = 0;
   const run = async (file, args) => {
@@ -120,7 +120,7 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
   const spawn = (file, args, opts) => { const c = fake(); if (args.includes('logcat')) { logcats.push(c); return c; } child = c; spawned.push({ file, args, opts }); return c; };
   const ctx = {
     logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }),
-    on: (name, fn) => { if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },
+    on: (name, fn, o) => { if (name === 'tools/pre-execute') gates[o?.prepend ? 'unshift' : 'push'](fn); if (name === 'session/event') events.push(fn); return () => {}; },
     effect(fn) { effects.push(fn()); },
     provide(n, v) { ctx[n] = v; },
     plugin(p, c) { plugins.push({ p, c }); return { dispose() {} }; },
@@ -133,9 +133,10 @@ function harness({ installed = true, license = true, bootAfter = 1, running = fa
     }[n]),
   };
   const routes = [];
-  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, aliveEveryMs: 20, mcp: true }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
-  const gate = async (name, input) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, input }, async () => out); return out; };
-  return { ctx, home, state, spawned, execs, effects, gate, sections, plugins, logcats, tools, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  apply(ctx, { home, abi: 'arm64-v8a', acceptLicense: license, bootTimeoutMs: 2000, restartDelayMs: 10, aliveEveryMs: 20, mcp: true, ...config }, { spawn, run, fetch: async () => { throw new Error('no network in tests'); }, mcpClient: { name: 'fake-mcp' } });
+  const gate = async (name, input, session) => { const exec = { name, input, agent: session ? { session: { id: session } } : undefined }; const run = (i) => (i < gates.length ? gates[i](exec, () => run(i + 1)) : { kind: 'allow', via: 'next' }); return run(0); };
+  const turnEnd = (id) => events.forEach((fn) => fn({ id }, { type: 'turn/end' }));
+  return { ctx, turnEnd, home, state, spawned, execs, effects, gate, sections, plugins, logcats, tools, cmd: () => cmd, child: () => child, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const until = async (pred, ms = 1500) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
 
@@ -435,4 +436,59 @@ test('phone_zoom tool: a part of the screen, enlarged, through the attachment st
   assert.match(readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8'), /"kind":"phone-zoom"/);
   assert.match(h.sections[0].text(), /phone_zoom 放大截图的一块，不用去电脑里裁图/);
   h.stop();
+});
+
+const audits = () => readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'phone-lease' || e.kind === 'qq-send-blocked');
+
+test('phone lease: one session drives the phone; another waits, then is refused; turn end and idle free it; her conversation goes first', async () => {
+  const h = harness({ config: { leaseWaitMs: 300, leaseIdleMs: 700 } });
+  const T = 'mcp__dot-phone__mobile_click_on_screen_at_coordinates';
+  assert.equal((await h.gate(T, {}, 'errand')).via, 'next');
+  const refused = await h.gate('mcp__dot-phone__mobile_take_screenshot', {}, 'interlude');
+  assert.equal(refused.kind, 'deny');
+  assert.match(refused.reason, /^手机正被另一件事占着（在用 mobile_click_on_screen_at_coordinates），稍后再试$/);
+  assert.equal((await h.gate(T, {}, 'errand')).via, 'next', 'the holder keeps going');
+  // the holder's turn ends: the waiting one gets it
+  const waiting = h.gate(T, {}, 'interlude');
+  setTimeout(() => h.turnEnd('errand'), 50);
+  assert.equal((await waiting).via, 'next');
+  // two wait; her conversation is first in line though it came second
+  h.ctx.dshPhone.setPriority('her');
+  const order = [];
+  const a = h.gate(T, {}, 'errand').then((r) => order.push(['errand', r.kind]));
+  await new Promise((r) => setTimeout(r, 20));
+  const b = h.gate(T, {}, 'her').then((r) => order.push(['her', r.kind]));
+  setTimeout(() => h.turnEnd('interlude'), 60);
+  await Promise.all([a, b]);
+  assert.deepEqual(order, [['her', 'allow'], ['errand', 'deny']]);
+  // idle: the holder stops touching it for leaseIdleMs
+  await new Promise((r) => setTimeout(r, 750));
+  assert.equal((await h.gate(T, {}, 'errand')).via, 'next');
+  assert.equal((await h.gate(T, {})).via, 'next', 'no session id: no lease');
+  assert.deepEqual([...new Set(audits().map((e) => e.event))].sort(), ['acquired', 'expired', 'refused', 'waited']);
+  h.stop();
+});
+
+test('phone QQ: typing or Enter with QQ in front is refused (search excepted); other apps and qqSendOnPhone pass', async () => {
+  let top = 'com.tencent.mobileqq/.activity.SplashActivity';
+  const run = async (config) => {
+    const h = harness({ config });
+    h.ctx.dshPhone.adbExec = async (args) => ({ stdout: args.join(' ').includes('dumpsys activity') ? `  topResumedActivity=ActivityRecord{1 u0 ${top} t9}\n` : '' });
+    return h;
+  };
+  const h = await run({});
+  const typed = await h.gate('mcp__dot-phone__mobile_type_keys', { text: '你好', submit: true }, 's');
+  assert.deepEqual(typed, { kind: 'deny', reason: '在手机 QQ 里不发消息，给人发 QQ 用 qq_send。' });
+  assert.equal((await h.gate('mcp__dot-phone__mobile_press_button', { button: 'ENTER' }, 's')).kind, 'deny');
+  assert.equal((await h.gate('mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 1, y: 2 }, 's')).via, 'next', 'reading: taps pass');
+  top = 'com.tencent.mobileqq/com.tencent.mobileqq.search.activity.UniteSearchActivity';
+  assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: '宽' }, 's')).via, 'next', 'QQ search may type');
+  top = 'com.android.chrome/com.google.android.apps.chrome.Main';
+  assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: 'hi' }, 's')).via, 'next');
+  assert.ok(audits().some((e) => e.kind === 'qq-send-blocked' && e.tool === 'mobile_type_keys'));
+  h.stop();
+  top = 'com.tencent.mobileqq/.activity.SplashActivity';
+  const h2 = await run({ qqSendOnPhone: true });
+  assert.equal((await h2.gate('mcp__dot-phone__mobile_type_keys', { text: 'hi' }, 's')).via, 'next');
+  h2.stop();
 });
