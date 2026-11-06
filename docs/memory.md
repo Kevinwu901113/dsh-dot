@@ -70,7 +70,9 @@
 
 ## 整理
 
-一次模型调用，读上次整理之后的记录（一次最多 `inputChars` 40000 字；积压更多就从最旧的分几次读，游标只走到真正读过的位置），输出三栏笔记的增删改、人物的印象和合并。只在两种时候发生：**新记录攒满 `consolidateEveryLines`（40）行**，或**交班**之前。`/dot memory now` 立刻整理。
+一次模型调用，读上次整理之后的记录（一次最多 `chunkLines` 80 行、`inputChars` 40000 字；积压更多就从最旧的分几次读，游标只走到真正读过的位置），输出三栏笔记的增删改、人物的印象和合并。只在两种时候发生：**新记录攒满 `consolidateEveryLines`（40）行**，或**交班**之前。`/dot memory now` 立刻整理。
+
+**失败了不连环重试**：一次整理没拿到 JSON（例如推理模型把输出额度全用在思考上，正文是空的），游标不动，下一次的批量减半（最少 `minChunkLines` 10 行），而且要再攒满一批新记录才重试，不会每一轮都带着越积越多的记录再试一遍。成功一次就恢复原来的批量。
 
 提示词的顺序是：规则（每次一字不差，命中服务商的前缀缓存）→ 她已有的三栏和认识的人 → 这段时间的记录。记录每行带时间（今年 `MM-DD HH:MM`，往年 `YYYY-MM-DD HH:MM`），「明天」「下周三」同样由代码换算好日期写在后面，模型照抄，不自己推算。
 
@@ -109,7 +111,7 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `chunkLines` 80 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
 自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（后端默认；`none` 不重排）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路）· `recallTopK` 10 · `recallMaxTokens` 1500 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35（不重排时）· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 

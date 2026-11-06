@@ -38,6 +38,8 @@ export const defaults = {
   handoffTokens: 150000,        // her conversation is handed over to a fresh session past this
   minTokensBetweenHandoffs: 40000,
   consolidateEveryLines: 40,    // transcript lines since the last consolidation that trigger one (and every handoff)
+  chunkLines: 80,               // at most this many lines per consolidation call; a backlog is read in several
+  minChunkLines: 10,            // after failed calls the chunk is halved, down to this
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
   dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
@@ -484,7 +486,13 @@ export function apply(ctx, config = {}) {
   // A backlog larger than one call reads (consolidations that failed, a long backfill) is consolidated
   // oldest-first in chunks: the cursor only ever moves past lines the model has actually read, so
   // nothing is skipped.
+  // A call that fails (no JSON back — e.g. a reasoning model that spent its whole output budget
+  // thinking) must not be retried on every turn with an ever larger backlog: each failure halves the
+  // next chunk (down to minChunkLines), and the `lines` trigger waits for another batch of new lines.
   let consolidating = null;
+  let failStreak = 0;
+  let holdUntil = 0; // the `lines` trigger waits until this many lines are pending
+  const chunkLines = () => Math.max(cfg.minChunkLines, Math.floor(cfg.chunkLines / 2 ** failStreak));
   async function consolidate({ reason = 'lines' } = {}) {
     if (consolidating) return consolidating;
     consolidating = (async () => {
@@ -493,9 +501,16 @@ export function apply(ctx, config = {}) {
       for (let round = 0; round < 20; round++) {
         const all = sinceCursor();
         if (!all.length) return result;
-        const fresh = takeChunk(all, cfg.inputChars);
+        const fresh = takeChunk(all.slice(0, chunkLines()), cfg.inputChars);
         result = await consolidateOnce(fresh, { reason: round ? `${reason}+${round}` : reason });
-        if (!result.ok || fresh.length === all.length) return result;
+        if (!result.ok) {
+          failStreak = Math.min(failStreak + 1, 6);
+          holdUntil = sinceCursor().length + cfg.consolidateEveryLines;
+          logger.warn(`consolidation failed (${result.error ?? result.skipped}); next try on ${chunkLines()} line(s), after ${cfg.consolidateEveryLines} more`);
+          return result;
+        }
+        failStreak = 0; holdUntil = 0;
+        if (fresh.length === all.length) return result;
       }
       return result;
     })();
@@ -515,7 +530,7 @@ export function apply(ctx, config = {}) {
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
     const out = parseLooseJson(r.raw);
-    if (!out) { audit('consolidate-unparsed', { reason }); return { error: 'reply was not JSON' }; }
+    if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
     if (bankless) { delete out.owner; delete out.self; }
     const report = applyExtraction(memory, out, { limits: cfg.limits });
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
@@ -601,7 +616,8 @@ export function apply(ctx, config = {}) {
       if (r.sessionId) handoffBase.set(r.sessionId, 0);
       return;
     }
-    if (sinceCursor().length >= cfg.consolidateEveryLines) void consolidate({ reason: 'lines' });
+    const pending = sinceCursor().length;
+    if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
   // Once a minute: the diary, from dailyAt on, once a day (a failed one is tried again next minute).
   ctx.effect(() => {

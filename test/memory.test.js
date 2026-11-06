@@ -109,6 +109,7 @@ export const charEmbedder = () => Promise.resolve({
   rerank: null,
 });
 function harness({ llmReply = '{}', recall = false } = {}) {
+  const reply = typeof llmReply === 'function' ? llmReply : () => llmReply;
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   // Automatic recall has its own tests (recall.test.js); here it must not install anything.
   writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: recall ? 'local' : 'off' } }));
@@ -134,7 +135,7 @@ function harness({ llmReply = '{}', recall = false } = {}) {
     get: (n) => services[n],
     provide(n, v) { services[n] = v; },
     inject(deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: (t) => { tools[t.name] = t; return () => {}; } }, effect: (f) => f(), on: (...a) => ctx.on(...a) }); },
-    llm: { stream: (opts) => { calls.push(opts); return (async function* () { yield { type: 'text-delta', text: llmReply }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } },
+    llm: { stream: (opts) => { calls.push(opts); return (async function* () { yield { type: 'text-delta', text: reply(opts) }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'deepseek-v4-flash' }) },
   };
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
@@ -539,4 +540,28 @@ test('review fixes: a restored item is not shelved again at once; an unreadable 
   apply(h.ctx, { home: h.home });
   assert.equal(readFileSync(join(dir, 'memory.v019.json'), 'utf8'), '{"first":true}');
   assert.equal(readdirSync(dir).filter((f) => /^memory\.v019-\d+\.json$/.test(f)).length, 1);
+});
+
+test('a failed consolidation (empty reply) is not retried every turn: the next waits for another batch and reads half as many lines', async () => {
+  let fail = true;
+  const h = harness({ llmReply: () => (fail ? '' : '{}') });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 10, chunkLines: 40, minChunkLines: 5 });
+  const turn = (i) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${i} 句话` }] }, { surfaceOp: 'append' }); h.emit('s1', 'assistant/message', msg(`回第 ${i} 句`)); h.emit('s1', 'turn/end', {}); };
+  const records = (c) => c.messages[0].content[0].text.split('=== 这段时间的记录 ===')[1].trim().split('\n').length;
+  for (let i = 0; i < 5; i++) turn(i);
+  await wait(30);
+  assert.equal(h.calls.length, 1, '10 lines: one call, it fails');
+  assert.equal(records(h.calls[0]), 10);
+  for (let i = 5; i < 9; i++) turn(i);
+  await wait(30);
+  assert.equal(h.calls.length, 1, 'not retried on every turn');
+  turn(9); await wait(30);
+  assert.equal(h.calls.length, 2, 'another batch pending: tried again');
+  assert.equal(records(h.calls[1]), 20, 'half of chunkLines');
+  fail = false;
+  for (let i = 10; i < 15; i++) turn(i);
+  await wait(30);
+  assert.equal(records(h.calls[2]), 10, 'halved again after the second failure');
+  assert.equal(records(h.calls[3]), 20, 'success: the rest of the backlog follows at full size');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
