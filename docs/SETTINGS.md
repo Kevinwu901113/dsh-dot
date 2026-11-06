@@ -106,6 +106,8 @@ setx DSH_DOT_COMPUTER off
 | `number` | `""` | 她的手机号，注册登录 App 用（也可用 `/phone number`；账号密码另存 `~/.dsh/dsh-dot-accounts.json`，见 [phone.md](phone.md)） |
 | `window` | `true` | 显示模拟器窗口 |
 | `gpu` | `"auto"` | 模拟器 GPU 模式。`auto` 在 API 35 上可能被强制成 CPU 软件渲染（`emulator.log` 里有 `forcing software rendering`），长时间跑会被模拟器的卡死检测杀掉；Mac 上可试 `"host"`（用 Mac 显卡），见 [phone.md](phone.md) |
+| `quickBoot` | `false` | Quick Boot 快照（退出存、启动读）。默认关：每次冷启动，慢一些，但被强杀后不会读到写了一半的快照 |
+| `adbPort` | `5137` | 插件自己的 adb server 端口，避开 MuMu、雷电、手机助手等自带旧 adb 占用的 5037；`0` = 用 5037 |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
 | `notifyCatchUpMs` | `43200000`（12 小时） | dsh 没开时到的通知，重启后这么久以内的照样叫醒她；更早的不叫 |
 | `leaseIdleMs` | `120000` | 同一时间只有一件事在用手机：占着的那件事这么久没碰手机（或它这一轮结束）就让出来 |

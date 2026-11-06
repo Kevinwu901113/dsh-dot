@@ -43,6 +43,8 @@ export const defaults = {
   port: 5554,               // console port; the adb serial is emulator-<port>
   window: true,             // show the emulator window (the phone's live view); false = headless
   gpu: 'auto',
+  quickBoot: false,         // Quick Boot snapshots (save on exit, load on start); off = cold boot, never a half-written snapshot
+  adbPort: 5137,            // her own adb server port (ANDROID_ADB_SERVER_PORT), away from other adbs on 5037; 0 = 5037
   locale: 'zh-CN',          // the phone's language (emulator -change-locale)
   timezone: 'Asia/Shanghai',
   number: '',               // her phone number for registering and logging into apps ('' = none); /phone number also sets it
@@ -553,9 +555,22 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'avd-created', avd: cfg.avd, api: cfg.api, abi });
   }
 
-  const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
+  // Her own adb server port: another adb on 5037 (MuMu, LDPlayer, phone assistants ship old ones)
+  // kills and restarts the server on every version mismatch, and she drops offline. 0 = the default 5037.
+  const adbPortEnv = () => (cfg.adbPort ? { ANDROID_ADB_SERVER_PORT: String(cfg.adbPort) } : {});
+  const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, ...adbPortEnv(), PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
 
-  let child = null, stopping = false, mcpFork = null;
+  let child = null, stopping = false, mcpFork = null, quickExits = 0;
+  /** The last lines of emulator.log, for the error a failed launch leaves. */
+  const logTail = (n = 8) => { try { return readFileSync(join(home, 'emulator.log'), 'utf8').trimEnd().split(/\r?\n/).slice(-n).join('\n'); } catch { return ''; } };
+  /** Windows: no WHPX / AEHD → x86_64 emulation exits at once. Say how to turn it on instead of launching. */
+  async function checkAccel() {
+    if (osTag !== 'windows') return;
+    try { await exec(paths.emulator, ['-accel-check'], { env: env(), timeout: 30_000, windowsHide: true }); } catch (err) {
+      const why = String(err.stdout || err.message).trim().split(/\r?\n/).slice(-3).join(' ');
+      throw new Error(`hardware acceleration is not available (${why}). Run as administrator: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart and bcdedit /set "{current}" hypervisorlaunchtype auto, enable virtualization (VT-x/AMD-V) in the BIOS if needed, reboot, then /phone restart`);
+    }
+  }
   async function waitBooted() {
     const deadline = Date.now() + cfg.bootTimeoutMs;
     while (Date.now() < deadline) {
@@ -600,7 +615,7 @@ export function apply(ctx, config = {}, deps = {}) {
     mcpFork = ctx.plugin(mcpClient, {
       transport: 'stdio', serverName: PHONE_SERVER, command: process.execPath, args: [entry], cwd: home,
       // ELECTRON_RUN_AS_NODE: inside the desktop app process.execPath is Electron; this makes it run as plain Node.
-      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ...adbPortEnv(), ELECTRON_RUN_AS_NODE: '1' },
       toolCallTimeoutMs: cfg.toolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
     logger.info(`${PHONE_TOOL_PREFIX}* mounted (mobile-mcp over adb)`);
@@ -638,21 +653,35 @@ export function apply(ctx, config = {}, deps = {}) {
       if (claim.attach) {
         logger.info(`${serial} is already running (AVD ${cfg.avd}); attaching`);
       } else {
+        await checkAccel();
         ensureCameraScene();
-        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
+        // No Quick Boot by default: the watchdog and `emu kill` can stop her mid-save, and the next
+        // launch then loads a half-written snapshot (Windows reports "Bug report interrupted by snapshot load?").
+        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.quickBoot ? [] : ['-no-snapshot']), ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
         // A piped, referenced child kept the Host alive after shutdown until the desktop updater
         // timed out ("Host did not complete graceful task teardown").
         mkdirSync(home, { recursive: true });
         const log = openSync(join(home, 'emulator.log'), 'a');
-        try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true }); } finally { closeSync(log); }
+        // windowsHide: on Windows a detached child gets its own console window; closing it kills the emulator.
+        try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true, windowsHide: true }); } finally { closeSync(log); }
         child.unref?.();
+        const launchedAt = Date.now();
         child.on('exit', (code) => {
           child = null;
           if (stopping) return;
+          // Exits within a minute of launch in a row = it cannot start (no hypervisor, GPU, broken AVD):
+          // stop relaunching and say why instead of flashing a window every few seconds.
+          quickExits = Date.now() - launchedAt < 60_000 ? quickExits + 1 : 0;
+          const tail = logTail();
+          if (quickExits >= 3) {
+            const message = `the emulator keeps exiting right after launch (code ${code}); stopped relaunching — /phone restart to try again${tail ? `\nemulator.log:\n${tail}` : ''}`;
+            setState('error', message); logger.error(message); audit({ kind: 'emulator-crash-loop', code });
+            return;
+          }
           setState('error', `the emulator exited (code ${code})`);
-          logger.warn(`emulator exited with ${code}; relaunching in ${cfg.restartDelayMs / 1000}s`);
+          logger.warn(`emulator exited with ${code}; relaunching in ${cfg.restartDelayMs / 1000}s${tail ? `\n${tail}` : ''}`);
           setTimeout(() => { if (!stopping) void start(); }, cfg.restartDelayMs).unref?.();
         });
       }
@@ -685,7 +714,9 @@ export function apply(ctx, config = {}, deps = {}) {
       let ok = false;
       try { ok = /^device\s*$/.test(String((await exec(paths.adb, ['-s', serial, 'get-state'], { env: env(), timeout: 8_000 })).stdout)); } catch {}
       if (ok) { misses = 0; return; }
-      if (++misses < 3) return;
+      // A flaky adb (another adb server fighting over the port) is not a dead emulator: ask adb to
+      // reconnect first, and give our own still-running child longer before it is killed.
+      if (++misses < (child && child.exitCode == null ? 8 : 3)) { try { await exec(paths.adb, ['reconnect', 'offline'], { env: env(), timeout: 8_000 }); } catch {} return; }
       clearInterval(aliveTimer); aliveTimer = null;
       shade.stop?.();
       audit({ kind: 'emulator-gone', serial });
@@ -701,6 +732,7 @@ export function apply(ctx, config = {}, deps = {}) {
    * not our child, so nothing would relaunch it on exit: wait until adb no longer lists it, then start.
    */
   phone.restart = async () => {
+    quickExits = 0;
     setState('booting');
     const ours = child;
     if (ours) ours.removeAllListeners('exit'); // its own relaunch-on-exit must not race this one
