@@ -243,3 +243,13 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **闸门按地盘分**（`src/computer/gate.js`）：`shellPatterns` 去掉 `rm -rf`、`python -c` / `node -e` 一类、`eval`、`nohup`、`chmod +x`、`crontab`、`systemctl`、`supervisorctl`（在她自己的虚拟机里都是正常用电脑），`truncate` 挪到下面；留 `sudo`、`curl|sh`、`curl|python`、`base64 -d|`、`ssh`/`scp`、`git push`、`dd if=`、`mkfs`、`shred`/`wipe`、`>/dev/sd`、受保护路径。新加 `sharedTouch`：把命令按 `; && || |` 和换行切段、跟着 `cd`，`rm`/`rmdir`/`unlink`/`mv`/`truncate`/`chmod`/`chown`/`chgrp`/`shred`、`find -delete`、`>` 覆盖写（`>>`、`/dev/null` 不算）的目标落在共享文件夹里或在它上面（`/Users/*`、`/`），或者是她整个家目录（`vmHome`，`~`、`$HOME`），就问。共享路径每次调用现读 `dshComputer.mounts`，经 `backend.toGuestPath`（Windows 是 `/mnt/<盘>/…`）；dsh 的 `bash` 的工作目录是会话文件夹（subprocess 第一次用时就共享它），所以相对路径算共享；虚拟机自带的 shell 从她家目录开始。粗糙是故意的：`$VAR` 当工作目录，引号外的转义不管。文件工具（`sandbox_file_operations` 删除/移动）没动，照旧问。
 - **`phone_zoom`**（`src/phone/phone.js`）：mobile-mcp 1.0.12 的截图只能整体缩小（`scale` 0–1、`maxSize`），没有裁剪放大，她以前去电脑里裁图。现截一张（`phone.screenshot`），自带的 PNG 解码（`decodePng`，原来 `blankPng` 里那段）裁 `{x,y,w,h}`、双线性放大 ≤3 倍、`encodePng`（deflate + 自算 CRC，不加依赖），`attachments.saveImages` 存成图片块返回；值里只有坐标和 ref，不含字节。`phone.device` 加一句。幕间观察轮放行它。
 - **看得见**：`dshDot.turn(id)` / `turns()` / `approvals()` 给出每个打开的轮的状态（`turnState`：`approval` 正在等审批、`stalled` 超过 `turnStallMs` 没事件、`timed-out` 审批过期后一直没动静、`running`）和最后在做什么。面板「最近 N 场」里进行中的那场按它显示「等审批 N 分钟」「卡住 N 分钟」「已超时」，顶上多一个黄 / 红徽章；`/dot` 列出每个在等的审批（在哪个会话、等了多久、上限）和每个卡住的轮（多久没事件、最后在做什么、跑腿会在多久后放弃 / 她的对话不取消），都没有时一行 `liveness: …` 带三个阈值。
+
+## 0.19.0：一个她当家、手机租约、幕间派活
+
+- **一个她当家**：只有她的对话跟他说话，跑腿只干活、交汇报；通知按会话线程过滤和合批；被忙会话扣住超过 `dot.heldMaxMs` 的通知改投新跑腿；同一轮里同一工具、几乎相同的参数达到 `dot.loopRepeat`（5）次就拒绝再调（`dot.loop-stopped`，审计 `loop-stopped`）；一轮里的审批提醒只发一条。
+- **手机租约**：同一时间只有一个会话操作手机（她的对话优先，幕间观察轮也走租约）；QQ 只用 `qq_send` 发；dsh 停机期间漏掉的通知开机补回。
+- **手机实时画面**：所有观看者共用一个截图循环，两帧之间至少歇截图耗时的 3 倍，失败退避，页面隐藏时暂停。起因：11-06 09:59 模拟器被自己的卡死检测杀掉（`detected a hanging thread 'QEMU2 main loop'`，主循环和 4 个 vCPU 同时 15 秒无响应）；API 35 + `-gpu auto` 被强制成 CPU 软件渲染，每次截屏都在宿主 CPU 上重合成整屏。`gpu` 的说明见 phone.md。
+- **幕间**：不再自己动手，改为给跑腿派任务（排在真实工作后面、会过期），结果和延迟作为剧情回来；虚构生活跟着她真实做过的事走，虚构人物不引发真实动作，人设只在 canon。
+- **记忆**：BM25 + 人名两路检索用 RRF 融合；改动的碎片替换旧的，日期写成绝对日期；使用记忆的规则（只答所问、不补细节、按记录时的状态说、不猜动机）。附 chat-memory-benchmark 适配器（`bench/`）。
+- **提示词覆盖**记下它基于哪一版内置，内置更新后面板和 `/dot prompts` 标出，`/dot prompts rebase` 对齐。
+- 小黑盒推广通知按通知正文（来自《…》，点击查看>>）识别。
