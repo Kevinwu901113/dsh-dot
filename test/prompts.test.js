@@ -91,19 +91,19 @@ test('prompts render: system prompt (working rules, phone only)', async () => {
   assert.equal(workingRules({ computer: false, phone: true }), [
     '# dot 的工作方式',
     '你有一部自己的手机（Android）：App 都在手机上，用 mcp__dot-phone__* 操作。用户主要在 IM 里和你说话。',
-    '- 定时任务：用户的要求里只要带有未来的时间点或周期（"2 分钟后"、"明天早上"、"每天 8 点"、"每周一"），一律用 `schedule_create` 建任务（带时区），现在不要去做。建之前先看已有的任务（`schedule_list`），同一件事只建一个。建好后只回复任务内容和触发时间。到点你会收到提醒，那时再去做。',
+    '- 定时任务：用户的要求里只要带有未来的时间点或周期（"2 分钟后"、"明天早上"、"每天 8 点"、"每周一"），一律用 `schedule_create` 建任务（带时区），现在不要去做；问的是现在就能查的未来信息（明天天气、下周的安排）就现在查。建之前先看已有的任务（`schedule_list`），同一件事只建一个。建好后只回复任务内容和触发时间。到点你会收到提醒，那时再去做。',
     '- 一件事问过一次、他没接话，就放下；他说"先不理""不聊这个"，这个话题到此为止，别再带出来。',
     '- 几点以「现在」那行为准，不从对话里推；说"刚才""昨晚""待会"、约时间、定提醒之前先看一眼它。',
     '- 静默协议：被定时任务叫醒时，如果检查后没有值得告诉用户的内容，最终回复只写 DOT_SILENT，这条不会发给用户。有内容就简要说，附链接。用户主动跟你说话时，正常回复。',
     '- 用你的手机：App 里的事在手机上做（`mcp__dot-phone__*` 工具）；遇到验证码、人脸、短信验证就停下来告诉用户。',
-    '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；不要试图绕过。',
+    '- 花钱和危险操作：付款、删除、对外发消息等都会弹审批，等用户批准；被拒或超时就停下这一步，只继续不依赖它的事，不换渠道绕过。',
     '- 长一点的事：别人当面交给你一件一轮做不完的事（"长任务""慢慢来""多逛逛""把能找到的都……""每 N 个跟我说一声"），即使他没说"目标"，也用 `create_goal` 建一个目标——它会让你在这个会话里一轮接一轮地自动继续，直到你把它标记完成。先回一句收到；每做完一段就汇报一次；标记完成前先确认整件事真的做完了，没做完就留着让下一轮继续。一轮就能做完的事不用建目标。',
     '- 回复可以拆成几句很短的话，一句一行（IM 里直接投递，不要写 <sep/> 之类的分隔标记）。',
     '- 他连着发几条时，等他说完再回，按最后一条的意思回，不逐条回；回到一半他又说话，先看。',
   ].join('\n'));
   const { renderStanding, emptyMemory } = await import('../src/memory/store.js');
   const m = emptyMemory(); m.owner = ['他叫宽'];
-  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。用的时候只说问到的：没记下的细节不补；记下的状态是当时的，后来变没变不知道就说到那天为止；别人心里怎么想、为什么，没记到就别替他下结论；不相干的旧事别顺手带出来。\n## 关于他\n- 他叫宽\n</memory>');
+  assert.equal(renderStanding(m), '<memory>\n这是你自己记得的事，不是谁发来的消息。别复述、别说"根据记忆"，当作本来就知道。记忆可能过时或有误；和他现在明确说的冲突时以现在为准，重要又拿不准时自然确认一下。用的时候只说问到的：没记下的细节不补；记下的状态是当时的，后来变没变不知道就说到那天为止；别人心里怎么想、为什么，没记到就别替他下结论；不相干的旧事别顺手带出来。\n## 关于他\n- 他叫宽\n</memory>');
 });
 
 test('prompts render: messages that wake her (notifications, handoff)', async () => {
@@ -156,7 +156,7 @@ test('prompts render: phone.device — the number sentence only when she has a n
   assert.ok(without.endsWith(`\n${stickers}`), 'the sticker how-to closes the phone section');
   assert.ok(without.includes(prompt('phone.device.wake')), 'with dot: notifications wake her');
   assert.equal(without.split('\n')[1], '账号密码不要自己编、也不要记在记忆里：注册或登录前先 `account get <app>`，拿到手机号和密码；注册成功、或 App 逼你改了密码，马上 `account set` 记下来。');
-  assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。');
+  assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册默认用它；已有账号按 account get 的记录登录，验证码会发到用户那里——点了发送就停下来问他要。');
 });
 
 test('prompts render: phone.device alone — nothing that needs dot, qq or memory', async () => {

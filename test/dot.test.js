@@ -126,7 +126,7 @@ test('an approval nobody answers within approvalWaitMs is rejected; he hears it 
     const post = h.hooks['tools/post-execute'];
     const res = await post({ callId: 'c1', name: 'bash', agent }, { isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "bash"' }] }, async () => ({ kind: 'accept' }));
     assert.deepEqual(res, { kind: 'block', feedback: [{ type: 'text', text: prompt('dot.approval-timeout', { minutes: 10 }) }] });
-    assert.equal(prompt('dot.approval-timeout', { minutes: 10 }), '没人批（等了 10 分钟没人点），这步先放下：换别的办法，或者以后再说。');
+    assert.equal(prompt('dot.approval-timeout', { minutes: 10 }), '没人批（等了 10 分钟没人点），这步先放下：只继续不依赖审批的事，不得换渠道绕过；需要时说明阻塞。');
     assert.deepEqual(await post({ callId: 'c1', name: 'bash' }, {}, async () => ({ kind: 'accept' })), { kind: 'accept' }, 'once');
     // withdrawn (the turn was stopped): 'cancelled', no expiry message
     const ac = new AbortController();

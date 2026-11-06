@@ -253,3 +253,13 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **记忆**：BM25 + 人名两路检索用 RRF 融合；改动的碎片替换旧的，日期写成绝对日期；使用记忆的规则（只答所问、不补细节、按记录时的状态说、不猜动机）。附 chat-memory-benchmark 适配器（`bench/`）。
 - **提示词覆盖**记下它基于哪一版内置，内置更新后面板和 `/dot prompts` 标出，`/dot prompts rebase` 对齐。
 - 小黑盒推广通知按通知正文（来自《…》，点击查看>>）识别。
+
+## 0.19.1：把覆盖里修好的提示词收回内置
+
+一位用户（作者本人）的 `~/dot/prompts` 里有 10 个覆盖，其中 6 个修的是内置本身的毛病，收回内置后覆盖可以删掉：
+- `dot.approval-timeout`、`interlude.play`、`dot.rules`（审批那条）：被拒或超时就停下这一步，只做不依赖它的事，不换渠道绕过（原来的"换别的办法"读起来像去绕审批）。
+- `interlude.round.phase.follow-up`：给用户的追发消息写 `<contact/>`、原话进 contact 字段（原来让她在 script 里写原话，和 `interlude.round` 的约定矛盾）；`interlude.round.refresh` 说清 `<contact/>` 只是标记。
+- `interlude.round`：区分消息到达和她注意到消息。
+- `phone.device.number`：注册用这个号，已有账号按 `account get` 的记录登录。
+- `memory.standing`：记忆可能过时，和他现在说的冲突时以现在为准。
+- `dot.rules`：问的是现在就能查的未来信息（天气、安排）就现在查，不建定时任务。

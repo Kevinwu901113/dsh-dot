@@ -356,7 +356,7 @@ test('phone number: /phone number persists and wins over dsh-dot.json; the devic
   assert.match((await h.cmd().handler({ rawInput: '' })).text, /number: \(none: \/phone number <digits>\) · accounts: 0 app\(s\)/);
   assert.match((await h.cmd().handler({ rawInput: 'number 138 0013-8000' })).text, /number set to 13800138000/);
   assert.equal(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-phone.json'), 'utf8')).number, '13800138000');
-  assert.match(h.sections[0].text(), /\n你的手机号是 13800138000：注册、登录都用它，验证码会发到用户那里——点了发送就停下来问他要。\n账号密码不要自己编/);
+  assert.match(h.sections[0].text(), /\n你的手机号是 13800138000：注册默认用它；已有账号按 account get 的记录登录，验证码会发到用户那里——点了发送就停下来问他要。\n账号密码不要自己编/);
   assert.match((await h.cmd().handler({ rawInput: 'number abc' })).text, /digits only/);
   assert.equal(h.ctx.dshPhone.number(), '13800138000', 'a bad number changes nothing');
   assert.match((await h.cmd().handler({ rawInput: 'number -' })).text, /number cleared/);

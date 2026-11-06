@@ -1,2 +1,2 @@
 写完后的连续性刷新：剧本已经写好了；调用一次 `interval` 工具，script 设为 "-"，并附上 {"continuity":{"current":"...","recent":["..."],"salient":["..."]}}，只根据已经确立的过去和现在重建。不要照抄或新编自由文本的未来计划。排定的未来事项另外通过 upcomingPlans、dueIntents 和 Schedule Preplan 提供。
-同时根据剧本填好：intents（剧本里提到的具体的未来可能，时间用 ISO-8601，严格晚于现在；没有就 []）、browserIntents（她想查的东西；没有就 []）、playIntents（她想在手机上做的一个小社交动作；没有就 []），以及 contact（剧本里的 <contact/> 标记就是发给用户的消息：把它的原话放进 contact.content；没有标记 → null）。不要改写剧本。
+同时根据剧本填好：intents（剧本里提到的具体的未来可能，时间用 ISO-8601，严格晚于现在；没有就 []）、browserIntents（她想查的东西；没有就 []）、playIntents（她想在手机上做的一个小社交动作；没有就 []），以及 contact（剧本里的 <contact/> 标记表示计划联系用户：将拟发送的原话放进 contact.content，不要把标记当作消息内容；没有标记 → null）。不要改写剧本。
