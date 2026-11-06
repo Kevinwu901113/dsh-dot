@@ -46,7 +46,9 @@ const sendText=()=>{if(!text.value)return;post('text',{text:text.value});text.va
 document.getElementById('send').addEventListener('click',sendText);
 document.getElementById('enter').addEventListener('click',()=>post('key',{key:'KEYCODE_ENTER'}));
 text.addEventListener('keydown',(e)=>{if(e.key==='Enter'){e.preventDefault();sendText()}});
-img.addEventListener('load',()=>status.textContent='live');img.addEventListener('error',()=>{status.textContent='reconnecting…';setTimeout(()=>{img.src='stream?fps=${fps}&r='+Date.now()},2000)});
+const connect=()=>{img.src='stream?fps=${fps}&r='+Date.now()};
+img.addEventListener('load',()=>status.textContent='live');img.addEventListener('error',()=>{if(document.hidden)return;status.textContent='reconnecting…';setTimeout(connect,2000)});
+document.addEventListener('visibilitychange',()=>{if(document.hidden){img.removeAttribute('src');status.textContent='paused'}else connect()});
 </script></body></html>`;
 }
 
@@ -78,6 +80,33 @@ export function mountLiveView({ webServer, connection, screenshot, shell, ready,
   const html = pageHtml({ name });
 
   const streams = new Set(); // stop functions of open /stream loops, ended on close()
+  // One capture loop for every open /stream: a second viewer must not double the screencaps.
+  // Each screencap is a full recomposite, and on a software-rendered emulator (API 35 + -gpu auto
+  // on a Mac) that runs on the host CPU; back-to-back captures stalled the VM past the emulator's
+  // 15 s hang detector, which killed it (2026-11-06). So capturing takes at most ~1/4 of the time,
+  // and failures back off.
+  const viewers = new Map(); // send(png) → requested fps
+  let capturing = false;
+  const captureLoop = async () => {
+    if (capturing) return;
+    capturing = true;
+    let fails = 0;
+    while (viewers.size) {
+      const started = Date.now();
+      let wait = 1000;
+      if (ready()) {
+        try {
+          const png = await screenshot();
+          const took = Date.now() - started;
+          fails = 0;
+          for (const send of viewers.keys()) send(png);
+          wait = Math.max(1000 / Math.max(...viewers.values(), 0.5) - took, took * 3, 50);
+        } catch (err) { fails++; wait = Math.min(30_000, 1000 * 2 ** fails); logger.debug?.(`live view frame failed: ${err.message}`); }
+      }
+      await new Promise((r) => setTimeout(r, wait));
+    }
+    capturing = false;
+  };
   const handler = async (req, res) => {
     // dsh decides who this is; nothing below runs for anyone else.
     if (rejectUnlessOwner(connection, req, res)) return;
@@ -92,18 +121,14 @@ export function mountLiveView({ webServer, connection, screenshot, shell, ready,
       if (req.method === 'GET' && sub === '/stream') {
         const fps = Math.min(5, Math.max(0.5, Number(url.searchParams.get('fps')) || 2));
         res.writeHead(200, { 'content-type': 'multipart/x-mixed-replace; boundary=frame', 'cache-control': 'no-store', connection: 'keep-alive' });
-        let open = true;
-        req.on('close', () => { open = false; });
-        const stop = () => { open = false; try { res.destroy(); } catch (error) { void error; } }; // drop the socket: nothing of ours outlives close()
-        streams.add(stop);
-        while (open) {
-          const started = Date.now();
-          if (ready()) {
-            try { const png = await screenshot(); if (!open) break; res.write(`--frame\r\ncontent-type: image/png\r\ncontent-length: ${png.length}\r\n\r\n`); res.write(png); res.write('\r\n'); } catch (err) { logger.debug?.(`live view frame failed: ${err.message}`); }
-          }
-          await new Promise((r) => setTimeout(r, Math.max(50, 1000 / fps - (Date.now() - started))));
-        }
-        streams.delete(stop);
+        const send = (png) => { res.write(`--frame\r\ncontent-type: image/png\r\ncontent-length: ${png.length}\r\n\r\n`); res.write(png); res.write('\r\n'); };
+        await new Promise((done) => {
+          const stop = () => { viewers.delete(send); streams.delete(stop); try { res.destroy(); } catch (error) { void error; } done(); }; // drop the socket: nothing of ours outlives close()
+          req.on('close', () => { viewers.delete(send); streams.delete(stop); done(); });
+          streams.add(stop);
+          viewers.set(send, fps);
+          void captureLoop();
+        });
         return res.end();
       }
       if (req.method === 'POST') {

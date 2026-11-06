@@ -279,6 +279,30 @@ test('live view on dsh\'s web server: every request passes dsh\'s connection gat
   server.close(); server.closeAllConnections?.();
 });
 
+test('live view: viewers share one capture loop, paced by how long a capture takes', async () => {
+  const { mountLiveView, LIVE_VIEW_PATH } = await import('../src/phone/live-view.js');
+  const http = await import('node:http');
+  let route = null, caps = 0;
+  // A slow capture (software-rendered emulator): 150 ms each.
+  const screenshot = async () => { caps++; await new Promise((r) => setTimeout(r, 150)); return Buffer.from('PNG!'); };
+  const view = mountLiveView({ webServer: { register: (r) => { route = r; return () => {}; } }, connection: { requestRejection: () => undefined }, screenshot, shell: async () => '', ready: () => true, logger: {} });
+  const server = http.createServer((req, res) => route.handler(req, res));
+  await new Promise((r) => server.listen(0, '127.0.0.1', r));
+  const url = `http://127.0.0.1:${server.address().port}${LIVE_VIEW_PATH}/stream?fps=5`;
+  const a = new AbortController(), b = new AbortController();
+  await Promise.all([fetch(url, { signal: a.signal }), fetch(url, { signal: b.signal })]);
+  await new Promise((r) => setTimeout(r, 1500));
+  // Two viewers at 5 fps would be 15 captures each, unshared and unpaced; one loop that rests 3× the
+  // capture time does ≤ 1500 / (150 + 450) + 1.
+  assert.ok(caps <= 4, `captures: ${caps}`);
+  a.abort(); b.abort();
+  await new Promise((r) => setTimeout(r, 700));
+  const after = caps;
+  await new Promise((r) => setTimeout(r, 700));
+  assert.equal(caps, after, 'no viewers, no captures');
+  view.close(); server.close(); server.closeAllConnections?.();
+});
+
 import { shade, SYSTEM, QQ_KUAN } from './fixtures/shade.js';
 
 test('phone: notifications flow through the policy to listeners and /phone; mute persists', async () => {

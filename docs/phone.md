@@ -29,7 +29,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `window` / `DSH_DOT_PHONE_WINDOW=off` | `true` | 显示模拟器窗口 |
 | `liveView` | `true` | 在 dsh 的 web server 上挂实时画面页（`/dsh-dot/phone/`）；`false` 关闭 |
 | `publicUrl` | 无 | 这个 dsh 对外的地址（你自己的暴露方式）；实时画面链接 = `<publicUrl>/dsh-dot/phone/`，写进审批提醒 |
-| `gpu` | `auto` | 模拟器 `-gpu` |
+| `gpu` | `auto` | 模拟器 `-gpu`（`auto` / `host` / `software` 等）。`auto` 在 API 35 上可能被强制成 CPU 软件渲染：`~/.dsh/phone/emulator.log` 里有 `forcing software rendering for GLES`。软件渲染下每次截屏都是宿主 CPU 重新合成整屏，持续高频截屏会让虚拟机卡过 15 秒、被模拟器的卡死检测杀掉（日志 `detected a hanging thread 'QEMU2 main loop'`）。Mac 上可改 `"host"` 用显卡，改后重启手机，确认日志里不再有 `forcing software rendering` |
 | `keepAppsAlive` / `keepAliveEveryMinutes` | `true` / `10` | 关掉 doze、standby、cached-apps freezer，给所有第三方 App（含她以后装的）后台运行许可，否则 QQ 退后台几分钟就被冻结、收不到消息（真机实测：发出到弹通知差 3.5 分钟） |
 | `locale` / `timezone` | `zh-CN` / `Asia/Shanghai` | 手机的语言和时区 |
 | `number` | 无 | 她的手机号（注册、登录 App 用）；也可用 `/phone number <号码>` 设 |

@@ -105,7 +105,7 @@ setx DSH_DOT_COMPUTER off
 | `locale` / `timezone` | `"zh-CN"` / `"Asia/Shanghai"` | 语言、时区 |
 | `number` | `""` | 她的手机号，注册登录 App 用（也可用 `/phone number`；账号密码另存 `~/.dsh/dsh-dot-accounts.json`，见 [phone.md](phone.md)） |
 | `window` | `true` | 显示模拟器窗口 |
-| `gpu` | `"auto"` | 模拟器 GPU 模式 |
+| `gpu` | `"auto"` | 模拟器 GPU 模式。`auto` 在 API 35 上可能被强制成 CPU 软件渲染（`emulator.log` 里有 `forcing software rendering`），长时间跑会被模拟器的卡死检测杀掉；Mac 上可试 `"host"`（用 Mac 显卡），见 [phone.md](phone.md) |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
 | `keepAppsAlive` | `true` | 不让后台 App 被冻结（聊天 App 收消息靠它） |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址，用于实时画面链接 |
