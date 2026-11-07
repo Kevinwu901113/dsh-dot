@@ -570,7 +570,7 @@ export function apply(ctx, config = {}) {
       if (event.type === 'assistant/message') {
         // What the turn cost, step by step: an interlude task hands it back with its result.
         const u = event.data?.usage;
-        if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += Number(u.inputTokens ?? 0) || 0; t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
+        if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
         if (!event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) t.text = text; }
         return;
       }
@@ -1055,7 +1055,7 @@ export function apply(ctx, config = {}) {
     audit('errand-cancelled', { session: id, idleMs: idle, cancelled, doing });
     const r = setTimeout(() => { void releaseHeld(id); }, 50); r.unref?.();
     void noteToConversation(noteOrigin(t.origin), errandStalledText(doing, Math.round(idle / 60000)));
-    if (taskRunning?.session === id) finishTask(taskRunning, 'done', errandStalledText(doing, Math.round(idle / 60000)));
+    if (taskRunning?.session === id) finishTask(taskRunning, 'stalled', errandStalledText(doing, Math.round(idle / 60000)), t.cost);
   };
   const turnInfo = (id, now = Date.now()) => {
     const t = turns.get(id);
@@ -1201,9 +1201,11 @@ export function apply(ctx, config = {}) {
     /**
      * Post an interlude task ({ kind: 'play'|'look'|'try', key, text, source, readOnly, ttlMs, onStart(sessionId), onDone(result) }):
      * run in an errand when nothing else is (see defaults.interludeQueueMax); `onDone` gets
-     * { status: 'done'|'expired'|'dropped', queuedAt, startedAt, doneAt, busyWith, report, cost: { in, cached, out } | null }. → 'queued' | 'refreshed'
+     * { status: 'done'|'stalled'|'expired'|'dropped', queuedAt, startedAt, doneAt, busyWith, report, cost: { in, cached, out } | null }. → 'queued' | 'refreshed'
      */
     task: enqueueTask,
+    /** How long a queued task waits before it expires. */
+    taskTtlMs: cfg.interludeTaskTtlMs,
     /** Something she wanted to tell him while living her day: a note in her conversation; she decides. True when handed over. */
     say: (text) => noteToConversation('say', text, prompt('dot.interlude-say', { text: String(text).trim() })),
     stats,

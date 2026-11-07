@@ -665,9 +665,16 @@ test('tries: a new thing she wants to do goes to her errands with hard limits; i
   assert.deepEqual(h.calls[0].tools[0].parameters.properties.tries.maxItems, 1);
   assert.deepEqual(tasks.map((t) => [t.kind, t.source]), [['try', TRY_SOURCE]]);
   assert.match(tasks[0].text, /想试试\] 你刚才想在电脑上：在电脑上用画图给自己画个新头像。因为看腻了现在这个。/);
-  assert.match(tasks[0].text, /不花钱[\s\S]*不改任何账号[\s\S]*不私信陌生人[\s\S]*要审批的等批准/);
+  assert.match(tasks[0].text, /不花钱[\s\S]*不改任何账号[\s\S]*不发帖、不评论、不私信任何人，也不找他[\s\S]*要审批的等批准/);
+  // while it runs, the errand cannot talk on QQ or write the ledger; other tools pass to their own gates
+  tasks[0].onStart('e1');
+  assert.equal((await h.gate('e1', 'qq_send')).kind, 'deny');
+  assert.equal((await h.gate('e1', 'mcp__dot-qq__send_group_msg')).kind, 'deny');
+  assert.equal((await h.gate('e1', `${VM_TOOL_PREFIX}browser_click`)).via, 'next');
+  assert.equal((await h.gate('s1', 'qq_send')).via, 'next', 'her conversation is not a try');
   const t0 = Date.now();
   tasks[0].onDone({ status: 'done', queuedAt: t0, startedAt: t0, doneAt: t0 + 60000, busyWith: '', report: '做了：画了一只戴耳机的猫\n结果：存成 avatar.png\n找他：不用', cost: { in: 12000, cached: 3000, out: 800 } });
+  assert.equal((await h.gate('e1', 'qq_send')).via, 'next', 'released when done');
   // he says something about it in her conversation: her tool notes it
   const fb = await h.tool().execute({ action: 'feedback', about: '头像', text: '猫挺可爱，换上吧' });
   assert.equal(fb.ok, true);
@@ -702,4 +709,38 @@ test('reflect and /interlude feedback: her afterthought and his word land on the
   assert.match(r.text, /look 看天气 → done：广州天气 ｜他：查天气挺贴心 ｜我：花了不少，下次直接用手机/);
   assert.match((await h.cmd().handler({ rawInput: 'feedback #nope 嗯' })).text, /no such doing #nope/);
   h.stop();
+});
+
+test('tries and plays: a task dot merges into one already waiting is not counted twice and leaves no stuck doing; no willingness = not wanted', async () => {
+  const reply = GOOD.replace('"contact":null', '"contact":null,"tries":[{"what":"试试记账 App","on":"either","willingness":0.9}],"playIntents":[{"app":"小黑盒","action":"like","target":"耳机测评","willingness":0.9}]');
+  const h = harness({ reply, vm: {} });
+  const tasks = [];
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { const same = tasks.some((x) => x.key === t.key); if (!same) tasks.push(t); return same ? 'refreshed' : 'queued'; }, isErrand: (id) => id === 'e1', session: () => 's1' } : n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe'] } : get(n)))(h.ctx.get);
+  for (const m of ['a', 'b']) { h.act('s1', m, 'ok'); await h.cmd().handler({ rawInput: 'now' }); }
+  assert.deepEqual(tasks.map((t) => t.kind).sort(), ['play', 'try']);
+  const list = JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8'));
+  assert.deepEqual(list.map((d) => d.kind).sort(), ['play', 'try'], 'one doing each');
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /today 1, posts 0\/1\) · tries: on \(today 1\/3\)/);
+  // the ledger tool: in her conversation with him only
+  assert.equal((await h.gate('e1', 'doings')).kind, 'deny');
+  assert.equal((await h.gate('qq-friend', 'doings')).kind, 'deny');
+  assert.equal((await h.gate('s1', 'doings')).via, 'next');
+  assert.match((await h.cmd().handler({ rawInput: 'feedback #abc' })).text, /what should she hear/);
+  h.stop();
+  assert.equal(parseReply('{"script":"x","tries":[{"what":"y"}]}').tries[0].willingness, 0);
+});
+
+test('doings: what was still queued when dsh went down is lost, not queued forever; msLeftInHours', async () => {
+  const { createDoings } = await import('../src/interlude/doings.js');
+  const { msLeftInHours } = await import('../src/interlude/core.js');
+  const file = join(mkdtempSync(join(tmpdir(), 'doings-')), 'doings.json');
+  let t = Date.now();
+  const d = createDoings(file, { now: () => t });
+  d.add({ kind: 'try', what: 'x' });
+  t += 3 * 3600000;
+  assert.equal(createDoings(file, { now: () => t }).all()[0].status, 'lost');
+  assert.equal(msLeftInHours('08:00-23:00', new Date(2026, 10, 7, 22, 30)), 30 * 60000);
+  assert.equal(msLeftInHours('22:00-02:00', new Date(2026, 10, 7, 23, 0)), 3 * 3600000);
+  assert.equal(msLeftInHours('08:00-23:00', new Date(2026, 10, 7, 23, 30)), 0);
+  assert.equal(msLeftInHours(''), Infinity);
 });

@@ -15,7 +15,7 @@
 // continuity snapshot (state.json), intents; slow change in who she is lives in dsh-dot/memory's self bank
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
-import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
+import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -185,6 +185,16 @@ export function inHours(spec, date = new Date()) {
 
 export { describeNow };
 
+/** Milliseconds until `spec`'s window ends ('HH:MM-HH:MM'), 0 outside it, Infinity for an empty spec. */
+export function msLeftInHours(spec, date = new Date()) {
+  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
+  if (!m) return Infinity;
+  if (!inHours(spec, date)) return 0;
+  const end = new Date(date); end.setHours(+m[3], +m[4], 0, 0);
+  if (end <= date) end.setDate(end.getDate() + 1);
+  return end - date;
+}
+
 // ── The round's system prompt is one file, src/prompts/interlude.round.txt (overridable whole from
 // <home>/prompts/). Its rules are HDS-Interlude's (1.0.1-rc57, src/narrator.ts and src/specialization.ts,
 // AGPL-3.0 © MOMOR1A/MomoiCore), translated into Chinese and merged, in the order HDSI's "lite" tier
@@ -330,7 +340,7 @@ export function parseReply(text, now = Date.now()) {
           willingness: Math.max(0, Math.min(1, Number(p?.willingness ?? 0) || 0)),
         })).filter((p) => p.app && p.action && (p.target || p.action === 'post')).slice(0, 1),
         tries: [].concat(o.tries ?? []).map((x) => ({
-          what: str(x?.what), on: ['phone', 'computer'].includes(x?.on) ? x.on : 'either', why: str(x?.why), willingness: num(x?.willingness, 0.7),
+          what: str(x?.what), on: ['phone', 'computer'].includes(x?.on) ? x.on : 'either', why: str(x?.why), willingness: num(x?.willingness, 0),
         })).filter((x) => x.what).slice(0, 1),
         reflect: [].concat(o.reflect ?? []).map((x) => ({ id: str(x?.id), text: str(x?.text) })).filter((x) => x.text).slice(0, 2),
       };
@@ -466,12 +476,14 @@ export function apply(ctx, config = {}) {
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
   const doings = createDoings(files.doings);
+  // Today's rounds (writing her life) as a cost record: dayTokensIn counts the cached reads too.
+  const roundCost = () => ({ in: Math.max(0, (meta.dayTokensIn ?? 0) - (meta.dayTokensCached ?? 0)), cached: meta.dayTokensCached ?? 0, out: meta.dayTokensOut ?? 0 });
 
   let state = readJson(files.state, null);
   let intents = readJson(files.intents, []);
   const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, dayPosts: 0, dayTries: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
   if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensOut = 0; meta.dayCost = null; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
 
@@ -527,6 +539,7 @@ export function apply(ctx, config = {}) {
         turns.delete(id);
         // An observation turn is the character looking, not an act: hand the text back, keep it out of the script.
         if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
+        if (t.origin === 'try' && !dshDot()?.task) trying.delete(id);
         lastActivity = Date.now();
         // Her errand session (dsh-dot) is not where she lives: it never becomes the act session.
         if (lastActSession !== id && !ctx.get('dshDot')?.isErrand?.(id)) { lastActSession = id; meta.lastSession = id; saveMeta(); }
@@ -582,6 +595,7 @@ export function apply(ctx, config = {}) {
       audit('browse-held', { phase, why: ctx.get('dshComputer') || phoneReady() ? 'vm daily cap' : 'no VM and no phone', route: 'vm', query: b.query || b.url });
       return false;
     }
+    let lookId = '';
     try {
       if (route === 'web') {
         const observed = await observeOnWeb(b);
@@ -595,13 +609,14 @@ export function apply(ctx, config = {}) {
       const target = deviceFor(b);
       if (!target) { audit('browse-held', { phase, why: 'no device', route: 'vm' }); return false; }
       if (dshDot()?.task) return lookLater(b, target, phase);
-      const id = doings.add({ kind: 'look', device: target.device, what: b.purpose || b.query || b.url });
+      lookId = doings.add({ kind: 'look', device: target.device, what: b.purpose || b.query || b.url });
       const observed = await observeInVm(b, target);
-      if (!observed) { doings.settle(id, { status: 'dropped' }); return false; }
+      if (!observed) { doings.settle(lookId, { status: 'dropped' }); return false; }
       record(phase, observed);
-      settleLook(id, observed);
+      settleLook(lookId, observed);
       return true;
-    } catch (error) { logger.warn(`browse failed: ${error.message}`); audit('browse-failed', { phase, route, error: clip(error.message, 200) }); return false; }
+    } catch (error) {
+      if (lookId) doings.settle(lookId, { status: 'dropped', result: error.message }); logger.warn(`browse failed: ${error.message}`); audit('browse-failed', { phase, route, error: clip(error.message, 200) }); return false; }
   }
   function settleLook(id, observed) {
     const got = observed.sources?.length ? observed.sources.map((x) => x.title).filter(Boolean).slice(0, 3).join('；') : observed.content;
@@ -650,10 +665,9 @@ export function apply(ctx, config = {}) {
   }
   /** The same look as a dsh-dot task: the round goes on; the observation lands in webContext and `returned` when it is done. */
   function lookLater(b, { device, app }, phase) {
-    let sid = '';
-    const doing = doings.add({ kind: 'look', device, what: b.purpose || b.query || b.url });
+    let sid = '', doing = '';
     const release = () => { if (sid) observing.delete(sid); };
-    dshDot().task({
+    const queued = dshDot().task({
       kind: 'look', key: `look|${device}|${b.url || b.query}`, text: observationPrompt(b, device, app), source: OBSERVATION_SOURCE, readOnly: true,
       onStart: (id) => { sid = id; looked.delete(id); observing.set(id, release); },
       onDone: (r) => {
@@ -663,6 +677,7 @@ export function apply(ctx, config = {}) {
         remember('look', b.purpose || b.query || b.url, r, doing);
       },
     });
+    if (queued !== 'refreshed') doing = doings.add({ kind: 'look', device, what: b.purpose || b.query || b.url });
     audit('browse-queued', { phase, device, query: b.query || b.url });
     return true;
   }
@@ -718,7 +733,7 @@ export function apply(ctx, config = {}) {
       // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
       const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
       const playApps = Object.keys(cfg.playApps).filter((label) => onPhone.includes(cfg.playApps[label]));
-      const view = doings.view({ rounds: { in: meta.dayTokensIn ?? 0, cached: 0, out: meta.dayTokensOut ?? 0 }, apps: playApps, price: cfg.price });
+      const view = doings.view({ rounds: roundCost(), apps: playApps, price: cfg.price });
       const { system, user, tools } = buildPrompt({
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
@@ -794,7 +809,7 @@ export function apply(ctx, config = {}) {
       meta.returned = (meta.returned ?? []).filter((r) => !back.includes(r)); // digested; what came back meanwhile waits for the next round
       meta.recentActs = [...lastHalfHour, ...items.map((i) => ({ ts: i.ts, on: i.on, did: clip([i.user, i.assistant].filter(Boolean).join(' → '), 160) }))];
       // The ledger: tokens this round, added to today's count (/interlude shows it).
-      for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
+      for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
       if (phase === 'advance') meta.lastAdvance = now;
       saveMeta();
       // HDSI deferred browsing: the character's browserIntent runs now through dsh's web service;
@@ -803,7 +818,7 @@ export function apply(ctx, config = {}) {
       for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
       for (const x of parsed?.tries ?? []) await tryOut(x, phase);
       // Her own afterthoughts on things she did: kept beside his reactions.
-      for (const r of parsed?.reflect ?? []) if (doings.feedback(r.id, r.text, 'her')) audit('reflected', { id: r.id });
+      for (const r of parsed?.reflect ?? []) if (r.id && doings.feedback(r.id, r.text, 'her', { exact: true })) audit('reflected', { id: r.id });
       audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, tried: (parsed?.tries ?? []).length, contact: Boolean(parsed?.contact), said });
       logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
       fails = 0;
@@ -834,9 +849,14 @@ export function apply(ctx, config = {}) {
     if (!phone?.isReady) return held('phone not ready');
     if (!(await phone.apps?.().catch(() => []) ?? []).includes(pkg)) return held(`${p.app} is not on her phone`);
     const counted = () => { meta.dayPlays++; if (p.action === 'post') meta.dayPosts = (meta.dayPosts ?? 0) + 1; saveMeta(); };
-    const doing = doings.add({ kind: 'play', app: p.app, action: p.action, what: [p.target, p.text].filter(Boolean).join('：'), why: p.why });
+    const entry = { kind: 'play', app: p.app, action: p.action, what: [p.target, p.text].filter(Boolean).join('：'), why: p.why };
     if (dshDot()?.task) {
-      dshDot().task({ kind: 'play', key: `play|${p.app}|${p.action}|${p.target}`, text: playPrompt(p, pkg), source: PLAY_SOURCE, onDone: (r) => remember('play', `${p.app} ${p.action}：${p.target}`, r, doing) });
+      let doing = '';
+      // A post's key carries its text, so two different posts to one board are two tasks.
+      const key = `play|${p.app}|${p.action}|${p.target}${p.action === 'post' ? `|${p.text}` : ''}`;
+      const r = dshDot().task({ kind: 'play', key, text: playPrompt(p, pkg), source: PLAY_SOURCE, ttlMs: ttlInHours(), onDone: (res) => remember('play', `${p.app} ${p.action}：${p.target}`, res, doing) });
+      if (r === 'refreshed') { audit('play-merged', { phase, app: p.app, action: p.action }); return false; } // the same one is already waiting
+      doing = doings.add(entry);
       counted();
       audit('play-queued', { phase, app: p.app, action: p.action, target: p.target });
       return true;
@@ -850,42 +870,70 @@ export function apply(ctx, config = {}) {
       if (!found || 'error' in found) return held(found?.error?.message ?? 'session not found');
       try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: playPrompt(p, pkg) }], source: PLAY_SOURCE }));
-      counted(); doings.settle(doing, { status: 'sent' });
+      counted(); doings.settle(doings.add(entry), { status: 'sent' });
       audit('play', { phase, app: p.app, action: p.action, target: p.target, why: p.why, session: sessionId });
       return true;
-    } catch (error) { doings.settle(doing, { status: 'dropped', result: error.message }); return held(error.message); }
+    } catch (error) { return held(error.message); }
   }
+  /** A task queued now expires when her active hours end (or at dot's own TTL, whichever is first). */
+  const ttlInHours = () => { const left = msLeftInHours(cfg.activeHours); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
   // 试: something new she wanted to do, on her phone or her computer — an errand turn with hard limits
   // in its prompt (interlude.try.txt) and the phone / computer gates' approvals on every act.
+  const tryDevices = () => [phoneReady() ? 'phone' : '', ctx.get('dshComputer') ? 'computer' : ''].filter(Boolean);
   const tryOpen = () => {
     rollDay();
     if (!cfg.tries || !inHours(cfg.activeHours) || (meta.dayTries ?? 0) >= cfg.tryDailyCap) return false;
-    if (!dshDot()?.task && !ctx.get('sessionController')) return false;
-    return phoneReady() || Boolean(ctx.get('dshComputer'));
+    // Only in an errand (or a session set aside for this): never in the middle of her conversation.
+    if (!dshDot()?.task && !(cfg.vmSession && ctx.get('sessionController'))) return false;
+    return tryDevices().length > 0;
   };
+  // Sessions running a try right now: the tools that would speak for her elsewhere are refused there.
+  const trying = new Set();
   async function tryOut(x, phase) {
     const held = (why) => { audit('try-held', { phase, why, what: x.what }); return false; };
-    if (!tryOpen()) return held(!cfg.tries ? 'disabled' : (meta.dayTries ?? 0) >= cfg.tryDailyCap ? 'daily cap' : 'no device or session');
+    if (!tryOpen()) return held(!cfg.tries ? 'disabled' : (meta.dayTries ?? 0) >= cfg.tryDailyCap ? 'daily cap' : !inHours(cfg.activeHours) ? 'outside active hours' : 'no errand or no device');
     if (x.willingness < cfg.willingnessThreshold) return held('willingness');
-    const doing = doings.add({ kind: 'try', what: x.what, why: x.why, device: x.on });
-    meta.dayTries = (meta.dayTries ?? 0) + 1; saveMeta();
-    audit('try', { phase, what: x.what, on: x.on, why: x.why });
+    if (x.on !== 'either' && !tryDevices().includes(x.on)) return held(`no ${x.on}`);
+    const entry = { kind: 'try', what: x.what, why: x.why, device: x.on };
+    const started = () => { meta.dayTries = (meta.dayTries ?? 0) + 1; saveMeta(); audit('try', { phase, what: x.what, on: x.on, why: x.why }); };
     if (dshDot()?.task) {
-      dshDot().task({ kind: 'try', key: `try|${x.what}`, text: tryPrompt(x), source: TRY_SOURCE, onDone: (r) => remember('try', x.what, r, doing) });
+      let doing = '', sid = '';
+      const r = dshDot().task({
+        kind: 'try', key: `try|${x.what}`, text: tryPrompt(x), source: TRY_SOURCE, ttlMs: ttlInHours(),
+        onStart: (id) => { sid = id; trying.add(id); },
+        onDone: (res) => { if (sid) trying.delete(sid); remember('try', x.what, res, doing); },
+      });
+      if (r === 'refreshed') { audit('try-merged', { phase, what: x.what }); return false; }
+      doing = doings.add(entry); started();
       return true;
     }
-    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
     const controller = ctx.get('sessionController');
-    if (!sessionId || !controller) { doings.settle(doing, { status: 'dropped', result: 'no session' }); return held('no session'); }
     try {
-      const found = await controller.resolveAgent(sessionId);
+      const found = await controller.resolveAgent(cfg.vmSession);
       if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'session not found');
+      try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
+      trying.add(cfg.vmSession);
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: tryPrompt(x) }], source: TRY_SOURCE }));
-      doings.settle(doing, { status: 'sent' });
+      doings.settle(doings.add(entry), { status: 'sent' }); started();
       return true;
-    } catch (error) { doings.settle(doing, { status: 'dropped', result: error.message }); return held(error.message); }
+    } catch (error) { return held(error.message); }
   }
+  // A try is hers to do on her phone and computer, not a way to talk: sending on QQ (to him or
+  // anyone) and the ledger tool are refused in that turn. Contact has its own gates (speak, caps).
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const sessionId = exec.agent?.session?.id;
+    // The ledger takes his reactions in her conversation with him only: not an errand, not a chat with someone else.
+    if (exec.name === 'doings' && sessionId && dshDot() && (dshDot().isErrand?.(sessionId) || (dshDot().session?.() && dshDot().session() !== sessionId))) {
+      return { kind: 'deny', reason: prompt('interlude.doings-tool.elsewhere') };
+    }
+    if (!sessionId || !trying.has(sessionId)) return next();
+    if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
+      audit('try-refused', { session: sessionId, tool: exec.name });
+      return { kind: 'deny', reason: prompt('interlude.try.refused', { tool: exec.name }) };
+    }
+    return next();
+  });
 
   // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
   async function contact(c, phase) {
@@ -1008,10 +1056,10 @@ export function apply(ctx, config = {}) {
         } else if (arg === 'doings') {
           result = `\n${doings.all().slice(-15).map(doingsLine).join('\n') || '(nothing yet)'}`;
         } else if (/^feedback\s+\S/.test(arg)) {
-          const m = /^feedback\s+(?:#(\S+)\s+)?([\s\S]+)$/.exec(arg);
-          const d = m && doings.feedback(m[1] ?? '', m[2], 'owner');
+          const m = /^feedback\s+(?:#(\S+)(?:\s+|$))?([\s\S]*)$/.exec(arg);
+          const d = m && m[2].trim() ? doings.feedback(m[1] ?? '', m[2], 'owner') : null;
           if (d) audit('feedback', { id: d.id, from: 'owner', via: 'command' });
-          result = d ? `\nnoted on #${d.id}: ${d.what}` : `\nno such doing${m?.[1] ? ` #${m[1]}` : ''}`;
+          result = d ? `\nnoted on #${d.id}: ${d.what}` : m && !m[2].trim() ? '\nwhat should she hear? /interlude feedback [#id] <text>' : `\nno such doing${m?.[1] ? ` #${m[1]}` : ''}`;
         } else if (arg === 'canon') {
           result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
         } else if (arg === 'now' || arg === 'advance' || arg === 'seed') {
@@ -1045,7 +1093,7 @@ export function apply(ctx, config = {}) {
         name: canon?.storyDefaults?.characterName ?? 'dot',
         state, cursor: meta.cursor, lastAdvance: meta.lastAdvance, rounds: meta.count,
         today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tries: meta.dayTries ?? 0, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
-        doings: doings.view({ rounds: { in: meta.dayTokensIn ?? 0, cached: 0, out: meta.dayTokensOut ?? 0 }, price: cfg.price, recent: 5 }),
+        doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 5 }),
         intents: intents.map((i) => ({ at: i.at, kind: i.kind, text: i.text })),
         script,
         speak: cfg.speak, play: cfg.play, activeHours: cfg.activeHours, advanceEveryMinutes: cfg.advanceEveryMinutes,

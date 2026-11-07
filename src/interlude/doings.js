@@ -39,9 +39,13 @@ export function labelOf(d) {
   return d.kind;
 }
 
+/** Queued longer than this at load (dsh restarted under it, its task is gone): 'lost'. */
+const LOST_AFTER = 2 * 3600000;
+
 export function createDoings(file, { now = () => Date.now() } = {}) {
   let list = [];
   try { const j = JSON.parse(readFileSync(file, 'utf8')); if (Array.isArray(j)) list = j; } catch (error) { void error; }
+  for (const d of list) if (d.status === 'queued' && now() - d.at > LOST_AFTER) { d.status = 'lost'; d.doneAt = now(); }
   const save = () => { try { writeFileSync(file, JSON.stringify(list.slice(-KEEP), null, 1)); } catch (error) { void error; } };
   let seq = 0;
   const find = (ref) => {
@@ -68,9 +72,9 @@ export function createDoings(file, { now = () => Date.now() } = {}) {
       save();
       return d;
     },
-    /** His reaction (from 'owner') or her own afterthought (from 'her') on a doing: `ref` is its id, a bit of its text, or '' for the latest. */
-    feedback(ref, text, from = 'owner') {
-      const d = find(ref);
+    /** His reaction (from 'owner') or her own afterthought (from 'her') on a doing: `ref` is its id, a bit of its text, or '' for the latest; `exact`: the id only. */
+    feedback(ref, text, from = 'owner', { exact = false } = {}) {
+      const d = exact ? list.find((x) => x.id === String(ref ?? '').replace(/^#/, '')) ?? null : find(ref);
       const t = clip(text, 200);
       if (!d || !t) return null;
       d.feedback = [...(d.feedback ?? []), { at: now(), from, text: t }].slice(-4);
