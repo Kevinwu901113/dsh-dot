@@ -35,9 +35,11 @@
 | | 交接 | `memory.handoff` |
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |
 | | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `interlude.play.post` `.verbs` `.parts` `interlude.play-rules` |
+| | 幕间：自己的时间 | `interlude.free` `.tidy` `.budget` `.refused` `.typing`；`interlude.tell-him` `.elsewhere` |
 | | 幕间：试点新的 | `interlude.try` `interlude.try.on` `interlude.try.refused`（那一趟里发 QQ 被拦下的理由）；她对话里记他反应的工具说明 `interlude.doings-tool` `interlude.doings-tool.elsewhere` |
 | 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
 | | 日记 | `memory.diary` |
+| | 成长：每周回顾 | `interlude.growth.system` `.too-much`；放进系统提示词的那段 `interlude.growth.section` |
 | | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 

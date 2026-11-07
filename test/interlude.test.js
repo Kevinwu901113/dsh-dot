@@ -30,7 +30,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
   const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [];
-  let cmd, tool;
+  let cmd; const tools = {};
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemblers.push(fn); if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },
@@ -39,7 +39,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
     get: (n) => ({
       systemPrompt: { context: (c) => prompts.push(c), section: (c) => { sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
       commands: { register: (c) => { cmd = c; return () => {}; } },
-      tools: { register: (t) => { tool = t; return () => {}; } },
+      tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
       dotMemory: memory,
@@ -66,7 +66,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { ctx, home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: () => tool, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, sections, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -743,4 +743,114 @@ test('doings: what was still queued when dsh went down is lost, not queued forev
   assert.equal(msLeftInHours('22:00-02:00', new Date(2026, 10, 7, 23, 0)), 3 * 3600000);
   assert.equal(msLeftInHours('08:00-23:00', new Date(2026, 10, 7, 23, 30)), 0);
   assert.equal(msLeftInHours(''), Infinity);
+});
+
+test('growth: week ids, how much a portrait changed, when the review is due, history and rollback', async () => {
+  const { weekId, changeRatio, createGrowth, lastDiaryDays } = await import('../src/interlude/growth.js');
+  assert.equal(weekId(new Date(2026, 10, 8, 12).getTime()), '2026-W45');
+  assert.equal(weekId(new Date(2026, 10, 9, 12).getTime()), '2026-W46');
+  assert.equal(weekId(new Date(2027, 0, 1, 12).getTime()), '2026-W53');
+  assert.equal(changeRatio('我喜欢画画', '我喜欢画画'), 0);
+  assert.ok(changeRatio('我喜欢画画，晚上逛小黑盒', '我喜欢画画，晚上看书') > 0.2);
+  assert.deepEqual(lastDiaryDays('## 11-01\na\n\n## 11-02\nb\n', 1), [{ day: '11-02', text: 'b' }]);
+  let t = new Date(2026, 10, 8, 20, 0).getTime(); // Sunday 20:00
+  const home = mkdtempSync(join(tmpdir(), 'growth-'));
+  const g = createGrowth({ home, maxChange: 0.35, now: () => t });
+  assert.equal(g.due('Sun 21:00', t), false);
+  t += 2 * 3600000;
+  assert.equal(g.due('Sun 21:00', t), true);
+  const first = '我叫小点。最近迷上了在电脑上画画，晚上不太刷小黑盒了。和他说话越来越随便。';
+  assert.equal(g.keep({ portrait: first, changes: '开始画画', tidy: ['每晚十点逛小黑盒'] }).ok, true);
+  assert.equal(g.due('Sun 21:00', t), false, 'done this week');
+  assert.deepEqual(g.tidy(), ['每晚十点逛小黑盒']);
+  t += 7 * 86400000;
+  const far = g.keep({ portrait: '完全不一样的另一个人，爱跑步，讨厌电脑。', changes: 'x', tidy: [] });
+  assert.equal(far.ok, false); assert.equal(far.why, 'changed too much');
+  assert.equal(g.portrait(), first, 'nothing kept');
+  assert.equal(g.keep({ portrait: `${first}这周学会了用记账 App。`, changes: '学会记账', tidy: [] }).ok, true);
+  assert.deepEqual(g.history().map((h) => [h.week, h.changes]), [['2026-W45', '开始画画'], ['2026-W46', '学会记账']]);
+  assert.equal(g.rollback('2026-W45'), true);
+  assert.equal(g.portrait(), first);
+  assert.equal(g.rollback('2020-W01'), false);
+});
+
+test('growth: the weekly review reads her week (never writes memory), keeps her portrait, and the portrait follows the Canon in her prompt and in the round', async () => {
+  const portrait = '我叫小点。最近迷上了画画，晚上不太刷小黑盒了。';
+  const memory = { herLife: () => ['装了小黑盒，常在晚上逛'], forInterlude: () => ['关于他：他叫宽'], knows: () => false };
+  const writes = new Proxy(memory, { set() { throw new Error('growth must not write memory'); } });
+  const reply = (o) => (o.tools?.[0]?.name === 'growth' ? `TOOL:${JSON.stringify({ portrait, changes: '开始画画', tidy: ['常在晚上逛'] })}` : GOOD);
+  const h = harness({ reply, memory: writes });
+  mkdirSync(join(h.home, 'memory'), { recursive: true });
+  writeFileSync(join(h.home, 'memory', 'diary.md'), '## 11-07 星期六\n今天第一次用画图软件画了只猫。\n\n');
+  const r = await h.cmd().handler({ rawInput: 'growth now' });
+  assert.match(r.text, /reviewed 20\d\d-W\d\d: 开始画画/);
+  const call = h.calls.find((c) => c.tools?.[0]?.name === 'growth');
+  const input = JSON.parse(call.messages[0].content[0].text);
+  assert.deepEqual(input.diaryThisWeek.map((d) => d.text), ['今天第一次用画图软件画了只猫。']);
+  assert.deepEqual(input.yourNotes, ['装了小黑盒，常在晚上逛']);
+  assert.match(call.system, /只为讨他喜欢而改的，不算你的变化/);
+  assert.match(h.canonText(), /你是 dot/);
+  const growthSection = h.sections.find((x) => x.name === 'interlude:growth');
+  assert.match(growthSection.text({ agent: { session: { id: 's1', header: { cwd: h.home } } } }), /## 你现在的样子[\s\S]*迷上了画画/);
+  assert.equal(growthSection.text({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } } }), '', 'only her sessions');
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.match(h.calls.at(-1).system, /迷上了画画/, 'the round sees her portrait too');
+  assert.match((await h.cmd().handler({ rawInput: 'growth' })).text, /迷上了画画[\s\S]*W\d\d：开始画画/);
+  h.stop();
+});
+
+test('free time: her own time goes to her errands with a budget; QQ and the ledger refused, typing in a social app asks, tell_him only there; past the budget the turn is stopped', async () => {
+  const { FREE_SOURCE } = await import('../src/interlude/core.js');
+  const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000, freeDailyTokens: 30000 } });
+  const tasks = [], cancelled = [];
+  let fg = 'com.max.xiaoheihe/.MainActivity';
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, isErrand: (id) => id === 'e1', session: () => 's1' }
+    : n === 'dshPhone' ? { isReady: true, apps: async () => [], foreground: async () => fg }
+      : n === 'agents' ? { get: (id) => ({ cancel: () => cancelled.push(id) }) } : get(n)))(h.ctx.get);
+  writeFileSync(join(h.home, 'her', '想学的.md'), '画画');
+  const r = await h.cmd().handler({ rawInput: 'free' });
+  assert.match(r.text, /queued \(budget 10000 tokens\)/);
+  assert.equal(tasks[0].kind, 'free'); assert.deepEqual(tasks[0].source, FREE_SOURCE);
+  assert.match(tasks[0].text, /自己的时间\] 接下来这段时间是你自己的，没有人要你做什么。/);
+  assert.match(tasks[0].text, /想学的\.md · \d+ B/);
+  assert.doesNotMatch(tasks[0].text, /点赞|评论|关注/, 'no list of what to do');
+  // before it starts, nothing is a free session
+  assert.equal((await h.gate('e1', 'qq_send')).via, 'next');
+  tasks[0].onStart('e1');
+  assert.equal((await h.gate('e1', 'qq_send')).kind, 'deny');
+  assert.equal((await h.gate('e1', 'doings')).kind, 'deny');
+  assert.equal((await h.gate('e1', 'tell_him')).via, 'next');
+  assert.equal((await h.gate('s1', 'tell_him')).kind, 'deny');
+  assert.equal((await h.gate('e1', `${PHONE_TOOL_PREFIX}mobile_type_keys`)).kind, 'ask');
+  fg = 'com.android.chrome/.Main';
+  assert.equal((await h.gate('e1', `${PHONE_TOOL_PREFIX}mobile_type_keys`)).via, 'next', 'typing elsewhere passes to the phone gate');
+  // tell_him with speak off: kept, not sent
+  const said = await h.tool('tell_him').execute({ text: '我画了只猫', why: '想给他看' });
+  assert.equal(said.handed, false);
+  // the budget: 9000 tokens → warned; 11000 → stopped
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 8000, outputTokens: 1000 } });
+  assert.deepEqual(cancelled, []);
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 2000, outputTokens: 0 } });
+  assert.deepEqual(cancelled, ['e1']);
+  tasks[0].onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '画了一只猫，存在 her/画/猫.png', cost: { in: 10000, cached: 0, out: 1000 } });
+  assert.equal((await h.gate('e1', 'qq_send')).via, 'next', 'over');
+  const list = JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8'));
+  assert.deepEqual(list.map((d) => [d.kind, d.status]), [['free', 'done'], ['say', 'kept']]);
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /free time: 1\/2 today, 11000\/30000 tokens/);
+  // the daily budget: what is left is less than one free time's floor → held
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 1 } });
+  h.stop();
+});
+
+test('free time: planned at random moments in her active hours, once a day', async () => {
+  const h = harness({ reply: GOOD, config: { freeTimesPerDay: 2, activeHours: '00:00-23:59' } });
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', isErrand: () => false } : get(n)))(h.ctx.get);
+  h.tick();
+  const meta = JSON.parse(readFileSync(join(h.home, 'interlude', 'meta.json'), 'utf8'));
+  assert.ok(meta.freeDay, 'planned today');
+  const end = new Date(); end.setHours(23, 29, 0, 0);
+  for (const at of meta.freeAt) assert.ok(at >= Date.now() - 60000 && at <= end.getTime() + 60000);
+  assert.ok(meta.freeAt.length <= 2);
+  h.stop();
 });

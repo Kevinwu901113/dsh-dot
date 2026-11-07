@@ -1,0 +1,1 @@
+[{stamp}] 这次的力气快用完了（已用 {used} / {budget} token），收个尾吧。

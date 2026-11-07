@@ -16,7 +16,7 @@
 // (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
 // multi-participant stories, seen/delayed replies inside a conversation.
 import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
@@ -24,6 +24,7 @@ import { sectionOf, setValues } from '../settings.js';
 import { prompt, table } from '../prompts.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
+import { createGrowth, growthTool } from './growth.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -91,6 +92,18 @@ export const defaults = {
   tryDailyCap: 3,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
   price: null,
+  // 自己的时间: a few times a day her errand self is woken with nothing to do but her own time — all her
+  // tools, her own folder (<home>/her), no list of what to do. Limits live in the gates (approvals, QQ
+  // refused, typing in social apps asks) and in the token budget, which ends the turn when it runs out.
+  freeTimesPerDay: 2,         // 0 = off; needs dsh-dot (her errands)
+  freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
+  freeDailyTokens: 300000,    // all free time in a day
+  // 成长: once a week she rewrites her own portrait ("她现在的样子", a system-prompt section after the
+  // Canon), changing at most portraitMaxChange of it; every version kept in <home>/her/growth.
+  growth: true,
+  growthAt: 'Sun 21:00',
+  portraitMaxChars: 900,
+  portraitMaxChange: 0.35,
   playApps: KNOWN_APPS.labels, // app label → package she may act in; {} = none
   speak: false,               // allow proactive contact over dsh-im
   maxContactsPerDay: 2,
@@ -121,6 +134,39 @@ export const OBSERVATION_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: '
 export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' });
 /** Source of the message that carries a try out: something new she wanted to do (approvals apply). */
 export const TRY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'try' });
+/** Source of the message that opens her own time. */
+export const FREE_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'free' });
+/** Phone apps where typing could post, comment or message someone: the social ones, QQ and WeChat. */
+export const SOCIAL_PACKAGES = [...new Set([...Object.values(KNOWN_APPS.labels), 'com.tencent.mobileqq', 'com.tencent.mm'])];
+/** A phone call that would type in the foreground app (as dsh-dot/phone's typesText). */
+const typesText = (tool, input) => tool === 'mobile_type_keys' || (['mobile_press_button', 'mobile_batch_commands'].includes(tool) && /ENTER|type_keys/i.test(JSON.stringify(input ?? '')));
+
+/** Her own folder as a short listing (relative paths, size, day), at most `max` entries. */
+export function listPlace(root, { max = 60, depth = 3 } = {}) {
+  const out = [];
+  const walk = (dir, rel, d) => {
+    let names = [];
+    try { names = readdirSync(dir, { withFileTypes: true }).sort((a, b) => a.name.localeCompare(b.name)); } catch (error) { void error; return; }
+    for (const e of names) {
+      if (out.length >= max) return;
+      const r = rel ? `${rel}/${e.name}` : e.name;
+      if (e.isDirectory()) { out.push(`${r}/`); if (d < depth) walk(join(dir, e.name), r, d + 1); continue; }
+      try { const st = statSync(join(dir, e.name)); const t = new Date(st.mtimeMs); out.push(`${r} · ${st.size} B · ${t.getMonth() + 1}-${t.getDate()}`); } catch (error) { void error; }
+    }
+  };
+  walk(root, '', 1);
+  return out;
+}
+
+/** The message that opens her own time. */
+export function freePrompt({ budget, left, place, listing = [], tidy = [], context = {} }, now = Date.now()) {
+  return prompt('interlude.free', {
+    stamp: stamp(now, now), budget, left, place,
+    listing: listing.length ? listing.map((l) => `- ${l}`).join('\n') : '（空的）',
+    tidy: tidy.length ? `${prompt('interlude.free.tidy', { items: tidy.map((t) => `「${t}」`).join('、') })}\n` : '',
+    context: JSON.stringify(context, null, 1),
+  });
+}
 
 /** The message that asks her to go and try the new thing she wanted to. */
 export function tryPrompt(x, now = Date.now()) {
@@ -476,6 +522,10 @@ export function apply(ctx, config = {}) {
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
   const doings = createDoings(files.doings);
+  const growth = cfg.growth ? createGrowth({ home, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
+  const portraitSection = () => { const p = growth?.portrait(); return p ? prompt('interlude.growth.section', { portrait: p }) : ''; };
+  const herPlace = join(home, 'her');
+  mkdirSync(herPlace, { recursive: true });
   // Today's rounds (writing her life) as a cost record: dayTokensIn counts the cached reads too.
   const roundCost = () => ({ in: Math.max(0, (meta.dayTokensIn ?? 0) - (meta.dayTokensCached ?? 0)), cached: meta.dayTokensCached ?? 0, out: meta.dayTokensOut ?? 0 });
 
@@ -483,7 +533,7 @@ export function apply(ctx, config = {}) {
   let intents = readJson(files.intents, []);
   const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, dayPosts: 0, dayTries: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
   if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
 
@@ -526,6 +576,7 @@ export function apply(ctx, config = {}) {
         if (event.data?.source?.kind === OBSERVATION_SOURCE.kind && event.data?.source?.form === 'observation') t.origin = 'observation';
         if (event.data?.source?.kind === PLAY_SOURCE.kind && event.data?.source?.form === 'play') { t.origin = 'play'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === TRY_SOURCE.kind && event.data?.source?.form === 'try') { t.origin = 'try'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
+        if (event.data?.source?.kind === FREE_SOURCE.kind && event.data?.source?.form === 'free') { t.origin = 'free'; t.user ||= '（她自己的时间）'; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-check') { t.origin = 'phone-check'; t.user ||= '（拿起手机看了一眼）'; }
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
@@ -720,11 +771,11 @@ export function apply(ctx, config = {}) {
     busy = true;
     const now = Date.now();
     try {
-      const identity = canonText();
+      const identity = [canonText(), portraitSection()].filter(Boolean).join('\n\n');
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try', 'free'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
       ]).filter(Boolean);
       const back = meta.returned ?? [];
@@ -935,6 +986,133 @@ export function apply(ctx, config = {}) {
     return next();
   });
 
+
+  // 成长: the weekly review (growth.js). One call; a portrait that changed too much is asked for again once.
+  let reviewing = false;
+  async function reviewGrowth({ force = false } = {}) {
+    if (!growth) return { skipped: 'growth off' };
+    if (reviewing) return { skipped: 'busy' };
+    reviewing = true;
+    try {
+      const mem = ctx.get('dotMemory');
+      let diaryText = '';
+      try { diaryText = readFileSync(join(home, 'memory', 'diary.md'), 'utf8'); } catch (error) { void error; }
+      const input = growth.input({ canon: canonText(), herLife: mem?.herLife?.() ?? [], owner: mem?.forInterlude?.() ?? [], diaryText, doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 20 }) });
+      if (!input.diaryThisWeek.length && !input.yourDoings.recent.length && !input.yourNotes.length) { growth.skip('nothing this week'); audit('growth-skipped', { why: 'nothing this week' }); return { skipped: 'nothing this week' }; }
+      const sel = ctx.agentDefaultModel.currentSelection();
+      const system = prompt('interlude.growth.system', { name: canon?.storyDefaults?.characterName ?? 'dot', maxChars: cfg.portraitMaxChars, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
+      const messages = [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-interlude' } })];
+      const call = async (msgs) => {
+        const r = await collectReply(ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs }));
+        const u = usageOf(r.usage);
+        if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; saveMeta(); }
+        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: 'growth', usage: u, reply: clip(r.args || r.text, 3000) })}\n`); } catch (error) { void error; }
+        try { return JSON.parse(r.args || r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (error) { void error; return null; }
+      };
+      let out = await call(messages);
+      let kept = growth.keep(out ?? {});
+      if (!kept.ok && kept.why === 'changed too much') {
+        out = await call([...messages, createUserMessage({ content: [{ type: 'text', text: prompt('interlude.growth.too-much', { ratio: `${Math.round(kept.ratio * 100)}%`, change: `${Math.round(cfg.portraitMaxChange * 100)}%` }) }], source: { kind: 'dsh-interlude' } })]);
+        kept = growth.keep(out ?? {}, { force });
+      }
+      if (!kept.ok) { growth.skip(kept.why); audit('growth-refused', { why: kept.why, ratio: kept.ratio }); return { error: kept.why }; }
+      audit('growth', { week: kept.week, ratio: Math.round(kept.ratio * 100) / 100, tidy: growth.tidy().length });
+      logger.info(`growth ${kept.week}: portrait rewritten (${Math.round(kept.ratio * 100)}% changed)`);
+      return { ok: true, week: kept.week, changes: String(out?.changes ?? '') };
+    } catch (error) { logger.warn(`growth review failed: ${error.message}`); audit('growth-failed', { error: clip(error.message, 200) }); return { error: error.message }; } finally { reviewing = false; }
+  }
+
+  // 自己的时间: a few times a day, at random moments in her active hours, her errand self gets time of her own.
+  const free = new Map(); // session id → { cost, warned, stopped, doing }
+  const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
+  const planFree = (now = Date.now()) => {
+    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(cfg.activeHours || '').trim());
+    const day = new Date(now); day.setHours(0, 0, 0, 0);
+    let start = day.getTime(), end = start + 86400000;
+    if (m) { start = day.getTime() + (+m[1] * 60 + +m[2]) * 60000; end = day.getTime() + (+m[3] * 60 + +m[4]) * 60000; if (end <= start) end += 86400000; }
+    const from = Math.max(now, start), to = end - 30 * 60000;
+    meta.freeAt = to > from ? Array.from({ length: Math.max(0, cfg.freeTimesPerDay) }, () => Math.round(from + Math.random() * (to - from))).sort((a, b) => a - b) : [];
+    meta.freeDay = dayOf(new Date(now)); saveMeta();
+  };
+  async function freeTime(phase = 'free') {
+    rollDay();
+    const held = (why) => { audit('free-held', { phase, why }); return { skipped: why }; };
+    if (!dshDot()?.task) return held('needs her errands (dsh-dot)');
+    if (free.size) return held('already running');
+    if (freeLeft() < Math.min(cfg.freeTokenCap, 20000)) return held('daily budget used');
+    const budget = Math.min(cfg.freeTokenCap, freeLeft());
+    const mem = ctx.get('dotMemory');
+    const context = {
+      now: describeNow(new Date()),
+      portrait: growth?.portrait() || null,
+      yourNotes: mem?.herLife?.() ?? [],
+      yourDoings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 10 }),
+      lately: state?.current ?? null,
+    };
+    let doing = '', sid = '';
+    const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), tidy: growth?.tidy() ?? [], context });
+    const r = dshDot().task({
+      kind: 'free', key: `free|${dayOf()}|${meta.dayFrees ?? 0}`, text, source: FREE_SOURCE, ttlMs: ttlInHours(),
+      onStart: (id) => { sid = id; free.set(id, { cost: 0, budget, warned: false, stopped: false }); },
+      onDone: (res) => { if (sid) free.delete(sid); remember('free', '自己的时间', res, doing); audit('free-done', { status: res.status, tokens: res.cost ? tokensOf(res.cost) : 0 }); },
+    });
+    if (r === 'refreshed') return held('already queued');
+    doing = doings.add({ kind: 'free', what: '自己的时间' });
+    meta.dayFrees = (meta.dayFrees ?? 0) + 1; saveMeta();
+    growth?.clearTidy();
+    audit('free-queued', { phase, budget });
+    return { ok: true, budget };
+  }
+  // What her own time costs, step by step: told to wrap up past 80% of its budget, stopped at 100%.
+  ctx.on('session/event', (session, event) => {
+    const f = free.get(session?.id);
+    if (!f || event?.type !== 'assistant/message' || !event.data?.usage) return;
+    const u = event.data.usage;
+    const step = (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheReadTokens ?? 0) || 0) + (Number(u.outputTokens ?? 0) || 0);
+    f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; saveMeta();
+    const id = session.id;
+    if (!f.warned && f.cost >= 0.8 * f.budget) {
+      f.warned = true;
+      void (async () => {
+        try {
+          const found = await ctx.get('sessionController')?.resolveAgent(id);
+          const agent = found && !('error' in found) ? found.agent : null;
+          const m = createUserMessage({ content: [{ type: 'text', text: prompt('interlude.free.budget', { stamp: stamp(), used: f.cost, budget: f.budget }) }], source: FREE_SOURCE });
+          if (typeof agent?.steer === 'function') agent.steer(m); else if (typeof agent?.send === 'function') agent.send(m, 'next-step', true);
+          audit('free-warned', { session: id, cost: f.cost });
+        } catch (error) { void error; }
+      })();
+    }
+    if (!f.stopped && f.cost >= f.budget) {
+      f.stopped = true;
+      try { ctx.get('agents')?.get?.(id)?.cancel?.({ kind: 'hook', reason: 'dsh-interlude: free time budget' }, { keepInbox: true }); } catch (error) { void error; }
+      audit('free-stopped', { session: id, cost: f.cost });
+    }
+  });
+  // In her own time: no QQ (he is reached through tell_him), no ledger tool, and typing in a social app asks first.
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const sessionId = exec.agent?.session?.id;
+    if (exec.name === 'tell_him') return sessionId && free.has(sessionId) ? next() : { kind: 'deny', reason: prompt('interlude.tell-him.elsewhere') };
+    if (!sessionId || !free.has(sessionId)) return next();
+    if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
+      audit('free-refused', { session: sessionId, tool: exec.name });
+      return { kind: 'deny', reason: prompt('interlude.free.refused', { tool: exec.name }) };
+    }
+    const tool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
+    if (tool && typesText(tool, exec.input ?? exec.args ?? exec.arguments)) {
+      const fg = await ctx.get('dshPhone')?.foreground?.().catch?.(() => '') ?? '';
+      const pkg = String(fg).split('/')[0];
+      if (SOCIAL_PACKAGES.includes(pkg)) {
+        const r = await next();
+        if (r?.kind === 'deny' || r?.kind === 'ask') return r;
+        const label = Object.keys(KNOWN_APPS.labels).find((k) => KNOWN_APPS.labels[k] === pkg) ?? pkg;
+        audit('free-typing-asked', { session: sessionId, app: pkg });
+        return { kind: 'ask', reason: prompt('interlude.free.typing', { app: label }) };
+      }
+    }
+    return next();
+  }, { prepend: true });
+
   // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
   async function contact(c, phase) {
     if (!cfg.speak) return false;
@@ -982,6 +1160,14 @@ export function apply(ctx, config = {}) {
     if (busy || running > 0) return;
     const now = Date.now();
     rollDay();
+    if (growth && growth.due(cfg.growthAt, now)) { void reviewGrowth(); return; }
+    if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
+      if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
+      if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(cfg.activeHours) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
+        meta.freeAt = meta.freeAt.slice(1); saveMeta();
+        void freeTime('scheduled'); return;
+      }
+    }
     const due = intents.find((i) => Date.parse(i.at) <= now);
     if (due) { void round('intent', due); return; }
     if (lastActivity && now - lastActivity >= cfg.idleMinutes * 60000 && digest().items.some((i) => !i.quiet)) { void round('follow-up'); return; }
@@ -1000,9 +1186,15 @@ export function apply(ctx, config = {}) {
       order: scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1,
       text: (c) => (inHome(c) ? canonText() : ''),
     }), 'dsh-interlude: canon section');
+    // Who she is now, in her own words (growth.js): right after the Canon; it changes once a week, so the cached prefix holds.
+    scope.effect(() => scope.systemPrompt.section({
+      name: 'interlude:growth',
+      order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1) + 0.5,
+      text: (c) => (inHome(c) ? portraitSection() : ''),
+    }), 'dsh-interlude: growth section');
     // Drop dsh's own openers for the character's sessions so the Canon is the first thing the model
     // reads; other sessions are untouched. (A `complete` section cannot do this per session.)
-    const keep = (name) => name === 'interlude:canon' || name === 'dot:rules' || name.startsWith('mcp:');
+    const keep = (name) => name === 'interlude:canon' || name === 'interlude:growth' || name === 'dot:rules' || name.startsWith('mcp:');
     scope.effect(() => scope.on('system-prompt/assemble', async (_assembly, c, next) => {
       const assembly = await next();
       if (!inHome(c)) return assembly;
@@ -1035,14 +1227,26 @@ export function apply(ctx, config = {}) {
         return { ok: true, note: `记在 #${d.id}（${d.what}）` };
       },
     }), 'dsh-interlude: doings tool');
+    scope.effect(() => scope.tools.register({
+      name: 'tell_him',
+      description: prompt('interlude.tell-him'),
+      parameters: { type: 'object', properties: { text: { type: 'string' }, why: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.note ?? '' }] },
+      async execute({ text, why = '' }) {
+        const said = await contact({ text: String(text ?? ''), willingness: 1, reason: String(why) }, 'free');
+        const id = doings.add({ kind: 'say', what: String(text ?? ''), why });
+        doings.settle(id, { status: said ? 'handed' : 'kept' });
+        return { ok: true, handed: Boolean(said), note: said ? '交给和他的对话了，说不说由那边的你决定。' : '记下了，这会儿不发（主动联系关着、今天次数到了或者不在活跃时间）。' };
+      },
+    }), 'dsh-interlude: tell_him tool');
   });
 
   // 5. /interlude
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id)',
-      input: { hint: '[now | advance | seed | preset <code> | canon | doings | feedback [#id] <text>]' },
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id), "free" gives her own time now, "growth" shows her portrait and its history ("growth now" reviews this week, "growth <week>" shows one, "growth rollback <week>" goes back to it)',
+      input: { hint: '[now | advance | seed | preset <code> | canon | doings | feedback [#id] <text> | free | growth [now | <week> | rollback <week>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
@@ -1053,6 +1257,16 @@ export function apply(ctx, config = {}) {
             audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
             result = `\nimported: ${canon.source.title} by @${canon.source.author} (${canon.source.license}) → ${files.canon}`;
           } catch (error) { result = `\nimport failed: ${error.message}`; }
+        } else if (/^growth(\s|$)/.test(arg)) {
+          const [, sub = '', week = ''] = arg.split(/\s+/);
+          if (!growth) result = '\ngrowth is off (interlude.growth = false)';
+          else if (sub === 'now') { const r = await reviewGrowth({ force: true }); result = r.ok ? `\nreviewed ${r.week}: ${r.changes}` : `\nnot reviewed: ${r.skipped ?? r.error}`; }
+          else if (sub === 'rollback') result = growth.rollback(week) ? `\nportrait is ${week}'s again` : `\nno portrait for ${week || '(week?)'}`;
+          else if (/^\d{4}-W\d{2}$/.test(sub)) { const h = growth.history().find((x) => x.week === sub); result = h ? `\n${sub}\n${h.portrait}\n\n这周变了什么：${h.changes}` : `\nno portrait for ${sub}`; }
+          else result = `\n${growth.portrait() || '(no portrait yet: the first review writes one; /interlude growth now)'}\n\n${growth.history().map((h) => `${h.week}：${clip(h.changes.replace(/\s+/g, ' '), 120)}`).join('\n') || '(no history yet)'}`;
+        } else if (arg === 'free') {
+          const r = await freeTime('command');
+          result = r.ok ? `\nher own time is queued (budget ${r.budget} tokens)` : `\nnot queued: ${r.skipped}`;
         } else if (arg === 'doings') {
           result = `\n${doings.all().slice(-15).map(doingsLine).join('\n') || '(nothing yet)'}`;
         } else if (/^feedback\s+\S/.test(arg)) {
@@ -1075,7 +1289,7 @@ export function apply(ctx, config = {}) {
           `script: ${readScript(files.script, 10000).length} entries · intents: ${intents.length} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
           `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
-          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''}, posts ${meta.dayPosts ?? 0}/${cfg.postDailyCap})` : 'off'} · tries: ${cfg.tries ? `on (today ${meta.dayTries ?? 0}/${cfg.tryDailyCap})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
+          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''}, posts ${meta.dayPosts ?? 0}/${cfg.postDailyCap})` : 'off'} · tries: ${cfg.tries ? `on (today ${meta.dayTries ?? 0}/${cfg.tryDailyCap})` : 'off'} · free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · growth: ${growth ? (growth.lastWeek() || 'no review yet') : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },
@@ -1094,6 +1308,8 @@ export function apply(ctx, config = {}) {
         state, cursor: meta.cursor, lastAdvance: meta.lastAdvance, rounds: meta.count,
         today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tries: meta.dayTries ?? 0, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
         doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 5 }),
+        free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: (meta.freeAt ?? [])[0] ?? null },
+        growth: growth ? { portrait: growth.portrait(), week: growth.lastWeek(), history: growth.history().map((h) => ({ week: h.week, changes: h.changes })) } : null,
         intents: intents.map((i) => ({ at: i.at, kind: i.kind, text: i.text })),
         script,
         speak: cfg.speak, play: cfg.play, activeHours: cfg.activeHours, advanceEveryMinutes: cfg.advanceEveryMinutes,

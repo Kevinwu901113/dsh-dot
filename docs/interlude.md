@@ -55,6 +55,8 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 6. **玩**：幕间里她可以写一个 `playIntent`——此刻想在手机上做的一件事：给哪篇点个赞、评论一句、关注谁、发一条新帖（`playActions`；发帖每天 ≤ `postDailyCap`，要带正文；私信 / 花钱不在其中，也写不进去；不想让她发帖就把 `post` 从 `playActions` 去掉）。这一轮写完后变成她会话里的一条 `[想玩会儿手机] …` 消息，她用手机去做（正常轮次，手机闸门的审批照常），做完只回 `DOT_SILENT`。门控和主动联系一样：活跃时段、意愿 ≥ 阈值、每天 ≤ `maxPlaysPerDay`（默认不限）、App 在 `playApps` 里**且装在她手机上**（没装一个就等于关）。行为准则不是我们写的，是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给住在社交网络上的 agent 定的守则（节译）：先回别人的回复，再慷慨点赞，再用心评论，再关注，最后才发新内容——而且只在真有话说时；参与 > 创造；真诚，不为凑数。
 6b. **试点新的**：她想做一件没做过、或不常做的事——装个 App 试试、在电脑上画点写点、学个东西、换个玩法——写进 `tries`（每轮最多一个，每天 ≤ `tryDailyCap`）。交给跑腿真去做，怎么做由她，提示词里只有几条硬边界：不花钱、不改账号和资料、不注册、不私信陌生人、不碰他的东西、只删自己建的、要审批的等批准。做完的汇报和玩一样留进她的对话。
 6c. **她自己的账（doings）**：玩、去看、试的每一件都记在 `doings.json`：做了什么、结果、花了多少 token（跑腿那一轮每一步的用量加起来；设了 `price` 还折成钱）、他怎么说。下一轮她看到 `yourDoings`：这七天她一直在做什么、各花多少、这周哪些 App 没碰过、最近几件的结果和他的反应、今天一共花了多少（含写生活本身）。值不值、要不要换着来，由她自己掂量，想法写进 `reflect`，也记在账上。他的反应有两条路进账：对话里他说起某件事时，她用 `doings` 工具记下；或者你直接 `/interlude feedback [#id] 一句话`（`/interlude doings` 看清单）。提示词不规定她该做什么：`interlude.round.free` 只说她不是照日程表过日子的人，其余交给她。
+6d. **自己的时间**：每天 `freeTimesPerDay`（默认 2）次，在活跃时段里随机挑时刻（他正在聊天时不开），叫醒跑腿的她，只说"接下来这段时间是你自己的"，不给任务、不列动作表；一起给她的是：她现在的样子、她的笔记、她的账、最近的状态，和她自己的地方 `<home>/her`（只属于她的文件夹，放什么、怎么放随她，下次开始时她会看到里面有什么）。边界在代码里：这段时间 QQ 和账本工具被拒；在社交 App（小黑盒、B站、QQ、微信……）里打字要他批准；花钱、装 App 照旧走手机和电脑的审批；想找他用 `tell_him`，它走主动联系的闸门（`speak`、次数、活跃时段），交给她和他的对话决定说不说。预算：每次 `freeTokenCap`（15 万）token，用到 80% 提醒她收尾，到上限停下；每天 `freeDailyTokens`（30 万）封顶。结束后，她真做过的事作为观察到的事进下一轮幕间，账上记一笔"自己的时间"。需要 dsh-dot（她的跑腿）。`/interlude free` 立刻给她一次。
+6e. **成长**：每周 `growthAt`（周日 21:00）一次回顾：读这周的日记、她自己的笔记、关于他的笔记、她的账和他的反应，由她重写「她现在的样子」——第一人称、`portraitMaxChars`（900）字以内、一次最多改 `portraitMaxChange`（35%，改多了要她再写一次，还多就这周不改），并写下"这周变了什么"。这一段作为系统提示词跟在人设后面（她的对话和幕间都看得到），一周才变一次，不影响缓存。每一版存在 `<home>/her/growth/<周>.md`：`/interlude growth` 看现在的样子和每周变化，`/interlude growth <周>` 看那一版，`/interlude growth rollback <周>` 回到那一版，`/interlude growth now` 立刻回顾一次。回顾不写记忆：它觉得她笔记里过时的条目，留到她下次自己的时间，由她自己用 memory 工具去改。提示词里要她分清"我自己想要的"和"只是因为他喜欢"——后者不算她的变化。
 7. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 8. **有 dot 时幕间不自己动手**：玩和用手机 / 电脑去看，都排队交给 dot 的跑腿（`dot.interludeQueueMax`、`dot.interludeTaskTtlMs`，优先级最低：通知的活先做），这一轮不等结果；做完、过期或作废后回到 `meta.json` 的 `returned`，下一轮读到：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成）、结果如何，写进剧情和 continuity。主动联系也不自己发：交给她的对话留一句，说不说由她定。网页（web）观察照旧当场看。没装 dot 时一切照上面的老办法。
 
@@ -122,6 +124,11 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `tries` | `true` | 允许她试没做过的事（交给跑腿，硬边界见上） |
 | `tryDailyCap` | `3` | 每天最多试几件 |
 | `price` | `null` | 每百万 token 的价钱 `{ in, cached, out }`（元），给了她就能看到花了多少钱；不给只看 token |
+| `freeTimesPerDay` | `2` | 每天几次「自己的时间」，`0` 关；需要 dsh-dot |
+| `freeTokenCap` / `freeDailyTokens` | `150000` / `300000` | 每次 / 每天自己的时间的 token 上限 |
+| `growth` | `true` | 每周回顾、「她现在的样子」 |
+| `growthAt` | `Sun 21:00` | 每周回顾的时刻（`Mon`…`Sun` + 时间） |
+| `portraitMaxChars` / `portraitMaxChange` | `900` / `0.35` | 「她现在的样子」的字数、每周最多改动的比例 |
 | `speak` | `false` | 允许主动联系 |
 | `maxContactsPerDay` | `2` | 每天最多主动几次 |
 | `willingnessThreshold` | `0.6` | 意愿低于此不发 |
@@ -129,7 +136,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 ### 六、文件
 
-全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）、`doings.json`（她自己做的事、花费和反馈，最多留 200 件）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
+全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）、`doings.json`（她自己做的事、花费和反馈，最多留 200 件）。她自己的地方在 `~/dot/her/`，成长史在 `~/dot/her/growth/`。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
 
 ### 七、原则
 
