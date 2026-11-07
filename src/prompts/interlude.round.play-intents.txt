@@ -1,1 +1,1 @@
-playIntents：[{"app":"{playApps} 之一","action":"{playActions}","target":"那条帖子/那个人，用她自己会叫的说法","text":"评论内容（action 是 comment 时）","why":"简短的理由","willingness":0.0}]——最多一个，只在她真心想做时才写；没有就给 []。
+playIntents：[{"app":"{playApps} 之一","action":"{playActions}","target":"那条帖子/那个人，用她自己会叫的说法","text":"评论或帖子的内容（comment、post 时）","why":"简短的理由","willingness":0.0}]——最多一个，没有就给 []。post 时 target 写发在哪（版块、话题）。

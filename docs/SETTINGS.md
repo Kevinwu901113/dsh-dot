@@ -182,12 +182,14 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `activeHours` | `"08:00-23:00"` | 活跃时段 |
 | `idleMinutes` | `10` | 聊天安静多久后跑一轮 |
-| `advanceEveryMinutes` | `180` | 自己过日子的间隔，0 关 |
-| `maxRoundsPerDay` | `12` | 每天最多几轮 |
+| `advanceEveryMinutes` | `90` | 自己过日子的间隔，0 关 |
+| `maxRoundsPerDay` | `20` | 每天最多几轮 |
 | `browseDailyCap` / `vmDailyCap` | `6` / `2` | 每天「去看」上限 |
 | `vmSites` | `[]` | 用电脑浏览器看的网站（她登录过的） |
 | `phoneApps` / `playApps` | 内置表 | 逛 / 玩的 App |
-| `play` | `true` | 「玩」（点赞、评论、关注） |
+| `play` | `true` | 「玩」（点赞、评论、关注、发帖）；`playActions` 去掉 `post` 就不发帖，`postDailyCap`（默认 1）是每天发帖上限 |
+| `tries` / `tryDailyCap` | `true` / `3` | 「试点新的」：她想做没做过的事，交给跑腿真去做（不花钱、不改账号、要审批的等批准） |
+| `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
 | `speak` | `false` | 主动找你；有 dot 时不自己发，交给她的对话（留一句「想跟他说的」），合不合适由她定，交过去才算一次 |
 | `maxContactsPerDay` / `willingnessThreshold` | `2` / `0.6` | 主动联系的上限和门槛 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |

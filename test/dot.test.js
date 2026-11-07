@@ -1066,10 +1066,12 @@ test('interlude tasks: notification work goes first; one at a time, after the er
   assert.deepEqual(started, ['errand-1']);
   h.emitAs('errand-1', h.home, 'turn/start', { turn: 2 });
   h.emitAs('errand-1', h.home, 'user/message', { source: { kind: 'dsh-interlude', form: 'play' } });
-  h.emitAs('errand-1', h.home, 'assistant/message', msg('做了：点了赞\n结果：成了\n找他：不用'));
+  h.emitAs('errand-1', h.home, 'assistant/message', { ...msg(''), usage: { inputTokens: 4000, cacheReadTokens: 1000, outputTokens: 60 } });
+  h.emitAs('errand-1', h.home, 'assistant/message', { ...msg('做了：点了赞\n结果：成了\n找他：不用'), usage: { inputTokens: 500, cacheReadTokens: 4500, outputTokens: 30 } });
   h.emitAs('errand-1', h.home, 'turn/end', { turn: 2 });
   await wait(80);
   assert.equal(done[0].status, 'done'); assert.equal(done[0].report, '做了：点了赞\n结果：成了\n找他：不用');
+  assert.deepEqual(done[0].cost, { in: 4500, cached: 5500, out: 90 }, 'what the errand turn cost, every step');
   assert.equal(followups.at(-1).m.source.form, 'observation');
   h.emitAs('errand-1', h.home, 'turn/start', { turn: 3 });
   h.emitAs('errand-1', h.home, 'user/message', { source: { kind: 'dsh-interlude', form: 'observation' } });

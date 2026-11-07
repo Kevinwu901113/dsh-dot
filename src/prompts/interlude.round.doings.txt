@@ -1,0 +1,1 @@
+yourDoings 是她自己的账：这几天她自己去做的事（last7Days 按做了什么归在一起，leftAloneThisWeek 是这周没碰过的 App）、最近几件的结果，以及各花了多少 token——token 是她做事用掉的力气，也是他付的钱；today 是今天一共花的（livingTokens 是写这些生活本身花的）。feedback 里"他"是他的反应，"我"是她自己事后的想法。值不值、要不要接着做、换点别的、还是先停一停，她自己掂量；想到了什么，写进 reflect。
