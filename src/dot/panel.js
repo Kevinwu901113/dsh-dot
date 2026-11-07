@@ -113,12 +113,12 @@ const ZH=true; // the rest of this page is Chinese; Electron's navigator.languag
 const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',stalled:(m)=>'卡住 '+m+' 分钟',approval:(m)=>'等审批 '+m+' 分钟',timedOut:'已超时',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
   src:{owner:'你',qq:'QQ',phone:'手机',check:'拿手机',interlude:'幕间',schedule:'定时',play:'玩'},
   phase:{advance:'推进','follow-up':'跟进',intent:'打算到点',seed:'开场',diary:'日记'},
-  act:{qq:'回 QQ',reply:'回你',image:'发图',sticker:'存表情',saw:'看了',like:'点赞',comment:'评论',follow:'关注',play:'玩',install:'装 App',diary:'写日记',interlude:'幕间',contact:'主动联系',approval:'审批',look:'去看'},
+  act:{qq:'回 QQ',reply:'回你',image:'发图',sticker:'存表情',saw:'看了',like:'点赞',comment:'评论',follow:'关注',play:'玩',install:'装 App',diary:'写日记',interlude:'幕间',contact:'主动联系',approval:'审批',look:'去看',try:'试新的',post:'发帖'},
   via:{web:'web',phone:'手机',computer:'电脑'}}
  :{title:(n)=>'Last '+n+' scenes',none:'Nothing yet (scenes appear once she is woken, has an interlude round, or plays)',run:'running',done:'done',fail:'failed',stalled:(m)=>'stalled '+m+' min',approval:(m)=>'approval '+m+' min',timedOut:'timed out',quiet:'stayed quiet',tools:'tools',model:'model',times:'×',tin:'tokens in',tout:'out',
   src:{owner:'You',qq:'QQ',phone:'Phone',check:'Picked up phone',interlude:'Interlude',schedule:'Scheduled',play:'Play'},
   phase:{advance:'advance','follow-up':'follow-up',intent:'intent',seed:'seed',diary:'diary'},
-  act:{qq:'QQ reply',reply:'Replied',image:'Image',sticker:'Kept sticker',saw:'Saw',like:'Like',comment:'Comment',follow:'Follow',play:'Play',install:'Install app',diary:'Diary',interlude:'Interlude',contact:'Reached out',approval:'Approval',look:'Looked'},
+  act:{qq:'QQ reply',reply:'Replied',image:'Image',sticker:'Kept sticker',saw:'Saw',like:'Like',comment:'Comment',follow:'Follow',play:'Play',install:'Install app',diary:'Diary',interlude:'Interlude',contact:'Reached out',approval:'Approval',look:'Looked',try:'Tried',post:'Posted'},
   via:{web:'web',phone:'phone',computer:'computer'}};
 let sceneN=30;try{sceneN=+localStorage.getItem('dot.scenes')||30}catch(e){}
 const openScenes=new Set();

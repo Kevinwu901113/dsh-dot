@@ -30,7 +30,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
   const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [];
-  let cmd;
+  let cmd, tool;
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemblers.push(fn); if (name === 'tools/pre-execute') gates.push(fn); return () => {}; },
@@ -39,6 +39,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
     get: (n) => ({
       systemPrompt: { context: (c) => prompts.push(c), section: (c) => { sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
       commands: { register: (c) => { cmd = c; return () => {}; } },
+      tools: { register: (t) => { tool = t; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
       dshComputer: { audit() {} },
       dotMemory: memory,
@@ -65,7 +66,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { ctx, home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: () => tool, stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -162,7 +163,7 @@ test('her life: the self bank reaches the interlude as herLife with its own cont
   const user = h.calls[0].messages[0].content[0].text;
   assert.match(user, /"herLife": \[\s*"学会了在小黑盒翻角色卡帖"/);
   assert.match(user, /"memories": \[\s*"关于他：他叫宽"/);
-  assert.match(h.calls[0].system, /她自己的生活：herLife 是她这些天真正在做的事/);
+  assert.match(h.calls[0].system, /她自己的生活：herLife 是她自己记的笔记/);
   h.stop();
 });
 
@@ -496,11 +497,11 @@ test('play: on by default but only in apps on her phone (none → disabled); a p
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
   assert.ok(h.calls[0].system.includes(playRules()), 'the rulebook is in the prompt');
-  assert.match(h.calls[0].system, /playIntents：\[\{"app":"小黑盒 之一","action":"like\|comment\|follow\|collect"/);
+  assert.match(h.calls[0].system, /playIntents：\[\{"app":"小黑盒 之一","action":"like\|comment\|follow\|collect\|post"/);
   assert.equal(h.followups.length, 1);
   assert.deepEqual(h.followups[0].m.source, PLAY_SOURCE);
   assert.match(h.followups[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 想玩会儿手机\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）给「那篇讲黑猴更新的帖子」点个赞。因为写得认真。/);
-  assert.match(h.followups[0].m.content[0].text, /不发新帖、不私信陌生人、不花钱/);
+  assert.match(h.followups[0].m.content[0].text, /不私信陌生人、不花钱、不改资料/);
   // the play turn is her act, quiet when DOT_SILENT
   h.emit('s1', 'turn/start', { turn: 2 });
   h.emit('s1', 'user/message', { content: h.followups[0].m.content, source: PLAY_SOURCE }, { surfaceOp: 'append' });
@@ -514,13 +515,27 @@ test('play: on by default but only in apps on her phone (none → disabled); a p
   await h.cmd().handler({ rawInput: 'now' });
   assert.equal(h.followups.length, 1);
   h.stop();
-  // a post is never carried out, nor an app she has no package for
-  const post = harness({ reply: withPlay.replace('"action":"like"', '"action":"post"'), vm: {}, config: { playApps: { 小黑盒: 'com.max.xiaoheihe' } } });
-  post.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe'] } : orig(n))(post.ctx.get);
+  // a post needs its text, is capped per day (postDailyCap), and is off once 'post' leaves playActions
+  const posting = (reply, config = {}) => { const x = harness({ reply, vm: {}, config: { playApps: { 小黑盒: 'com.max.xiaoheihe' }, ...config } }); x.ctx.get = ((orig) => (n) => n === 'dshPhone' ? { isReady: true, apps: async () => ['com.max.xiaoheihe'] } : orig(n))(x.ctx.get); return x; };
+  const bare = posting(withPlay.replace('"action":"like"', '"action":"post"'));
+  bare.act('s1', 'hi', 'hello');
+  await bare.cmd().handler({ rawInput: 'now' });
+  assert.equal(bare.followups.length, 0, 'a post without text is held');
+  bare.stop();
+  const post = posting(withPlay.replace('"action":"like"', '"action":"post"').replace('"why":"写得认真"', '"text":"黑猴这次更新我最喜欢新的那段 boss 战","why":"写得认真"'));
   post.act('s1', 'hi', 'hello');
   await post.cmd().handler({ rawInput: 'now' });
-  assert.equal(post.followups.length, 0);
+  assert.equal(post.followups.length, 1);
+  assert.match(post.followups[0].m.content[0].text, /想发点什么\] 你刚才想：在小黑盒（com\.max\.xiaoheihe）「那篇讲黑猴更新的帖子」发一条：「黑猴这次更新/);
+  post.act('s1', 'again', 'ok');
+  await post.cmd().handler({ rawInput: 'now' });
+  assert.equal(post.followups.length, 1, 'one post a day');
   post.stop();
+  const noPost = posting(withPlay.replace('"action":"like"', '"action":"post"').replace('"why":"写得认真"', '"text":"x","why":"写得认真"'), { playActions: ['like', 'comment'] });
+  noPost.act('s1', 'hi', 'hello');
+  await noPost.cmd().handler({ rawInput: 'now' });
+  assert.equal(noPost.followups.length, 0);
+  noPost.stop();
 });
 
 test('contact marker: what really went out, or her deleting it; the prompt forbids claiming sends', async () => {
@@ -603,5 +618,88 @@ test('with dsh-dot: plays and device looks are posted as errand tasks (the round
   await h.cmd().handler({ rawInput: 'now' });
   assert.deepEqual(JSON.parse(h.calls[2].messages[0].content[0].text).returned, [], 'digested once');
   assert.doesNotMatch(h.calls[2].system, /returned 是她早先想做/);
+  h.stop();
+});
+
+test('doings: grouped by what she did, costed, with his reactions; feedback finds the latest, an id or a bit of text', async () => {
+  const { createDoings, tokensOf, yuanOf, labelOf } = await import('../src/interlude/doings.js');
+  const dir = mkdtempSync(join(tmpdir(), 'doings-'));
+  let t = Date.now();
+  const d = createDoings(join(dir, 'doings.json'), { now: () => t });
+  const a = d.add({ kind: 'play', app: '小黑盒', action: 'like', what: '耳机测评' });
+  d.settle(a, { status: 'done', result: '点了', usage: { inputTokens: 3000, cacheReadTokens: 2000, outputTokens: 100 } });
+  t += 1000;
+  const b = d.add({ kind: 'play', app: '小黑盒', action: 'like', what: '黑猴更新' });
+  d.settle(b, { status: 'done', usage: { in: 1000, cached: 0, out: 50 } });
+  t += 1000;
+  const c = d.add({ kind: 'try', what: '用画图给自己画个头像', device: 'computer' });
+  d.settle(c, { status: 'done', result: '画了一只猫', usage: { inputTokens: 20000, outputTokens: 900 } });
+  assert.equal(labelOf({ kind: 'look', device: 'phone' }), '去看（手机）');
+  assert.equal(d.feedback('', '画得不错', 'owner').id, c, 'latest done');
+  assert.equal(d.feedback(`#${a}`, '别老点赞了', 'owner').id, a);
+  assert.equal(d.feedback('黑猴', '这条点得好', 'owner').id, b);
+  assert.equal(d.feedback('没有这件', 'x'), null);
+  const v = d.view({ rounds: { in: 10000, cached: 0, out: 2000 }, apps: ['小黑盒', 'B站'], price: { in: 1, cached: 0.1, out: 2 } });
+  assert.deepEqual(v.last7Days.map((g) => [g.what, g.times, g.tokens, g.reactions]), [['小黑盒 点赞', 2, 6150, 2], ['试点新的', 1, 20900, 1]]);
+  assert.deepEqual(v.leftAloneThisWeek, ['B站']);
+  assert.equal(v.today.tokens, 6150 + 20900 + 12000);
+  assert.equal(v.today.livingTokens, 12000);
+  assert.ok(v.today.yuan > 0);
+  assert.deepEqual(v.recent.at(-1).feedback, ['他：画得不错']);
+  assert.equal(tokensOf(null), 0);
+  assert.equal(yuanOf({ in: 1e6, cached: 0, out: 0 }, null), null);
+  // persisted
+  assert.equal(createDoings(join(dir, 'doings.json')).all().length, 3);
+});
+
+test('tries: a new thing she wants to do goes to her errands with hard limits; its cost, result and his reaction come back as yourDoings', async () => {
+  const { TRY_SOURCE } = await import('../src/interlude/core.js');
+  const reply = GOOD.replace('"contact":null', '"contact":null,"tries":[{"what":"在电脑上用画图给自己画个新头像","on":"computer","why":"看腻了现在这个","willingness":0.8}]');
+  const h = harness({ reply, vm: {}, config: { tryDailyCap: 1 } });
+  const tasks = [];
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, isErrand: () => false } : get(n)))(h.ctx.get);
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.match(h.calls[0].system, /tries：\[\{"what"/);
+  assert.match(h.calls[0].system, /没有人会一直只做那几件事/);
+  assert.deepEqual(h.calls[0].tools[0].parameters.properties.tries.maxItems, 1);
+  assert.deepEqual(tasks.map((t) => [t.kind, t.source]), [['try', TRY_SOURCE]]);
+  assert.match(tasks[0].text, /想试试\] 你刚才想在电脑上：在电脑上用画图给自己画个新头像。因为看腻了现在这个。/);
+  assert.match(tasks[0].text, /不花钱[\s\S]*不改任何账号[\s\S]*不私信陌生人[\s\S]*要审批的等批准/);
+  const t0 = Date.now();
+  tasks[0].onDone({ status: 'done', queuedAt: t0, startedAt: t0, doneAt: t0 + 60000, busyWith: '', report: '做了：画了一只戴耳机的猫\n结果：存成 avatar.png\n找他：不用', cost: { in: 12000, cached: 3000, out: 800 } });
+  // he says something about it in her conversation: her tool notes it
+  const fb = await h.tool().execute({ action: 'feedback', about: '头像', text: '猫挺可爱，换上吧' });
+  assert.equal(fb.ok, true);
+  // and she reflects in the next round
+  h.act('s1', 'again', 'ok');
+  const id = JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8'))[0].id;
+  await h.cmd().handler({ rawInput: 'now' });
+  const payload = JSON.parse(h.calls[1].messages[0].content[0].text);
+  assert.equal(payload.returned[0].tokens, 15800);
+  const mine = payload.yourDoings.recent.find((x) => x.id === id);
+  assert.equal(mine.tokens, 15800);
+  assert.deepEqual(mine.feedback, ['他：猫挺可爱，换上吧']);
+  assert.match(h.calls[1].system, /yourDoings 是她自己的账/);
+  assert.match(h.calls[1].system, /tries：\[\]（宿主关闭了/, 'daily cap reached: tries off');
+  assert.equal(tasks.length, 1);
+  h.stop();
+});
+
+test('reflect and /interlude feedback: her afterthought and his word land on the doing; /interlude doings lists them', async () => {
+  const reply = (o) => (o.messages[0].content[0].text.includes('"yourDoings"') && JSON.parse(o.messages[0].content[0].text).yourDoings.recent.length
+    ? GOOD.replace('"contact":null', `"contact":null,"reflect":[{"id":"${JSON.parse(o.messages[0].content[0].text).yourDoings.recent[0].id}","text":"花了不少，下次直接用手机"}]`)
+    : GOOD.replace('"contact":null', '"contact":null,"browserIntents":[{"mode":"search","query":"广州 降温","purpose":"看天气"}]'));
+  const web = { search: async () => ({ content: '这周广州降温到 12 度，周四有雨，出门记得带伞，早晚温差大，注意添衣。'.repeat(8), sources: [{ title: '广州天气', url: 'https://x', snippet: '降温' }] }) };
+  const h = harness({ reply, web });
+  h.act('s1', 'hi', 'hello');
+  await h.cmd().handler({ rawInput: 'now' });
+  let r = await h.cmd().handler({ rawInput: 'feedback 查天气挺贴心' });
+  assert.match(r.text, /noted on #\S+: 看天气/);
+  h.act('s1', 'again', 'ok');
+  await h.cmd().handler({ rawInput: 'now' });
+  r = await h.cmd().handler({ rawInput: 'doings' });
+  assert.match(r.text, /look 看天气 → done：广州天气 ｜他：查天气挺贴心 ｜我：花了不少，下次直接用手机/);
+  assert.match((await h.cmd().handler({ rawInput: 'feedback #nope 嗯' })).text, /no such doing #nope/);
   h.stop();
 });

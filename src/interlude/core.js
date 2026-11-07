@@ -23,6 +23,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
 import { prompt, table } from '../prompts.js';
 import { describeNow, stamp } from '../clock.js';
+import { createDoings, tokensOf } from './doings.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -66,21 +67,30 @@ export const defaults = {
   webContextLimit: 4,         // observations later rounds see
   identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // follow-up round this long after a conversation goes quiet
-  advanceEveryMinutes: 180,   // independent life progression; 0 disables
+  advanceEveryMinutes: 90,    // independent life progression; 0 disables
   activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
-  maxRoundsPerDay: 12,
+  maxRoundsPerDay: 20,
   // DeepSeek's reasoning shares this budget with the reply; 1400 cut half the rounds off before the JSON closed.
   maxTokens: 16384,
   digestChars: 6000,
   scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
-  // 玩: small social actions on her own accounts, on her phone — like, comment, follow (post/DM/pay
-  // never, by construction). Off by default. Executed as a normal turn (approvals apply), gated like
-  // contact: active hours, willingness, daily cap. The behaviour rules are Moltbook's agent-social
-  // rulebook (heartbeat.md / rules.md), translated — not written here. On by default: only in apps
-  // she installed herself (playApps is narrowed to what is on her phone), and only these actions.
+  // 玩: social actions on her own accounts, on her phone — like, comment, follow, collect, post (DM/pay
+  // never, by construction). Executed as an errand turn (approvals apply), gated like contact: active
+  // hours, willingness, daily cap. The behaviour rules are Moltbook's agent-social rulebook
+  // (heartbeat.md / rules.md), translated — not written here. Only in apps she installed herself
+  // (playApps is narrowed to what is on her phone), and only these actions; drop 'post' to keep her
+  // from posting anything new.
   play: true,
-  playActions: ['like', 'comment', 'follow', 'collect'], // collect = save stickers she likes (qq_sticker_keep)
+  playActions: ['like', 'comment', 'follow', 'collect', 'post'], // collect = save stickers she likes (qq_sticker_keep)
   maxPlaysPerDay: 0,          // 0 = no cap: how often she plays is her own habit (her self notes); a round yields at most one play, so ≤ maxRoundsPerDay
+  postDailyCap: 1,            // new posts per day (a post is public and stays); 0 = none
+  // 试: something she has not done before, on her phone or her computer — an open errand inside hard
+  // limits (no money, no account changes, no strangers' DMs, approvals apply). What it cost and what
+  // he said about it come back to her in `yourDoings`.
+  tries: true,
+  tryDailyCap: 3,
+  // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
+  price: null,
   playApps: KNOWN_APPS.labels, // app label → package she may act in; {} = none
   speak: false,               // allow proactive contact over dsh-im
   maxContactsPerDay: 2,
@@ -109,12 +119,21 @@ export const playRules = () => prompt('interlude.play-rules');
 export const OBSERVATION_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'observation' });
 /** Source of the message that carries a play intent out: a normal turn (she acts; approvals apply). */
 export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' });
+/** Source of the message that carries a try out: something new she wanted to do (approvals apply). */
+export const TRY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'try' });
+
+/** The message that asks her to go and try the new thing she wanted to. */
+export function tryPrompt(x, now = Date.now()) {
+  const on = table('interlude.try.on');
+  return prompt('interlude.try', { stamp: stamp(now, now), on: on[x.on] ?? on.either ?? '', what: x.what, why: x.why ? `因为${x.why}。` : '', phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX });
+}
 
 /** The message that asks her to go and do the small thing she wanted to do on her phone. */
 export function playPrompt(p, pkg, now = Date.now()) {
   const parts = table('interlude.play.parts', { text: p.text, why: p.why });
   const common = { stamp: stamp(now, now), app: p.app, pkg: pkg ? `（${pkg}）` : '', why: p.why ? parts.why : '', phonePrefix: PHONE_TOOL_PREFIX, rules: playRules() };
   if (p.action === 'collect') return prompt('interlude.play.collect', { ...common, target: p.target && p.target !== '表情包' ? `「${p.target}」` : '' });
+  if (p.action === 'post') return prompt('interlude.play.post', { ...common, target: p.target ? `「${p.target}」` : '', text: p.text });
   const verbs = table('interlude.play.verbs');
   return prompt('interlude.play', { ...common, target: p.target, verb: Object.hasOwn(verbs, p.action) ? verbs[p.action] : p.action, said: p.text ? parts.said : '' });
 }
@@ -194,7 +213,7 @@ export function lengthBlockFor(model = '') {
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [] }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false }) {
   const playing = Boolean(play && playApps.length);
   const system = prompt('interlude.round', {
     canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
@@ -206,12 +225,15 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     browsing: browser === 'disabled' ? prompt('interlude.round.browsing.disabled') : prompt('interlude.round.browsing.deferred'),
     agency: speak && phase !== 'follow-up' ? prompt('interlude.round.agency') : '',
     play: playing ? prompt('interlude.round.play', { playRules: playRules(), playApps: playApps.join('、'), collect: playActions.includes('collect') && stickers >= 0 && stickers < 5 ? prompt('interlude.round.play.collect', { stickers }) : '' }) : '',
+    free: prompt('interlude.round.free'),
+    doings: doings ? prompt('interlude.round.doings') : '',
     glm: /glm/i.test(String(model)) ? prompt('interlude.round.glm') : '',
     style: style?.trim() || prompt('interlude.round.style.none'),
     // The field list travels as the arguments of one `interval` tool call, so the provider guarantees
     // their shape; a reply that is prose only is still accepted (the host fills the rest afterwards).
     seed: phase === 'seed' ? prompt('interlude.round.seed') : '',
     playIntents: playing ? prompt('interlude.round.play-intents', { playApps: playApps.join('/'), playActions: playActions.join('|') }) : prompt('interlude.round.play-intents.off'),
+    tries: trying ? prompt('interlude.round.tries') : prompt('interlude.round.tries.off'),
     contact: speak ? prompt('interlude.round.contact') : prompt('interlude.round.contact.off'),
   });
   const payload = {
@@ -232,15 +254,17 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     herLife,
     // What she handed to her errands earlier, now back: what she wanted, what she was busy with, when it happened (or not).
     returned,
+    // What she did on her own lately, what each cost, and what he said about it (doings.js).
+    ...(doings ? { yourDoings: doings } : {}),
     currentEvent: { type: 'none' },
-    output: 'one `interval` tool call: script, continuity, intents, browserIntents, playIntents, contact',
+    output: 'one `interval` tool call: script, continuity, intents, browserIntents, playIntents, tries, reflect, contact',
   };
   void digest;
-  return { system, user: JSON.stringify(payload, null, 1), tools: [intervalTool({ play: playing, playApps, playActions, speak })] };
+  return { system, user: JSON.stringify(payload, null, 1), tools: [intervalTool({ play: playing, playApps, playActions, speak, trying })] };
 }
 
 /** The round's fields as a tool: the provider validates the arguments, so a call is always JSON. */
-export function intervalTool({ play = false, playApps = [], playActions = [], speak = false } = {}) {
+export function intervalTool({ play = false, playApps = [], playActions = [], speak = false, trying = false } = {}) {
   const str = { type: 'string' };
   const strs = { type: 'array', items: str };
   const willingness = { type: 'number', minimum: 0, maximum: 1 };
@@ -257,6 +281,10 @@ export function intervalTool({ play = false, playApps = [], playActions = [], sp
         playIntents: play
           ? { type: 'array', maxItems: 1, items: { type: 'object', properties: { app: { type: 'string', enum: playApps }, action: { type: 'string', enum: playActions }, target: str, text: str, why: str, willingness }, required: ['app', 'action', 'target'] } }
           : { type: 'array', maxItems: 0, items: {} },
+        tries: trying
+          ? { type: 'array', maxItems: 1, items: { type: 'object', properties: { what: str, on: { type: 'string', enum: ['phone', 'computer', 'either'] }, why: str, willingness }, required: ['what'] } }
+          : { type: 'array', maxItems: 0, items: {} },
+        reflect: { type: 'array', maxItems: 2, items: { type: 'object', properties: { id: str, text: str }, required: ['text'] } },
         contact: speak
           ? { anyOf: [{ type: 'null' }, { type: 'object', properties: { content: str, willingness, reason: str }, required: ['content'] }] }
           : { type: 'null' },
@@ -300,7 +328,11 @@ export function parseReply(text, now = Date.now()) {
         playIntents: [].concat(o.playIntents ?? []).map((p) => ({
           app: str(p?.app), action: str(p?.action).toLowerCase(), target: str(p?.target), text: str(p?.text), why: str(p?.why),
           willingness: Math.max(0, Math.min(1, Number(p?.willingness ?? 0) || 0)),
-        })).filter((p) => p.app && p.action && p.target).slice(0, 1),
+        })).filter((p) => p.app && p.action && (p.target || p.action === 'post')).slice(0, 1),
+        tries: [].concat(o.tries ?? []).map((x) => ({
+          what: str(x?.what), on: ['phone', 'computer'].includes(x?.on) ? x.on : 'either', why: str(x?.why), willingness: num(x?.willingness, 0.7),
+        })).filter((x) => x.what).slice(0, 1),
+        reflect: [].concat(o.reflect ?? []).map((x) => ({ id: str(x?.id), text: str(x?.text) })).filter((x) => x.text).slice(0, 2),
       };
     } catch (error) { void error; }
   }
@@ -421,7 +453,7 @@ export function apply(ctx, config = {}) {
   const files = {
     script: join(dir, 'script.md'), state: join(dir, 'state.json'),
     intents: join(dir, 'intents.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
-    canon: join(dir, 'canon.json'), web: join(dir, 'web-context.jsonl'),
+    canon: join(dir, 'canon.json'), web: join(dir, 'web-context.jsonl'), doings: join(dir, 'doings.json'),
   };
   mkdirSync(dir, { recursive: true });
   // The Canon: an imported preset wins; otherwise the configured storyDefaults; AGENTS.md is not involved.
@@ -433,12 +465,13 @@ export function apply(ctx, config = {}) {
   };
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
+  const doings = createDoings(files.doings);
 
   let state = readJson(files.state, null);
   let intents = readJson(files.intents, []);
-  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
+  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, dayPosts: 0, dayTries: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
   if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayTokensIn = 0; meta.dayTokensOut = 0; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensOut = 0; meta.dayCost = null; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
 
@@ -456,8 +489,10 @@ export function apply(ctx, config = {}) {
   // (and how long it waited, behind what) is plot for the next round.
   const dshDot = () => ctx.get('dshDot');
   const at = (ms) => (ms ? describeNow(new Date(ms)) : null);
-  const remember = (kind, wanted, r) => {
-    meta.returned = [...(meta.returned ?? []), { kind, wanted, status: r.status, queuedAt: at(r.queuedAt), busyWith: r.busyWith || '', startedAt: at(r.startedAt), doneAt: at(r.doneAt), report: clip(String(r.report ?? ''), 400) }].slice(-5);
+  const remember = (kind, wanted, r, doing = '') => {
+    if (doing) doings.settle(doing, { status: r.status, result: r.report, usage: r.cost, doneAt: r.doneAt });
+    const tokens = r.cost ? tokensOf(r.cost) : undefined;
+    meta.returned = [...(meta.returned ?? []), { kind, wanted, status: r.status, queuedAt: at(r.queuedAt), busyWith: r.busyWith || '', startedAt: at(r.startedAt), doneAt: at(r.doneAt), report: clip(String(r.report ?? ''), 400), ...(doing ? { id: doing } : {}), ...(tokens !== undefined ? { tokens } : {}) }].slice(-5);
     saveMeta();
     audit('task-returned', { kind, status: r.status });
   };
@@ -478,6 +513,7 @@ export function apply(ctx, config = {}) {
         if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
         if (event.data?.source?.kind === OBSERVATION_SOURCE.kind && event.data?.source?.form === 'observation') t.origin = 'observation';
         if (event.data?.source?.kind === PLAY_SOURCE.kind && event.data?.source?.form === 'play') { t.origin = 'play'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
+        if (event.data?.source?.kind === TRY_SOURCE.kind && event.data?.source?.form === 'try') { t.origin = 'try'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
         if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-check') { t.origin = 'phone-check'; t.user ||= '（拿起手机看了一眼）'; }
         if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
@@ -494,7 +530,7 @@ export function apply(ctx, config = {}) {
         lastActivity = Date.now();
         // Her errand session (dsh-dot) is not where she lives: it never becomes the act session.
         if (lastActSession !== id && !ctx.get('dshDot')?.isErrand?.(id)) { lastActSession = id; meta.lastSession = id; saveMeta(); }
-        const quiet = ['schedule', 'phone-check', 'notification', 'play'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
+        const quiet = ['schedule', 'phone-check', 'notification', 'play', 'try'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
         const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet, on: t.on || undefined });
         try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
         return;
@@ -554,16 +590,22 @@ export function apply(ctx, config = {}) {
         if (observed.thin && browserMode() === 'auto' && vmOpen()) {
           audit('browse-upgrade', { phase, why: observed.thin, query: b.query || b.url });
           route = 'vm';
-        } else { record(phase, observed); return true; }
+        } else { record(phase, observed); settleLook(doings.add({ kind: 'look', device: 'web', what: b.purpose || b.query || b.url }), observed); return true; }
       }
       const target = deviceFor(b);
       if (!target) { audit('browse-held', { phase, why: 'no device', route: 'vm' }); return false; }
       if (dshDot()?.task) return lookLater(b, target, phase);
+      const id = doings.add({ kind: 'look', device: target.device, what: b.purpose || b.query || b.url });
       const observed = await observeInVm(b, target);
-      if (!observed) return false;
+      if (!observed) { doings.settle(id, { status: 'dropped' }); return false; }
       record(phase, observed);
+      settleLook(id, observed);
       return true;
     } catch (error) { logger.warn(`browse failed: ${error.message}`); audit('browse-failed', { phase, route, error: clip(error.message, 200) }); return false; }
+  }
+  function settleLook(id, observed) {
+    const got = observed.sources?.length ? observed.sources.map((x) => x.title).filter(Boolean).slice(0, 3).join('；') : observed.content;
+    doings.settle(id, { status: observed.thin ? 'thin' : 'done', result: got });
   }
   async function observeOnWeb(b) {
     const web = ctx.get('web');
@@ -609,6 +651,7 @@ export function apply(ctx, config = {}) {
   /** The same look as a dsh-dot task: the round goes on; the observation lands in webContext and `returned` when it is done. */
   function lookLater(b, { device, app }, phase) {
     let sid = '';
+    const doing = doings.add({ kind: 'look', device, what: b.purpose || b.query || b.url });
     const release = () => { if (sid) observing.delete(sid); };
     dshDot().task({
       kind: 'look', key: `look|${device}|${b.url || b.query}`, text: observationPrompt(b, device, app), source: OBSERVATION_SOURCE, readOnly: true,
@@ -617,7 +660,7 @@ export function apply(ctx, config = {}) {
         const via = looked.get(sid) || device;
         release();
         if (r.status === 'done' && r.report) record(phase, { via, app: (via === device && app) || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(r.report, 1200), session: sid });
-        remember('look', b.purpose || b.query || b.url, r);
+        remember('look', b.purpose || b.query || b.url, r, doing);
       },
     });
     audit('browse-queued', { phase, device, query: b.query || b.url });
@@ -666,7 +709,7 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with HDSI ownership labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
       ]).filter(Boolean);
       const back = meta.returned ?? [];
@@ -675,6 +718,7 @@ export function apply(ctx, config = {}) {
       // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
       const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
       const playApps = Object.keys(cfg.playApps).filter((label) => onPhone.includes(cfg.playApps[label]));
+      const view = doings.view({ rounds: { in: meta.dayTokensIn ?? 0, cached: 0, out: meta.dayTokensOut ?? 0 }, apps: playApps, price: cfg.price });
       const { system, user, tools } = buildPrompt({
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
@@ -682,6 +726,7 @@ export function apply(ctx, config = {}) {
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
         play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
         memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
+        doings: view, trying: tryOpen(),
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
@@ -756,7 +801,10 @@ export function apply(ctx, config = {}) {
       // the observation is evidence for later rounds (webContext), never for this script.
       for (const b of parsed?.browserIntents ?? []) await browse(b, phase);
       for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
-      audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, contact: Boolean(parsed?.contact), said });
+      for (const x of parsed?.tries ?? []) await tryOut(x, phase);
+      // Her own afterthoughts on things she did: kept beside his reactions.
+      for (const r of parsed?.reflect ?? []) if (doings.feedback(r.id, r.text, 'her')) audit('reflected', { id: r.id });
+      audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, tried: (parsed?.tries ?? []).length, contact: Boolean(parsed?.contact), said });
       logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
       fails = 0;
       return { ok: true, script, contact: parsed?.contact ?? null, said };
@@ -780,12 +828,16 @@ export function apply(ctx, config = {}) {
     if (p.willingness < cfg.willingnessThreshold) return held('willingness');
     rollDay();
     if (cfg.maxPlaysPerDay > 0 && meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
+    if (p.action === 'post' && (meta.dayPosts ?? 0) >= cfg.postDailyCap) return held('post daily cap');
+    if (p.action === 'post' && !p.text) return held('post without text');
     const phone = ctx.get('dshPhone');
     if (!phone?.isReady) return held('phone not ready');
     if (!(await phone.apps?.().catch(() => []) ?? []).includes(pkg)) return held(`${p.app} is not on her phone`);
+    const counted = () => { meta.dayPlays++; if (p.action === 'post') meta.dayPosts = (meta.dayPosts ?? 0) + 1; saveMeta(); };
+    const doing = doings.add({ kind: 'play', app: p.app, action: p.action, what: [p.target, p.text].filter(Boolean).join('：'), why: p.why });
     if (dshDot()?.task) {
-      dshDot().task({ kind: 'play', key: `play|${p.app}|${p.action}|${p.target}`, text: playPrompt(p, pkg), source: PLAY_SOURCE, onDone: (r) => remember('play', `${p.app} ${p.action}：${p.target}`, r) });
-      meta.dayPlays++; saveMeta();
+      dshDot().task({ kind: 'play', key: `play|${p.app}|${p.action}|${p.target}`, text: playPrompt(p, pkg), source: PLAY_SOURCE, onDone: (r) => remember('play', `${p.app} ${p.action}：${p.target}`, r, doing) });
+      counted();
       audit('play-queued', { phase, app: p.app, action: p.action, target: p.target });
       return true;
     }
@@ -798,10 +850,41 @@ export function apply(ctx, config = {}) {
       if (!found || 'error' in found) return held(found?.error?.message ?? 'session not found');
       try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: playPrompt(p, pkg) }], source: PLAY_SOURCE }));
-      meta.dayPlays++; saveMeta();
+      counted(); doings.settle(doing, { status: 'sent' });
       audit('play', { phase, app: p.app, action: p.action, target: p.target, why: p.why, session: sessionId });
       return true;
-    } catch (error) { return held(error.message); }
+    } catch (error) { doings.settle(doing, { status: 'dropped', result: error.message }); return held(error.message); }
+  }
+
+  // 试: something new she wanted to do, on her phone or her computer — an errand turn with hard limits
+  // in its prompt (interlude.try.txt) and the phone / computer gates' approvals on every act.
+  const tryOpen = () => {
+    rollDay();
+    if (!cfg.tries || !inHours(cfg.activeHours) || (meta.dayTries ?? 0) >= cfg.tryDailyCap) return false;
+    if (!dshDot()?.task && !ctx.get('sessionController')) return false;
+    return phoneReady() || Boolean(ctx.get('dshComputer'));
+  };
+  async function tryOut(x, phase) {
+    const held = (why) => { audit('try-held', { phase, why, what: x.what }); return false; };
+    if (!tryOpen()) return held(!cfg.tries ? 'disabled' : (meta.dayTries ?? 0) >= cfg.tryDailyCap ? 'daily cap' : 'no device or session');
+    if (x.willingness < cfg.willingnessThreshold) return held('willingness');
+    const doing = doings.add({ kind: 'try', what: x.what, why: x.why, device: x.on });
+    meta.dayTries = (meta.dayTries ?? 0) + 1; saveMeta();
+    audit('try', { phase, what: x.what, on: x.on, why: x.why });
+    if (dshDot()?.task) {
+      dshDot().task({ kind: 'try', key: `try|${x.what}`, text: tryPrompt(x), source: TRY_SOURCE, onDone: (r) => remember('try', x.what, r, doing) });
+      return true;
+    }
+    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
+    const controller = ctx.get('sessionController');
+    if (!sessionId || !controller) { doings.settle(doing, { status: 'dropped', result: 'no session' }); return held('no session'); }
+    try {
+      const found = await controller.resolveAgent(sessionId);
+      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'session not found');
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: tryPrompt(x) }], source: TRY_SOURCE }));
+      doings.settle(doing, { status: 'sent' });
+      return true;
+    } catch (error) { doings.settle(doing, { status: 'dropped', result: error.message }); return held(error.message); }
   }
 
   // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
@@ -888,12 +971,30 @@ export function apply(ctx, config = {}) {
     });
   });
 
+  // 4b. Her own hands on the ledger: in her conversation, when he reacts to something she did on her own.
+  const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;
+  ctx.inject(['tools'], (scope) => {
+    scope.effect(() => scope.tools.register({
+      name: 'doings',
+      description: prompt('interlude.doings-tool'),
+      parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'feedback'] }, about: { type: 'string' }, text: { type: 'string' }, from: { type: 'string', enum: ['owner', 'her'] } }, required: ['action'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? (v.list ?? `doings: ${v.note ?? 'ok'}`) : `doings error: ${v?.error}` }] },
+      async execute(args) {
+        if (args.action === 'list') return { ok: true, list: doings.all().slice(-10).map(doingsLine).join('\n') || '（还没有）' };
+        const d = doings.feedback(args.about, args.text, args.from === 'her' ? 'her' : 'owner');
+        if (!d) return { ok: false, error: args.text ? `没找到「${args.about ?? ''}」` : 'text is empty' };
+        audit('feedback', { id: d.id, from: args.from === 'her' ? 'her' : 'owner' });
+        return { ok: true, note: `记在 #${d.id}（${d.what}）` };
+      },
+    }), 'dsh-interlude: doings tool');
+  });
+
   // 5. /interlude
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it',
-      input: { hint: '[now | advance | seed | preset <code> | canon]' },
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id)',
+      input: { hint: '[now | advance | seed | preset <code> | canon | doings | feedback [#id] <text>]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
@@ -904,6 +1005,13 @@ export function apply(ctx, config = {}) {
             audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
             result = `\nimported: ${canon.source.title} by @${canon.source.author} (${canon.source.license}) → ${files.canon}`;
           } catch (error) { result = `\nimport failed: ${error.message}`; }
+        } else if (arg === 'doings') {
+          result = `\n${doings.all().slice(-15).map(doingsLine).join('\n') || '(nothing yet)'}`;
+        } else if (/^feedback\s+\S/.test(arg)) {
+          const m = /^feedback\s+(?:#(\S+)\s+)?([\s\S]+)$/.exec(arg);
+          const d = m && doings.feedback(m[1] ?? '', m[2], 'owner');
+          if (d) audit('feedback', { id: d.id, from: 'owner', via: 'command' });
+          result = d ? `\nnoted on #${d.id}: ${d.what}` : `\nno such doing${m?.[1] ? ` #${m[1]}` : ''}`;
         } else if (arg === 'canon') {
           result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
         } else if (arg === 'now' || arg === 'advance' || arg === 'seed') {
@@ -919,7 +1027,7 @@ export function apply(ctx, config = {}) {
           `script: ${readScript(files.script, 10000).length} entries · intents: ${intents.length} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
           `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
           `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
-          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
+          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''}, posts ${meta.dayPosts ?? 0}/${cfg.postDailyCap})` : 'off'} · tries: ${cfg.tries ? `on (today ${meta.dayTries ?? 0}/${cfg.tryDailyCap})` : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },
@@ -936,7 +1044,8 @@ export function apply(ctx, config = {}) {
       return {
         name: canon?.storyDefaults?.characterName ?? 'dot',
         state, cursor: meta.cursor, lastAdvance: meta.lastAdvance, rounds: meta.count,
-        today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
+        today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tries: meta.dayTries ?? 0, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
+        doings: doings.view({ rounds: { in: meta.dayTokensIn ?? 0, cached: 0, out: meta.dayTokensOut ?? 0 }, price: cfg.price, recent: 5 }),
         intents: intents.map((i) => ({ at: i.at, kind: i.kind, text: i.text })),
         script,
         speak: cfg.speak, play: cfg.play, activeHours: cfg.activeHours, advanceEveryMinutes: cfg.advanceEveryMinutes,

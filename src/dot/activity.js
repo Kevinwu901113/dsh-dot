@@ -57,7 +57,7 @@ const localDay = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${
 
 const APP = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信', 'com.max.xiaoheihe': '小黑盒', 'tv.danmaku.bili': 'B站', 'com.sina.weibo': '微博', 'com.xingin.xhs': '小红书', 'com.zhihu.android': '知乎', 'com.ss.android.ugc.aweme': '抖音', 'com.coolapk.market': '酷安', 'com.baidu.tieba': '贴吧', 'com.douban.frodo': '豆瓣', 'com.taobao.taobao': '淘宝', 'com.eg.android.AlipayGphone': '支付宝', 'org.telegram.messenger': 'Telegram', 'com.android.chrome': 'Chrome' };
 const appName = (pkg) => APP[pkg] ?? String(pkg ?? '').split('.').pop() ?? '';
-const PLAY_KEY = { like: 'like', comment: 'comment', follow: 'follow', collect: 'sticker' };
+const PLAY_KEY = { like: 'like', comment: 'comment', follow: 'follow', collect: 'sticker', post: 'post' };
 const PHASE = { advance: 'advance', 'follow-up': 'follow-up', intent: 'intent', seed: 'seed' };
 
 /**
@@ -150,6 +150,12 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
         const s = open(t, e.session, { kind: 'play', name: e.app ?? '' });
         s.trigger = clip(e.why ?? '');
         act(s, PLAY_KEY[e.action] ?? 'play', `${e.app ?? ''} · ${e.target ?? ''}`);
+        break;
+      }
+      case 'interlude:try': {
+        const s = open(t, e.session ?? '', { kind: 'play', name: '试点新的' });
+        s.trigger = clip(e.why ?? '');
+        act(s, 'try', e.what ?? '');
         break;
       }
       case 'mc:diary': {

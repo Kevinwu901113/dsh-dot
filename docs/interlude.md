@@ -52,7 +52,9 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - **web**：dsh 的 `web` 服务。匿名、只读、便宜、看不见。适合好奇心：搜个新闻、看个公开页。
    - **vm**：她自己的电脑（dsh-computer 的虚拟机浏览器）。带着她的登录态和标签页，实时画面里看得见。适合"她的站"——微博、B 站、小红书、X 这些登录后才像样的地方。实现上是往她最近一个会话里追加一条 `[幕间观察]` 消息，让她用 `mcp__dot-vm__browser_*` 自己去看，最后那段回复就是观察结果；这一轮**不算幕**（不进剧本），也**没有审批**：只读工具（打开、滚动、读文字、截图、标签页）直接放行，其他任何工具——点击、输入、下载、shell——直接拒绝，不弹审批卡。她只能看，不能动。
    - `browser: auto`（默认）：先走 web；URL 的主机在 `vmSites` 里就直接走 vm（她的站从不匿名看）；web 结果太薄或被挡（JS 墙、验证码、登录墙）也升级到 vm，一天最多 `vmDailyCap` 次。
-6. **玩**：幕间里她可以写一个 `playIntent`——此刻真想在手机上做的一件小事：给哪篇点个赞、评论一句、关注谁（`playActions`，发帖 / 私信 / 花钱不在其中，也写不进去）。这一轮写完后变成她会话里的一条 `[想玩会儿手机] …` 消息，她用手机去做（正常轮次，手机闸门的审批照常），做完只回 `DOT_SILENT`。门控和主动联系一样：活跃时段、意愿 ≥ 阈值、每天 ≤ `maxPlaysPerDay`（默认不限）、App 在 `playApps` 里**且装在她手机上**（没装一个就等于关）。行为准则不是我们写的，是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给住在社交网络上的 agent 定的守则（节译）：先回别人的回复，再慷慨点赞，再用心评论，再关注，最后才发新内容——而且只在真有话说时；参与 > 创造；真诚，不为凑数。
+6. **玩**：幕间里她可以写一个 `playIntent`——此刻想在手机上做的一件事：给哪篇点个赞、评论一句、关注谁、发一条新帖（`playActions`；发帖每天 ≤ `postDailyCap`，要带正文；私信 / 花钱不在其中，也写不进去；不想让她发帖就把 `post` 从 `playActions` 去掉）。这一轮写完后变成她会话里的一条 `[想玩会儿手机] …` 消息，她用手机去做（正常轮次，手机闸门的审批照常），做完只回 `DOT_SILENT`。门控和主动联系一样：活跃时段、意愿 ≥ 阈值、每天 ≤ `maxPlaysPerDay`（默认不限）、App 在 `playApps` 里**且装在她手机上**（没装一个就等于关）。行为准则不是我们写的，是 [Moltbook](https://www.moltbook.com/heartbeat.md) 给住在社交网络上的 agent 定的守则（节译）：先回别人的回复，再慷慨点赞，再用心评论，再关注，最后才发新内容——而且只在真有话说时；参与 > 创造；真诚，不为凑数。
+6b. **试点新的**：她想做一件没做过、或不常做的事——装个 App 试试、在电脑上画点写点、学个东西、换个玩法——写进 `tries`（每轮最多一个，每天 ≤ `tryDailyCap`）。交给跑腿真去做，怎么做由她，提示词里只有几条硬边界：不花钱、不改账号和资料、不注册、不私信陌生人、不碰他的东西、只删自己建的、要审批的等批准。做完的汇报和玩一样留进她的对话。
+6c. **她自己的账（doings）**：玩、去看、试的每一件都记在 `doings.json`：做了什么、结果、花了多少 token（跑腿那一轮每一步的用量加起来；设了 `price` 还折成钱）、他怎么说。下一轮她看到 `yourDoings`：这七天她一直在做什么、各花多少、这周哪些 App 没碰过、最近几件的结果和他的反应、今天一共花了多少（含写生活本身）。值不值、要不要换着来，由她自己掂量，想法写进 `reflect`，也记在账上。他的反应有两条路进账：对话里他说起某件事时，她用 `doings` 工具记下；或者你直接 `/interlude feedback [#id] 一句话`（`/interlude doings` 看清单）。提示词不规定她该做什么：`interlude.round.free` 只说她不是照日程表过日子的人，其余交给她。
 7. **主动联系（Agency，默认关）**：`speak: true` 时，模型给出的 `contact` 过四道闸——在活跃时段、意愿 ≥ `willingnessThreshold`、当天未超 `maxContactsPerDay`、dsh-im 有投递目标——才通过 `dshIm.send()` 发出去。被拦下的会记在审计日志里。
 8. **有 dot 时幕间不自己动手**：玩和用手机 / 电脑去看，都排队交给 dot 的跑腿（`dot.interludeQueueMax`、`dot.interludeTaskTtlMs`，优先级最低：通知的活先做），这一轮不等结果；做完、过期或作废后回到 `meta.json` 的 `returned`，下一轮读到：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成）、结果如何，写进剧情和 continuity。主动联系也不自己发：交给她的对话留一句，说不说由她定。网页（web）观察照旧当场看。没装 dot 时一切照上面的老办法。
 
@@ -107,15 +109,19 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `presetHub` | `https://typ0.space` | HDSI 预设分享站 |
 | `identityFile` | 无 | 可选：额外追加到 Canon 后面的文本文件 |
 | `idleMinutes` | `10` | 安静多久算一幕结束 |
-| `advanceEveryMinutes` | `180` | 独立生活推进的间隔；`0` 关闭 |
+| `advanceEveryMinutes` | `90` | 独立生活推进的间隔；`0` 关闭 |
 | `activeHours` | `08:00-23:00` | 推进和主动联系只在这个时段 |
-| `maxRoundsPerDay` | `12` | 每天幕间上限 |
+| `maxRoundsPerDay` | `20` | 每天幕间上限 |
 | `maxTokens` | `16384` | 每轮输出上限 |
 | `scriptEntriesInPrompt` | `2` | 下一幕能看到几段剧本 |
-| `play` | `true` | 允许她在手机 App 上做小动作（点赞 / 评论 / 关注）；只在她装了的 App 里 |
+| `play` | `true` | 允许她在手机 App 上玩（点赞 / 评论 / 关注 / 发帖）；只在她装了的 App 里 |
 | `playApps` | 内置常见社区 App（`KNOWN_APPS.labels`） | 可以玩的 App：`{ 小黑盒: com.max.xiaoheihe }`（标签 → 包名），再按手机上装了什么收窄 |
-| `playActions` | `like, comment, follow, collect` | 允许的动作；`collect` = 去 App 逛逛攒表情包（`qq_sticker_keep`），表情包少于 5 张时幕间会被提醒；`post` / `dm` 永远不执行 |
-| `maxPlaysPerDay` | `3` | 每天最多几次 |
+| `playActions` | `like, comment, follow, collect, post` | 允许的动作；`collect` = 去 App 逛逛攒表情包（`qq_sticker_keep`），表情包少于 5 张时幕间会被提醒；去掉 `post` 就不发帖；`dm` 永远不执行 |
+| `maxPlaysPerDay` | `0` | 每天最多几次，`0` 不限 |
+| `postDailyCap` | `1` | 每天最多发几条新帖 |
+| `tries` | `true` | 允许她试没做过的事（交给跑腿，硬边界见上） |
+| `tryDailyCap` | `3` | 每天最多试几件 |
+| `price` | `null` | 每百万 token 的价钱 `{ in, cached, out }`（元），给了她就能看到花了多少钱；不给只看 token |
 | `speak` | `false` | 允许主动联系 |
 | `maxContactsPerDay` | `2` | 每天最多主动几次 |
 | `willingnessThreshold` | `0.6` | 意愿低于此不发 |
@@ -123,7 +129,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 ### 六、文件
 
-全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
+全部在 `~/dot/interlude/`，纯文本，可以随时打开看、改、删：`canon.json`、`script.md`、`state.json`、`intents.json`、`pending.jsonl`（还没被幕间处理的幕）、`calls.jsonl`（每轮的模型和原始回复）、`meta.json`（光标、计数）、`doings.json`（她自己做的事、花费和反馈，最多留 200 件）。幕间事件也写进 dsh-computer 的审计日志（`kind: "interlude"`），如果装了它。
 
 ### 七、原则
 

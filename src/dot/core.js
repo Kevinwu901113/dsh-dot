@@ -240,7 +240,7 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
 }
 
 /** Errand turns whose conclusion is noted in her conversation (observations hand theirs to the interlude). */
-const NOTED = ['phone-check', 'phone-notification', 'play'];
+const NOTED = ['phone-check', 'phone-notification', 'play', 'try'];
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
@@ -567,12 +567,18 @@ export function apply(ctx, config = {}) {
     if (isErrand(id)) {
       if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot') { t.origin = event.data.source.form; return; }
       if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-interlude') { t.origin = event.data.source.form; return; }
-      if (event.type === 'assistant/message' && !event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) t.text = text; return; }
+      if (event.type === 'assistant/message') {
+        // What the turn cost, step by step: an interlude task hands it back with its result.
+        const u = event.data?.usage;
+        if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += Number(u.inputTokens ?? 0) || 0; t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
+        if (!event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) t.text = text; }
+        return;
+      }
       if (ended) {
         const text = stripSilent(t.text.trim());
         // Observations hand their text to the interlude themselves; only her own doings are noted.
         if (text && !isSilent(t.text.trim()) && NOTED.includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
-        if (taskRunning?.session === id) finishTask(taskRunning, 'done', text);
+        if (taskRunning?.session === id) finishTask(taskRunning, 'done', text, t.cost);
         void rotateErrandIfLarge(id);
       }
       return;
@@ -869,10 +875,10 @@ export function apply(ctx, config = {}) {
   const taskQueue = []; let taskRunning = null;
   const errandsBusy = () => Boolean(taskRunning) || threads.size > 0 || [...turns.keys()].some(isErrand)
     || [...held].some(([id, ns]) => isErrand(id) && ns.length) || Boolean(flight.get(errandId)?.length); // delivered, turn not started yet
-  const finishTask = (t, status, report = '') => {
+  const finishTask = (t, status, report = '', cost = null) => {
     if (t === taskRunning) taskRunning = null; else taskQueue.splice(taskQueue.indexOf(t), 1);
     audit(`task-${status}`, { kind: t.kind, key: t.key, session: t.session, waitedMs: (t.startedAt ?? Date.now()) - t.queuedAt });
-    try { t.onDone?.({ status, queuedAt: t.queuedAt, startedAt: t.startedAt ?? null, doneAt: Date.now(), busyWith: t.busyWith, report }); } catch (err) { logger.warn(`task onDone failed: ${err.message}`); }
+    try { t.onDone?.({ status, queuedAt: t.queuedAt, startedAt: t.startedAt ?? null, doneAt: Date.now(), busyWith: t.busyWith, report, cost }); } catch (err) { logger.warn(`task onDone failed: ${err.message}`); }
   };
   const nextTask = async () => {
     const now = Date.now();
@@ -1193,9 +1199,9 @@ export function apply(ctx, config = {}) {
     errand: ensureErrand,
     errandId: () => errandId,
     /**
-     * Post an interlude task ({ kind: 'play'|'look', key, text, source, readOnly, ttlMs, onStart(sessionId), onDone(result) }):
+     * Post an interlude task ({ kind: 'play'|'look'|'try', key, text, source, readOnly, ttlMs, onStart(sessionId), onDone(result) }):
      * run in an errand when nothing else is (see defaults.interludeQueueMax); `onDone` gets
-     * { status: 'done'|'expired'|'dropped', queuedAt, startedAt, doneAt, busyWith, report }. → 'queued' | 'refreshed'
+     * { status: 'done'|'expired'|'dropped', queuedAt, startedAt, doneAt, busyWith, report, cost: { in, cached, out } | null }. → 'queued' | 'refreshed'
      */
     task: enqueueTask,
     /** Something she wanted to tell him while living her day: a note in her conversation; she decides. True when handed over. */

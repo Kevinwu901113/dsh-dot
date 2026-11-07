@@ -82,7 +82,7 @@ test('prompts loader: placeholders, a missing one left as written and warned onc
   assert.equal(warns.length, 1);
   assert.equal(fill('a\n{x}\nb\n{y}', { x: '', y: '' }), 'a\nb');
   assert.equal(fill('{v}', { v: '{w}' }), '{w}', 'values are not filled again');
-  assert.deepEqual(table('dot.errand-note.what'), { 'phone-check': '刚才拿起手机看了一眼', notification: '刚才手机响了，你去看了', play: '刚才在手机上玩了会儿', other: '刚才在手机上处理了点事' });
+  assert.deepEqual(table('dot.errand-note.what'), { 'phone-check': '刚才拿起手机看了一眼', notification: '刚才手机响了，你去看了', play: '刚才在手机上玩了会儿', try: '刚才自己试了点新东西', other: '刚才在手机上处理了点事' });
 });
 
 // What she is given, as literals: moved from the code verbatim (0.14.0), so her behaviour did not change.

@@ -10,7 +10,7 @@
 - `{名字}` 是占位符，代码填；没填到的原样留着，并在日志里提醒一次。别删，删了那部分内容就不出现了。
 - 某一行只有一个 `{名字}` 且它是空的（比如没开电脑时的 `{computerRule}`），这一行整行省掉。
 - 带条件的片段是单独的文件（`qq.channel.owner.txt` 只在设了主人时拼进 `{owner}`；`phone.device.number.txt` 只在设了手机号时拼进 `phone.device` 的 `{number}` 那一行，里面的 `{number}` 是号码本身；`phone.stickers.txt` 是 `phone.device` 的 `{stickers}`，各 App 怎么加表情包，整段手机提示词只在手机开着时出现）。
-- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`interlude.play.verbs`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`）：只改等号右边。
+- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`interlude.play.verbs`、`interlude.try.on`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`）：只改等号右边。
 - **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
 - `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
@@ -34,10 +34,11 @@
 | | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what`（跑腿卡住被放弃：`dot.errand-stalled`） |
 | | 交接 | `memory.handoff` |
 | | 幕间：去看一眼 | `interlude.observation` `.where` `.vm` `.phone` |
-| | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `.verbs` `.parts` `interlude.play-rules` |
+| | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `interlude.play.post` `.verbs` `.parts` `interlude.play-rules` |
+| | 幕间：试点新的 | `interlude.try` `interlude.try.on`；她对话里记他反应的工具说明 `interlude.doings-tool` |
 | 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
 | | 日记 | `memory.diary` |
-| | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
+| | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 
 **还在代码里的**：
