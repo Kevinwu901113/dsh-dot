@@ -745,33 +745,48 @@ test('doings: what was still queued when dsh went down is lost, not queued forev
   assert.equal(msLeftInHours(''), Infinity);
 });
 
-test('growth: week ids, how much a portrait changed, when the review is due, history and rollback', async () => {
-  const { weekId, changeRatio, createGrowth, lastDiaryDays } = await import('../src/interlude/growth.js');
+test('growth: week ids, how much a portrait changed, when the review is due (a missed one caught up), history and rollback', async () => {
+  const { weekId, changeRatio, createGrowth, lastDiaryDays, lastMoment } = await import('../src/interlude/growth.js');
   assert.equal(weekId(new Date(2026, 10, 8, 12).getTime()), '2026-W45');
   assert.equal(weekId(new Date(2026, 10, 9, 12).getTime()), '2026-W46');
   assert.equal(weekId(new Date(2027, 0, 1, 12).getTime()), '2026-W53');
-  assert.equal(changeRatio('我喜欢画画', '我喜欢画画'), 0);
-  assert.ok(changeRatio('我喜欢画画，晚上逛小黑盒', '我喜欢画画，晚上看书') > 0.2);
-  assert.deepEqual(lastDiaryDays('## 11-01\na\n\n## 11-02\nb\n', 1), [{ day: '11-02', text: 'b' }]);
+  const base = '我叫小点，最近迷上了在电脑上画画，晚上不太刷小黑盒了，和他说话越来越随便。';
+  assert.equal(changeRatio(base, base), 0);
+  assert.ok(changeRatio(base, base + base) >= 0.5, 'appending as much again is a big change');
+  assert.ok(changeRatio(base, base.slice(0, base.length / 2)) >= 0.45, 'cutting half is too');
+  assert.ok(changeRatio('甲乙丙丁。戊己庚辛。', '戊己庚辛。甲乙丙丁。') >= 0.4, 'so is reordering');
+  assert.equal(changeRatio('A', 'B'), 1);
+  assert.deepEqual(lastDiaryDays('## 2026-11-01 周日\na\n\n## 2026-11-07 周六\nb\n', 7, new Date(2026, 10, 3).getTime()), [{ day: '2026-11-07 周六', text: 'b' }]);
+  assert.equal(new Date(lastMoment('Sun 21:00', new Date(2026, 10, 9, 10).getTime())).getDate(), 8, 'Monday: last Sunday');
   let t = new Date(2026, 10, 8, 20, 0).getTime(); // Sunday 20:00
-  const home = mkdtempSync(join(tmpdir(), 'growth-'));
-  const g = createGrowth({ home, maxChange: 0.35, now: () => t });
-  assert.equal(g.due('Sun 21:00', t), false);
+  const dir = mkdtempSync(join(tmpdir(), 'growth-'));
+  const g = createGrowth({ dir, at: 'Sun 21:00', maxChars: 200, maxChange: 0.35, now: () => t });
+  assert.equal(g.due(t), true, 'never reviewed: last week is caught up');
+  g.skip('nothing');
+  assert.equal(g.due(t), false);
   t += 2 * 3600000;
-  assert.equal(g.due('Sun 21:00', t), true);
-  const first = '我叫小点。最近迷上了在电脑上画画，晚上不太刷小黑盒了。和他说话越来越随便。';
-  assert.equal(g.keep({ portrait: first, changes: '开始画画', tidy: ['每晚十点逛小黑盒'] }).ok, true);
-  assert.equal(g.due('Sun 21:00', t), false, 'done this week');
+  assert.equal(g.due(t), true, 'Sunday 22:00');
+  assert.equal(g.keep({ portrait: 'x'.repeat(201), changes: '', tidy: [] }).why, 'too long');
+  assert.equal(g.keep({ portrait: base, changes: '开始画画', tidy: ['每晚十点逛小黑盒'] }).ok, true);
+  assert.equal(g.due(t), false, 'done this week');
   assert.deepEqual(g.tidy(), ['每晚十点逛小黑盒']);
-  t += 7 * 86400000;
-  const far = g.keep({ portrait: '完全不一样的另一个人，爱跑步，讨厌电脑。', changes: 'x', tidy: [] });
+  t += 10 * 86400000; // Wednesday after next: Sunday was missed
+  assert.equal(g.due(t), true, 'caught up');
+  const far = g.keep({ portrait: '完全不一样的另一个人，爱跑步，讨厌电脑，从不说话。', changes: 'x', tidy: [] });
   assert.equal(far.ok, false); assert.equal(far.why, 'changed too much');
-  assert.equal(g.portrait(), first, 'nothing kept');
-  assert.equal(g.keep({ portrait: `${first}这周学会了用记账 App。`, changes: '学会记账', tidy: [] }).ok, true);
-  assert.deepEqual(g.history().map((h) => [h.week, h.changes]), [['2026-W45', '开始画画'], ['2026-W46', '学会记账']]);
+  assert.equal(g.portrait(), base, 'nothing kept');
+  const next = `${base}这周学会了用记账 App。`;
+  assert.equal(g.keep({ portrait: next, changes: '学会记账', tidy: ['x'] }).week, '2026-W46');
+  assert.equal(g.keep({ portrait: `${next}还有画了猫。`, changes: '又一次', tidy: [] }, { force: true }).week, '2026-W46-2', 'a second review of a week keeps the first');
+  assert.deepEqual(g.history().map((h) => [h.week, h.changes]), [['2026-W45', '开始画画'], ['2026-W46', '学会记账'], ['2026-W46-2', '又一次']]);
   assert.equal(g.rollback('2026-W45'), true);
-  assert.equal(g.portrait(), first);
+  assert.equal(g.portrait(), base);
+  assert.deepEqual(g.tidy(), [], 'the tidy list of a discarded portrait goes');
   assert.equal(g.rollback('2020-W01'), false);
+  // a portrait with its own headings survives the archive
+  t += 7 * 86400000;
+  assert.equal(g.keep({ portrait: `${base}\n\n## 小标题`, changes: 'h', tidy: [] }, { force: true }).ok, true);
+  assert.match(g.history().at(-1).portrait, /## 小标题$/);
 });
 
 test('growth: the weekly review reads her week (never writes memory), keeps her portrait, and the portrait follows the Canon in her prompt and in the round', async () => {
@@ -781,9 +796,12 @@ test('growth: the weekly review reads her week (never writes memory), keeps her 
   const reply = (o) => (o.tools?.[0]?.name === 'growth' ? `TOOL:${JSON.stringify({ portrait, changes: '开始画画', tidy: ['常在晚上逛'] })}` : GOOD);
   const h = harness({ reply, memory: writes });
   mkdirSync(join(h.home, 'memory'), { recursive: true });
-  writeFileSync(join(h.home, 'memory', 'diary.md'), '## 11-07 星期六\n今天第一次用画图软件画了只猫。\n\n');
+  const d = new Date(); const day = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  writeFileSync(join(h.home, 'memory', 'diary.md'), `## 2020-01-01 周三\n很久以前。\n\n## ${day} 周六\n今天第一次用画图软件画了只猫。\n\n`);
   const r = await h.cmd().handler({ rawInput: 'growth now' });
   assert.match(r.text, /reviewed 20\d\d-W\d\d: 开始画画/);
+  assert.ok(existsSync(join(h.home, 'interlude', 'growth', 'current.md')), 'kept outside her own folder');
+  assert.ok(!existsSync(join(h.home, 'her', 'growth')));
   const call = h.calls.find((c) => c.tools?.[0]?.name === 'growth');
   const input = JSON.parse(call.messages[0].content[0].text);
   assert.deepEqual(input.diaryThisWeek.map((d) => d.text), ['今天第一次用画图软件画了只猫。']);
@@ -832,14 +850,42 @@ test('free time: her own time goes to her errands with a budget; QQ and the ledg
   h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 8000, outputTokens: 1000 } });
   assert.deepEqual(cancelled, []);
   h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 2000, outputTokens: 0 } });
+  await new Promise((r) => setImmediate(r));
   assert.deepEqual(cancelled, ['e1']);
   tasks[0].onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '画了一只猫，存在 her/画/猫.png', cost: { in: 10000, cached: 0, out: 1000 } });
   assert.equal((await h.gate('e1', 'qq_send')).via, 'next', 'over');
   const list = JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8'));
-  assert.deepEqual(list.map((d) => [d.kind, d.status]), [['free', 'done'], ['say', 'kept']]);
+  assert.deepEqual(list.map((d) => [d.kind, d.status]), [['free', 'stopped'], ['say', 'kept']], 'stopped by the budget, said so');
   assert.match((await h.cmd().handler({ rawInput: '' })).text, /free time: 1\/2 today, 11000\/30000 tokens/);
-  // the daily budget: what is left is less than one free time's floor → held
-  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 1 } });
+  // the daily budget: 11000 of 30000 used; one more would be capped at what is left
+  assert.match((await h.cmd().handler({ rawInput: 'free' })).text, /budget 10000 tokens/);
+  assert.match((await h.cmd().handler({ rawInput: 'free' })).text, /not queued: already running/, 'one at a time, from queued on');
+  h.stop();
+});
+
+test('free time: one step past the whole budget stops it without a wake-up message; with no cancel, every tool is refused', async () => {
+  const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000 } });
+  const tasks = [], steered = [];
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, isErrand: () => true }
+    : n === 'agents' ? { get: () => ({ steer: (m) => steered.push(m) }) } : get(n)))(h.ctx.get); // no cancel on this host
+  await h.cmd().handler({ rawInput: 'free' });
+  tasks[0].onStart('e1');
+  // cached re-reads weigh a tenth: 50000 cached + 4000 fresh + 500 out = 9500 → warned, not stopped
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 4000, cacheReadTokens: 50000, outputTokens: 500 } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(steered.length, 1);
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 20000 } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(steered.length, 1, 'no second message');
+  assert.equal((await h.gate('e1', `${VM_TOOL_PREFIX}browser_navigate`)).kind, 'deny', 'stopped: every tool refused');
+  tasks[0].onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '', cost: null });
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8')).at(-1).status, 'stopped');
+  // one step over both thresholds at once: stopped, no warning steered into an idle agent
+  await h.cmd().handler({ rawInput: 'free' });
+  tasks[1].onStart('e2');
+  h.emit('e2', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 30000 } });
+  await new Promise((r) => setImmediate(r));
+  assert.equal(steered.length, 1);
   h.stop();
 });
 
@@ -851,6 +897,6 @@ test('free time: planned at random moments in her active hours, once a day', asy
   assert.ok(meta.freeDay, 'planned today');
   const end = new Date(); end.setHours(23, 29, 0, 0);
   for (const at of meta.freeAt) assert.ok(at >= Date.now() - 60000 && at <= end.getTime() + 60000);
-  assert.ok(meta.freeAt.length <= 2);
+  if (Date.now() < end.getTime() - 60000) assert.equal(meta.freeAt.length, 2); else assert.equal(meta.freeAt.length, 0);
   h.stop();
 });

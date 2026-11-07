@@ -99,7 +99,7 @@ export const defaults = {
   freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
   freeDailyTokens: 300000,    // all free time in a day
   // 成长: once a week she rewrites her own portrait ("她现在的样子", a system-prompt section after the
-  // Canon), changing at most portraitMaxChange of it; every version kept in <home>/her/growth.
+  // Canon), changing at most portraitMaxChange of it; every version kept in <home>/interlude/growth.
   growth: true,
   growthAt: 'Sun 21:00',
   portraitMaxChars: 900,
@@ -522,7 +522,8 @@ export function apply(ctx, config = {}) {
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
   const doings = createDoings(files.doings);
-  const growth = cfg.growth ? createGrowth({ home, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
+  // Outside her own folder: only the weekly review changes her portrait (she could rewrite a file in <home>/her).
+  const growth = cfg.growth ? createGrowth({ dir: join(dir, 'growth'), at: cfg.growthAt, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
   const portraitSection = () => { const p = growth?.portrait(); return p ? prompt('interlude.growth.section', { portrait: p }) : ''; };
   const herPlace = join(home, 'her');
   mkdirSync(herPlace, { recursive: true });
@@ -998,7 +999,7 @@ export function apply(ctx, config = {}) {
       let diaryText = '';
       try { diaryText = readFileSync(join(home, 'memory', 'diary.md'), 'utf8'); } catch (error) { void error; }
       const input = growth.input({ canon: canonText(), herLife: mem?.herLife?.() ?? [], owner: mem?.forInterlude?.() ?? [], diaryText, doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 20 }) });
-      if (!input.diaryThisWeek.length && !input.yourDoings.recent.length && !input.yourNotes.length) { growth.skip('nothing this week'); audit('growth-skipped', { why: 'nothing this week' }); return { skipped: 'nothing this week' }; }
+      if (!input.diaryThisWeek.length && !input.yourDoings.last7Days.length) { growth.skip('nothing this week'); audit('growth-skipped', { why: 'nothing this week' }); return { skipped: 'nothing this week' }; }
       const sel = ctx.agentDefaultModel.currentSelection();
       const system = prompt('interlude.growth.system', { name: canon?.storyDefaults?.characterName ?? 'dot', maxChars: cfg.portraitMaxChars, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
       const messages = [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-interlude' } })];
@@ -1010,20 +1011,28 @@ export function apply(ctx, config = {}) {
         try { return JSON.parse(r.args || r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (error) { void error; return null; }
       };
       let out = await call(messages);
-      let kept = growth.keep(out ?? {});
-      if (!kept.ok && kept.why === 'changed too much') {
-        out = await call([...messages, createUserMessage({ content: [{ type: 'text', text: prompt('interlude.growth.too-much', { ratio: `${Math.round(kept.ratio * 100)}%`, change: `${Math.round(cfg.portraitMaxChange * 100)}%` }) }], source: { kind: 'dsh-interlude' } })]);
+      let kept = growth.keep(out ?? {}, { force });
+      if (!kept.ok && ['changed too much', 'too long'].includes(kept.why)) {
+        const again = kept.why === 'too long'
+          ? prompt('interlude.growth.too-long', { length: kept.length, maxChars: cfg.portraitMaxChars })
+          : prompt('interlude.growth.too-much', { ratio: `${Math.round(kept.ratio * 100)}%`, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
+        out = await call([...messages, createUserMessage({ content: [{ type: 'text', text: again }], source: { kind: 'dsh-interlude' } })]);
         kept = growth.keep(out ?? {}, { force });
       }
       if (!kept.ok) { growth.skip(kept.why); audit('growth-refused', { why: kept.why, ratio: kept.ratio }); return { error: kept.why }; }
       audit('growth', { week: kept.week, ratio: Math.round(kept.ratio * 100) / 100, tidy: growth.tidy().length });
       logger.info(`growth ${kept.week}: portrait rewritten (${Math.round(kept.ratio * 100)}% changed)`);
       return { ok: true, week: kept.week, changes: String(out?.changes ?? '') };
-    } catch (error) { logger.warn(`growth review failed: ${error.message}`); audit('growth-failed', { error: clip(error.message, 200) }); return { error: error.message }; } finally { reviewing = false; }
+    } catch (error) {
+      // Model down: try again in an hour, not every minute.
+      meta.growthFailedAt = Date.now(); saveMeta();
+      logger.warn(`growth review failed: ${error.message}`); audit('growth-failed', { error: clip(error.message, 200) }); return { error: error.message };
+    } finally { reviewing = false; }
   }
 
   // 自己的时间: a few times a day, at random moments in her active hours, her errand self gets time of her own.
-  const free = new Map(); // session id → { cost, warned, stopped, doing }
+  const free = new Map(); // session id → { cost, budget, warned, stopped }
+  let freeQueued = false; // one free time at a time, from queued to done
   const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
   const planFree = (now = Date.now()) => {
     const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(cfg.activeHours || '').trim());
@@ -1031,32 +1040,40 @@ export function apply(ctx, config = {}) {
     let start = day.getTime(), end = start + 86400000;
     if (m) { start = day.getTime() + (+m[1] * 60 + +m[2]) * 60000; end = day.getTime() + (+m[3] * 60 + +m[4]) * 60000; if (end <= start) end += 86400000; }
     const from = Math.max(now, start), to = end - 30 * 60000;
-    meta.freeAt = to > from ? Array.from({ length: Math.max(0, cfg.freeTimesPerDay) }, () => Math.round(from + Math.random() * (to - from))).sort((a, b) => a - b) : [];
+    // Slots still ahead (yesterday's, past midnight when the hours wrap) are kept.
+    const kept = (meta.freeAt ?? []).filter((t) => t > now && t < start);
+    meta.freeAt = [...kept, ...(to > from ? Array.from({ length: Math.max(0, cfg.freeTimesPerDay) }, () => Math.round(from + Math.random() * (to - from))) : [])].sort((a, b) => a - b);
     meta.freeDay = dayOf(new Date(now)); saveMeta();
   };
   async function freeTime(phase = 'free') {
     rollDay();
     const held = (why) => { audit('free-held', { phase, why }); return { skipped: why }; };
     if (!dshDot()?.task) return held('needs her errands (dsh-dot)');
-    if (free.size) return held('already running');
+    if (free.size || freeQueued) return held('already running');
     if (freeLeft() < Math.min(cfg.freeTokenCap, 20000)) return held('daily budget used');
     const budget = Math.min(cfg.freeTokenCap, freeLeft());
     const mem = ctx.get('dotMemory');
     const context = {
       now: describeNow(new Date()),
-      portrait: growth?.portrait() || null,
       yourNotes: mem?.herLife?.() ?? [],
       yourDoings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 10 }),
       lately: state?.current ?? null,
     };
-    let doing = '', sid = '';
+    let doing = '', sid = '', f = null;
     const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), tidy: growth?.tidy() ?? [], context });
     const r = dshDot().task({
       kind: 'free', key: `free|${dayOf()}|${meta.dayFrees ?? 0}`, text, source: FREE_SOURCE, ttlMs: ttlInHours(),
-      onStart: (id) => { sid = id; free.set(id, { cost: 0, budget, warned: false, stopped: false }); },
-      onDone: (res) => { if (sid) free.delete(sid); remember('free', '自己的时间', res, doing); audit('free-done', { status: res.status, tokens: res.cost ? tokensOf(res.cost) : 0 }); },
+      onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false }; free.set(id, f); },
+      onDone: (res) => {
+        freeQueued = false;
+        if (sid && free.get(sid) === f) free.delete(sid);
+        const status = f?.stopped ? 'stopped' : res.status;
+        remember('free', '自己的时间', { ...res, status }, doing);
+        audit('free-done', { status, tokens: res.cost ? tokensOf(res.cost) : 0 });
+      },
     });
     if (r === 'refreshed') return held('already queued');
+    freeQueued = true;
     doing = doings.add({ kind: 'free', what: '自己的时间' });
     meta.dayFrees = (meta.dayFrees ?? 0) + 1; saveMeta();
     growth?.clearTidy();
@@ -1064,29 +1081,42 @@ export function apply(ctx, config = {}) {
     return { ok: true, budget };
   }
   // What her own time costs, step by step: told to wrap up past 80% of its budget, stopped at 100%.
+  // A cached re-read of the context weighs a tenth (what it costs on DeepSeek), or every step would
+  // spend the whole context again and the budget would buy three steps.
+  const freeWeight = (u) => (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0) + (Number(u.outputTokens ?? 0) || 0) + 0.1 * (Number(u.cacheReadTokens ?? 0) || 0);
+  const agentOf = async (id) => {
+    const a = ctx.get('agents')?.get?.(id);
+    if (a) return a;
+    try { const found = await ctx.get('sessionController')?.resolveAgent(id); return found && !('error' in found) ? found.agent : null; } catch (error) { void error; return null; }
+  };
   ctx.on('session/event', (session, event) => {
-    const f = free.get(session?.id);
+    const id = session?.id;
+    const f = free.get(id);
     if (!f || event?.type !== 'assistant/message' || !event.data?.usage) return;
-    const u = event.data.usage;
-    const step = (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheReadTokens ?? 0) || 0) + (Number(u.outputTokens ?? 0) || 0);
+    const step = Math.round(freeWeight(event.data.usage));
     f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; saveMeta();
-    const id = session.id;
+    if (!f.stopped && f.cost >= f.budget) {
+      f.stopped = true; // from here the gate refuses every tool, whether or not the cancel lands
+      void (async () => {
+        const agent = await agentOf(id);
+        try { if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'hook', reason: 'dsh-interlude: free time budget' }, { keepInbox: true }); audit('free-stopped', { session: id, cost: f.cost }); return; } } catch (error) { void error; }
+        audit('free-stop-refused-tools', { session: id, cost: f.cost });
+      })();
+      return;
+    }
     if (!f.warned && f.cost >= 0.8 * f.budget) {
       f.warned = true;
       void (async () => {
+        const agent = await agentOf(id);
+        if (free.get(id) !== f || f.stopped) return; // over by now: no message to wake an idle agent with
+        const m = createUserMessage({ content: [{ type: 'text', text: prompt('interlude.free.budget', { stamp: stamp(), used: f.cost, budget: f.budget }) }], source: FREE_SOURCE });
         try {
-          const found = await ctx.get('sessionController')?.resolveAgent(id);
-          const agent = found && !('error' in found) ? found.agent : null;
-          const m = createUserMessage({ content: [{ type: 'text', text: prompt('interlude.free.budget', { stamp: stamp(), used: f.cost, budget: f.budget }) }], source: FREE_SOURCE });
-          if (typeof agent?.steer === 'function') agent.steer(m); else if (typeof agent?.send === 'function') agent.send(m, 'next-step', true);
+          if (typeof agent?.steer === 'function') agent.steer(m);
+          else if (typeof agent?.send === 'function') agent.send(m, 'next-step', true);
+          else { audit('free-warn-unavailable', { session: id }); return; }
           audit('free-warned', { session: id, cost: f.cost });
         } catch (error) { void error; }
       })();
-    }
-    if (!f.stopped && f.cost >= f.budget) {
-      f.stopped = true;
-      try { ctx.get('agents')?.get?.(id)?.cancel?.({ kind: 'hook', reason: 'dsh-interlude: free time budget' }, { keepInbox: true }); } catch (error) { void error; }
-      audit('free-stopped', { session: id, cost: f.cost });
     }
   });
   // In her own time: no QQ (he is reached through tell_him), no ledger tool, and typing in a social app asks first.
@@ -1094,18 +1124,27 @@ export function apply(ctx, config = {}) {
     const sessionId = exec.agent?.session?.id;
     if (exec.name === 'tell_him') return sessionId && free.has(sessionId) ? next() : { kind: 'deny', reason: prompt('interlude.tell-him.elsewhere') };
     if (!sessionId || !free.has(sessionId)) return next();
+    if (free.get(sessionId).stopped) return { kind: 'deny', reason: prompt('interlude.free.over') };
     if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
       audit('free-refused', { session: sessionId, tool: exec.name });
       return { kind: 'deny', reason: prompt('interlude.free.refused', { tool: exec.name }) };
     }
     const tool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
-    if (tool && typesText(tool, exec.input ?? exec.args ?? exec.arguments)) {
-      const fg = await ctx.get('dshPhone')?.foreground?.().catch?.(() => '') ?? '';
-      const pkg = String(fg).split('/')[0];
-      if (SOCIAL_PACKAGES.includes(pkg)) {
+    const input = exec.input ?? exec.args ?? exec.arguments;
+    if (tool && typesText(tool, input)) {
+      const phone = ctx.get('dshPhone');
+      // The phone first (one session drives it at a time), then which app is in front.
+      const busyPhone = await phone?.lease?.(sessionId, tool);
+      if (busyPhone) return { kind: 'deny', reason: busyPhone };
+      let pkg = '';
+      try { pkg = String((await phone?.foreground?.()) ?? '').split('/')[0]; } catch (error) { void error; }
+      // A batch that opens an app and types: the app it opens is where the typing lands.
+      const opened = tool === 'mobile_batch_commands' ? /launch_app[\s\S]*?"(?:packageName|package|appId)"\s*:\s*"([\w.]+)"/.exec(JSON.stringify(input ?? ''))?.[1] : '';
+      if (opened) pkg = opened;
+      if (SOCIAL_PACKAGES.includes(pkg) || (tool === 'mobile_batch_commands' && /launch_app/.test(JSON.stringify(input ?? '')) && !opened)) {
         const r = await next();
         if (r?.kind === 'deny' || r?.kind === 'ask') return r;
-        const label = Object.keys(KNOWN_APPS.labels).find((k) => KNOWN_APPS.labels[k] === pkg) ?? pkg;
+        const label = Object.keys(KNOWN_APPS.labels).find((k) => KNOWN_APPS.labels[k] === pkg) ?? (pkg || '一个刚打开的 App');
         audit('free-typing-asked', { session: sessionId, app: pkg });
         return { kind: 'ask', reason: prompt('interlude.free.typing', { app: label }) };
       }
@@ -1160,7 +1199,8 @@ export function apply(ctx, config = {}) {
     if (busy || running > 0) return;
     const now = Date.now();
     rollDay();
-    if (growth && growth.due(cfg.growthAt, now)) { void reviewGrowth(); return; }
+    // The weekly review runs beside the rounds, never instead of them.
+    if (growth && !reviewing && growth.due(now) && now - (meta.growthFailedAt ?? 0) >= 3600000) void reviewGrowth();
     if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
       if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
       if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(cfg.activeHours) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
