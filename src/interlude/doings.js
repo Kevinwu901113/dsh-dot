@@ -36,6 +36,8 @@ export function labelOf(d) {
   if (d.kind === 'play') return `${d.app ?? ''} ${{ like: '点赞', comment: '评论', follow: '关注', collect: '收表情', post: '发帖' }[d.action] ?? d.action ?? ''}`.trim();
   if (d.kind === 'look') return `去看${d.device ? `（${d.device === 'phone' ? '手机' : '电脑'}）` : ''}`;
   if (d.kind === 'try') return '试点新的';
+  if (d.kind === 'free') return '自己的时间';
+  if (d.kind === 'say') return '想跟他说';
   return d.kind;
 }
 

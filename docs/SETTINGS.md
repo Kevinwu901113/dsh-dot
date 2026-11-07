@@ -190,6 +190,8 @@ setx DSH_DOT_COMPUTER off
 | `play` | `true` | 「玩」（点赞、评论、关注、发帖）；`playActions` 去掉 `post` 就不发帖，`postDailyCap`（默认 1）是每天发帖上限 |
 | `tries` / `tryDailyCap` | `true` / `3` | 「试点新的」：她想做没做过的事，交给跑腿真去做（不花钱、不改账号、要审批的等批准） |
 | `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
+| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天几次、每次和每天的 token 上限；`0` 次关 |
+| `growth` / `growthAt` | `true` / `Sun 21:00` | 每周回顾，重写「她现在的样子」（`portraitMaxChars` 900、`portraitMaxChange` 0.35） |
 | `speak` | `false` | 主动找你；有 dot 时不自己发，交给她的对话（留一句「想跟他说的」），合不合适由她定，交过去才算一次 |
 | `maxContactsPerDay` / `willingnessThreshold` | `2` / `0.6` | 主动联系的上限和门槛 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
