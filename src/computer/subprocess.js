@@ -13,6 +13,15 @@ import { clip } from './audit.js';
 const run = promisify(execFile);
 const PROC_DIR = '/tmp/.dsh-computer-procs';
 const VM_HOME = '/home/gem';
+const REMOUNT_WAIT_MS = 120_000;
+
+const STAGE = { downloading: '下载', installing: '安装', starting: '开机', remounting: '重新挂载' };
+/** What a command gets while the computer is not up yet: what is happening, and not to wait. */
+export function notReady(status = {}) {
+  const what = STAGE[status.stage] ?? STAGE[status.state] ?? '准备';
+  const pct = status.progress?.total ? `，${Math.round((status.progress.done / status.progress.total) * 100)}%` : '';
+  return `电脑还在${what}中${pct}，现在跑不了命令。不用等它，也别自己去装或启动；先直接回话，好了会告诉你`;
+}
 
 export default class DshComputerSubprocess extends LocalSubprocessRuntime {
   static inject = ['dshComputer'];
@@ -35,10 +44,19 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     return this.vm.isShared(cwd) ? this.backend.toGuestPath(cwd) : VM_HOME;
   }
 
-  /** Must this spawn wait (VM booting, or a remount in flight)? */
+  /** Must this spawn wait (a remount in flight)? Booting is not waited for: see usable(). */
   mustWait() {
-    if (!this.vm.isReady) return true;
     try { return existsSync(this.vm.lockFile); } catch { return false; }
+  }
+
+  /**
+   * A command while the computer is still being installed or booting (minutes, on a first run)
+   * fails at once with a reason she can act on, instead of holding her turn — waiting here could
+   * not be cancelled and outlived the stop button. A failed computer fails the same way.
+   */
+  usable() {
+    if (this.vm.error) throw new Error(`电脑出错了，现在跑不了命令（${this.vm.error.message}）。不用等，先直接回话；/computer 看详情`);
+    if (!this.vm.isReady) throw new Error(notReady(this.vm.status?.()));
   }
 
   // Ending the host-side exec client does not reliably stop the process inside the VM, so every
@@ -53,8 +71,14 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
   }
 
   async resolveExecutable(command, env, signal) {
-    await this.vm.ready;
-    while (this.mustWait()) await new Promise((r) => setTimeout(r, 500));
+    this.usable();
+    // A remount (a new folder shared) takes seconds; bounded, and the stop button ends it.
+    for (const until = Date.now() + REMOUNT_WAIT_MS; this.mustWait();) {
+      if (signal?.aborted) throw signal.reason ?? new Error('aborted');
+      if (Date.now() > until) throw new Error('电脑在重新挂载文件夹，2 分钟还没好；稍后再试');
+      await new Promise((r) => setTimeout(r, 500));
+      this.usable();
+    }
     const probe = command.startsWith('/') ? 'test -x "$1" && printf %s "$1"' : 'command -v -- "$1"';
     const argv = this.backend.execArgv({ user: this.vm.user, cwd: VM_HOME, env, argv: ['/bin/sh', '-lc', probe, 'sh', command] });
     try {
@@ -69,10 +93,10 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     return { platform: 'posix', defaultShell: '/bin/bash' };
   }
 
-  // spawn() must return synchronously; while the computer is still booting, a host-side shell
-  // waits (up to 15 min) until the VM accepts commands, then hands over to the exec command.
+  // spawn() must return synchronously; during a remount a host-side shell waits until the VM
+  // accepts commands again, then hands over to the exec command. A booting computer fails fast.
   holdUntilReady(argv) {
-    if (this.vm.error) throw this.vm.error;
+    this.usable();
     if (!this.mustWait()) return argv;
     return [...this.backend.waitPrefix(this.vm.user, this.vm.lockFile), ...argv];
   }
@@ -92,7 +116,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
   }
 
   async spawnTerminal(spec) {
-    await this.vm.ready;
+    this.usable();
     const shared = this.vm.isShared(spec.cwd) ? null : this.vm.ensureShared?.(spec.cwd);
     if (shared) await shared;
     const argv = this.backend.execArgv({ user: this.vm.user, cwd: this.vmCwd(spec.cwd), env: spec.env, argv: spec.argv, tty: true });

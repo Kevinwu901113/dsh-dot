@@ -22,6 +22,7 @@ import { join, relative, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
+import { diagnose, report as doctorReport } from './doctor.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
 import { ago, describeNow, mondayOf, stamp } from '../clock.js';
@@ -242,6 +243,25 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
 const NOTED = ['phone-check', 'phone-notification', 'play'];
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
+export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
+
+const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
+/**
+ * While her phone or computer is still being installed or booting: what each is doing, for her
+ * turn (a dynamic context, gone once both are up, so the cached prefix is untouched). '' = all up.
+ */
+export function setupText(phoneStatus, computerStatus) {
+  const lines = [];
+  const p = phoneStatus;
+  if (p && p.state !== 'ready') {
+    lines.push(`手机：${p.state === 'needs-license' ? '还没装（等他在 dsh 里发 /phone accept）' : p.state === 'downloading' ? (p.progress?.text ?? '下载中') : p.state === 'booting' ? '开机中' : p.state === 'error' ? `出错了（${p.error ?? '未知'}），/phone 看详情` : p.state}`);
+  }
+  const c = computerStatus;
+  if (c && (c.state === 'starting' || c.state === 'error')) {
+    lines.push(`电脑：${c.state === 'error' ? `出错了（${c.error ?? '未知'}），/computer 看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
+  }
+  return lines.length ? prompt('dot.setup', { devices: lines.join('\n') }) : '';
+}
 /** The note an errand leaves in her conversation: what she did on her phone, in her own words. */
 export function errandNote(origin, text, now = Date.now()) {
   const what = table('dot.errand-note.what');
@@ -654,6 +674,12 @@ export function apply(ctx, config = {}) {
         return nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0);
       },
     });
+    // First install / boot: her phone and computer take minutes to come up; she talks meanwhile.
+    scope.systemPrompt.context({
+      name: 'dot:setup',
+      order: 898,
+      text: (c) => (inHome(c) ? setupText(phone()?.status?.(), computer()?.status?.()) : ''),
+    });
     scope.systemPrompt.context({
       name: 'dot:scheduled-turn',
       order: 900,
@@ -1051,9 +1077,53 @@ export function apply(ctx, config = {}) {
   };
   ctx.effect(() => { const timer = setInterval(() => { watchTurns(); void rerouteHeld(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
   phoneCheckNow = phoneCheck;
+  // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
+  // something still has to be installed, and when a device fails; problems go to the log and his IM.
+  let lastDoctor = null;
+  const runDoctor = async () => {
+    const items = await diagnose({ phone: phone()?.doctorInfo?.() ?? null, computer: computer()?.doctorInfo?.() ?? null, home: dshHome() });
+    lastDoctor = { at: Date.now(), bad: items.filter((i) => i.level === 'bad').length, warn: items.filter((i) => i.level === 'warn').length };
+    audit('doctor', { bad: lastDoctor.bad, warn: lastDoctor.warn, problems: items.filter((i) => i.level !== 'ok').map((i) => i.name) });
+    return items;
+  };
+  const doctorTell = async (why) => {
+    try {
+      const items = await runDoctor();
+      if (!items.some((i) => i.level === 'bad')) return;
+      const text = doctorReport(items, { onlyProblems: true });
+      logger.warn(`${why}\n${text}`);
+      void im.send(`🩺 ${why}\n${text}\n（完整结果：在 dsh 里发 /dot doctor）`, 'plain');
+    } catch (err) { logger.warn(`doctor failed: ${err.message}`); }
+  };
+  ctx.effect(() => {
+    const t = setTimeout(() => {
+      const p = phone()?.doctorInfo?.(), c = computer()?.doctorInfo?.();
+      if ((p && !p.installed) || (c && !c.installed)) void doctorTell('手机/电脑还没装好，先替你查了一遍这台机器');
+    }, 15_000);
+    return () => clearTimeout(t);
+  }, 'dsh-dot: first-run doctor');
+  // When a device she was waiting for (installing or booting in this run) comes up, she tells him herself.
+  const announced = new Set();
+  const announceReady = (device, label) => {
+    if (announced.has(device)) return;
+    announced.add(device);
+    audit('setup-ready', { device });
+    const id = lastSession;
+    if (!id) { void im.send(`✅ dot: ${label}装好了`, 'plain'); return; }
+    waking = waking.then(async () => {
+      const found = await resolveLive(id);
+      if (!found || 'error' in found) { void im.send(`✅ dot: ${label}装好了`, 'plain'); return; }
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.setup-done', { device: label }) }], source: SETUP_SOURCE }));
+    }).catch((err) => logger.warn(`setup announce failed: ${err.message}`));
+  };
+  const watchSetup = (device, label, waiting) => { let wasWaiting = false; return (s) => { if (waiting(s)) wasWaiting = true; else if (wasWaiting && s.state === 'ready') announceReady(device, label); }; };
+  const phoneSetup = watchSetup('phone', '手机', (s) => s.state === 'needs-license' || s.state === 'downloading');
+  const computerSetup = watchSetup('computer', '电脑', (s) => s.state === 'starting' && (s.stage === 'downloading' || s.stage === 'installing'));
+  ctx.inject(['dshComputer'], (c) => c.effect(() => { const off = c.dshComputer.onStatus?.(computerSetup); const now = c.dshComputer.status?.(); if (now) computerSetup(now); return off ?? (() => {}); }, 'dsh-dot: computer setup watch'));
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
-    if (s.state === 'error') void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain');
-    if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept（默认 16 GB 存储，要别的大小发 /phone accept 32 这样，建好后不能改）。', 'plain');
+    phoneSetup(s);
+    if (s.state === 'error') { void im.send(`⚠️ dot: 手机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-phone.log`, 'plain'); void doctorTell('手机出错了，体检发现的问题'); }
+    if (s.state === 'needs-license') void im.send('📱 dot: 手机还没装好——需要先接受 Android SDK 许可。在 dsh 里发 /phone accept（默认 16 GB 存储，要别的大小发 /phone accept 32 这样，建好后不能改）。装之前可以先发 /dot doctor 查一下这台电脑。', 'plain');
   }) ?? (() => {}), 'dsh-dot: phone status'));
 
   const prompts = promptsPage({ home, port: Number(cfg.promptsPort) || 7870 });
@@ -1076,8 +1146,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page',
-      input: { hint: '[test | check | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page',
+      input: { hint: '[doctor | test | check | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         // /dot memory … and /dot people … belong to dsh-dot/memory.
@@ -1085,6 +1155,7 @@ export function apply(ctx, config = {}) {
           const mem = ctx.get('dotMemory');
           return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
         }
+        if (arg === 'doctor') { try { return { kind: 'success', text: doctorReport(await runDoctor()) }; } catch (err) { return { kind: 'success', text: `doctor failed: ${err.message}` }; } }
         if (arg === 'prompts stop') return { kind: 'success', text: (await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running' };
         const rb = /^prompts rebase (\S+)( --reset)?$/.exec(arg);
         if (rb) { try { return { kind: 'success', text: rebase(rb[1], Boolean(rb[2])) }; } catch (err) { return { kind: 'success', text: err.message }; } }
@@ -1100,6 +1171,7 @@ export function apply(ctx, config = {}) {
         const lines = [
           `computer: ${vm ? `${vm.state}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}` : 'not installed (optional)'} · phone: ${ph ? `${ph.state}${ph.error ? ` (${ph.error})` : ''}` : 'not installed (optional)'}`,
           `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
+          ...(lastDoctor && (lastDoctor.bad || lastDoctor.warn) ? [`doctor: ${lastDoctor.bad} problem(s), ${lastDoctor.warn} warning(s) — /dot doctor`] : []),
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           // Where his next message goes: when she "does not answer", look here first.
           `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'} · errand: ${errandId || '(none)'}`,

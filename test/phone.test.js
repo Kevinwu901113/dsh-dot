@@ -187,6 +187,32 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   h.stop();
 });
 
+test('phone: launch is cold-boot, windowless console, own adb port; three quick exits stop the relaunch loop', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.spawned.length === 1));
+  const { args, opts } = h.spawned[0];
+  assert.ok(args.includes('-no-snapshot'), 'no Quick Boot snapshot by default');
+  assert.equal(opts.windowsHide, true, 'no console window to close on Windows');
+  assert.equal(opts.env.ANDROID_ADB_SERVER_PORT, '5137', 'her own adb server, away from 5037');
+  writeFileSync(join(h.home, 'emulator.log'), 'boot...\nFATAL: x86_64 emulation currently requires hardware acceleration\n');
+  for (let i = 1; i <= 3; i++) {
+    await until(() => h.spawned.length === i);
+    h.child().emit('exit', 1);
+  }
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(h.spawned.length, 3, 'not relaunched a fourth time');
+  assert.match(h.ctx.dshPhone.error, /keeps exiting right after launch[\s\S]*hardware acceleration/, 'the reason from emulator.log is in the error');
+  h.stop();
+});
+
+test('phone: quickBoot and adbPort 0 restore the stock behaviour', async () => {
+  const h = harness({ config: { quickBoot: true, adbPort: 0 } });
+  assert.ok(await until(() => h.spawned.length === 1));
+  assert.ok(!h.spawned[0].args.includes('-no-snapshot'));
+  assert.equal(h.spawned[0].opts.env.ANDROID_ADB_SERVER_PORT, process.env.ANDROID_ADB_SERVER_PORT);
+  h.stop();
+});
+
 test('phone: an emulator left running from the last dsh run is attached, not launched again', async () => {
   const h = harness({ running: true });
   assert.ok(await until(() => h.ctx.dshPhone.isReady));

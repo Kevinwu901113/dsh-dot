@@ -43,6 +43,8 @@ export const defaults = {
   port: 5554,               // console port; the adb serial is emulator-<port>
   window: true,             // show the emulator window (the phone's live view); false = headless
   gpu: 'auto',
+  quickBoot: false,         // Quick Boot snapshots (save on exit, load on start); off = cold boot, never a half-written snapshot
+  adbPort: 5137,            // her own adb server port (ANDROID_ADB_SERVER_PORT), away from other adbs on 5037; 0 = 5037
   locale: 'zh-CN',          // the phone's language (emulator -change-locale)
   timezone: 'Asia/Shanghai',
   number: '',               // her phone number for registering and logging into apps ('' = none); /phone number also sets it
@@ -83,6 +85,17 @@ const CHANNELS = { stable: 'channel-0', beta: 'channel-1', dev: 'channel-2', can
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-phone.json');
 export const auditFile = () => join(dshHome(), 'dsh-phone-audit.jsonl');
+
+const PART = { 'platform-tools': '工具', emulator: '模拟器', 'system image': '系统镜像' };
+/** A download in progress as people read it: { what, doneMb, totalMb, pct, etaMin, text }. */
+export function progressView({ what, done, total, startedAt }, now = Date.now()) {
+  const mb = (b) => Math.round(b / 1048576);
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : null;
+  const rate = done / Math.max(1, (now - startedAt) / 1000);
+  const etaMin = total && rate > 0 && done > 1048576 ? Math.max(1, Math.round((total - done) / rate / 60)) : null;
+  const text = `下载${PART[what] ?? what} ${mb(done)}${total ? `/${mb(total)}` : ''} MB${etaMin ? `，约 ${etaMin} 分钟` : ''}`;
+  return { what, doneMb: mb(done), totalMb: total ? mb(total) : null, pct, etaMin, text };
+}
 export const shadeFile = () => join(dshHome(), 'dsh-phone-shade.json');
 
 /** Optional user settings file ($DSH_HOME/dsh-phone.json), for the desktop app which has no shell env. */
@@ -393,11 +406,15 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'status', state, error });
     for (const fn of listeners) { try { fn(phone.status()); } catch {} }
   };
-  phone.status = () => ({ state: phone.state, serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
+  phone.status = () => ({ state: phone.state, ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
   phone.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  /** For /dot doctor: what is configured, and what is already on disk / running. */
+  phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, paths: { emulator: paths.emulator } });
   let markReady;
   phone.ready = new Promise((r) => (markReady = r));
-  phone.adbExec = (args, opts) => exec(paths.adb, ['-s', serial, ...args], opts);
+  // Every direct adb call talks to her own adb server (env: adbPort) and cannot hang a turn: a
+  // stuck adb (offline device, another server) ends after 30 s unless the caller asks for longer.
+  phone.adbExec = (args, opts = {}) => exec(paths.adb, ['-s', serial, ...args], { env: env(), timeout: 30_000, ...opts });
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
   /** Third-party packages on her phone — the apps she installed herself (cached a minute). */
   let appsCache = { at: 0, pkgs: [] };
@@ -506,7 +523,11 @@ export function apply(ctx, config = {}, deps = {}) {
     const [repoXml, sysImgXml] = await Promise.all([text(`${REPO}/repository2-3.xml`), text(`${REPO}/sys-img/${cfg.tag}/sys-img2-3.xml`)]);
     const dl = resolveDownloads({ repoXml, sysImgXml, osTag, abi, api: cfg.api, tag: cfg.tag, channel: cfg.channel });
     logger.info(`installing: emulator ${dl.emulator.version}, platform-tools, ${dl.systemImage.path} (${dl.systemImage.sizeMb} MB) → ${home}`);
-    const progress = (what) => (got, total) => logger.info(`${what}: ${Math.round(got / 1048576)}${total ? `/${Math.round(total / 1048576)}` : ''} MB`);
+    // Progress for /phone, the panel and her rules (not only the log): which file, MB, and a rough ETA.
+    const progress = (what) => { const startedAt = Date.now(); let logged = 0; return (got, total) => {
+      phone.progress = { what, done: got, total: total || 0, startedAt };
+      if (Date.now() - logged > 5_000) { logged = Date.now(); logger.info(`${what}: ${Math.round(got / 1048576)}${total ? `/${Math.round(total / 1048576)}` : ''} MB`); }
+    }; };
     const fetchZip = async (what, url) => { const file = join(paths.downloads, url.split('/').pop()); if (!existsSync(file)) await (deps.fetch ? download(url, file, fetchImpl, progress(what)) : curlDownload(url, file, progress(what))); return file; };
     if (!existsSync(paths.adb)) await unzip(await fetchZip('platform-tools', dl.platformTools.url), home);
     if (!existsSync(paths.emulator)) await unzip(await fetchZip('emulator', dl.emulator.url), home);
@@ -519,6 +540,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }
     mkdirSync(join(home, 'platforms'), { recursive: true }); // the emulator expects the folder to exist
     rmSync(paths.downloads, { recursive: true, force: true });
+    phone.progress = null;
     audit({ kind: 'installed', emulator: dl.emulator.version, systemImage: dl.systemImage.path });
   }
 
@@ -553,9 +575,22 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'avd-created', avd: cfg.avd, api: cfg.api, abi });
   }
 
-  const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
+  // Her own adb server port: another adb on 5037 (MuMu, LDPlayer, phone assistants ship old ones)
+  // kills and restarts the server on every version mismatch, and she drops offline. 0 = the default 5037.
+  const adbPortEnv = () => (cfg.adbPort ? { ANDROID_ADB_SERVER_PORT: String(cfg.adbPort) } : {});
+  const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, ...adbPortEnv(), PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
 
-  let child = null, stopping = false, mcpFork = null;
+  let child = null, stopping = false, mcpFork = null, quickExits = 0;
+  /** The last lines of emulator.log, for the error a failed launch leaves. */
+  const logTail = (n = 8) => { try { return readFileSync(join(home, 'emulator.log'), 'utf8').trimEnd().split(/\r?\n/).slice(-n).join('\n'); } catch { return ''; } };
+  /** Windows: no WHPX / AEHD → x86_64 emulation exits at once. Say how to turn it on instead of launching. */
+  async function checkAccel() {
+    if (osTag !== 'windows') return;
+    try { await exec(paths.emulator, ['-accel-check'], { env: env(), timeout: 30_000, windowsHide: true }); } catch (err) {
+      const why = String(err.stdout || err.message).trim().split(/\r?\n/).slice(-3).join(' ');
+      throw new Error(`hardware acceleration is not available (${why}). Run as administrator: Enable-WindowsOptionalFeature -Online -FeatureName HypervisorPlatform -All -NoRestart and bcdedit /set "{current}" hypervisorlaunchtype auto, enable virtualization (VT-x/AMD-V) in the BIOS if needed, reboot, then /phone restart`);
+    }
+  }
   async function waitBooted() {
     const deadline = Date.now() + cfg.bootTimeoutMs;
     while (Date.now() < deadline) {
@@ -600,7 +635,7 @@ export function apply(ctx, config = {}, deps = {}) {
     mcpFork = ctx.plugin(mcpClient, {
       transport: 'stdio', serverName: PHONE_SERVER, command: process.execPath, args: [entry], cwd: home,
       // ELECTRON_RUN_AS_NODE: inside the desktop app process.execPath is Electron; this makes it run as plain Node.
-      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ELECTRON_RUN_AS_NODE: '1' },
+      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ...adbPortEnv(), ELECTRON_RUN_AS_NODE: '1' },
       toolCallTimeoutMs: cfg.toolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
     logger.info(`${PHONE_TOOL_PREFIX}* mounted (mobile-mcp over adb)`);
@@ -638,21 +673,35 @@ export function apply(ctx, config = {}, deps = {}) {
       if (claim.attach) {
         logger.info(`${serial} is already running (AVD ${cfg.avd}); attaching`);
       } else {
+        await checkAccel();
         ensureCameraScene();
-        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
+        // No Quick Boot by default: the watchdog and `emu kill` can stop her mid-save, and the next
+        // launch then loads a half-written snapshot (Windows reports "Bug report interrupted by snapshot load?").
+        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.quickBoot ? [] : ['-no-snapshot']), ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
         // A piped, referenced child kept the Host alive after shutdown until the desktop updater
         // timed out ("Host did not complete graceful task teardown").
         mkdirSync(home, { recursive: true });
         const log = openSync(join(home, 'emulator.log'), 'a');
-        try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true }); } finally { closeSync(log); }
+        // windowsHide: on Windows a detached child gets its own console window; closing it kills the emulator.
+        try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true, windowsHide: true }); } finally { closeSync(log); }
         child.unref?.();
+        const launchedAt = Date.now();
         child.on('exit', (code) => {
           child = null;
           if (stopping) return;
+          // Exits within a minute of launch in a row = it cannot start (no hypervisor, GPU, broken AVD):
+          // stop relaunching and say why instead of flashing a window every few seconds.
+          quickExits = Date.now() - launchedAt < 60_000 ? quickExits + 1 : 0;
+          const tail = logTail();
+          if (quickExits >= 3) {
+            const message = `the emulator keeps exiting right after launch (code ${code}); stopped relaunching — /phone restart to try again${tail ? `\nemulator.log:\n${tail}` : ''}`;
+            setState('error', message); logger.error(message); audit({ kind: 'emulator-crash-loop', code });
+            return;
+          }
           setState('error', `the emulator exited (code ${code})`);
-          logger.warn(`emulator exited with ${code}; relaunching in ${cfg.restartDelayMs / 1000}s`);
+          logger.warn(`emulator exited with ${code}; relaunching in ${cfg.restartDelayMs / 1000}s${tail ? `\n${tail}` : ''}`);
           setTimeout(() => { if (!stopping) void start(); }, cfg.restartDelayMs).unref?.();
         });
       }
@@ -685,7 +734,9 @@ export function apply(ctx, config = {}, deps = {}) {
       let ok = false;
       try { ok = /^device\s*$/.test(String((await exec(paths.adb, ['-s', serial, 'get-state'], { env: env(), timeout: 8_000 })).stdout)); } catch {}
       if (ok) { misses = 0; return; }
-      if (++misses < 3) return;
+      // A flaky adb (another adb server fighting over the port) is not a dead emulator: ask adb to
+      // reconnect first, and give our own still-running child longer before it is killed.
+      if (++misses < (child && child.exitCode == null ? 8 : 3)) { try { await exec(paths.adb, ['reconnect', 'offline'], { env: env(), timeout: 8_000 }); } catch {} return; }
       clearInterval(aliveTimer); aliveTimer = null;
       shade.stop?.();
       audit({ kind: 'emulator-gone', serial });
@@ -701,6 +752,7 @@ export function apply(ctx, config = {}, deps = {}) {
    * not our child, so nothing would relaunch it on exit: wait until adb no longer lists it, then start.
    */
   phone.restart = async () => {
+    quickExits = 0;
     setState('booting');
     const ours = child;
     if (ours) ours.removeAllListeners('exit'); // its own relaunch-on-exit must not race this one
@@ -840,7 +892,7 @@ export function apply(ctx, config = {}, deps = {}) {
         const [verb0, arg1] = arg.split(/\s+/);
         if (verb0 === 'accept') {
           try { if (arg1) phone.setStorage(arg1); } catch (err) { return { kind: 'success', text: `phone: ${err.message}` }; }
-          phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage (watch ~/.dsh/dsh-phone.log)`;
+          phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage — about 2 GB to download, often 10–30 min. /phone or the dsh-dot panel shows progress; she can talk meanwhile and says so when the phone is ready`;
         }
         else if (verb0 === 'size') {
           if (!arg1) { const st = phone.storage(); extra = `\nstorage: ${st.gb} GB${st.fixed ? ' (fixed: the phone exists)' : ' (used when the phone is created)'}`; }
@@ -861,7 +913,7 @@ export function apply(ctx, config = {}, deps = {}) {
           extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
         }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
+        return { kind: 'success', text: `phone: ${s.state}${s.progress ? ` — ${s.progress.text}` : ''}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

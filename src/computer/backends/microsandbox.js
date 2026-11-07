@@ -163,7 +163,7 @@ export function createMicrosandboxBackend(config, logger) {
 
     restartServices,
 
-    async ensure({ mounts, port, waitHealthy }) {
+    async ensure({ mounts, port, waitHealthy, onStage = () => {} }) {
       // 1. Host virtualization (Hypervisor.framework / WHP / KVM).
       try {
         await msb(['doctor'], { timeout: 60_000 });
@@ -182,7 +182,7 @@ export function createMicrosandboxBackend(config, logger) {
         logger.warn(`computer "${name}" missing; restoring its disk from snapshot ${saved.member}`);
         await restoreFrom(savedRef, mounts, port);
       } else if (!all.includes(name)) {
-        logger.info(`pulling ${config.image} (first run only, a few GB)…`);
+        logger.info(`pulling ${config.image} (first run only, a few GB)…`); onStage('downloading');
         await msb(['pull', '-q', config.image], { timeout: 60 * 60_000, env: systemProxyEnv() });
         const args = [
           'create', '--name', name, '--hostname', config.name,
@@ -195,10 +195,10 @@ export function createMicrosandboxBackend(config, logger) {
         for (const m of mounts) args.push('--mount-dir', mountSpec(m));
         for (const [k, v] of Object.entries(serviceEnv)) args.push('-e', `${k}=${v}`);
         args.push(config.image);
-        logger.info(`creating computer "${name}" (mounts: ${mounts.join(', ')})`);
+        logger.info(`creating computer "${name}" (mounts: ${mounts.join(', ')})`); onStage('installing');
         await msb(args, { timeout: 10 * 60_000 });
       } else if (!(await names(true)).includes(name)) {
-        logger.info(`waking computer "${name}"`);
+        logger.info(`waking computer "${name}"`); onStage('starting');
         await msb(['start', '-q', name], { timeout: 5 * 60_000 });
       }
 
