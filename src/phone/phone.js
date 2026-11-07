@@ -85,6 +85,17 @@ const CHANNELS = { stable: 'channel-0', beta: 'channel-1', dev: 'channel-2', can
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-phone.json');
 export const auditFile = () => join(dshHome(), 'dsh-phone-audit.jsonl');
+
+const PART = { 'platform-tools': '工具', emulator: '模拟器', 'system image': '系统镜像' };
+/** A download in progress as people read it: { what, doneMb, totalMb, pct, etaMin, text }. */
+export function progressView({ what, done, total, startedAt }, now = Date.now()) {
+  const mb = (b) => Math.round(b / 1048576);
+  const pct = total ? Math.min(100, Math.round((done / total) * 100)) : null;
+  const rate = done / Math.max(1, (now - startedAt) / 1000);
+  const etaMin = total && rate > 0 && done > 1048576 ? Math.max(1, Math.round((total - done) / rate / 60)) : null;
+  const text = `下载${PART[what] ?? what} ${mb(done)}${total ? `/${mb(total)}` : ''} MB${etaMin ? `，约 ${etaMin} 分钟` : ''}`;
+  return { what, doneMb: mb(done), totalMb: total ? mb(total) : null, pct, etaMin, text };
+}
 export const shadeFile = () => join(dshHome(), 'dsh-phone-shade.json');
 
 /** Optional user settings file ($DSH_HOME/dsh-phone.json), for the desktop app which has no shell env. */
@@ -395,11 +406,15 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'status', state, error });
     for (const fn of listeners) { try { fn(phone.status()); } catch {} }
   };
-  phone.status = () => ({ state: phone.state, serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
+  phone.status = () => ({ state: phone.state, ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
   phone.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  /** For /dot doctor: what is configured, and what is already on disk / running. */
+  phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, paths: { emulator: paths.emulator } });
   let markReady;
   phone.ready = new Promise((r) => (markReady = r));
-  phone.adbExec = (args, opts) => exec(paths.adb, ['-s', serial, ...args], opts);
+  // Every direct adb call talks to her own adb server (env: adbPort) and cannot hang a turn: a
+  // stuck adb (offline device, another server) ends after 30 s unless the caller asks for longer.
+  phone.adbExec = (args, opts = {}) => exec(paths.adb, ['-s', serial, ...args], { env: env(), timeout: 30_000, ...opts });
   phone.shell = async (cmd) => (await phone.adbExec(['shell', cmd])).stdout;
   /** Third-party packages on her phone — the apps she installed herself (cached a minute). */
   let appsCache = { at: 0, pkgs: [] };
@@ -508,7 +523,11 @@ export function apply(ctx, config = {}, deps = {}) {
     const [repoXml, sysImgXml] = await Promise.all([text(`${REPO}/repository2-3.xml`), text(`${REPO}/sys-img/${cfg.tag}/sys-img2-3.xml`)]);
     const dl = resolveDownloads({ repoXml, sysImgXml, osTag, abi, api: cfg.api, tag: cfg.tag, channel: cfg.channel });
     logger.info(`installing: emulator ${dl.emulator.version}, platform-tools, ${dl.systemImage.path} (${dl.systemImage.sizeMb} MB) → ${home}`);
-    const progress = (what) => (got, total) => logger.info(`${what}: ${Math.round(got / 1048576)}${total ? `/${Math.round(total / 1048576)}` : ''} MB`);
+    // Progress for /phone, the panel and her rules (not only the log): which file, MB, and a rough ETA.
+    const progress = (what) => { const startedAt = Date.now(); let logged = 0; return (got, total) => {
+      phone.progress = { what, done: got, total: total || 0, startedAt };
+      if (Date.now() - logged > 5_000) { logged = Date.now(); logger.info(`${what}: ${Math.round(got / 1048576)}${total ? `/${Math.round(total / 1048576)}` : ''} MB`); }
+    }; };
     const fetchZip = async (what, url) => { const file = join(paths.downloads, url.split('/').pop()); if (!existsSync(file)) await (deps.fetch ? download(url, file, fetchImpl, progress(what)) : curlDownload(url, file, progress(what))); return file; };
     if (!existsSync(paths.adb)) await unzip(await fetchZip('platform-tools', dl.platformTools.url), home);
     if (!existsSync(paths.emulator)) await unzip(await fetchZip('emulator', dl.emulator.url), home);
@@ -521,6 +540,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }
     mkdirSync(join(home, 'platforms'), { recursive: true }); // the emulator expects the folder to exist
     rmSync(paths.downloads, { recursive: true, force: true });
+    phone.progress = null;
     audit({ kind: 'installed', emulator: dl.emulator.version, systemImage: dl.systemImage.path });
   }
 
@@ -872,7 +892,7 @@ export function apply(ctx, config = {}, deps = {}) {
         const [verb0, arg1] = arg.split(/\s+/);
         if (verb0 === 'accept') {
           try { if (arg1) phone.setStorage(arg1); } catch (err) { return { kind: 'success', text: `phone: ${err.message}` }; }
-          phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage (watch ~/.dsh/dsh-phone.log)`;
+          phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage — about 2 GB to download, often 10–30 min. /phone or the dsh-dot panel shows progress; she can talk meanwhile and says so when the phone is ready`;
         }
         else if (verb0 === 'size') {
           if (!arg1) { const st = phone.storage(); extra = `\nstorage: ${st.gb} GB${st.fixed ? ' (fixed: the phone exists)' : ' (used when the phone is created)'}`; }
@@ -893,7 +913,7 @@ export function apply(ctx, config = {}, deps = {}) {
           extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
         }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
+        return { kind: 'success', text: `phone: ${s.state}${s.progress ? ` — ${s.progress.text}` : ''}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

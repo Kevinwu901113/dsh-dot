@@ -25,6 +25,7 @@
 | | 电脑上的 QQ | `qq.channel` `qq.channel.owner` `qq.channel.score` `qq.stickers` `qq.channel.no-stickers` `qq.faces` |
 | | 现在几点（每一轮，在对话历史之后） | `dot.now` |
 | | 定时任务那一轮 | `dot.scheduled` |
+| | 手机/电脑还在装（只在第一次装、开机没好时） / 装好那一刻 | `dot.setup` / `dot.setup-done` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`） |
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |

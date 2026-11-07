@@ -108,6 +108,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 然后在 dsh 里：
 
 ```text
+/dot doctor                 # 先体检这台电脑：虚拟化、磁盘、内存、端口、下载源，有问题直接给修复命令
 /phone accept               # 接受 Android SDK 许可，手机开始自己装（约 2 GB；/phone accept 32 给 32 GB 存储）
 /interlude preset 6QA0-1PD6 # 从 typ0.space 导入一份 HDSI 人设，换成你喜欢的分享码
 /qq install → /qq account <小号> → /qq start → /qq qr   # 她用手机摄像头扫码登录电脑 QQ
@@ -116,7 +117,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 <details>
 <summary><b>第一次设置的完整说明</b></summary>
 
-1. **手机**：`/phone accept` 后插件下载模拟器、platform-tools、系统镜像（进度在 `~/.dsh/dsh-phone.log`），装完自动开机，桌面出现手机窗口。存储大小建好后不能再改。`/phone` 看状态。
+1. **手机**：`/phone accept` 后插件下载模拟器、platform-tools、系统镜像（约 2 GB，常见 10–30 分钟；进度在 `/phone` 和 dsh-dot 面板里），装完自动开机，桌面出现手机窗口，她会自己跟你说一声。装的过程中照常聊天，她不会等。存储大小建好后不能再改。`/phone` 看状态。
 2. **装 App、登录**：在手机窗口里像真手机一样操作，或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸由你亲手过，她遇到会停下来叫你。**用小号**，各平台条款都不允许自动化。
 3. **人设**：`/interlude preset <分享码>`，或把 [`examples/canon.minase-style.json`](examples/canon.minase-style.json) 放到 `~/dot/interlude/canon.json`。
 4. **她逛什么**：不用配。常见社区 App 的站点 → 包名表是内置的，只对她**自己装了**的 App 生效。其他 App 在 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps` / `playApps`。

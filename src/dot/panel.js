@@ -150,10 +150,12 @@ document.addEventListener('toggle',(e)=>{const d=e.target;if(!d.classList||!d.cl
 function render(s){
   const d=s.devices||{}, it=s.interlude, m=s.memory, dot=s.dot;
   let b='';
-  if(d.phone) b+=badge(d.phone.state==='ready'?'ok':d.phone.error?'bad':'warn','手机',d.phone.state==='ready'?'就绪':(d.phone.state||''));
+  const pstate={'needs-license':'等你 /phone accept',downloading:'下载中',booting:'开机中',error:'出错'};
+  if(d.phone) b+=badge(d.phone.state==='ready'?'ok':d.phone.error?'bad':'warn','手机',d.phone.state==='ready'?'就绪':d.phone.progress?d.phone.progress.text+(d.phone.progress.pct!=null?' · '+d.phone.progress.pct+'%':''):(pstate[d.phone.state]||d.phone.state||''));
   if(d.qq) b+=badge(d.qq.connected?'ok':d.qq.error?'bad':'warn','电脑 QQ',d.qq.connected?(d.qq.selfId||'在线'):(d.qq.state||'离线'));
   const cstate={ready:'就绪',starting:'启动中',remounting:'换绑中','shell-only':'只有 shell',unsafe:'网关未上锁 已停用',error:'出错'};
-  if(d.computer) b+=badge(d.computer.state==='ready'?'ok':d.computer.state==='error'?'bad':'warn','电脑',cstate[d.computer.state]||d.computer.state||'');
+  const cstage={downloading:'下载镜像中（首次几 GB）',installing:'创建中',starting:'开机中'};
+  if(d.computer) b+=badge(d.computer.state==='ready'?'ok':d.computer.state==='error'?'bad':'warn','电脑',(d.computer.state==='starting'&&cstage[d.computer.stage])||cstate[d.computer.state]||d.computer.state||'');
   if(d.computer&&(d.computer.gatewayOpen||d.computer.portRelayOpen)) b+=badge('bad','电脑网关',d.computer.gatewayOpen?'无密钥开放':'端口转发未关');
   if(m&&m.conversation) b+=badge(m.conversation.session?'ok':'warn','她的对话','第 '+m.gen+' 段 · '+fmt(m.conversation.tokens)+' / '+fmt(m.conversation.handoffAt)+' token');
   for(const t of (dot&&dot.turns)||[]){if(t.state==='running')continue;const who=t.errand?'跑腿':t.conversation?'她的对话':'会话';const mins=Math.floor((t.state==='approval'?t.waitMs:t.idleMs)/60000);b+=badge(t.state==='approval'?'warn':'bad',who,t.state==='approval'?'等审批 '+mins+' 分钟 · '+(t.tool||''):t.state==='timed-out'?'审批已超时，卡住 '+mins+' 分钟':'卡住 '+mins+' 分钟 · '+(t.doing||''));}

@@ -141,7 +141,7 @@ function pickBackend(config, logger) {
 /** Phase 1 (gates shell tools): VM exists, runs and accepts commands. */
 export async function ensureShell(config, computer, logger) {
   const waitHealthy = (ms) => waitFor(`${computer.baseUrl}/v1/sandbox`, ms, computer.authHeaders());
-  return computer.backend.ensure({ mounts: computer.mounts, port: config.port, waitHealthy });
+  return computer.backend.ensure({ mounts: computer.mounts, port: config.port, waitHealthy, onStage: (stage) => computer.setStage?.(stage) });
 }
 
 /** Phase 2 (browser / live view): the image's web services answer; repairs common failures. */
@@ -243,6 +243,7 @@ export function apply(ctx, config = {}) {
   // Status for other plugins (dot, IM bridges): one snapshot shape plus change notifications.
   const listeners = new Set();
   computer.status = () => ({
+    stage: !computer.isReady && !computer.error ? computer.stage || 'starting' : undefined, // downloading | installing | starting, while not up
     state: computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : computer.unsafe ? 'unsafe' : 'shell-only',
     backend: backend.kind,
     liveViewUrl: computer.liveViewUrl,
@@ -253,12 +254,16 @@ export function apply(ctx, config = {}) {
     mounts: [...computer.mounts],
     error: (computer.error || computer.servicesError)?.message,
   });
+  /** For /dot doctor: what is configured, and whether a computer was ever created on this host. */
+  computer.doctorInfo = () => ({ installed: computer.isReady || 'mounts' in state, memory: cfg.memory, rootDisk: cfg.rootDisk, image: cfg.image, backend: backend.kind });
+  computer.setStage = (stage) => { computer.stage = stage; changed(); };
   computer.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   let lastState;
   const changed = () => {
     const snap = computer.status();
-    if (snap.state === lastState) return;
-    lastState = snap.state;
+    const key = `${snap.state}:${snap.stage ?? ''}`; // a new install stage is news too (panel, dot)
+    if (key === lastState) return;
+    lastState = key;
     computer.audit({ kind: 'status', state: snap.state, error: snap.error });
     for (const fn of listeners) { try { fn(snap); } catch {} }
   };
