@@ -66,7 +66,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { ctx, home, calls, sent, sections, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, sections, prompts, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -899,4 +899,24 @@ test('free time: planned at random moments in her active hours, once a day', asy
   for (const at of meta.freeAt) assert.ok(at >= Date.now() - 60000 && at <= end.getTime() + 60000);
   if (Date.now() < end.getTime() - 60000) assert.equal(meta.freeAt.length, 2); else assert.equal(meta.freeAt.length, 0);
   h.stop();
+});
+
+test('voice: how she talks is the last thing in her conversation (after the memory and the interlude), from the Canon or the built-in; not in errands', async () => {
+  const h = harness({ reply: GOOD, vm: {} });
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', isErrand: (id) => id === 'e1' } : get(n)))(h.ctx.get);
+  const voice = h.prompts.find((p) => p.name === 'interlude:voice');
+  const others = h.prompts.filter((p) => p !== voice);
+  assert.ok(others.every((p) => p.order < voice.order), 'after every other context of the interlude');
+  assert.ok(voice.order > 905, 'after the memory (904/905)');
+  const c = (id, cwd = h.home) => ({ agent: { session: { id, header: { cwd } } } });
+  assert.match(voice.text(c('s1')), /接下来是dot在 IM 里回他/);
+  assert.equal(voice.text(c('e1')), '', 'errands report, they do not chat');
+  assert.equal(voice.text(c('x', '/elsewhere')), '', 'only her sessions');
+  h.stop();
+  const own = harness({ reply: GOOD, canon: { ...CANON, voice: '（你是小点：短句，一句一行。）' } });
+  assert.equal(own.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', own.home)), '（你是小点：短句，一句一行。）');
+  own.stop();
+  const off = harness({ reply: GOOD, config: { voice: false } });
+  assert.equal(off.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', off.home)), '');
+  off.stop();
 });

@@ -29,7 +29,7 @@ test('prompts page: lists every file exactly once, and every entry renders', asy
     assert.ok(r && !r.startsWith('（没拼出来'), `${e.id}: ${r.slice(0, 200)}`);
     assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps|canon|length|phase|contactRule|agency|browsing|herLife|play|playRules|playApps|playActions|collect|glm|style|seed|playIntents|contact)\}/, e.id);
   }
-  assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机：Android[\s\S]*<memory>/);
+  assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机（Android，工具 mcp__dot-phone__\*）[\s\S]*<memory>[\s\S]*说话提醒（最后一段）[\s\S]*小点在 IM 里回他/);
 });
 
 test('prompts loader: an override in <home>/prompts wins, edits show without a restart, removing it brings the built-in back', () => {
