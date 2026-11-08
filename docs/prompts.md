@@ -27,6 +27,8 @@
 | | 定时任务那一轮 | `dot.scheduled` |
 | | 手机/电脑还在装（只在第一次装、开机没好时） / 装好那一刻 | `dot.setup` / `dot.setup-done` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
+| | 说明书（第一次用时才给） | `dot.manuals.hint` `.what` `.deny` |
+| | 说话提醒（最后一段） | `interlude.voice`（人设里的「说话提醒」优先） |
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`） |
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
 | | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
