@@ -6,7 +6,7 @@ import { execFile } from 'node:child_process';
 import { accessSync, constants, existsSync, statfsSync } from 'node:fs';
 import { arch, freemem, platform, totalmem } from 'node:os';
 import { promisify } from 'node:util';
-import { systemProxyEnv } from '../computer/backends/proxy.js';
+import { systemProxyEnv } from './computer/backends/proxy.js';
 
 const run = promisify(execFile);
 const GB = 1024 ** 3;
@@ -14,7 +14,14 @@ const gb = (bytes) => `${(bytes / GB).toFixed(bytes < 10 * GB ? 1 : 0)} GB`;
 const parseGb = (v) => { const m = /^(\d+(?:\.\d+)?)\s*([GM])?/i.exec(String(v ?? '')); return m ? Number(m[1]) / (m[2]?.toUpperCase() === 'M' ? 1024 : 1) : 0; };
 
 /** One finding: level ok | warn | bad, what was seen, and (when not ok) how to fix it. */
-const item = (name, level, detail, fix = '') => ({ name, level, detail, fix });
+const item = (name, level, detail, fix = '', action = null) => ({ name, level, detail, fix, ...(action ? { action } : {}) });
+/** One-click fixes the dot page (and /phone doctor fix <id>) can apply: settings written to dsh-dot.json. */
+export const FIXES = {
+  'computer-image-cn': { label: '电脑改用国内镜像', section: 'computer', values: { image: 'enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest' }, apply: 'restart-dsh' },
+  'phone-gpu-software': { label: '手机改用软件渲染', section: 'phone', values: { gpu: 'swiftshader_indirect' }, apply: 'restart-phone' },
+  'phone-connectivity-cn': { label: '手机联网检测改用国内地址', section: 'phone', values: { connectivityCheck: 'cn' }, apply: 'restart-phone' },
+  'phone-adb-port': { label: '手机 adb 换到 5139 端口', section: 'phone', values: { adbPort: 5139 }, apply: 'restart-phone' },
+};
 
 /**
  * Everything the doctor needs from the outside, injectable for tests:
@@ -74,7 +81,7 @@ function checkDisk(h, where, needs) {
 }
 
 /** RAM for what is configured; on Windows the emulator commits all its guest RAM up front (page file). */
-async function checkMemory(h, wantGb) {
+async function checkMemory(h, wantGb, pendingGb = wantGb) {
   const name = '内存';
   const total = h.totalmem();
   const want = wantGb * GB;
@@ -90,8 +97,11 @@ async function checkMemory(h, wantGb) {
     if (freeKb > 0) {
       const freeCommit = freeKb * 1024;
       const fix = '加大页面文件：系统属性 → 高级 → 性能设置 → 高级 → 虚拟内存，设为"系统管理的大小"或至少 16 GB；或者关掉一些程序';
-      if (freeCommit < want + GB) out.push(item('可提交内存（页面文件）', 'bad', `还能分配 ${gb(freeCommit)}（上限 ${gb(totalKb * 1024)}），模拟器启动时要一次性占下它的全部内存`, fix));
-      else if (freeCommit < want + 4 * GB) out.push(item('可提交内存（页面文件）', 'warn', `还能分配 ${gb(freeCommit)}，比较紧`, fix));
+      // Only what is not running yet still has to be committed; a running phone/computer already is.
+      const pending = pendingGb * GB;
+      if (!pending) out.push(item('可提交内存（页面文件）', freeCommit < 2 * GB ? 'warn' : 'ok', `还能分配 ${gb(freeCommit)}（手机、电脑都已在运行）`, freeCommit < 2 * GB ? fix : ''));
+      else if (freeCommit < pending + GB) out.push(item('可提交内存（页面文件）', 'bad', `还能分配 ${gb(freeCommit)}（上限 ${gb(totalKb * 1024)}），还没启动的要 ${pendingGb} GB，启动时要一次性占下`, fix));
+      else if (freeCommit < pending + 4 * GB) out.push(item('可提交内存（页面文件）', 'warn', `还能分配 ${gb(freeCommit)}，比较紧`, fix));
       else out.push(item('可提交内存（页面文件）', 'ok', `还能分配 ${gb(freeCommit)}`));
     }
   }
@@ -122,7 +132,7 @@ async function checkPorts(h, phone) {
   if (other && adbPort !== 5037) out.push(item('adb 端口', 'ok', `5037 被 ${other.name} 占着（模拟器、手机助手常自带旧 adb）；插件用自己的 ${adbPort}，不受影响`));
   else if (other && !OWN.test(other.name)) out.push(item('adb 端口', 'warn', `5037 被 ${other.name} 占着`, '在 ~/.dsh/dsh-dot.json 设 phone.adbPort 为 5137，让插件用自己的 adb'));
   const own = adbPort !== 5037 ? await listener(h, adbPort) : null;
-  if (own && !OWN.test(own.name)) out.push(item('adb 端口', 'bad', `插件要用的 ${adbPort} 被 ${own.name} 占了`, `在 ~/.dsh/dsh-dot.json 把 phone.adbPort 换成别的，比如 ${adbPort + 2}`));
+  if (own && !OWN.test(own.name)) out.push(item('adb 端口', 'bad', `插件要用的 ${adbPort} 被 ${own.name} 占了`, `在 ~/.dsh/dsh-dot.json 把 phone.adbPort 换成别的，比如 ${adbPort + 2}`, { id: 'phone-adb-port', label: FIXES['phone-adb-port'].label }));
   if (!phone?.running) {
     // emulator-<port>: console on port, adb on port+1. BlueStacks and others like 5555.
     for (const p of [port, port + 1]) {
@@ -132,6 +142,14 @@ async function checkPorts(h, phone) {
   }
   if (!out.length) out.push(item('端口', 'ok', `adb ${adbPort}、模拟器 ${port}/${port + 1} 没有冲突`));
   return out;
+}
+
+/** The phone's own view of its network (Android's validation): validated | partial | none. */
+function checkPhoneNetwork(state) {
+  const name = '手机网络';
+  if (state === 'validated') return item(name, 'ok', '已联网（安卓验证通过）');
+  if (state === 'partial') return item(name, 'warn', '部分连通：能上网，但安卓的联网检测没通过（状态栏显示受限，有的 App 会以为没网）', '把联网检测改成国内地址', { id: 'phone-connectivity-cn', label: FIXES['phone-connectivity-cn'].label });
+  return item(name, 'bad', '手机里没网', '电脑能上网的话，多半是 DNS 或代理：在 dot 页面设置里试试手机的 DNS / 代理；导出诊断包发给作者');
 }
 
 /** Can the downloads be reached (through the system proxy, as the installers use it)? */
@@ -145,7 +163,7 @@ async function checkDownloads(h, targets) {
     const ms = Date.now() - started;
     out.push(ok
       ? item(`下载源：${t.what}`, ms > 8000 ? 'warn' : 'ok', `${t.host} 能连上（${(ms / 1000).toFixed(1)} 秒${proxy ? `，经代理 ${proxy}` : ''}）`, ms > 8000 ? '很慢，第一次下载可能要很久' : '')
-      : item(`下载源：${t.what}`, 'bad', `连不上 ${t.host}${proxy ? `（已经走了代理 ${proxy}）` : '（没检测到代理）'}`, '开代理（系统代理即可，插件会自动用），或设环境变量 HTTPS_PROXY=http://127.0.0.1:端口 后重启 dsh'));
+      : item(`下载源：${t.what}`, 'bad', `连不上 ${t.host}${proxy ? `（已经走了代理 ${proxy}）` : '（没检测到代理）'}`, t.action ? `点「${t.action.label}」；或开代理（系统代理即可）后重启 dsh` : '开代理（系统代理即可，插件会自动用），或设环境变量 HTTPS_PROXY=http://127.0.0.1:端口 后重启 dsh', t.action));
   }
   return out;
 }
@@ -161,14 +179,19 @@ export async function diagnose({ phone, computer, home }, deps = hostDeps()) {
   const needs = [];
   if (phone && !phone.installed) needs.push({ what: `手机（下载 2 + 系统 4 + 存储 ${phone.dataGb}）`, gb: 6 + Number(phone.dataGb || 16) });
   if (computer && !computer.installed) needs.push({ what: '电脑（镜像约 4 + 磁盘）', gb: 4 + Math.ceil(parseGb(computer.rootDisk || '16G') / 2) });
-  const wantGb = (phone ? Number(phone.ramMb || 3072) / 1024 : 0) + (computer ? parseGb(computer.memory || '4G') : 0);
+  const phoneGb = phone ? Number(phone.ramMb || 3072) / 1024 : 0, computerGb = computer ? parseGb(computer.memory || '4G') : 0;
+  const wantGb = phoneGb + computerGb;
+  const pendingGb = (phone && !phone.running ? phoneGb : 0) + (computer && !computer.running ? computerGb : 0);
   const downloads = [];
   if (phone && !phone.installed) downloads.push({ what: '手机', host: 'dl.google.com', url: 'https://dl.google.com/android/repository/repository2-3.xml' });
-  if (computer && !computer.installed && /^ghcr\.io\//.test(computer.image ?? '')) downloads.push({ what: '电脑', host: 'ghcr.io', url: 'https://ghcr.io/v2/' });
+  const registry = String(computer?.image ?? '').split('/')[0];
+  if (computer && !computer.installed && registry.includes('.')) downloads.push({ what: '电脑', host: registry, url: `https://${registry}/v2/`, action: registry === 'ghcr.io' ? { id: 'computer-image-cn', label: FIXES['computer-image-cn'].label } : null });
   const results = await Promise.all([
     phone || computer ? checkVirtualization(h, phone) : null,
     checkDisk(h, home, needs),
-    wantGb ? checkMemory(h, Math.ceil(wantGb)) : [],
+    wantGb ? checkMemory(h, Math.ceil(wantGb), Math.ceil(pendingGb)) : [],
+    phone?.network ? checkPhoneNetwork(phone.network) : null,
+    phone?.crashed && phone.gpu !== 'swiftshader_indirect' ? item('手机崩溃', 'bad', `模拟器崩过（退出码 ${phone.crashed}），多半是显卡渲染`, '改用软件渲染（画面稍慢，更稳）', { id: 'phone-gpu-software', label: FIXES['phone-gpu-software'].label }) : null,
     phone ? checkPorts(h, phone) : [],
     checkDownloads(h, downloads),
   ]);
@@ -183,4 +206,15 @@ export function report(items, { onlyProblems = false } = {}) {
   const bad = items.filter((i) => i.level === 'bad').length, warn = items.filter((i) => i.level === 'warn').length;
   const head = bad ? `dot 体检：${bad} 项会导致装不上或用不了${warn ? `，${warn} 项要留意` : ''}` : warn ? `dot 体检：能用，${warn} 项要留意` : 'dot 体检：都没问题';
   return [head, ...shown.map((i) => `${MARK[i.level]} ${i.name}：${i.detail}${i.fix ? `\n   → ${i.fix.replace(/\n/g, '\n     ')}` : ''}`)].join('\n');
+}
+
+/**
+ * Run the doctor against whatever services exist right now (any subset of components):
+ * phone/computer are the dshPhone / dshComputer services or undefined.
+ */
+export async function doctorFor({ phone, computer, home }, deps) {
+  const p = phone?.doctorInfo?.() ?? null;
+  if (p && phone.network && p.running) p.network = await phone.network().catch(() => null);
+  const c = computer?.doctorInfo?.() ?? null;
+  return diagnose({ phone: p, computer: c, home }, deps);
 }

@@ -108,7 +108,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 然后在 dsh 里：
 
 ```text
-/dot doctor                 # 先体检这台电脑：虚拟化、磁盘、内存、端口、下载源，有问题直接给修复命令
+/phone doctor               # 先体检这台电脑：虚拟化、磁盘、内存、端口、下载源、手机网络；能一键修的给 /phone doctor fix <id>
 /phone accept               # 接受 Android SDK 许可，手机开始自己装（约 2 GB；/phone accept 32 给 32 GB 存储）
 /interlude preset 6QA0-1PD6 # 从 typ0.space 导入一份 HDSI 人设，换成你喜欢的分享码
 /qq install → /qq account <小号> → /qq start → /qq qr   # 她用手机摄像头扫码登录电脑 QQ

@@ -25,7 +25,7 @@ import { join, relative, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
-import { diagnose, report as doctorReport } from './doctor.js';
+import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
 import { ago, describeNow, mondayOf, stamp } from '../clock.js';
@@ -272,7 +272,7 @@ export function setupText(phoneStatus, computerStatus) {
   }
   const c = computerStatus;
   if (c && (c.state === 'starting' || c.state === 'error')) {
-    lines.push(`电脑：${c.state === 'error' ? `出错了（${c.error ?? '未知'}），/computer 看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
+    lines.push(`电脑：${c.state === 'error' ? `出错了（${c.error ?? '未知'}），/phone doctor 或 dot 页面看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
   }
   return lines.length ? prompt('dot.setup', { devices: lines.join('\n') }) : '';
 }
@@ -1183,7 +1183,7 @@ export function apply(ctx, config = {}) {
   // something still has to be installed, and when a device fails; problems go to the log and his IM.
   let lastDoctor = null;
   const runDoctor = async () => {
-    const items = await diagnose({ phone: phone()?.doctorInfo?.() ?? null, computer: computer()?.doctorInfo?.() ?? null, home: dshHome() });
+    const items = await doctorFor({ phone: phone(), computer: computer(), home: dshHome() });
     lastDoctor = { at: Date.now(), bad: items.filter((i) => i.level === 'bad').length, warn: items.filter((i) => i.level === 'warn').length };
     audit('doctor', { bad: lastDoctor.bad, warn: lastDoctor.warn, problems: items.filter((i) => i.level !== 'ok').map((i) => i.name) });
     return items;
@@ -1194,7 +1194,7 @@ export function apply(ctx, config = {}) {
       if (!items.some((i) => i.level === 'bad')) return;
       const text = doctorReport(items, { onlyProblems: true });
       logger.warn(`${why}\n${text}`);
-      void im.send(`🩺 ${why}\n${text}\n（完整结果：在 dsh 里发 /dot doctor）`, 'plain');
+      void im.send(`🩺 ${why}\n${text}\n（完整结果：在 dsh 里发 /phone doctor，或打开左侧栏的 dot 页面）`, 'plain');
     } catch (err) { logger.warn(`doctor failed: ${err.message}`); }
   };
   ctx.effect(() => {

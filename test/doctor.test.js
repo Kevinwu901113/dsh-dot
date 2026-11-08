@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { diagnose, report, hostDeps } from '../src/dot/doctor.js';
+import { diagnose, report, hostDeps } from '../src/doctor.js';
 import { setupText } from '../src/dot/core.js';
 import { progressView } from '../src/phone/phone.js';
 import DshComputerSubprocess, { notReady } from '../src/computer/subprocess.js';
@@ -88,4 +88,17 @@ test('computer subprocess: a booting or failed computer fails a command at once 
   vm.error = new Error('no hypervisor');
   await assert.rejects(sp.resolveExecutable('ls', {}, undefined), /电脑出错了.*no hypervisor/);
   assert.match(notReady({ state: 'starting' }), /电脑还在开机中/);
+});
+
+test('doctor: a running phone is not counted again against the page file; a crash suggests software rendering', async () => {
+  const items = await diagnose({ phone: { ...phone, installed: true, running: true, crashed: 3221225477, gpu: 'auto' }, computer: { ...computer, installed: true, running: false }, home: 'C:/h' }, windows({ totalGb: 16, commitGb: 7.5 }));
+  const commit = items.find((i) => i.name === '可提交内存（页面文件）');
+  assert.equal(commit.level, 'warn', commit.detail); // 4 GB computer pending, 7.5 free: tight, not failing
+  const crash = items.find((i) => i.name === '手机崩溃');
+  assert.equal(crash.action.id, 'phone-gpu-software');
+});
+
+test('doctor: an unreachable ghcr.io offers the mainland mirror', async () => {
+  const items = await diagnose({ phone: null, computer: { ...computer, image: 'ghcr.io/agent-infra/sandbox:latest' }, home: 'C:/h' }, windows({ curl: 'fail' }));
+  assert.equal(items.find((i) => i.name === '下载源：电脑').action.id, 'computer-image-cn');
 });

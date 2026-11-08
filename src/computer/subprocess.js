@@ -55,7 +55,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
    * not be cancelled and outlived the stop button. A failed computer fails the same way.
    */
   usable() {
-    if (this.vm.error) throw new Error(`电脑出错了，现在跑不了命令（${this.vm.error.message}）。不用等，先直接回话；/computer 看详情`);
+    if (this.vm.error) throw new Error(`电脑出错了，现在跑不了命令（${this.vm.error.message}）。不用等，先直接回话；/phone doctor 或左侧栏 dot 页面看详情`);
     if (!this.vm.isReady) throw new Error(notReady(this.vm.status?.()));
   }
 

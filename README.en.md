@@ -56,7 +56,7 @@ Web: `dsh plugin --profile web add dsh-dot-life`. From source: use `github:Kevin
 Then, in dsh:
 
 ```text
-/dot doctor                 # check this machine first: virtualization, disk, memory, ports, downloads (with fixes)
+/phone doctor               # check this machine first: virtualization, disk, memory, ports, downloads, the phone network (one-click fixes: /phone doctor fix <id>)
 /phone accept               # accept the Android SDK license; the phone installs itself (~2 GB)
 /interlude preset 6QA0-1PD6 # import an HDSI persona from typ0.space
 /qq install → /qq account <alt account> → /qq start → /qq qr

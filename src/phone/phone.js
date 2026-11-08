@@ -18,7 +18,8 @@ import { systemProxyEnv } from '../computer/backends/proxy.js';
 import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
-import { sectionOf, setValues } from '../settings.js';
+import { fileError, sectionOf, setValues, writeSections } from '../settings.js';
+import { doctorFor, FIXES, report as doctorReport } from '../doctor.js';
 import { prompt } from '../prompts.js';
 import { createAccounts, renderAccount } from './accounts.js';
 
@@ -42,7 +43,10 @@ export const defaults = {
   dataGb: 16,               // her storage (/data), fixed when the phone is created: /phone accept <GB> or /phone size <GB> before that
   port: 5554,               // console port; the adb serial is emulator-<port>
   window: true,             // show the emulator window (the phone's live view); false = headless
-  gpu: 'auto',
+  gpu: '',                  // '' = per platform: Windows swiftshader_indirect (host GPU crashed the emulator there: 0xC0000005, 'context was preempted'), else auto
+  connectivityCheck: 'cn',  // Android's "is there internet" probe: 'cn' (reachable in mainland China), 'google' (stock), or an http(s) URL answering 204
+  dnsServer: '',            // '' = the emulator picks the host's DNS; e.g. '223.5.5.5' (a network that blocks outside DNS, like many campuses, must keep '')
+  proxy: '',                // '' = none; 'system' = the host's system proxy; or 'http://host:port' — the phone's traffic goes through it
   quickBoot: false,         // Quick Boot snapshots (save on exit, load on start); off = cold boot, never a half-written snapshot
   adbPort: 5137,            // her own adb server port (ANDROID_ADB_SERVER_PORT), away from other adbs on 5037; 0 = 5037
   locale: 'zh-CN',          // the phone's language (emulator -change-locale)
@@ -55,7 +59,8 @@ export const defaults = {
   keepAliveEveryMinutes: 10, // re-apply for apps installed since boot
   acceptLicense: false,     // Android SDK license (https://developer.android.com/studio/terms); `/phone accept` also sets it
   channel: 'stable',        // emulator release channel
-  bootTimeoutMs: 300_000,
+  bootTimeoutMs: 600_000,   // a failure after 10 min; past bootSlowMs /phone says it is a slow boot
+  bootSlowMs: 300_000,
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
   aliveEveryMs: 15_000,     // once ready, adb is asked this often whether the emulator still answers; 3 misses = relaunch
   liveView: true,           // the live view page (screen + tap/swipe/type) at /dsh-dot/phone/ on dsh's own web server, behind dsh's login
@@ -85,6 +90,23 @@ const CHANNELS = { stable: 'channel-0', beta: 'channel-1', dev: 'channel-2', can
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsFile = () => join(dshHome(), 'dsh-phone.json');
 export const auditFile = () => join(dshHome(), 'dsh-phone-audit.jsonl');
+
+export const CN_CONNECTIVITY = 'connect.rom.miui.com/generate_204';
+/** The -gpu mode: an explicit setting, else per platform. */
+export const gpuMode = (gpu, os = process.platform) => gpu || (os === 'win32' ? 'swiftshader_indirect' : 'auto');
+/** The shell commands that point Android's connectivity probe where it can be answered. */
+export function connectivityCommands(check) {
+  const keys = ['captive_portal_https_url', 'captive_portal_http_url', 'captive_portal_fallback_url', 'captive_portal_other_fallback_urls'];
+  if (check === 'google') return keys.map((k) => `settings delete global ${k}`);
+  const url = check === 'cn' || !check ? CN_CONNECTIVITY : String(check).replace(/^https?:\/\//, '');
+  return [`settings put global ${keys[0]} https://${url}`, ...keys.slice(1).map((k) => `settings put global ${k} http://${url}`)];
+}
+/** -http-proxy for the emulator: '' none, 'system' the host's, else as given. */
+export function proxyArg(proxy, system = () => systemProxyEnv()) {
+  if (!proxy) return '';
+  if (proxy === 'system') { const e = system(); return e.HTTPS_PROXY || e.https_proxy || e.HTTP_PROXY || e.http_proxy || ''; }
+  return proxy;
+}
 
 const PART = { 'platform-tools': '工具', emulator: '模拟器', 'system image': '系统镜像' };
 /** A download in progress as people read it: { what, doneMb, totalMb, pct, etaMin, text }. */
@@ -410,10 +432,20 @@ export function apply(ctx, config = {}, deps = {}) {
   // adb serial (emulator-5554) — with the serial every first call failed with "Device … not found".
   // MOBILEMCP_LEGACY_ROBOT=1 makes mobile-mcp use adb serials again.
   const mcpDevice = () => (process.env.MOBILEMCP_LEGACY_ROBOT === '1' ? serial : String(cfg.avd).replace(/_/g, ' '));
-  phone.status = () => ({ state: phone.state, device: mcpDevice(), ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
+  phone.status = () => ({ state: phone.state, ...(phone.slowBoot && phone.state === 'booting' ? { slowBoot: true } : {}), device: mcpDevice(), ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
   phone.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   /** For /dot doctor: what is configured, and what is already on disk / running. */
-  phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, paths: { emulator: paths.emulator } });
+  phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, gpu: gpuMode(cfg.gpu), crashed: lastCrash, paths: { emulator: paths.emulator } });
+  /** Android's own verdict on its network: validated | partial | none (null when it cannot be read). */
+  /** The machine check (src/doctor.js) for the phone and, when it is on, the computer. */
+  phone.doctor = () => doctorFor({ phone, computer: (() => { try { return ctx.get('dshComputer'); } catch { return undefined; } })(), home: dshHome() });
+  phone.network = async () => {
+    if (!phone.isReady) return null;
+    const out = String((await phone.adbExec(['shell', 'dumpsys connectivity']).catch(() => ({ stdout: '' }))).stdout);
+    const active = out.split(/\n/).find((l) => /NetworkAgentInfo\{/.test(l) && /CONNECTED/.test(l) && /INTERNET/.test(l));
+    if (!active) return out ? 'none' : null;
+    return /&VALIDATED|VALIDATED&/.test(active.replace(/EVER_VALIDATED/g, '')) ? 'validated' : /PARTIAL_CONNECTIVITY/.test(active) ? 'partial' : 'none';
+  };
   let markReady;
   phone.ready = new Promise((r) => (markReady = r));
   // Every direct adb call talks to her own adb server (env: adbPort) and cannot hang a turn: a
@@ -465,7 +497,8 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.onNotification = (fn) => { notifyListeners.add(fn); return () => notifyListeners.delete(fn); };
   phone.notifications = () => [...recent];
   const shade = createShadeWatch({
-    readShade: async () => (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout,
+    // Not while she is booting or down: every poll would fail and fill the log (one line per 4 s).
+    readShade: async () => { if (!phone.isReady) throw Object.assign(new Error('phone not ready'), { quiet: true }); return (await phone.adbExec(['shell', 'dumpsys', 'notification', '--noredact'], { env: env(), timeout: 10_000 })).stdout; },
     tailEvents: (onEvent) => {
       // `-T 1`: from now, not the buffer's history. Restarted if it dies while the phone is up.
       let proc = null, stopped = false;
@@ -584,7 +617,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const adbPortEnv = () => (cfg.adbPort ? { ANDROID_ADB_SERVER_PORT: String(cfg.adbPort) } : {});
   const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, ...adbPortEnv(), PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
 
-  let child = null, stopping = false, mcpFork = null, quickExits = 0;
+  let child = null, stopping = false, mcpFork = null, quickExits = 0, lastCrash = 0, crashTimes = [];
   /** The last lines of emulator.log, for the error a failed launch leaves. */
   const logTail = (n = 8) => { try { return readFileSync(join(home, 'emulator.log'), 'utf8').trimEnd().split(/\r?\n/).slice(-n).join('\n'); } catch { return ''; } };
   /** Windows: no WHPX / AEHD → x86_64 emulation exits at once. Say how to turn it on instead of launching. */
@@ -596,16 +629,22 @@ export function apply(ctx, config = {}, deps = {}) {
     }
   }
   async function waitBooted() {
-    const deadline = Date.now() + cfg.bootTimeoutMs;
+    const startedAt = Date.now(), gen = generation;
+    const deadline = startedAt + cfg.bootTimeoutMs;
+    phone.slowBoot = false;
     while (Date.now() < deadline) {
       if (stopping) throw new Error('stopped');
+      if (gen !== generation) throw Object.assign(new Error('superseded by a restart'), { superseded: true });
       try {
         const { stdout } = await exec(paths.adb, ['-s', serial, 'shell', 'getprop', 'sys.boot_completed'], { env: env(), timeout: 10_000 });
-        if (String(stdout).trim() === '1') return;
+        if (String(stdout).trim() === '1') { phone.slowBoot = false; return; }
       } catch { /* adb not up yet, or the device not listed yet */ }
+      if (!phone.slowBoot && Date.now() - startedAt > cfg.bootSlowMs) { phone.slowBoot = true; logger.warn(`phone still booting after ${Math.round(cfg.bootSlowMs / 60000)} min`); }
       await sleep(3000);
     }
-    throw new Error(`the phone did not finish booting in ${Math.round(cfg.bootTimeoutMs / 1000)}s`);
+    phone.slowBoot = false;
+    const tail = logTail(5);
+    throw new Error(`the phone did not finish booting in ${Math.round(cfg.bootTimeoutMs / 60000)} min — a crash dialog from the emulator left open, no hardware acceleration, or a GPU problem: /phone doctor${tail ? `\nemulator.log:\n${tail}` : ''}`);
   }
   const sh = async (cmd) => { try { return (await exec(paths.adb, ['-s', serial, 'shell', cmd], { env: env(), timeout: 10_000 })).stdout; } catch { return ''; } };
   async function settle() {
@@ -619,6 +658,9 @@ export function apply(ctx, config = {}, deps = {}) {
       ...(cfg.keepAppsAlive ? ['dumpsys deviceidle disable', 'settings put global app_standby_enabled 0', 'settings put global adaptive_battery_management_enabled 0', 'settings put global cached_apps_freezer disabled'] : [])]) {
       await sh(cmd);
     }
+    // Android probes Google to decide "connected, no internet"; unreachable in mainland China, so the
+    // phone shows limited connectivity and saved Wi-Fi is not joined. Point it at a reachable 204.
+    for (const cmd of connectivityCommands(cfg.connectivityCheck)) await sh(cmd).catch(() => {});
     if (cfg.keepAppsAlive) await keepAppsAlive();
   }
   /** Per-app background allowances for every third-party app on the phone — the ones she installed included. */
@@ -666,7 +708,24 @@ export function apply(ctx, config = {}, deps = {}) {
   const setPort = (p) => { port = p; serial = `emulator-${p}`; phone.serial = serial; };
   /** Is her emulator (on the claimed port) still listed by adb? */
   async function alreadyRunning() { return (await listedPorts()).includes(port); }
-  async function start() {
+  // One start at a time: a relaunch after an exit, /phone retry, /phone restart and the dot page can
+  // all ask; a second caller joins the start in flight instead of racing it.
+  let starting = null, inFlight = false, again = false, generation = 0;
+  function start() {
+    if (inFlight) { again = true; return starting; }
+    inFlight = true;
+    starting = startOnce();
+    return starting;
+  }
+  async function startOnce() {
+    try { await startBody(); } finally {
+      inFlight = false;
+      // Asked again while this one ran (accepting the license as it stopped for it, a retry): go on
+      // if this one ended where a new start helps.
+      if (again) { again = false; if (phone.state === 'needs-license' ? cfg.acceptLicense : phone.state === 'error') void start(); }
+    }
+  }
+  async function startBody() {
     try {
       await ensureSdk();
       ensureAvd();
@@ -681,7 +740,7 @@ export function apply(ctx, config = {}, deps = {}) {
         ensureCameraScene();
         // No Quick Boot by default: the watchdog and `emu kill` can stop her mid-save, and the next
         // launch then loads a half-written snapshot (Windows reports "Bug report interrupted by snapshot load?").
-        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', cfg.gpu, '-netdelay', 'none', '-netspeed', 'full', ...(cfg.quickBoot ? [] : ['-no-snapshot']), ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window'])];
+        const args = ['-avd', cfg.avd, '-port', String(port), '-no-boot-anim', '-gpu', gpuMode(cfg.gpu), '-netdelay', 'none', '-netspeed', 'full', ...(cfg.quickBoot ? [] : ['-no-snapshot']), ...(cfg.locale ? ['-change-locale', cfg.locale] : []), ...(cfg.timezone ? ['-timezone', cfg.timezone] : []), ...(cfg.window ? [] : ['-no-window']), ...(cfg.dnsServer ? ['-dns-server', cfg.dnsServer] : []), ...(proxyArg(cfg.proxy) ? ['-http-proxy', proxyArg(cfg.proxy)] : [])];
         // The phone outlives dsh (see the lifecycle effect), so it must not hold dsh's event loop:
         // no pipes back to us (output goes to emulator.log), its own process group, and unref'd.
         // A piped, referenced child kept the Host alive after shutdown until the desktop updater
@@ -691,13 +750,19 @@ export function apply(ctx, config = {}, deps = {}) {
         // windowsHide: on Windows a detached child gets its own console window; closing it kills the emulator.
         try { child = spawnImpl(paths.emulator, args, { env: env(), stdio: ['ignore', log, log], detached: true, windowsHide: true }); } finally { closeSync(log); }
         child.unref?.();
+        // spawn failures (ENOENT, EACCES) arrive as 'error', not 'exit'.
+        child.on('error', (err) => { logger.error(`emulator could not be started: ${err.message}`); setState('error', `the emulator could not be started: ${err.message}`); });
         const launchedAt = Date.now();
         child.on('exit', (code) => {
           child = null;
           if (stopping) return;
+          if (code && code !== 0 && code !== 1) lastCrash = code; // a crash (0xC0000005 …), not a closed window or a failed start
           // Exits within a minute of launch in a row = it cannot start (no hypervisor, GPU, broken AVD):
           // stop relaunching and say why instead of flashing a window every few seconds.
+          // A crash an hour later is news, a crash every few minutes is a loop too.
           quickExits = Date.now() - launchedAt < 60_000 ? quickExits + 1 : 0;
+          crashTimes = [...crashTimes.filter((t) => Date.now() - t < 30 * 60_000), Date.now()];
+          if (crashTimes.length >= 5) quickExits = Math.max(quickExits, 3);
           const tail = logTail();
           if (quickExits >= 3) {
             const message = `the emulator keeps exiting right after launch (code ${code}); stopped relaunching — /phone restart to try again${tail ? `\nemulator.log:\n${tail}` : ''}`;
@@ -719,6 +784,7 @@ export function apply(ctx, config = {}, deps = {}) {
       watchAlive();
       await mountMcp();
     } catch (err) {
+      if (err.superseded) return;
       if (phone.state !== 'needs-license') {
         const message = /fetch failed|curl|ENOTFOUND|ECONN|timed out/i.test(err.message) && phone.state === 'downloading' ? `download failed (${err.message}) — dl.google.com must be reachable; set HTTPS_PROXY or the system proxy and /phone retry` : err.message;
         setState('error', message); logger.error(`phone failed: ${message}`);
@@ -756,7 +822,7 @@ export function apply(ctx, config = {}, deps = {}) {
    * not our child, so nothing would relaunch it on exit: wait until adb no longer lists it, then start.
    */
   phone.restart = async () => {
-    quickExits = 0;
+    quickExits = 0; crashTimes = []; generation++;
     setState('booting');
     const ours = child;
     if (ours) ours.removeAllListeners('exit'); // its own relaunch-on-exit must not race this one
@@ -764,6 +830,7 @@ export function apply(ctx, config = {}, deps = {}) {
     try { await exec(paths.adb, ['-s', serial, 'emu', 'kill'], { env: env(), timeout: 10_000 }); } catch { ours?.kill(); }
     for (let i = 0; i < 30 && (await alreadyRunning()); i++) await new Promise((r) => setTimeout(r, 1000));
     try { ours?.kill('SIGKILL'); } catch {}
+    if (inFlight) await starting.catch(() => {}); // a boot in flight gives up (generation changed) before the new one
     void start();
   };
 
@@ -888,12 +955,23 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'phone',
-      description: 'the phone: status; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "number <digits>" sets her phone number ("number -" clears it); "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[accept [GB] | size <GB> | number <digits> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
+      description: 'the phone: status; "doctor" checks this machine (virtualization, disk, memory, ports, downloads, the phone network) and "doctor fix <id>" applies a one-click fix; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "number <digits>" sets her phone number ("number -" clears it); "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
+      input: { hint: '[doctor [fix <id>] | accept [GB] | size <GB> | number <digits> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
         const [verb0, arg1] = arg.split(/\s+/);
+        if (verb0 === 'doctor') {
+          // /phone doctor · /phone doctor fix <id>: the machine check, independent of the dot component.
+          if (arg1 === 'fix') {
+            const id = arg.split(/\s+/)[2];
+            const f = FIXES[id];
+            if (!f) return { kind: 'success', text: `phone: unknown fix "${id ?? ''}" — one of ${Object.keys(FIXES).join(', ')}` };
+            try { writeSections({ [f.section]: f.values }); } catch (err) { return { kind: 'success', text: `phone: ${err.message}` }; }
+            return { kind: 'success', text: `✅ ${f.label}（写入 ~/.dsh/dsh-dot.json）${f.apply === 'restart-phone' ? '\n/phone restart 生效' : '\n重启 dsh 生效'}` };
+          }
+          try { return { kind: 'success', text: doctorReport(await phone.doctor()) }; } catch (err) { return { kind: 'success', text: `phone: doctor failed: ${err.message}` }; }
+        }
         if (verb0 === 'accept') {
           try { if (arg1) phone.setStorage(arg1); } catch (err) { return { kind: 'success', text: `phone: ${err.message}` }; }
           phone.accept(); extra = `\nlicense accepted; installing/booting now with ${phone.storage().gb} GB of storage — about 2 GB to download, often 10–30 min. /phone or the dsh-dot panel shows progress; she can talk meanwhile and says so when the phone is ready`;
@@ -917,7 +995,7 @@ export function apply(ctx, config = {}, deps = {}) {
           extra += `\nnotifications wake her from every app except: ${pol.muted.length ? pol.muted.join(', ') : '(none muted)'}\napps seen: ${pol.apps.length ? pol.apps.map((a) => `${a.pkg} ×${a.count} (${a.policy})`).join(', ') : '(none yet)'}\n/phone notify mute <pkg> · /phone notify wake <pkg>`;
         }
         const s = phone.status();
-        return { kind: 'success', text: `phone: ${s.state}${s.progress ? ` — ${s.progress.text}` : ''}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
+        return { kind: 'success', text: `${fileError() ? `⚠️ ~/.dsh/dsh-dot.json 格式不对，整个文件被忽略：${fileError()}\n` : ''}phone: ${s.state}${s.slowBoot ? ' — booting slowly, still going' : ''}${s.progress ? ` — ${s.progress.text}` : ''}${s.error ? ` — ${s.error}` : ''}\nserial: ${serial} · Android API ${cfg.api} (${abi}) · ${cfg.window ? 'window' : 'headless'} · home: ${home}\nlive view: ${phone.publicLiveViewUrl ?? phone.liveViewUrl ?? 'off'}\nstorage: ${phone.storage().gb} GB · license: ${cfg.acceptLicense ? 'accepted' : `not accepted (${LICENSE_URL})`} · mcp: ${mcpFork ? 'mounted' : 'not mounted'}\nnumber: ${cfg.number || '(none: /phone number <digits>)'} · accounts: ${phone.accounts.count()} app(s) in ${phone.accounts.file ?? 'the account store'}${extra}` };
       },
     }), 'dsh-dot/phone: /phone command');
   });

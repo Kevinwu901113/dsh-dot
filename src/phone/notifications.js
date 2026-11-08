@@ -78,7 +78,7 @@ export function createShadeWatch({ readShade, tailEvents, pollMs, wanted, onChan
     if (inFlight) return inFlight; // one dumpsys at a time; a burst collapses into the next read
     inFlight = (async () => {
       let dump;
-      try { dump = await readShade(); } catch (err) { logger.debug?.(`shade read failed: ${err.message}`); return; }
+      try { dump = await readShade(); } catch (err) { if (!err.quiet) logger.debug?.(`shade read failed: ${err.message}`); return; }
       const now = new Map(parseShade(dump).map((n) => [n.key, n]));
       const last = primed ? null : load();
       for (const [key, n] of now) {

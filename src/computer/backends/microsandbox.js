@@ -10,6 +10,22 @@ import { dirname, join } from 'node:path';
 import { promisify } from 'node:util';
 import { systemProxyEnv } from './proxy.js';
 
+/**
+ * A blocked registry (ghcr.io from mainland China without a proxy) makes `msb pull` hang for a long
+ * time; ask the registry first (any HTTP answer, 401 included, means reachable) and fail in seconds.
+ */
+export async function registryReachable(image, run = (cmd, args, opts) => promisify(execFile)(cmd, args, opts)) {
+  const host = String(image).split('/')[0];
+  if (!host.includes('.')) return true; // Docker Hub short names: let msb handle it
+  try {
+    const { stdout } = await run('curl', ['-sS', '-o', process.platform === 'win32' ? 'NUL' : '/dev/null', '-m', '15', '-w', '%{http_code}', `https://${host}/v2/`], { env: { ...process.env, ...systemProxyEnv() }, timeout: 25_000, windowsHide: true });
+    if (/^[1-5]\d\d$/.test(String(stdout).trim().slice(-3)) && !String(stdout).trim().endsWith('000')) return true;
+  } catch (err) {
+    if (/ENOENT/.test(String(err.code ?? err.message))) return true; // no curl: let msb try
+  }
+  throw new Error(`cannot reach ${host} to download the computer image — on the dot page (or /phone doctor fix computer-image-cn) switch to the mainland China mirror, or turn on a proxy and restart dsh`);
+}
+
 const execFileAsync = promisify(execFile);
 
 const PLATFORM_PACKAGES = {
@@ -183,7 +199,9 @@ export function createMicrosandboxBackend(config, logger) {
         await restoreFrom(savedRef, mounts, port);
       } else if (!all.includes(name)) {
         logger.info(`pulling ${config.image} (first run only, a few GB)…`); onStage('downloading');
-        await msb(['pull', '-q', config.image], { timeout: 60 * 60_000, env: systemProxyEnv() });
+        await registryReachable(config.image);
+        try { await msb(['pull', '-q', config.image], { timeout: 60 * 60_000, env: systemProxyEnv() }); }
+        catch (err) { throw new Error(`could not download the computer image ${config.image}: ${String(err.stderr || err.message).trim().split(/\r?\n/).slice(-2).join(' ')} — on the dot page (or /phone doctor fix computer-image-cn) switch to the mainland China mirror, or turn on a proxy`); }
         const args = [
           'create', '--name', name, '--hostname', config.name,
           '-m', config.memory, '-c', String(config.cpus),

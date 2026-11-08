@@ -105,7 +105,11 @@ setx DSH_DOT_COMPUTER off
 | `locale` / `timezone` | `"zh-CN"` / `"Asia/Shanghai"` | 语言、时区 |
 | `number` | `""` | 她的手机号，注册登录 App 用（也可用 `/phone number`；账号密码另存 `~/.dsh/dsh-dot-accounts.json`，见 [phone.md](phone.md)） |
 | `window` | `true` | 显示模拟器窗口 |
-| `gpu` | `"auto"` | 模拟器 GPU 模式。`auto` 在 API 35 上可能被强制成 CPU 软件渲染（`emulator.log` 里有 `forcing software rendering`），长时间跑会被模拟器的卡死检测杀掉；Mac 上可试 `"host"`（用 Mac 显卡），见 [phone.md](phone.md) |
+| `gpu` | `""` | 渲染方式。空 = Windows 用 `swiftshader_indirect`（软件渲染：显卡渲染在部分 Windows 上会崩，0xC0000005），其他系统 `auto`；也可填 `auto` / `host` / `angle_indirect` |
+| `connectivityCheck` | `"cn"` | 安卓判断"有没有网"的检测地址：`cn` = `connect.rom.miui.com/generate_204`（国内能访问；默认的 Google 地址国内访问不了，会显示"连接受限"），`google` = 系统默认，或自填返回 204 的地址 |
+| `dnsServer` | `""` | 给模拟器指定 DNS，如 `223.5.5.5`；空 = 用电脑的。校园网等封了外部 DNS 的网络必须留空 |
+| `proxy` | `""` | 手机的流量走代理：`system` = 电脑的系统代理，或 `http://host:port`；空 = 不走 |
+| `bootTimeoutMs` / `bootSlowMs` | `600000` / `300000` | 开机超时 / 超过这么久显示"开机较慢"（毫秒） |
 | `quickBoot` | `false` | Quick Boot 快照（退出存、启动读）。默认关：每次冷启动，慢一些，但被强杀后不会读到写了一半的快照 |
 | `adbPort` | `5137` | 插件自己的 adb server 端口，避开 MuMu、雷电、手机助手等自带旧 adb 占用的 5037；`0` = 用 5037 |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
@@ -124,7 +128,7 @@ setx DSH_DOT_COMPUTER off
 | `memory` / `cpus` | `"4G"` / `2` | 资源上限 |
 | `mounts` | `[]` | 共享文件夹 |
 | `backend` | `"auto"` | `microsandbox` / `docker` |
-| `image` | `ghcr.io/agent-infra/sandbox:latest` | 镜像 |
+| `image` | 国内镜像 `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest` | 镜像（作者官方的国内镜像，与 `ghcr.io/agent-infra/sandbox:latest` 同一镜像；海外用户可改回 ghcr）🔒 建立时 |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址 |
 
 网关端口只能用环境变量 `DSH_COMPUTER_PORT` 改。

@@ -20,7 +20,8 @@ export const name = 'dot-computer';
 export const defaults = {
   backend: 'auto', // auto | microsandbox | docker
   name: 'dsh-computer',
-  image: 'ghcr.io/agent-infra/sandbox:latest',
+  // The same image, mirrored by its authors for mainland China (most users); 'ghcr.io/agent-infra/sandbox:latest' is the origin.
+  image: 'enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest',
   port: 18080,
   user: 'gem',
   memory: '4G',
@@ -255,7 +256,7 @@ export function apply(ctx, config = {}) {
     error: (computer.error || computer.servicesError)?.message,
   });
   /** For /dot doctor: what is configured, and whether a computer was ever created on this host. */
-  computer.doctorInfo = () => ({ installed: computer.isReady || 'mounts' in state, memory: cfg.memory, rootDisk: cfg.rootDisk, image: cfg.image, backend: backend.kind });
+  computer.doctorInfo = () => ({ installed: computer.isReady || 'mounts' in state, running: Boolean(computer.isReady), memory: cfg.memory, rootDisk: cfg.rootDisk, image: cfg.image, backend: backend.kind });
   computer.setStage = (stage) => { computer.stage = stage; changed(); };
   computer.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   let lastState;
