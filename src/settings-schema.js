@@ -63,7 +63,7 @@ export const SCHEMA = [
   e('qq', 'tidy', 'QQ', 'bool', 'live', '去掉句号、引号、破折号等书面符号'),
   e('qq', 'dropLatinLeaks', 'QQ', 'bool', 'live', '不发整条都是英文的气泡'),
   e('qq', 'ignore', 'QQ', 'text', 'live', '不回复的 QQ 号（别的机器人；逗号分开。qq-bridge 的机器人号会自动认出，不用填）'),
-  e('qq', 'loopMax', 'QQ', 'int', 'live', '防互刷：和同一个号在一个聊天里一来一回几轮、中间没别人说话就停（0 = 不管）', { min: 0, max: 50 }),
+  e('qq', 'loopMax', 'QQ', 'int', 'live', '防互刷（只管群聊）：和同一个号在一个群里一来一回几轮、中间没别人说话就停（0 = 不管）', { min: 0, max: 50 }),
   e('qq', 'loopCooldownMinutes', 'QQ', 'int', 'live', '防互刷：停多少分钟', { min: 1, max: 1440 }),
   e('qq', 'token', 'QQ', 'text', 'restart-dsh', 'OneBot 令牌', { secret: true, hidden: true }),
   // dot

@@ -49,8 +49,9 @@ export const defaults = {
   // A list, or numbers separated by commas / spaces.
   ignore: '',
   // Two bots answering each other in a group never stop: when someone (not the owner) and she have
-  // gone back and forth loopMax times in one chat with nobody else saying a word in between, she
-  // stops answering that account there for loopCooldownMinutes. 0 = off.
+  // gone back and forth loopMax times in one group with nobody else saying a word in between, she
+  // stops answering that account there for loopCooldownMinutes. Groups only: in a private chat there
+  // is never anybody else, a friend talking to her is not a loop. 0 = off.
   loopMax: 4,
   loopCooldownMinutes: 10,
   // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
@@ -483,10 +484,11 @@ export function parseIgnore(v) {
 }
 
 /**
- * Two bots in one chat answering each other. Per chat it counts rounds — someone's message, then
+ * Two bots in one group answering each other. Per group it counts rounds — someone's message, then
  * hers (said()), then the same someone again — and trips at `max` such rounds with nobody else in
  * between (any other account's message, the owner's above all, resets it). Tripped, that account
- * is not answered in that chat for `cooldownMs`. Pure bookkeeping, no I/O.
+ * is not answered in that group for `cooldownMs`. Only `group:` chats count: a private chat has no
+ * "anybody else" and is never a loop. Pure bookkeeping, no I/O.
  */
 export function createLoopBreaker({ max = 4, cooldownMs = 600_000, now = Date.now } = {}) {
   const chats = new Map(); // chat → { with, rounds, saidSince } ; cooling: `${chat}|${uin}` → until
@@ -494,7 +496,7 @@ export function createLoopBreaker({ max = 4, cooldownMs = 600_000, now = Date.no
   return {
     /** A message from `uin` in `chat`. → '' (fine) | 'cooling' (still ignored) | 'tripped' (ignored from now on). */
     heard(chat, uin, { human = false } = {}) {
-      if (!max) return '';
+      if (!max || !String(chat).startsWith('group:')) return '';
       const key = `${chat}|${uin}`, until = cooling.get(key);
       if (until) { if (until > now()) return 'cooling'; cooling.delete(key); }
       const c = chats.get(chat);

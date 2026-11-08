@@ -2,7 +2,7 @@
 // sidebar tabs, the header buttons and the dot page; on the host this mounts the dot page's API
 // (/dsh-dot/api: settings, doctor, one-click fixes, diagnostics), independent of which other
 // components are on.
-import { mountApi } from '../page/api.js';
+import { mountApi } from './api.js';
 
 export const inject = [];
 

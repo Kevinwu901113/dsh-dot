@@ -160,13 +160,11 @@ test('setup steps: live facts decide, acknowledgements are stored, off component
   assert.equal(setupSteps(ctx('error')).steps.find((x) => x.id === 'phone').state, 'blocked');
 });
 
-test('api: danger zone needs the typed confirmation; setup only stores known flags', async () => {
+test('api: danger zone actions reach the phone; setup only stores known flags', async () => {
   let rebuilt = null;
   const api = createApi({ get: (n) => (n === 'dshPhone' ? { status: () => ({ state: 'ready' }), rebuild: async (o) => { rebuilt = o; } } : undefined) });
   const call = async (method, sub, body) => { let status, out; await api({ method, url: sub, async *[Symbol.asyncIterator]() { if (body) yield Buffer.from(JSON.stringify(body)); } }, { writeHead(s) { status = s; return this; }, end(b) { out = JSON.parse(b); } }, sub); return { status, out }; };
-  assert.equal((await call('POST', '/action/phone-rebuild', {})).status, 400);
-  assert.equal(rebuilt, null);
-  assert.equal((await call('POST', '/action/phone-rebuild', { confirm: 'dot', gb: 32 })).status, 200);
+  assert.equal((await call('POST', '/action/phone-rebuild', { gb: 32 })).status, 200);
   assert.deepEqual(rebuilt, { gb: 32 });
   assert.equal((await call('POST', '/action/qq-owner', { number: '1' })).out.error, 'QQ组件没开（在 dsh 的插件页打开）');
   await call('PUT', '/setup', { doctorAck: true, evil: 'x', dismissed: 'yes' });

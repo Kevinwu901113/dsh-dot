@@ -8,7 +8,7 @@
 |---|---|
 | qq-bridge 照常跑，她的组件一个都别碰它 | 什么都不用设。装了 qq-bridge 就自动认出（`compat.qqBridge: auto`）：它的会话里不会出现 dot 的任何工具，它的目录不会被共享进她的虚拟机，它的机器人号她不回 |
 | **只要手机和虚拟机，给 qq-bridge 的管理员私聊用** | qq-bridge 切到 **closed-agent 模式**（它的控制台或 `state/mode.json`）。这个模式下只有管理员私聊能建会话，用的是 dsh 默认 preset、全工具面；dsh-dot 把她的手机（`mcp__dot-phone__*`）和电脑（`mcp__dot-vm__*`、`bash` 进虚拟机）给这个会话，其他的（记忆、她的 QQ、账号库）不给。dot / 记忆 / 幕间 / QQ 组件可以在 dsh 插件页关掉，只留 phone + computer |
-| 她和 qq-bridge 的机器人在同一个群 | 她自动不回它（号从它的 SnowLuma 配置里读）；它会不会回她看它的 `ignore.sendQQ`。`/dot doctor` 会列出共同的群 |
+| 她和 qq-bridge 的机器人在同一个群 | 她自动不回它（号从它的 SnowLuma 配置里读）；它会不会回她看它自己的黑名单（`deny.private` / `deny.groups`）。`/dot doctor` 会列出共同的群 |
 
 ## 它在 dsh 里长什么样
 
@@ -67,9 +67,11 @@
 | `hideBridgeTools` | `true` | 她的会话里不出现 qq-bridge 的 MCP 工具 |
 | `refreshMs` | `5000` | 多久重读一次它的 `config.json` / `mode.json` |
 
-`qq` 段新增：`ignore`（不回的号，逗号分开）、`loopMax`、`loopCooldownMinutes`。
+`qq` 段新增：`ignore`（不回的号，逗号分开）、`loopMax`、`loopCooldownMinutes`（防互刷只管群聊，私聊不限）。
 
 ## 没做的
 
 - **SnowLuma 的部署**：qq-bridge 只连接用户自己装好的 SnowLuma；dsh-dot 的 `/qq install snowluma` 会在虚拟机里自动装（许可证问题另议）。两边各装各的互不影响，但**不要登录同一个号**。
-- 不改 qq-bridge 的任何文件；它的 `ignore.sendQQ` 要不要加她的号，由用户决定。
+- 不改 qq-bridge 的任何文件；要不要在它那边把她的号拉黑，由用户决定。
+- 没有 `config.json` 的 qq-bridge 目录不算装了（它自己也不启动）。
+- 关掉 dot 组件时，dsh-dot 只是手机和虚拟机的通道：qq 组件也应一起关掉（她的 QQ 工具只给她的会话，没有 dot 就没有她的会话）。

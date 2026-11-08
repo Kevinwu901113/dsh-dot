@@ -45,8 +45,7 @@ export function statusOf(ctx) {
 const need = (svc, what) => { if (!svc) throw new Error(`${what}组件没开（在 dsh 的插件页打开）`); return svc; };
 const ACTIONS = {
   'phone-rebuild': async ({ phone }, body) => {
-    if (body?.confirm !== 'dot') throw new Error('要确认：输入 dot');
-    await need(phone, '手机').rebuild({ gb: body.gb ? Number(body.gb) : undefined });
+    await need(phone, '手机').rebuild({ gb: body?.gb ? Number(body.gb) : undefined });
     return '旧手机已删除，正在新建并开机（几分钟）';
   },
   'phone-cleanup': async ({ phone }) => { const b = need(phone, '手机').cleanup(); return `清掉了 ${Math.round(b / 1048576)} MB 下载缓存`; },
@@ -63,9 +62,9 @@ const ACTIONS = {
     const r = await need(interlude, '幕间').importPreset(String(body?.code ?? '').trim());
     return `已导入：${r.name}（${r.title}，作者 @${r.author}，${r.license}）`;
   },
-  'phone-accept': async ({ phone }, body) => { if (!phone) throw new Error('手机组件没开'); if (body?.gb) phone.setStorage(String(body.gb)); phone.accept(); return '已接受许可，开始安装'; },
-  'phone-restart': async ({ phone }) => { if (!phone) throw new Error('手机组件没开'); await phone.restart(); return '手机重启中'; },
-  'phone-retry': async ({ phone }) => { if (!phone) throw new Error('手机组件没开'); await phone.restart(); return '重试中'; },
+  'phone-accept': async ({ phone }, body) => { need(phone, '手机'); if (body?.gb) phone.setStorage(String(body.gb)); phone.accept(); return '已接受许可，开始安装'; },
+  'phone-restart': async ({ phone }) => { await need(phone, '手机').restart(); return '手机重启中'; },
+  'phone-retry': async ({ phone }) => { await need(phone, '手机').restart(); return '重试中'; },
 };
 
 /**
@@ -110,7 +109,8 @@ export function createApi(ctx, logger) {
     const route = `${req.method} ${sub}`;
     try {
       if (route === 'GET /status') { const su = setupSteps(ctx); return json(res, 200, { status: statusOf(ctx), fileError: fileError() || null, setup: { done: su.done, dismissed: su.dismissed }, version: pluginVersion }); }
-      if (route === 'GET /settings') return json(res, 200, { entries: describe(readAll()), fileError: fileError() || null, components: Object.fromEntries(Object.entries(statusOf(ctx)).map(([k, v]) => [k, v !== null])) });
+      // components: which sections' components are on (gate exposes no service and is never listed: the page treats an unlisted section as on)
+      if (route === 'GET /settings') { const s = services(ctx); return json(res, 200, { entries: describe(readAll()), fileError: fileError() || null, components: Object.fromEntries(Object.keys(s).map((k) => [k, Boolean(s[k])])) }); }
       if (route === 'PUT /settings') {
         const body = await readJson(req);
         const patch = validatePatch(body.patch);

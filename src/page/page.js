@@ -69,9 +69,8 @@ async function api(method, path, body) {
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
 }
-const NAMES = { phone: '手机', computer: '电脑', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容' };
+const NAMES = { phone: '手机', computer: '电脑', gate: '审批', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容' };
 const APPLY = { live: '即时生效', 'restart-phone': '重启手机生效', 'restart-dsh': '重启 dsh 生效', create: '只对新建生效' };
-const SECTION_OF_GROUP = (g) => g.startsWith('手机') ? 'phone' : g === '电脑' ? 'computer' : g === 'QQ' ? 'qq' : g === 'dot' ? 'dot' : g === '审批' ? 'computer' : g.startsWith('兼容') ? 'compat' : '';
 function level(s) { if (!s) return ''; if (/ready|on/.test(s.state)) return 'ok'; if (s.state === 'error') return 'bad'; return 'warn'; }
 function stateText(name, s) {
   if (!s) return '关';
@@ -128,7 +127,7 @@ function renderSettings() {
   for (const e of entries) (groups[e.group] ||= []).push(e);
   $('groups').className = '';
   $('groups').innerHTML = Object.entries(groups).map(([g, list]) => {
-    const sec = SECTION_OF_GROUP(g), on = !sec || components[sec] !== false;
+    const sec = list[0].section, on = components[sec] !== false;
     return '<div class="card" style="margin-bottom:12px"><details class="group"' + (on ? ' open' : '') + '><summary>' + esc(g) + (on ? '' : ' <span class="mute small">（' + NAMES[sec] + '组件没开：在 dsh 的插件页打开）</span>') + '</summary>'
       + list.map((e) => '<div class="set' + (changes[id(e)] !== undefined ? ' changed' : '') + '" data-id="' + id(e) + '"><label for="in-' + id(e).replace('.', '-') + '">' + esc(e.zh)
         + '<span class="tag' + (e.apply === 'create' ? ' create' : '') + '">' + APPLY[e.apply] + '</span><br><span class="key">' + id(e) + ' · 默认 ' + esc(JSON.stringify(e.default)) + (e.value !== undefined ? ' · 已设 ' + esc(JSON.stringify(e.value)) : '') + '</span></label><div>' + control(e) + '</div></div>').join('')
@@ -232,7 +231,7 @@ $('sum').onclick = async () => {
 $('rb').onclick = async () => {
   if ($('rbConfirm').value.trim() !== 'dot') { $('rbMsg').className = 'msg err'; $('rbMsg').textContent = '先在框里输入 dot'; return; }
   if (!confirm('确定删掉现在这台手机并新建？她手机里的一切都会没有。')) return;
-  await act('phone-rebuild', $('rbMsg'), { confirm: 'dot', gb: $('rbGb').value || undefined });
+  await act('phone-rebuild', $('rbMsg'), { gb: $('rbGb').value || undefined });
 };
 $('cl').onclick = () => act('phone-cleanup', $('clMsg'));
 

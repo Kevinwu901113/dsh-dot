@@ -69,16 +69,18 @@ const mtime = (file) => { try { return statSync(file).mtimeMs; } catch { return 
 
 /**
  * Where qq-bridge is: the explicit root, else the repo behind `~/.dsh/plugins/qq-agent-presets`
- * (a link to `<repo>/plugins/qq-agent-presets`) or `qq-mode-console`. '' when not found.
+ * or `qq-mode-console` (links into its checkout). A checkout without `config.json` is not a running
+ * qq-bridge (its own loadConfig() refuses to start without one), so it does not count: ''.
  */
 export function findRoot({ root = '', home = dshHome() } = {}) {
-  if (root) return existsSync(join(root, 'config.json')) || existsSync(join(root, 'package.json')) ? resolve(root) : '';
+  const configured = (dir) => existsSync(join(dir, 'config.json'));
+  if (root) return configured(root) ? resolve(root) : '';
   for (const bundle of BRIDGE_BUNDLES) {
     let target;
     try { target = realpathSync(join(home, 'plugins', bundle)); } catch { continue; }
-    // <repo>/plugins/<bundle> → <repo>; a copy elsewhere still says where it came from in package.json? no: walk up.
+    // <repo>/plugins/<bundle> or a build dir inside the repo → walk up to the repo root.
     for (let dir = target; dir !== dirname(dir); dir = dirname(dir)) {
-      if (existsSync(join(dir, 'config.example.json')) && existsSync(join(dir, 'src', 'bridge.js'))) return dir;
+      if (existsSync(join(dir, 'src', 'bridge.js')) && existsSync(join(dir, 'package.json'))) return configured(dir) ? dir : '';
     }
   }
   return '';
@@ -102,11 +104,11 @@ export function botUins(config, env = process.env) {
 
 /**
  * Everything of qq-bridge's this plugin looks at, read from its files (never its network):
- * { root, configPath, config, stateDir, sessionCwd, slangCwd, mode, ownerQQ, groups, privates, botUins, consolePort }.
+ * { root, configPath, config, stateDir, sessionCwd, slangCwd, mode, ownerQQ, groups, privates, botUins, consolePort, sandboxPresets }.
  */
 export function readBridge(root, env = process.env) {
   const configPath = join(root, 'config.json');
-  const config = readJson(configPath) ?? readJson(join(root, 'config.example.json')) ?? {};
+  const config = readJson(configPath) ?? {};
   const stateDir = join(root, 'state');
   const modeFile = readJson(join(stateDir, 'mode.json'));
   const mode = String(modeFile?.mode ?? config.mode ?? 'reserved2').trim() || 'reserved2';
@@ -122,6 +124,8 @@ export function readBridge(root, env = process.env) {
     privates: list(allow.private ?? allow.privates),
     botUins: botUins(config, env),
     consolePort: Number(config.consolePort) || 3100,
+    // The whitelist presets its chat modes run on (its PRESET_NAMES: qq-chat / qq-chat-v2), as configured.
+    sandboxPresets: [...new Set([config.agentPreset, config.socialV2?.agentPreset, 'qq-chat', 'qq-chat-v2'].map((x) => String(x ?? '').trim()).filter(Boolean))],
     stamp: `${mtime(configPath)}:${mtime(join(stateDir, 'mode.json'))}`,
   };
 }
@@ -139,9 +143,13 @@ export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
   if (!m && hers?.(id, cwd)) return 'dot';
   if (m) {
     if (m[1] !== 'p') return 'qqb-sandbox';
-    // The session's preset is the truth when dsh records it (a `qq-chat*` preset is the whitelist); the
-    // bridge's mode file stands in for an older dsh that does not. Unknown both ways: the safe side.
-    if (preset !== undefined && preset !== null && preset !== '') return /^qq-chat/.test(String(preset)) ? 'qqb-sandbox' : 'qqb-owner';
+    // The session's preset is the truth when dsh records it: one of the bridge's chat presets (read from
+    // its config; `qq-chat*` by name when the bridge is not readable) is the whitelist, anything else
+    // is the owner's full chat. The bridge's mode file stands in for an older dsh that records none.
+    if (preset !== undefined && preset !== null && preset !== '') {
+      const p = String(preset);
+      return (bridge?.sandboxPresets ?? ['qq-chat', 'qq-chat-v2']).includes(p) || /^qq-chat/.test(p) ? 'qqb-sandbox' : 'qqb-owner';
+    }
     return bridge?.mode === 'closed-agent' ? 'qqb-owner' : 'qqb-sandbox';
   }
   if (!bridge) return 'other';
@@ -272,7 +280,7 @@ export function doctor({ bridge, qq, groupsOf } = {}) {
   if (hers && bridge.ownerQQ && String(hers) === bridge.ownerQQ) item('QQ 账号', 'bad', `她的 QQ ${hers} 是 qq-bridge 的管理员号（ownerQQ）`, '她不能用你的号；/qq account 换成她自己的');
   if (groupsOf && bridge.groups.length) {
     const shared = groupsOf().filter((g) => bridge.groups.includes(String(g)));
-    if (shared.length) item('共同的群', 'warn', `她和 qq-bridge 的机器人都在：${shared.join('、')}；她不回它的消息，但它会回她的`, `想让两边都安静：在 qq-bridge 的 config.json 里把她的号 ${hers || ''} 加进 ignore.sendQQ`);
+    if (shared.length) item('共同的群', 'warn', `她和 qq-bridge 的机器人都在：${shared.join('、')}；她不回它的消息，但它会回她的`, `想让两边都安静：在 qq-bridge 那边把她的号 ${hers || ''} 拉黑（它的 config.json 有 deny.private / deny.groups 黑名单，按它的文档填），或别让两个号进同一个群`);
   }
   return items;
 }

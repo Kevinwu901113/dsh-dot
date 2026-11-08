@@ -676,6 +676,10 @@ test('qq: parseIgnore and the loop breaker', () => {
   b.said('group:7'); assert.equal(b.heard('group:7', '1'), '');
   b.said('group:7'); assert.equal(b.heard('group:7', '1'), '', 'the owner-style reset earlier left two rounds, not three');
   assert.equal(createLoopBreaker({ max: 0 }).heard('g', '1'), '');
+  // a private chat is never a loop: a friend and her, back and forth, as long as they like
+  const pv = createLoopBreaker({ max: 2, cooldownMs: 100, now: () => t });
+  for (let i = 0; i < 6; i++) { assert.equal(pv.heard('user:5', '5'), ''); pv.said('user:5'); }
+  assert.ok(!pv.cooling('user:5', '5'));
 });
 
 test('qq: two bots in one group — after loopMax rounds with nobody else she stops answering that account there', async () => {

@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, classify, hiddenFor, findRoot, readBridge, botUins, doctor, isDotTool, isDeviceTool, BRIDGE_ID_RE, BRIDGE_TOOL_PREFIXES } from '../src/compat/qq-bridge.js';
@@ -11,7 +11,7 @@ import DshComputerSubprocess from '../src/computer/subprocess.js';
 function fakeBridge({ mode = 'reserved2', ownerQQ = 20002, groups = [111, 222], uins = ['30003'], sessionCwd = '' } = {}) {
   const root = mkdtempSync(join(tmpdir(), 'qq-bridge-'));
   mkdirSync(join(root, 'src')); writeFileSync(join(root, 'src', 'bridge.js'), '');
-  writeFileSync(join(root, 'config.example.json'), '{}');
+  writeFileSync(join(root, 'package.json'), '{}');
   const sl = join(root, 'snowluma', 'config'); mkdirSync(sl, { recursive: true });
   for (const u of uins) writeFileSync(join(sl, `onebot_${u}.json`), '{}');
   writeFileSync(join(root, 'config.json'), JSON.stringify({ ownerQQ, sessionCwd, allow: { groups, private: [] }, snowluma: { homeDir: join(root, 'snowluma') }, consolePort: 3100 }));
@@ -46,6 +46,11 @@ test('findRoot / readBridge / botUins: the checkout behind ~/.dsh/plugins/qq-age
   assert.equal(findRoot({ home: mkdtempSync(join(tmpdir(), 'empty-')) }), '');
   assert.equal(findRoot({ root }), root);
   assert.equal(findRoot({ root: join(root, 'nope') }), '');
+  // a checkout without config.json is not a running qq-bridge (its loadConfig() is fail-fast): not found
+  const bare = fakeBridge(); rmSync(join(bare.root, 'config.json'));
+  assert.equal(findRoot({ home: bare.dsh }), '');
+  assert.equal(findRoot({ root: bare.root }), '');
+  process.env.DSH_HOME = dsh;
   const b = readBridge(root);
   assert.equal(b.mode, 'reserved2');
   assert.equal(b.ownerQQ, '20002');
@@ -75,6 +80,11 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
   const closed = { ...bridge, mode: 'closed-agent' };
   assert.equal(classify({ id: 'qqb-p-20002', cwd: bridge.sessionCwd }, closed, hers), 'qqb-owner');
   assert.equal(classify({ id: 'qqb-p-20002', cwd: bridge.sessionCwd, preset: 'standard' }, bridge, hers), 'qqb-owner'); // the recorded preset wins over the mode file
+  // the bridge's own preset names (its config: agentPreset / socialV2.agentPreset) are the whitelist, whatever they are called
+  assert.deepEqual(bridge.sandboxPresets, ['qq-chat', 'qq-chat-v2']);
+  const renamed = { ...bridge, sandboxPresets: ['my-chat', 'qq-chat', 'qq-chat-v2'] };
+  assert.equal(classify({ id: 'qqb-p-20002', cwd: bridge.sessionCwd, preset: 'my-chat' }, renamed, hers), 'qqb-sandbox');
+  assert.equal(classify({ id: 'qqb-p-20002', cwd: bridge.sessionCwd, preset: 'qq-chat-v3' }, renamed, hers), 'qqb-sandbox', 'qq-chat* by name still counts');
   assert.equal(classify({ id: 'qqb-g-1', cwd: bridge.sessionCwd }, closed, hers), 'qqb-sandbox');
   // its slang learner: a dsh id, cwd under its state/
   assert.equal(classify({ id: 'session-abc', cwd: join(bridge.stateDir, 'slang-agent') }, bridge, hers), 'qqb-sandbox');
