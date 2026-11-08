@@ -36,9 +36,9 @@ export const DotArtwork = ({ size = 36, className }: { size?: number; className?
   </svg>
 )
 
-/** Sixteen-pixel dot glyph in the surrounding text color. */
-export const DotIcon = (): ReactNode => (
-  <svg width="16" height="16" viewBox="0 0 16 16" fill="none" aria-hidden="true">
+/** Dot glyph in the surrounding text color (16 px unless the sidebar asks for another size). */
+export const DotIcon = ({ size = 16 }: { size?: number } = {}): ReactNode => (
+  <svg width={size} height={size} viewBox="0 0 16 16" fill="none" aria-hidden="true">
     <circle cx="8" cy="8" r="5.25" stroke="currentColor" strokeWidth="1.2" />
     <circle cx="8" cy="8" r="2" fill="currentColor" />
   </svg>

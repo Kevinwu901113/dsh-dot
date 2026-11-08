@@ -34,6 +34,11 @@ export async function probe(_endpoint: ComputerEndpoint, signal: AbortSignal): P
 }
 
 /** The dot panel, served by dsh-dot/dot on dsh's own web server (same origin as the client). */
+/** The dot page (settings, doctor, diagnostics), served by the plugin's root component. */
+export function pageUrl(): string {
+  try { return `${window.location.origin}/dsh-dot/page/` } catch { return '/dsh-dot/page/' }
+}
+
 export function panelUrl(): string {
   try { return `${window.location.origin}/dsh-dot/panel/` } catch { return '/dsh-dot/panel/' }
 }

@@ -86,7 +86,7 @@ async function checkMemory(h, wantGb, pendingGb = wantGb) {
   const total = h.totalmem();
   const want = wantGb * GB;
   const out = [];
-  const tight = '少开几个程序；或在 ~/.dsh/dsh-dot.json 调小：phone.ramMb（默认 3072）、computer.memory（默认 4G），不要电脑就设 computer 为 off';
+  const tight = '少开几个程序；或在 ~/.dsh/dsh-dot.json 调小：phone.ramMb（默认 3072）、computer.memory（默认 4G），不要电脑就设环境变量 DSH_DOT_COMPUTER=off 后重启 dsh（别只在插件页关 computer/subprocess：那样 dsh 就没法执行命令了）';
   if (total < want + 3 * GB) out.push(item(name, 'bad', `总共 ${gb(total)}，手机+电脑要 ${wantGb} GB，系统自己还要几 GB`, tight));
   else if (total < want + 6 * GB) out.push(item(name, 'warn', `总共 ${gb(total)}，手机+电脑要 ${wantGb} GB，比较紧`, tight));
   else out.push(item(name, 'ok', `总共 ${gb(total)}，手机+电脑要 ${wantGb} GB`));

@@ -11,6 +11,7 @@ import { dshHome, fileError, readAll, writeSections } from '../settings.js';
 import { describe, validatePatch } from '../settings-schema.js';
 import { doctorFor, FIXES } from '../doctor.js';
 import { bundle, summary, versions } from './diag.js';
+import { PAGE_PATH, pageHtml } from './page.js';
 
 export const API_PATH = '/dsh-dot/api';
 const require = createRequire(import.meta.url);
@@ -86,6 +87,16 @@ export function createApi(ctx, logger) {
       if (route === 'GET /setup') return json(res, 200, readSetup());
       if (route === 'PUT /setup') return json(res, 200, writeSetup(await readJson(req)));
       if (route === 'GET /summary') return json(res, 200, { text: summary({ status: statusOf(ctx), doctor: await doctor(), info: info() }) });
+      if (route === 'POST /diag/save') {
+        // The desktop app may not hand an iframe's download to the user: also write it under ~/.dsh/diag/.
+        const body = await readJson(req);
+        const buf = bundle({ dotHome: dotHome(), status: statusOf(ctx), doctor: await doctor(), info: info(), withPrivate: body.private === true });
+        const dir = join(dshHome(), 'diag');
+        mkdirSync(dir, { recursive: true });
+        const file = join(dir, `dsh-dot-diag-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '-')}.zip`);
+        writeFileSync(file, buf);
+        return json(res, 200, { ok: true, file });
+      }
       if (req.method === 'GET' && sub.split('?')[0] === '/diag') {
         const withPrivate = new URL(req.url ?? '/', 'http://x').searchParams.get('private') === '1';
         const buf = bundle({ dotHome: dotHome(), status: statusOf(ctx), doctor: await doctor(), info: info(), withPrivate });
@@ -101,10 +112,19 @@ export function createApi(ctx, logger) {
   };
 }
 
-/** Mount on dsh's web server. Returns the unregister function. */
+/** Mount the page and its API on dsh's web server. Returns the unregister function. */
 export function mountApi(ctx, webServer, logger, connection) {
   const handle = createApi(ctx, logger);
-  return webServer.register({
+  const html = pageHtml();
+  const offPage = webServer.register({
+    kind: 'prefix', path: PAGE_PATH,
+    handler: (req, res) => {
+      if (rejectUnlessOwner(connection, req, res)) return;
+      if (req.method !== 'GET') { res.writeHead(405).end(); return; }
+      res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' }).end(html);
+    },
+  });
+  const offApi = webServer.register({
     kind: 'prefix', path: API_PATH,
     handler: async (req, res) => {
       if (rejectUnlessOwner(connection, req, res)) return;
@@ -113,4 +133,5 @@ export function mountApi(ctx, webServer, logger, connection) {
       await handle(req, res, url.pathname.slice(API_PATH.length) || '/');
     },
   });
+  return () => { offPage?.(); offApi?.(); };
 }

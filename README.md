@@ -108,6 +108,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 然后在 dsh 里：
 
 ```text
+# 也可以点左侧栏的「dot 设置」：设置、体检（一键修复）、导出诊断包都在那页
 /phone doctor               # 先体检这台电脑：虚拟化、磁盘、内存、端口、下载源、手机网络；能一键修的给 /phone doctor fix <id>
 /phone accept               # 接受 Android SDK 许可，手机开始自己装（约 2 GB；/phone accept 32 给 32 GB 存储）
 /interlude preset 6QA0-1PD6 # 从 typ0.space 导入一份 HDSI 人设，换成你喜欢的分享码

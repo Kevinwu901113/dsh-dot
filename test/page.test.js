@@ -123,3 +123,17 @@ test('phone network/gpu helpers', () => {
   assert.equal(proxyArg('system', () => ({ HTTPS_PROXY: 'http://127.0.0.1:7890' })), 'http://127.0.0.1:7890');
   assert.equal(proxyArg('http://h:1'), 'http://h:1');
 });
+
+test('page: served with its script intact; diag/save writes under ~/.dsh/diag', async () => {
+  const { pageHtml } = await import('../src/page/page.js');
+  const html = pageHtml();
+  assert.match(html, /<title>dot 设置<\/title>/);
+  assert.ok(!html.slice(html.indexOf('<script>')).includes('${'), 'no stray template interpolation in the page script');
+  const api = createApi({ get: () => undefined });
+  let status, out;
+  const req = { method: 'POST', url: '/diag/save', async *[Symbol.asyncIterator]() {} };
+  await api(req, { writeHead(s) { status = s; return this; }, end(b) { out = JSON.parse(b); } }, '/diag/save');
+  assert.equal(status, 200);
+  assert.ok(out.file.startsWith(join(home, 'diag')));
+  assert.ok(readFileSync(out.file).length > 100);
+});

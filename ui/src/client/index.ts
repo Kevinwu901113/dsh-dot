@@ -7,7 +7,7 @@ import type { Context } from '@deepseek-ai/cordis'
 import { ComputerView, type ComputerViewProps } from './view.tsx'
 import { HeaderButton } from './HeaderButton.tsx'
 import { ComputerArtwork } from './icons.tsx'
-import { panelUrl, phoneLiveViewUrl, probePanel, probePhone, type ComputerEndpoint } from './endpoint.ts'
+import { pageUrl, panelUrl, phoneLiveViewUrl, probePanel, probePhone, type ComputerEndpoint } from './endpoint.ts'
 import { DotArtwork, DotIcon, PhoneArtwork, PhoneIcon } from './icons.tsx'
 import { en, NS, zh } from './locales.ts'
 
@@ -127,4 +127,15 @@ export function apply(ctx: Context): void {
   ctx.effect(() => c.slots.inject('conversation.session.header.utilities', () => c.slots.register({
     name: 'conversation.session.header.utilities', id: DOT_ID, order: -18, locale: NS,
   }, DotHeader)), 'dsh-dot-panel.header')
+
+  // The dot page: a left-sidebar entry like Plugins, opening a full page (settings, doctor,
+  // diagnostics) served same-origin by the plugin's root component, so it works with any components on.
+  const PAGE_ID = 'dsh-dot'
+  const PageIcon = ({ size }: { size?: number }): ReactNode => createElement(DotIcon, { size })
+  const PageBody = (): ReactNode => createElement('div', { style: { position: 'relative', width: '100%', height: '100%', minHeight: 0 } },
+    createElement('iframe', { src: pageUrl(), title: 'dot', style: { position: 'absolute', inset: 0, width: '100%', height: '100%', border: 0, display: 'block' } }))
+  ctx.effect(() => c.slots.inject('main', () => c.slots.register({ name: 'main', key: PAGE_ID, locale: NS }, PageBody)), 'dsh-dot-page.main')
+  ctx.effect(() => c.slots.inject('sidebar.panellist', () => c.slots.register({
+    name: 'sidebar.panellist', id: PAGE_ID, order: 20, label: () => t('pageTitle'), locale: NS,
+  }, PageIcon)), 'dsh-dot-page.entry')
 }
