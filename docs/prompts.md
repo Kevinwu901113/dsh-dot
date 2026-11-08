@@ -27,6 +27,7 @@
 | | 定时任务那一轮 | `dot.scheduled` |
 | | 手机/电脑还在装（只在第一次装、开机没好时） / 装好那一刻 | `dot.setup` / `dot.setup-done` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
+| | 她自己的经验（进 App 时给） | `dot.howto.given` `dot.howto.no-notes`；整理经验的调用 `dot.howto.reflect` |
 | | 说明书（第一次用时才给） | `dot.manuals.hint` `.what` `.deny` |
 | | 说话提醒（最后一段） | `interlude.voice`（人设里的「说话提醒」优先） |
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`） |

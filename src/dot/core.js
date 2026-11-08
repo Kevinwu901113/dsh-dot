@@ -15,6 +15,8 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { createManuals, defaultManuals } from './manuals.js';
+import { createHowto, howtoTool } from './howto.js';
+import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { get as httpGet } from 'node:http';
@@ -209,6 +211,12 @@ export const defaults = {
   // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
   // session (manuals.js), instead of riding along in every system prompt between the Canon and her words.
   manuals: true,
+  // What she learns using her phone (howto.js): each turn's steps per app are logged; a turn of
+  // howtoMinSteps steps or more, or with errors, is reflected on once (a small call) and her notes for
+  // that app rewritten (≤ howtoMaxChars); the first time she opens the app in a session they come along.
+  howto: true,
+  howtoMinSteps: 12,
+  howtoMaxChars: 800,
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
   // (0 = wait for ever). A turn with no session event for turnStallMs is stalled; an errand stalled
@@ -516,6 +524,7 @@ export function apply(ctx, config = {}) {
   const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
   const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
   let manualFor = () => null; // set where the manuals are (below)
+  let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
@@ -659,7 +668,8 @@ export function apply(ctx, config = {}) {
   // And the first call of her phone or computer tools in a session brings their manual along (manuals.js).
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const minutes = expiredCalls.get(exec?.callId);
-    const note = cfg.manuals && exec?.name ? manualFor(exec) : null;
+    const notes = [cfg.manuals && exec?.name ? manualFor(exec) : null, cfg.howto && exec?.name ? howtoFor(exec, result) : null].filter(Boolean);
+    const note = notes.join('\n\n');
     if (minutes === undefined && !note) return next();
     if (minutes !== undefined) expiredCalls.delete(exec.callId);
     const d = await next();
@@ -678,6 +688,45 @@ export function apply(ctx, config = {}) {
     hint: (key) => table('dot.manuals.hint', { serial: phone()?.status?.()?.device ?? 'dot' })[key] ?? '',
     given: (key, manual) => prompt('dot.manuals.given', { what: table('dot.manuals.what')[key] ?? key, manual }),
   });
+  // Her phone notes (howto.js): every phone call of her sessions is a step of this turn's run; the first
+  // time she is in an app in a session, her notes for it come along (in the post-execute hook above).
+  const appLabels = Object.fromEntries(Object.entries(KNOWN_APPS.labels).map(([label, pkg]) => [pkg, label]));
+  const howto = createHowto({ dir: join(home, 'her', 'howto'), labelOf: (pkg) => appLabels[pkg] ?? pkg, minSteps: cfg.howtoMinSteps, maxChars: cfg.howtoMaxChars });
+  howtoFor = (exec, result) => {
+    if (!exec.name.startsWith(PHONE_TOOL_PREFIX)) return null;
+    const s = exec.agent?.session;
+    if (!s?.id || !(isDotSession(s.id, s.header?.cwd) || turns.has(s.id))) return null;
+    const app = howto.step(s.id, exec.name, exec.arguments ?? exec.input, { isError: Boolean(result?.isError), error: contentText(result?.content ?? []) });
+    const got = howto.take(s.id, app);
+    if (!got) return null;
+    audit('howto-given', { session: s.id, app });
+    return prompt('dot.howto.given', { app: got.app, notes: got.notes || prompt('dot.howto.no-notes'), recent: got.recent || '—' });
+  };
+  const said = new Map(); // session id → her last words this turn (for the reflection)
+  ctx.on('session/event', (session, event) => {
+    if (!cfg.howto) return;
+    const id = session?.id;
+    if (event?.type === 'assistant/message' && !event.data?.interrupted) { const t = contentText(event.data?.message?.content); if (t.trim()) said.set(id, t); return; }
+    if (event?.type !== 'turn/end') return;
+    const learn = howto.end(id, said.get(id) ?? '');
+    said.delete(id);
+    for (const r of learn) void reflectHowto(r);
+  });
+  // One small call per run worth learning from: what she did (her calls and their errors, not the
+  // screen's text), her notes for the app, her last runs → the notes rewritten.
+  async function reflectHowto(r) {
+    try {
+      const sel = ctx.agentDefaultModel?.currentSelection?.();
+      if (!sel || !ctx.llm?.stream) return;
+      const reply = await collectReply(ctx.llm.stream({
+        provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}),
+        system: prompt('dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
+        messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
+      }));
+      const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
+      if (howto.keep(r.app, out)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked) });
+    } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
+  }
   // The manual rides along with the first call's result, for her next step (in the post-execute hook above).
   manualFor = (exec) => {
     const note = manuals.take(exec.name, exec.agent?.session?.id);
@@ -1177,14 +1226,20 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page',
-      input: { hint: '[doctor | test | check | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
+      input: { hint: '[doctor | test | check | howto [<app>] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         // /dot memory … and /dot people … belong to dsh-dot/memory.
         if (/^(memory|people)\b/.test(arg)) {
           const mem = ctx.get('dotMemory');
           return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
+        }
+        if (/^howto\b/.test(arg)) {
+          const app = arg.slice(5).trim();
+          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}\n\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.worked === false ? '✗' : ''}`).join(' → ') || '-'}` };
+          const rows = howto.apps().map((a) => { const r = howto.recent(a, 10); return `${a}: ${r.map((x) => x.steps).join(' → ') || '-'}${howto.notes(a) ? ' · notes' : ''}`; });
+          return { kind: 'success', text: `steps per run, oldest first (notes in ${howto.dir})\n${rows.join('\n') || '(nothing yet)'}` };
         }
         if (arg === 'doctor') { try { return { kind: 'success', text: doctorReport(await runDoctor()) }; } catch (err) { return { kind: 'success', text: `doctor failed: ${err.message}` }; } }
         if (arg === 'prompts stop') return { kind: 'success', text: (await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running' };
