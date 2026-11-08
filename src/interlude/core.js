@@ -1359,6 +1359,15 @@ export function apply(ctx, config = {}) {
 
   // For the panel (dsh-dot/dot): where her life stands, as data.
   ctx.provide?.('dshInterlude', {
+    /** Import her persona from the HDSI hub by share code (the dot page's setup; /interlude preset does the same). */
+    async importPreset(code) {
+      canon = await fetchPreset(cfg.presetHub, code);
+      writeFileSync(files.canon, JSON.stringify(canon, null, 2));
+      audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
+      return { name: canon.storyDefaults.characterName, title: canon.source.title, author: canon.source.author, license: canon.source.license };
+    },
+    /** The imported persona, or null while she runs on the built-in one. */
+    canon() { return canon?.source ? { name: canon.storyDefaults?.characterName, title: canon.source.title, author: canon.source.author } : null; },
     /** One line on who she is (for the QQ group scorer): name + the character profile. */
     who() { const sd = canon?.storyDefaults ?? {}; return `${sd.characterName ?? 'dot'}：${String(sd.characterProfile ?? '').replace(/\s+/g, ' ').slice(0, 240)}`; },
     status() {

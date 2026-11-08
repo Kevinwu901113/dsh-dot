@@ -2,7 +2,7 @@
  * dsh-computer client: a right-Sidebar tab showing the agent's computer (noVNC)
  * and a Session header button that shows or hides it.
  */
-import { createElement, type ReactNode } from 'react'
+import { createElement, useEffect, useState, type ReactNode } from 'react'
 import type { Context } from '@deepseek-ai/cordis'
 import { ComputerView, type ComputerViewProps } from './view.tsx'
 import { HeaderButton } from './HeaderButton.tsx'
@@ -138,4 +138,33 @@ export function apply(ctx: Context): void {
   ctx.effect(() => c.slots.inject('sidebar.panellist', () => c.slots.register({
     name: 'sidebar.panellist', id: PAGE_ID, order: 20, label: () => t('pageTitle'), locale: NS,
   }, PageIcon)), 'dsh-dot-page.entry')
+
+  // First run: one small card (not a modal) pointing at the dot page until setup is done or he says later.
+  const api = (): string => pageUrl().replace(/page\/$/, '') + 'api'
+  const openPage = (): void => { try { (c.layout ?? c.get?.('layout'))?.selectPanel?.(PAGE_ID) } catch { /* no layout service */ } }
+  const DotOnboarding = (props: { complete: () => void }): ReactNode => {
+    const [show, setShow] = useState(false)
+    useEffect(() => {
+      let alive = true
+      fetch(`${api()}/status`, { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).then((j) => {
+        if (!alive) return
+        if (!j || j.setup?.done || j.setup?.dismissed) props.complete()
+        else setShow(true)
+      }).catch(() => { if (alive) props.complete() })
+      return () => { alive = false }
+    }, [])
+    if (!show) return null
+    const later = (): void => {
+      void fetch(`${api()}/setup`, { method: 'PUT', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dismissed: true }) }).catch(() => {})
+      props.complete()
+    }
+    const btn = (label: string, onClick: () => void, primary: boolean): ReactNode => createElement('button', { type: 'button', onClick, style: { font: 'inherit', padding: '5px 12px', borderRadius: 6, cursor: 'pointer', border: `1px solid ${primary ? '#4a7fd6' : 'rgba(128,128,128,.4)'}`, background: primary ? '#4a7fd6' : 'transparent', color: primary ? '#fff' : 'inherit' } }, label)
+    return createElement('div', { role: 'dialog', 'aria-label': t('onboardTitle'), style: { position: 'fixed', right: 20, bottom: 20, zIndex: 1000, maxWidth: 340, background: 'Canvas', color: 'CanvasText', colorScheme: 'light dark', border: '1px solid rgba(128,128,128,.3)', borderRadius: 10, padding: '14px 16px', boxShadow: '0 6px 24px rgba(0,0,0,.18)', font: "13px/1.55 system-ui, -apple-system, 'PingFang SC', 'Microsoft YaHei', sans-serif" } },
+      createElement('div', { style: { fontWeight: 600, marginBottom: 4 } }, t('onboardTitle')),
+      createElement('div', { style: { opacity: 0.75, marginBottom: 10 } }, t('onboardBody')),
+      createElement('div', { style: { display: 'flex', gap: 8 } }, btn(t('onboardGo'), () => { openPage(); props.complete() }, true), btn(t('onboardLater'), later, false)))
+  }
+  ctx.effect(() => c.slots.inject('settings.onboarding', () => c.slots.register({
+    name: 'settings.onboarding', id: PAGE_ID, order: 100, label: () => t('pageTitle'), locale: NS,
+  }, DotOnboarding)), 'dsh-dot-page.onboarding')
 }

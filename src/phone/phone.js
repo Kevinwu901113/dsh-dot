@@ -821,9 +821,9 @@ export function apply(ctx, config = {}, deps = {}) {
    * Stop the emulator and start it again. An emulator dsh attached to (left from an earlier run) is
    * not our child, so nothing would relaunch it on exit: wait until adb no longer lists it, then start.
    */
-  phone.restart = async () => {
+  /** Stop her emulator and any boot in flight (used by restart and rebuild). */
+  async function stopEmulator() {
     quickExits = 0; crashTimes = []; generation++;
-    setState('booting');
     const ours = child;
     if (ours) ours.removeAllListeners('exit'); // its own relaunch-on-exit must not race this one
     child = null;
@@ -831,7 +831,34 @@ export function apply(ctx, config = {}, deps = {}) {
     for (let i = 0; i < 30 && (await alreadyRunning()); i++) await new Promise((r) => setTimeout(r, 1000));
     try { ours?.kill('SIGKILL'); } catch {}
     if (inFlight) await starting.catch(() => {}); // a boot in flight gives up (generation changed) before the new one
+  }
+  phone.restart = async () => {
+    setState('booting');
+    await stopEmulator();
     void start();
+  };
+  /**
+   * Rebuild her phone: a new AVD with the current storage/RAM settings. Everything on the phone goes
+   * (apps she installed, logins, photos); the downloaded SDK stays, so it boots in minutes.
+   */
+  phone.rebuild = async ({ gb } = {}) => {
+    if (gb !== undefined && (!Number.isInteger(Number(gb)) || Number(gb) < 8 || Number(gb) > 256)) throw new Error('storage size: a whole number of GB from 8 to 256');
+    setState('booting');
+    await stopEmulator();
+    rmSync(join(paths.avdHome, `${cfg.avd}.avd`), { recursive: true, force: true });
+    rmSync(join(paths.avdHome, `${cfg.avd}.ini`), { force: true });
+    if (gb !== undefined) phone.setStorage(gb);
+    lastCrash = 0;
+    audit({ kind: 'rebuilt', avd: cfg.avd, dataGb: cfg.dataGb });
+    void start();
+  };
+  /** Space the phone's leftovers take that can go: the download cache (re-downloaded only if the SDK is reinstalled). */
+  phone.cleanup = () => {
+    let bytes = 0;
+    const walk = (d) => { try { for (const e of readdirSync(d, { withFileTypes: true })) { const p = join(d, e.name); if (e.isDirectory()) walk(p); else bytes += statSync(p).size; } } catch {} };
+    walk(paths.downloads);
+    rmSync(paths.downloads, { recursive: true, force: true });
+    return bytes;
   };
 
   ctx.provide('dshPhone', phone);

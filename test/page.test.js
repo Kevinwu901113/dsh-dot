@@ -137,3 +137,39 @@ test('page: served with its script intact; diag/save writes under ~/.dsh/diag', 
   assert.ok(out.file.startsWith(join(home, 'diag')));
   assert.ok(readFileSync(out.file).length > 100);
 });
+
+test('setup steps: live facts decide, acknowledgements are stored, off components are skipped', async () => {
+  const { setupSteps } = await import('../src/page/api.js');
+  writeFileSync(join(home, 'dsh-dot-setup.json'), '{}');
+  let canon = null;
+  const ctx = (phoneState) => ({ get: (n) => ({
+    dshPhone: { status: () => ({ state: phoneState, progress: { text: '下载 1/2 MB' } }) },
+    dshInterlude: { canon: () => canon },
+    dshQq: { status: () => ({ state: 'stopped', connected: false, owner: '' }) },
+  })[n] });
+  let r = setupSteps(ctx('downloading'));
+  const by = (id) => r.steps.find((x) => x.id === id);
+  assert.equal(by('phone').state, 'working'); assert.equal(by('phone').detail, '下载 1/2 MB');
+  assert.equal(by('computer').state, 'skip');
+  assert.equal(by('persona').state, 'todo');
+  assert.equal(by('qq').detail, '还没填你的 QQ 号');
+  assert.equal(r.done, false);
+  canon = { name: 'a', title: 't' };
+  r = setupSteps(ctx('ready'), { doctorAck: true, componentsAck: true, qqSkip: true });
+  assert.ok(r.done, JSON.stringify(r.steps));
+  assert.equal(setupSteps(ctx('error')).steps.find((x) => x.id === 'phone').state, 'blocked');
+});
+
+test('api: danger zone needs the typed confirmation; setup only stores known flags', async () => {
+  let rebuilt = null;
+  const api = createApi({ get: (n) => (n === 'dshPhone' ? { status: () => ({ state: 'ready' }), rebuild: async (o) => { rebuilt = o; } } : undefined) });
+  const call = async (method, sub, body) => { let status, out; await api({ method, url: sub, async *[Symbol.asyncIterator]() { if (body) yield Buffer.from(JSON.stringify(body)); } }, { writeHead(s) { status = s; return this; }, end(b) { out = JSON.parse(b); } }, sub); return { status, out }; };
+  assert.equal((await call('POST', '/action/phone-rebuild', {})).status, 400);
+  assert.equal(rebuilt, null);
+  assert.equal((await call('POST', '/action/phone-rebuild', { confirm: 'dot', gb: 32 })).status, 200);
+  assert.deepEqual(rebuilt, { gb: 32 });
+  assert.equal((await call('POST', '/action/qq-owner', { number: '1' })).out.error, 'QQ组件没开（在 dsh 的插件页打开）');
+  await call('PUT', '/setup', { doctorAck: true, evil: 'x', dismissed: 'yes' });
+  const saved = JSON.parse(readFileSync(join(home, 'dsh-dot-setup.json'), 'utf8'));
+  assert.equal(saved.doctorAck, true); assert.equal(saved.evil, undefined); assert.equal(saved.dismissed, undefined);
+});

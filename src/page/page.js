@@ -41,8 +41,15 @@ textarea{width:100%;box-sizing:border-box;min-height:160px;font:12px/1.5 ui-mono
 <div class="row" style="justify-content:space-between"><h1>dot 设置</h1><span class="mute small" id="ver"></span></div>
 <div class="row" id="badges"></div>
 <div class="card banner" id="fileErr" hidden></div>
-<div class="tabs" role="tablist"><button data-tab="settings" class="on">设置</button><button data-tab="doctor">体检</button><button data-tab="diag">诊断</button></div>
+<div class="tabs" role="tablist"><button data-tab="setup">开始</button><button data-tab="status">状态</button><button data-tab="settings" class="on">设置</button><button data-tab="doctor">体检</button><button data-tab="diag">诊断</button></div>
+<section id="tab-setup" hidden><div id="steps" class="mute">加载中…</div></section>
+<section id="tab-status" hidden><div id="statusCards" class="mute">加载中…</div></section>
 <section id="tab-settings"><div id="groups" class="mute">加载中…</div>
+<details class="card" style="margin-top:12px"><summary style="cursor:pointer;color:var(--bad)">危险区</summary>
+<div class="item" style="grid-template-columns:1fr auto"><div><b>重建手机</b><div class="mute">删掉现在这台手机，用当前的存储和内存设置新建一台。她装的 App、登录、照片全部没了；已下载的系统不用重下，几分钟就好。</div>
+<div class="row" style="margin-top:6px">新存储 <select id="rbGb"><option value="">不变</option><option>8</option><option>16</option><option>32</option><option>64</option></select> GB · 输入 <b>dot</b> 确认 <input type="text" id="rbConfirm" style="width:70px"></div><div class="msg" id="rbMsg"></div></div><div><button class="btn" id="rb" style="color:var(--bad);border-color:var(--bad)">重建手机</button></div></div>
+<div class="item" style="grid-template-columns:1fr auto"><div><b>清理手机下载缓存</b><div class="mute">安装时下载的压缩包。手机已装好的话可以删。</div><div class="msg" id="clMsg"></div></div><div><button class="btn" id="cl">清理</button></div></div>
+</details>
 <div class="bar"><button class="btn primary" id="save" disabled>保存</button><button class="btn" id="revert" disabled>撤销修改</button><span class="msg" id="saveMsg"></span></div></section>
 <section id="tab-doctor" hidden><div class="card"><div class="row" style="justify-content:space-between"><h2>这台电脑能不能跑她的手机和电脑</h2><button class="btn primary" id="runDoctor">开始体检</button></div><div id="doctor" class="mute">还没体检。</div></div></section>
 <section id="tab-diag" hidden><div class="card"><h2>导出诊断包</h2>
@@ -70,7 +77,8 @@ function stateText(name, s) {
   if (!s) return '关';
   if (s.progress && s.progress.text) return s.progress.text + (s.progress.pct != null ? ' · ' + s.progress.pct + '%' : '');
   if (s.slowBoot) return '开机较慢，还在开';
-  return ({ ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪' })[s.state] || s.state || '';
+  if (name === 'qq' && s.connected) return '已登录';
+  return ({ ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪', stopped: '没在运行', idle: '没在运行', installing: '安装中', 'not-installed': '没装', connecting: '连接中', 'needs-account': '没填她的 QQ 号', connected: '已连接', installed: '已安装', reconnecting: '重连中', blocked: '被拦下' })[s.state] || s.state || '';
 }
 async function loadStatus() {
   try {
@@ -220,13 +228,111 @@ $('sum').onclick = async () => {
   } catch (e) { $('sumMsg').className = 'msg err'; $('sumMsg').textContent = e.message; }
 };
 
-// ---- tabs
-for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => {
-  for (const x of document.querySelectorAll('.tabs button')) x.classList.toggle('on', x === b);
-  for (const t of ['settings', 'doctor', 'diag']) $('tab-' + t).hidden = t !== b.dataset.tab;
-  if (b.dataset.tab === 'doctor' && !$('doctor').dataset.ran) { $('doctor').dataset.ran = '1'; runDoctor(); }
+// ---- danger zone
+$('rb').onclick = async () => {
+  if ($('rbConfirm').value.trim() !== 'dot') { $('rbMsg').className = 'msg err'; $('rbMsg').textContent = '先在框里输入 dot'; return; }
+  if (!confirm('确定删掉现在这台手机并新建？她手机里的一切都会没有。')) return;
+  await act('phone-rebuild', $('rbMsg'), { confirm: 'dot', gb: $('rbGb').value || undefined });
 };
-loadStatus(); loadSettings().catch((e) => { $('groups').className = 'msg err'; $('groups').textContent = e.message; });
-setInterval(() => { if (!document.hidden) loadStatus(); }, 3000);
+$('cl').onclick = () => act('phone-cleanup', $('clMsg'));
+
+// ---- status
+function renderStatus(st) {
+  const DETAIL = {
+    phone: (x) => [x.serial && '设备 ' + x.serial, x.api && 'Android API ' + x.api + (x.abi ? ' (' + x.abi + ')' : ''), x.storage && x.storage.gb && '存储 ' + x.storage.gb + ' GB'],
+    computer: (x) => [x.backend && '后端 ' + x.backend, x.stage && '阶段 ' + x.stage],
+    qq: (x) => [x.connected ? '已连接' : '未连接', x.qq && '她的号 ' + x.qq, x.owner && '你的号 ' + x.owner],
+  };
+  $('statusCards').className = '';
+  $('statusCards').innerHTML = Object.entries(st).map(([k, x]) => '<div class="card" style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><h2><span class="badge ' + level(x) + '"><span class="dotc"></span>' + NAMES[k] + '：' + esc(stateText(k, x)) + '</span></h2>'
+    + (k === 'phone' && x ? '<span class="row"><button class="btn" data-act="phone-restart">重启手机</button></span>' : '') + '</div>'
+    + (!x ? '<p class="mute">组件没开。在 dsh 的插件页（dsh-dot-life）打开。</p>' : '')
+    + (x && DETAIL[k] ? '<p class="mute">' + esc(DETAIL[k](x).filter(Boolean).join(' · ')) + '</p>' : '')
+    + (x && x.error ? '<pre class="fix" style="color:var(--bad)">' + esc(x.error) + '</pre>' : '')
+    + '<div class="msg" id="st-' + k + '"></div></div>').join('');
+  for (const b of document.querySelectorAll('[data-act]')) b.onclick = () => act(b.dataset.act, $('st-phone'));
+}
+
+// ---- setup
+let stepSig = '';
+const ICON = { done: '✅', todo: '⬜', working: '⏳', blocked: '❌', skip: '➖' };
+function stepBody(x) {
+  if (x.state === 'skip') return '<p class="mute">' + esc(x.detail) + '，跳过。</p>';
+  if (x.id === 'doctor') return x.state === 'done' ? '' : '<p class="mute">先看看这台电脑能不能跑她的手机和电脑：虚拟化、磁盘、内存、端口、下载源。有问题的项能一键修的直接修。</p><p class="row"><button class="btn primary" data-go="doctor">开始体检</button><button class="btn" data-ack="doctorAck">我看过了，继续</button></p>';
+  if (x.id === 'components') return x.state === 'done' ? '' : '<p class="mute">dsh-dot 由几个组件组成，在 dsh 的「插件」页里 dsh-dot-life 下面开关，改完重启 dsh：</p><ul class="mute small">'
+    + '<li><b>phone</b> 她的手机（安卓模拟器，约 2 GB 下载）</li><li><b>computer + subprocess + gate</b> 她的电脑（Linux 虚拟机）和审批；QQ 需要它。不要电脑请设环境变量 DSH_DOT_COMPUTER=off，<b>别只关 subprocess</b>（dsh 会没法执行命令）</li>'
+    + '<li><b>qq</b> 她自己的 QQ</li><li><b>dot / memory / interlude</b> 她这个人：对话、记忆、幕间生活。只想要手机和电脑（自己的 agent 用）可以关掉这三个</li></ul><p class="row"><button class="btn primary" data-ack="componentsAck">就这样，继续</button></p>';
+  if (x.id === 'phone') {
+    if (x.state === 'todo') return '<p class="mute">要下载约 2 GB（模拟器 + 安卓 15 系统），常见 10–30 分钟。需要接受 <a href="https://developer.android.com/studio/terms" target="_blank">Android SDK 许可</a>。</p><p class="row">存储 <select id="phGb"><option>8</option><option selected>16</option><option>32</option><option>64</option></select> GB（建好后不能改）<button class="btn primary" id="phGo">接受许可并安装</button></p><div class="msg" id="phMsg"></div>';
+    if (x.state === 'working') return '<p>' + esc(x.detail) + '</p><p class="mute small">装的过程中可以关掉这页，照常用 dsh。</p>';
+    if (x.state === 'blocked') return '<pre class="fix" style="color:var(--bad)">' + esc(x.detail) + '</pre><p class="row"><button class="btn" data-go="doctor">去体检</button><button class="btn" id="phRetry">重试</button></p><div class="msg" id="phMsg"></div>';
+    return '<p class="mute">' + esc(x.detail) + '</p>';
+  }
+  if (x.id === 'computer') {
+    if (x.state === 'working') return '<p>' + esc(({ downloading: '下载镜像中（第一次几 GB）', installing: '创建中', starting: '开机中' })[x.detail] || x.detail || '准备中') + '</p><p class="mute small">电脑在 dsh 启动时自动安装，不用点什么。</p>';
+    if (x.state === 'blocked') return '<pre class="fix" style="color:var(--bad)">' + esc(x.detail) + '</pre><p class="row"><button class="btn primary" id="cmCn">改用国内镜像</button><button class="btn" data-go="doctor">去体检</button></p><div class="msg" id="cmMsg"></div>';
+    return '<p class="mute">' + esc(x.detail) + '</p>';
+  }
+  if (x.id === 'persona') return x.state === 'done' ? '<p class="mute">' + esc(x.detail) + '</p>' : '<p class="mute">她是谁：从 <a href="https://typ0.space" target="_blank">HDSI 预设站</a> 挑一个角色，复制分享码粘到这里。</p><p class="row"><input type="text" id="pcCode" placeholder="分享码" style="width:180px"><button class="btn primary" id="pcGo">导入</button><button class="btn" data-ack="personaSkip">先用内置人设</button></p><div class="msg" id="pcMsg"></div>';
+  if (x.id === 'qq') return x.state === 'done' ? '<p class="mute">' + esc(x.detail) + '</p>' : '<p class="mute">她用自己的 QQ 小号。先填号码，再安装并扫码登录（用她手机上的 QQ 扫，或你自己的手机）。</p>'
+    + '<div class="set"><label>你的 QQ 号<br><span class="key">你的私聊算你本人说的话</span></label><div class="row"><input type="text" id="qqOwner" value="' + esc(x.owner) + '" style="width:140px"><button class="btn" id="qqOwnerGo">保存</button></div></div>'
+    + '<div class="set"><label>她的 QQ 号</label><div class="row"><input type="text" id="qqAcc" value="' + esc(x.account) + '" style="width:140px"><button class="btn" id="qqAccGo">保存</button></div></div>'
+    + '<div class="set"><label>安装并启动<br><span class="key">在她的电脑里装 QQ（几分钟）；状态 ' + esc(x.qqState || '-') + '</span></label><div class="row"><select id="qqBe"><option value="napcat">napcat</option><option value="snowluma">snowluma</option></select><button class="btn primary" id="qqInst">安装</button></div></div>'
+    + '<div class="set"><label>登录二维码</label><div><button class="btn" id="qqQr">显示二维码</button><div id="qqQrBox"></div></div></div>'
+    + '<div class="msg" id="qqMsg"></div><p class="row"><button class="btn" data-ack="qqSkip">先不接 QQ</button></p>';
+  return '';
+}
+async function loadSetup(force) {
+  let j;
+  try { j = await api('GET', '/setup'); } catch (e) { $('steps').className = 'msg err'; $('steps').textContent = e.message; return; }
+  // Re-render only when a step changes state: inputs he is typing in must survive the 3 s poll.
+  const sig = JSON.stringify(j.steps.map((x) => [x.id, x.state]));
+  if (!force && sig === stepSig) { // only the progress lines move
+    for (const x of j.steps) if (x.state === 'working') { const el = document.querySelector('[data-step="' + x.id + '"] .stepbody p'); if (el) el.textContent = x.id === 'computer' ? (({ downloading: '下载镜像中（第一次几 GB）', installing: '创建中', starting: '开机中' })[x.detail] || x.detail) : x.detail; }
+    return;
+  }
+  stepSig = sig;
+  $('steps').className = '';
+  $('steps').innerHTML = (j.done ? '<div class="card" style="margin-bottom:12px;border-color:var(--ok)"><b style="color:var(--ok)">都准备好了。</b> <span class="mute">以后要改什么在「设置」里改；出问题先跑「体检」。</span></div>' : '')
+    + j.steps.map((x, n) => '<div class="card" style="margin-bottom:12px" data-step="' + x.id + '"><h2>' + ICON[x.state] + ' ' + (n + 1) + '. ' + esc(x.title) + '</h2><div class="stepbody">' + stepBody(x) + '</div></div>').join('');
+  for (const b of document.querySelectorAll('[data-ack]')) b.onclick = async () => { await api('PUT', '/setup', { [b.dataset.ack]: true }); loadSetup(true); };
+  for (const b of document.querySelectorAll('[data-go]')) b.onclick = () => openTab(b.dataset.go);
+  const on = (id, f) => { if ($(id)) $(id).onclick = f; };
+  on('phGo', () => act('phone-accept', $('phMsg'), { gb: Number($('phGb').value) }).then(() => setTimeout(() => loadSetup(true), 800)));
+  on('phRetry', () => act('phone-retry', $('phMsg')));
+  on('cmCn', async () => { try { await api('POST', '/fix/computer-image-cn'); $('cmMsg').className = 'msg ok'; $('cmMsg').textContent = '已改成国内镜像。完全退出 dsh 再打开，电脑会重新下载。'; } catch (e) { $('cmMsg').className = 'msg err'; $('cmMsg').textContent = e.message; } });
+  on('pcGo', () => act('persona-import', $('pcMsg'), { code: $('pcCode').value }).then(() => setTimeout(() => loadSetup(true), 500)));
+  on('qqOwnerGo', () => act('qq-owner', $('qqMsg'), { number: $('qqOwner').value.trim() }));
+  on('qqAccGo', () => act('qq-account', $('qqMsg'), { number: $('qqAcc').value.trim() }));
+  on('qqInst', () => act('qq-install', $('qqMsg'), { backend: $('qqBe').value }));
+  on('qqQr', () => {
+    $('qqQrBox').innerHTML = '<p class="mute small" id="qqQrNote">取二维码中（QQ 要在跑；可能要半分钟）…</p><img id="qqQrImg" alt="" style="max-width:220px;display:block;margin-top:6px">';
+    $('qqQrImg').onerror = () => { $('qqQrNote').textContent = '二维码还没出来：先点安装，等 QQ 启动后再点一次'; };
+    $('qqQrImg').onload = () => { $('qqQrNote').textContent = '用她手机上的 QQ 扫（二维码一两分钟过期，过期再点一次）'; };
+    $('qqQrImg').src = API + '/qq/qr?t=' + Date.now();
+  });
+}
+
+// ---- tabs
+let tab = 'settings';
+function openTab(name) {
+  tab = name;
+  for (const x of document.querySelectorAll('.tabs button')) x.classList.toggle('on', x.dataset.tab === name);
+  for (const t of ['setup', 'status', 'settings', 'doctor', 'diag']) $('tab-' + t).hidden = t !== name;
+  if (name === 'doctor' && !$('doctor').dataset.ran) { $('doctor').dataset.ran = '1'; runDoctor(); }
+  if (name === 'setup') loadSetup(true);
+  if (name === 'status') refreshStatus();
+}
+for (const b of document.querySelectorAll('.tabs button')) b.onclick = () => openTab(b.dataset.tab);
+let lastStatus = null;
+async function refreshStatus() { try { const j = await api('GET', '/status'); lastStatus = j; renderStatus(j.status); } catch (e) { $('statusCards').className = 'msg err'; $('statusCards').textContent = e.message; } }
+(async () => {
+  await loadStatus();
+  loadSettings().catch((e) => { $('groups').className = 'msg err'; $('groups').textContent = e.message; });
+  // First run: open on 开始 until every step is done (or he said "later"); ?tab= wins.
+  const want = new URLSearchParams(location.search).get('tab');
+  try { const j = await api('GET', '/status'); openTab(want || (j.setup.done || j.setup.dismissed ? 'settings' : 'setup')); } catch { openTab(want || 'settings'); }
+})();
+setInterval(() => { if (document.hidden) return; loadStatus(); if (tab === 'setup') loadSetup(false); if (tab === 'status') refreshStatus(); }, 3000);
 </script></body></html>`;
 }
