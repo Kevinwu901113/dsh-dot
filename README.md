@@ -127,6 +127,9 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 
 </details>
 
+> [!TIP]
+> **已经在用 [qq-bridge](https://github.com/Derpyu520/qq-bridge)，只想要她的手机和电脑？** 直接装，什么都不用配：插件会认出 qq-bridge，它的会话里不出现 dot 的工具，它的目录不进虚拟机，它的机器人号她不回。把 qq-bridge 切到 closed-agent 模式，管理员私聊就能用 `mcp__dot-phone__*` / `mcp__dot-vm__*`；dot / 记忆 / 幕间 / QQ 四个组件可以在插件页关掉。细节在 [docs/qq-bridge.md](docs/qq-bridge.md)。
+
 ## ⚙️ 设置
 
 所有个人设置都在**一个文件**：`~/.dsh/dsh-dot.json`（Windows：`%USERPROFILE%\.dsh\dsh-dot.json`），按组件分段，升级插件不会覆盖，改完重启 dsh。
@@ -146,7 +149,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 
 ## 🧩 架构
 
-一个插件，六个组件。每个都能单独关，缺了哪个其余照常跑。
+一个插件，七个组件。每个都能单独关，缺了哪个其余照常跑。
 
 ```mermaid
 flowchart LR
@@ -181,6 +184,7 @@ flowchart LR
 | **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small + bge-reranker-base，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
 | **`dot`** ◎ | 定时结果 → IM、审批与设备提醒、工作规则、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 | **`computer`** 🖥️ | 自带 microVM：shell、浏览器、桌面、实时画面、审批、审计 · [文档](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker | `DSH_DOT_COMPUTER=off` |
+| **`compat`** 🤝 | 和别的插件共处：每个会话归谁、看得见哪些工具、命令在哪跑；今天认 [qq-bridge](https://github.com/Derpyu520/qq-bridge) · [文档](docs/qq-bridge.md) | — | `DSH_DOT_COMPAT=off` |
 
 ## 🕰️ 她的一天
 
@@ -199,7 +203,7 @@ flowchart LR
 ```text
 /phone [accept|restart|screenshot]
 /interlude [now|advance|seed|preset <code>|canon]
-/dot [test|check|prompts [stop]]
+/dot [test|check|doctor|prompts [stop]]
 /dot memory [now|diary|handoff|recall …]
 /dot people [approve <id>|drop <id>|forget <名字>]
 /qq [install|account|start|qr|backend|owner]

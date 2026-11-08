@@ -81,7 +81,7 @@ Every key, which ones only apply to a newly created phone / VM, and rules for ag
 
 ## 🧩 Architecture
 
-One plugin, six components. Each can be turned off on its own; the rest keep running.
+One plugin, seven components. Each can be turned off on its own; the rest keep running.
 
 ```mermaid
 flowchart LR
@@ -116,13 +116,14 @@ flowchart LR
 | **`memory`** | Transcript + auto-recall (local multilingual-e5-small + bge-reranker-base; SiliconFlow / DashScope optional), three notes (about you / herself / not over yet), people cards, diary, handoff · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
 | **`dot`** | Scheduled results → IM, approval and device notices, working rules, sidebar status panel | `DSH_DOT_CONTACT=off` |
 | **`computer`** | Bundled microVM ([microsandbox](https://github.com/zerocore-ai/microsandbox)) or Docker · [docs](docs/computer.md) | `DSH_DOT_COMPUTER=off` |
+| **`compat`** | Living next to other plugins: whose session is this, which tools it sees, where its commands run; knows [qq-bridge](https://github.com/Derpyu520/qq-bridge) today · [docs (zh)](docs/qq-bridge.md) | `DSH_DOT_COMPAT=off` |
 
 ## ⌨️ Commands
 
 ```text
 /phone [accept|restart|screenshot]
 /interlude [now|advance|seed|preset <code>|canon]
-/dot [test|check]
+/dot [test|check|doctor]
 /dot memory [now|diary|handoff|recall …]
 /dot people [approve <id>|drop <id>|forget <name>]
 /qq [install|account|start|qr|backend|owner]
