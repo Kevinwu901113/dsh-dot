@@ -212,9 +212,12 @@ export function report(items, { onlyProblems = false } = {}) {
  * Run the doctor against whatever services exist right now (any subset of components):
  * phone/computer are the dshPhone / dshComputer services or undefined.
  */
-export async function doctorFor({ phone, computer, home }, deps) {
+export async function doctorFor({ phone, computer, compat, home }, deps) {
   const p = phone?.doctorInfo?.() ?? null;
   if (p && phone.network && p.running) p.network = await phone.network().catch(() => null);
   const c = computer?.doctorInfo?.() ?? null;
-  return diagnose({ phone: p, computer: c, home }, deps);
+  const items = await diagnose({ phone: p, computer: c, home }, deps);
+  // Living next to qq-bridge (dshDotCompat): its own findings, when it is here.
+  try { items.push(...((await compat?.doctor?.()) ?? [])); } catch (err) { items.push({ name: 'qq-bridge', level: 'warn', detail: `检查没跑完：${err.message}`, fix: '' }); }
+  return items;
 }

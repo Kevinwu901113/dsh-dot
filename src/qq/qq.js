@@ -44,6 +44,15 @@ export const defaults = {
   scoreThreshold: 7,
   scoreModel: '',
   scoreMaxPerMinute: 6,
+  // Accounts she never answers (other bots: a qq-bridge bot found next to her is ignored on its own,
+  // see src/compat/qq-bridge.js). Their messages do not wake her, are not scored, not remembered.
+  // A list, or numbers separated by commas / spaces.
+  ignore: '',
+  // Two bots answering each other in a group never stop: when someone (not the owner) and she have
+  // gone back and forth loopMax times in one chat with nobody else saying a word in between, she
+  // stops answering that account there for loopCooldownMinutes. 0 = off.
+  loopMax: 4,
+  loopCooldownMinutes: 10,
   // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
   // hashes (times and URLs keep theirs). Off = send exactly what the model wrote.
   tidy: true,
@@ -467,6 +476,42 @@ function withFileLog(logger) {
   return wrapped;
 }
 
+/** The `ignore` setting as a list of QQ numbers: an array, or a string of numbers separated by , ， space or newline. */
+export function parseIgnore(v) {
+  const raw = Array.isArray(v) ? v : String(v ?? '').split(/[\s,，;；]+/);
+  return [...new Set(raw.map((x) => String(x ?? '').trim()).filter((x) => /^\d{5,12}$/.test(x)))];
+}
+
+/**
+ * Two bots in one chat answering each other. Per chat it counts rounds — someone's message, then
+ * hers (said()), then the same someone again — and trips at `max` such rounds with nobody else in
+ * between (any other account's message, the owner's above all, resets it). Tripped, that account
+ * is not answered in that chat for `cooldownMs`. Pure bookkeeping, no I/O.
+ */
+export function createLoopBreaker({ max = 4, cooldownMs = 600_000, now = Date.now } = {}) {
+  const chats = new Map(); // chat → { with, rounds, saidSince } ; cooling: `${chat}|${uin}` → until
+  const cooling = new Map();
+  return {
+    /** A message from `uin` in `chat`. → '' (fine) | 'cooling' (still ignored) | 'tripped' (ignored from now on). */
+    heard(chat, uin, { human = false } = {}) {
+      if (!max) return '';
+      const key = `${chat}|${uin}`, until = cooling.get(key);
+      if (until) { if (until > now()) return 'cooling'; cooling.delete(key); }
+      const c = chats.get(chat);
+      if (human || !c || c.with !== uin) { chats.set(chat, { with: uin, rounds: 0, saidSince: false }); return ''; }
+      if (!c.saidSince) return ''; // they said two things in a row: no round completed
+      c.rounds++; c.saidSince = false;
+      if (c.rounds < max) return '';
+      cooling.set(key, now() + cooldownMs); chats.delete(chat);
+      return 'tripped';
+    },
+    /** She sent something to `chat`. */
+    said(chat) { const c = chats.get(chat); if (c) c.saidSince = true; },
+    /** Is `uin` cooling in `chat`? */
+    cooling(chat, uin) { const until = cooling.get(`${chat}|${uin}`); return Boolean(until && until > now()); },
+  };
+}
+
 export function apply(ctx, config = {}, deps = {}) {
   const logger = withFileLog(ctx.logger('dsh-dot/qq'));
   const settings = readSettingsFile();
@@ -482,6 +527,11 @@ export function apply(ctx, config = {}, deps = {}) {
   sanitise('githubProxy', (v) => assertSafeShellUrl(v, 'githubProxy'), '');
   sanitise('backend', (v) => { if (!BACKENDS.includes(v)) throw new Error(`unknown backend "${String(v).slice(0, 20)}" (${BACKENDS.join(' | ')})`); return v; }, defaults.backend);
   sanitise('snowlumaVersion', (v) => { if (!/^[A-Za-z0-9._-]{1,40}$/.test(String(v))) throw new Error('bad release tag'); return String(v); }, '');
+  cfg.ignore = parseIgnore(cfg.ignore);
+  const loop = createLoopBreaker({ max: Number(cfg.loopMax) || 0, cooldownMs: (Number(cfg.loopCooldownMinutes) || 10) * 60_000 });
+  const notAnswered = () => { let b = []; try { b = ctx.get('dshDotCompat')?.ignoredUins?.() ?? []; } catch {} const all = [...new Set([...cfg.ignore, ...b])]; return all.length ? `\nnot answered: ${all.join(', ')}${b.length ? ` (${b.join(', ')}: qq-bridge's bot)` : ''}` : ''; };
+  /** Accounts she does not answer: the ignore setting plus whatever compat knows (qq-bridge's bots). */
+  const ignored = (uin) => { if (cfg.ignore.includes(String(uin))) return 'ignore'; try { if (ctx.get('dshDotCompat')?.ignoredUins?.().includes(String(uin))) return 'qq-bridge'; } catch {} return ''; };
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
   // Her stickers also live in her phone's album (dot-stickers): re-synced whenever the saved set changes and when the phone comes up.
@@ -921,6 +971,15 @@ export function apply(ctx, config = {}, deps = {}) {
     const selfId = String(ev.self_id ?? qq.selfId);
     if (String(ev.user_id) === selfId) return;
     const isGroup = ev.message_type === 'group';
+    const chat = isGroup ? `group:${ev.group_id}` : `user:${ev.user_id}`;
+    // Another bot's words: not hers to answer (an owner message is never ignored).
+    if (!(qq.owner && String(ev.user_id) === String(qq.owner))) {
+      const why = ignored(ev.user_id);
+      if (why) { audit({ kind: 'ignored', why, from: String(ev.user_id), chat }); return; }
+      const cooling = loop.heard(chat, String(ev.user_id));
+      if (cooling === 'tripped') { audit({ kind: 'loop-break', chat, with: String(ev.user_id), max: cfg.loopMax, cooldownMinutes: cfg.loopCooldownMinutes }); logger.warn(`qq: ${chat} — ${cfg.loopMax} rounds back and forth with ${ev.user_id} and nobody else: not answering them there for ${cfg.loopCooldownMinutes} min`); }
+      if (cooling) return;
+    } else loop.heard(chat, String(ev.user_id), { human: true });
     const who = ev.sender?.card || ev.sender?.nickname || String(ev.user_id);
     // Every picture in it, in order, with the words that stand for it in `text` — what she may get to see (seeImages).
     const seen = [];
@@ -1147,6 +1206,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const ids = [], failed = [];
     const started = Date.now();
     const toOwner = Boolean(qq.owner) && target.user_id === Number(qq.owner);
+    loop.said(target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`);
     let unsent = null;
     for (const [i, part] of parts.entries()) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
@@ -1172,6 +1232,8 @@ export function apply(ctx, config = {}, deps = {}) {
     return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
+  /** The groups she is in: [{ gid, name }] (OneBot get_group_list). */
+  qq.groups = async () => ((await call('get_group_list', {})) ?? []).map((g) => ({ gid: String(g.group_id ?? ''), name: String(g.group_name ?? '') })).filter((g) => g.gid);
   qq.friends = async () => ((await call('get_friend_list', {})) ?? []).map((f) => ({ uid: String(f.user_id ?? ''), nickname: String(f.nickname ?? ''), remark: String(f.remark ?? '') })).filter((f) => f.uid);
   qq.setAccount = (n) => { cfg.qq = assertSafeQQ(n); qq.qq = cfg.qq; writeSettings({ qq: cfg.qq }); };
   qq.setOwner = (n) => { qq.owner = assertSafeQQ(n, 'owner QQ number'); writeSettings({ owner: qq.owner }); };
@@ -1320,7 +1382,7 @@ export function apply(ctx, config = {}, deps = {}) {
           }
         } catch (err) { extra = `\nerror: ${err.message}`; }
         const s = qq.status();
-        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''} · backend: ${s.backend}${sl() ? ` · mcp: ${mcpFork ? 'mounted' : 'not mounted'}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not set — /qq owner <your QQ number>)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${extra}` };
+        return { kind: 'success', text: `qq: ${s.state}${s.error ? ` — ${s.error}` : ''} · backend: ${s.backend}${sl() ? ` · mcp: ${mcpFork ? 'mounted' : 'not mounted'}` : ''}\naccount: ${s.qq || '(not set)'} · owner: ${s.owner || '(not set — /qq owner <your QQ number>)'} · connected: ${s.connected} · ws: ${s.wsPort} in the computer${notAnswered()}${extra}` };
       },
     }), 'dsh-dot/qq: /qq command');
   });

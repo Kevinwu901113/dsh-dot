@@ -69,9 +69,9 @@ async function api(method, path, body) {
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
 }
-const NAMES = { phone: '手机', computer: '电脑', qq: 'QQ', dot: 'dot', interlude: '幕间' };
+const NAMES = { phone: '手机', computer: '电脑', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容' };
 const APPLY = { live: '即时生效', 'restart-phone': '重启手机生效', 'restart-dsh': '重启 dsh 生效', create: '只对新建生效' };
-const SECTION_OF_GROUP = (g) => g.startsWith('手机') ? 'phone' : g === '电脑' ? 'computer' : g === 'QQ' ? 'qq' : g === 'dot' ? 'dot' : g === '审批' ? 'computer' : '';
+const SECTION_OF_GROUP = (g) => g.startsWith('手机') ? 'phone' : g === '电脑' ? 'computer' : g === 'QQ' ? 'qq' : g === 'dot' ? 'dot' : g === '审批' ? 'computer' : g.startsWith('兼容') ? 'compat' : '';
 function level(s) { if (!s) return ''; if (/ready|on/.test(s.state)) return 'ok'; if (s.state === 'error') return 'bad'; return 'warn'; }
 function stateText(name, s) {
   if (!s) return '关';
@@ -242,6 +242,7 @@ function renderStatus(st) {
     phone: (x) => [x.serial && '设备 ' + x.serial, x.api && 'Android API ' + x.api + (x.abi ? ' (' + x.abi + ')' : ''), x.storage && x.storage.gb && '存储 ' + x.storage.gb + ' GB'],
     computer: (x) => [x.backend && '后端 ' + x.backend, x.stage && '阶段 ' + x.stage],
     qq: (x) => [x.connected ? '已连接' : '未连接', x.qq && '她的号 ' + x.qq, x.owner && '你的号 ' + x.owner],
+    compat: (x) => [x.qqBridge ? 'qq-bridge：' + x.qqBridge.root + '（模式 ' + x.qqBridge.mode + (x.qqBridge.bots && x.qqBridge.bots.length ? '，机器人 ' + x.qqBridge.bots.join('/') : '') + '）' : '没发现 qq-bridge'],
   };
   $('statusCards').className = '';
   $('statusCards').innerHTML = Object.entries(st).map(([k, x]) => '<div class="card" style="margin-bottom:12px"><div class="row" style="justify-content:space-between"><h2><span class="badge ' + level(x) + '"><span class="dotc"></span>' + NAMES[k] + '：' + esc(stateText(k, x)) + '</span></h2>'

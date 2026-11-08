@@ -330,3 +330,14 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **体检**：`/phone doctor`（不再依赖 dot 组件），虚拟化、磁盘、内存（Windows 页面文件，已在跑的不重复算）、端口占用（BlueStacks 的 5555 等）、下载源、手机网络、模拟器崩溃；能修的带一键修复（`/phone doctor fix <id>`）。首次启动和手机出错时自动跑。
 - **dot 设置页**（左侧栏「dot 设置」，设计见 `docs/DOT-PAGE.md`）：开始（六步引导：体检、组件、手机、电脑、人设、QQ）、状态、设置（按 `src/settings-schema.js` 生成的表单，写 `~/.dsh/dsh-dot.json`）、体检（一键修复）、诊断（打码的诊断包下载 / 存到 `~/.dsh/diag/`，复制摘要）、危险区（重建手机、清下载缓存）。首次打开 dsh 右下角提示一次。挂在插件根组件上，只开部分组件也能用。
 - `dsh-dot.json` 格式坏了会在 `/phone` 和页面上直接显示，不再只进日志。
+
+## 0.22.0：和 qq-bridge 共处
+
+起因：很多人先装了 [qq-bridge](https://github.com/Derpyu520/qq-bridge)，再想要这里的手机和虚拟机。逐组件对过两边源码（`docs/qq-bridge.md`）：dot、记忆、幕间、面板本来就只认她自己的会话，没有冲突；冲突在三处——我们注册的全局工具会进它的会话（白名单拒掉，但每条消息多带几十个工具说明；它私聊模式下 `account` 能把她的 App 密码交出去）、电脑组件会把它的目录共享进虚拟机（重建一次，她的 QQ 掉线）、她和它的机器人在一个群里会互相回复。反过来，它 patch 进 dsh 的三个 MCP server 也会出现在她的会话里。
+
+- **新组件 `compat`**（`src/compat/qq-bridge.js`，总是开着，只在找到 qq-bridge 时起作用）：顺着 `~/.dsh/plugins/qq-agent-presets` 找到它的 `config.json` / `state/mode.json`；一个 `owner(session)` 回答会话归谁（`dot` / `qqb-sandbox` / `qqb-owner` / `other`），其他组件只问它。
+- **工具可见性**：`agent/created` 里按归属 `tools.restrict({ deny })`（dsh 的 restrict 取交集，和它自己的叠加），`tools/change` 时重算，执行期 guard 兜底。她的工具只在她的会话；手机电脑另给 closed-agent 的管理员私聊；qq-bridge 的工具不进她的会话。工具归类在 `src/tool-prefixes.js`，测试和源码对账。
+- **电脑**：qq-bridge 的目录不共享（命令在虚拟机家目录跑）；管理员私聊可选 `host`。
+- **QQ**：自动忽略它的机器人号（从它的 SnowLuma 配置读）+ `qq.ignore`；防互刷熔断（`loopMax` / `loopCooldownMinutes`），对任何机器人有效。
+- **体检**：同号、同群、读不到机器人号。
+- `dot.scope: all` 也不再把 `qqb-*` 当她的。

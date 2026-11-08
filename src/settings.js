@@ -9,7 +9,7 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFil
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export const SECTIONS = ['phone', 'computer', 'gate', 'qq', 'memory', 'interlude', 'dot'];
+export const SECTIONS = ['phone', 'computer', 'gate', 'qq', 'memory', 'interlude', 'dot', 'compat'];
 
 export const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 export const settingsPath = () => join(dshHome(), 'dsh-dot.json');

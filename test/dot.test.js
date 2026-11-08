@@ -1157,3 +1157,14 @@ test('howto: in her sessions every phone call is a step; her notes for an app co
   assert.equal(other.additionalContexts, undefined);
   stop(h);
 });
+
+test('dot: a qq-bridge session (qqb-…) is never hers, whatever the scope; dshDot.hers is exposed for compat', () => {
+  const h = harness();
+  h.ctx.provide = (n, v) => { h.ctx[n] = v; };
+  apply(h.ctx, h.config);
+  assert.equal(h.ctx.dshDot.hers('s1', join(h.home, 'x')), true);
+  assert.equal(h.ctx.dshDot.hers('s1', '/anywhere'), false);
+  assert.equal(h.ctx.dshDot.hers('qqb-g-1-' + 'a'.repeat(32), h.home), false);
+  assert.equal(h.ctx.dshDot.hers('qqb-p-20002', h.home), false);
+  stop(h);
+});

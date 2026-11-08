@@ -11,3 +11,12 @@ export const QQ_SERVER = 'dot-qq';
 export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
 // dot's own phone tool (phone.js): a part of the screen, enlarged. Read-only, so observation turns allow it.
 export const PHONE_ZOOM_TOOL = 'phone_zoom';
+
+// Every model-facing tool this plugin registers, by who may use it (src/compat/qq-bridge.js hides the
+// rest per session; test/compat.test.js checks the list against the register() calls in src/).
+//   DOT_TOOLS / DOT_TOOL_PREFIXES: hers alone — her memory, her accounts, her QQ (qq_send and her
+//                                  SnowLuma actions), her day. Never in another plugin's session.
+//   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
+export const DOT_TOOLS = ['memory', 'recall', 'account', 'doings', 'tell_him', 'qq_send', 'qq_sticker_keep'];
+export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
+export const DEVICE_TOOL_PREFIXES = [PHONE_TOOL_PREFIX, VM_TOOL_PREFIX];

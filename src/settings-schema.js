@@ -13,8 +13,9 @@ import { defaults as computerDefaults } from './computer/vm.js';
 import { defaults as gateDefaults } from './computer/gate.js';
 import { defaults as qqDefaults } from './qq/qq.js';
 import { defaults as dotDefaults } from './dot/core.js';
+import { defaults as compatDefaults } from './compat/qq-bridge.js';
 
-export const COMPONENT_DEFAULTS = { phone: phoneDefaults, computer: computerDefaults, gate: gateDefaults, qq: qqDefaults, dot: dotDefaults };
+export const COMPONENT_DEFAULTS = { phone: phoneDefaults, computer: computerDefaults, gate: gateDefaults, qq: qqDefaults, dot: dotDefaults, compat: compatDefaults };
 
 const choice = (...values) => ({ type: 'enum', values });
 const e = (section, key, group, type, apply, zh, extra = {}) => ({ section, key, group, apply, zh, ...(typeof type === 'string' ? { type } : type), ...extra });
@@ -61,6 +62,9 @@ export const SCHEMA = [
   e('qq', 'typingMsPerChar', 'QQ', 'int', 'live', '分条发送的打字停顿（毫秒/字，0 = 一次发完）', { min: 0, max: 500 }),
   e('qq', 'tidy', 'QQ', 'bool', 'live', '去掉句号、引号、破折号等书面符号'),
   e('qq', 'dropLatinLeaks', 'QQ', 'bool', 'live', '不发整条都是英文的气泡'),
+  e('qq', 'ignore', 'QQ', 'text', 'live', '不回复的 QQ 号（别的机器人；逗号分开。qq-bridge 的机器人号会自动认出，不用填）'),
+  e('qq', 'loopMax', 'QQ', 'int', 'live', '防互刷：和同一个号在一个聊天里一来一回几轮、中间没别人说话就停（0 = 不管）', { min: 0, max: 50 }),
+  e('qq', 'loopCooldownMinutes', 'QQ', 'int', 'live', '防互刷：停多少分钟', { min: 1, max: 1440 }),
   e('qq', 'token', 'QQ', 'text', 'restart-dsh', 'OneBot 令牌', { secret: true, hidden: true }),
   // dot
   e('dot', 'phoneCheckEveryMinutes', 'dot', 'int', 'restart-dsh', '隔多久拿起手机看一眼（分钟，0 = 不看）', { min: 0, max: 1440 }),
@@ -68,6 +72,12 @@ export const SCHEMA = [
   e('dot', 'manuals', 'dot', 'bool', 'restart-dsh', '手机、电脑说明书在第一次用时才给（省 token）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),
+  // compat (living next to qq-bridge)
+  e('compat', 'qqBridge', '兼容·qq-bridge', choice('auto', true, false), 'restart-dsh', '认 qq-bridge（auto = 装了就认）'),
+  e('compat', 'qqBridgeRoot', '兼容·qq-bridge', 'text', 'restart-dsh', 'qq-bridge 的目录（自动找不到时填；里面有 config.json）'),
+  e('compat', 'ownerDevices', '兼容·qq-bridge', 'bool', 'live', 'qq-bridge 管理员私聊（封闭 agent 模式）能用她的手机和电脑'),
+  e('compat', 'ownerComputer', '兼容·qq-bridge', choice('vm', 'host'), 'live', '管理员私聊里的命令在哪跑：vm = 她的电脑（不共享 qq-bridge 的目录）/ host = 本机'),
+  e('compat', 'hideBridgeTools', '兼容·qq-bridge', 'bool', 'live', '她的会话里不出现 qq-bridge 的工具（mcp__snowluma__* 等）'),
 ];
 
 /** Keys whose values never leave the machine as they are (diagnostics, logs). */
@@ -90,7 +100,11 @@ export function validate(entry, value) {
       if (entry.max !== undefined && n > entry.max) fail(`不能大于 ${entry.max}`);
       return n;
     }
-    case 'enum': if (!entry.values.includes(value)) fail(`只能是 ${entry.values.map((v) => v || '（空）').join(' / ')}`); return value;
+    case 'enum': {
+      // A <select> hands back strings; an enum of true/false (compat.qqBridge) takes them as booleans.
+      const v = value === 'true' && entry.values.includes(true) ? true : value === 'false' && entry.values.includes(false) ? false : value;
+      if (!entry.values.includes(v)) fail(`只能是 ${entry.values.map((x) => (x === '' ? '（空）' : String(x))).join(' / ')}`); return v;
+    }
     case 'enum-or-text': case 'text': if (typeof value !== 'string') fail('要文字'); return value.trim();
     default: return value;
   }

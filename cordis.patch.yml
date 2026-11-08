@@ -1,4 +1,4 @@
-# dsh-dot: one plugin, five components. The character lives on her own devices.
+# dsh-dot: one plugin, seven components. The character lives on her own devices.
 #   phone     — her phone: an Android emulator this plugin installs, boots and keeps alive;
 #               tools mcp__dot-phone__* (mobile-mcp over adb). The emulator window is the live view.
 #               DSH_DOT_PHONE=off turns it off.
@@ -13,6 +13,8 @@
 #               live view, working rules as a prompt section. Needs dsh-im and the official
 #               schedule bundle (see README). DSH_DOT_CONTACT=off turns it off.
 #   memory    — what she remembers (people, fragments, diary, owner/self banks). DSH_DOT_MEMORY=off.
+#   compat    — living next to qq-bridge: per-session tool visibility, where its commands run, its bot
+#               accounts kept out of her QQ. DSH_DOT_COMPAT=off turns it off.
 #   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a
 #               prompt section, and a life between conversations — script, continuity, intents,
 #               going to look at things on her phone / in her browser (read-only), optional
@@ -37,6 +39,12 @@
     defaultPreset: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? 'workspace-write' : (process.env.DSH_COMPUTER_PRESET ?? 'computer')"
 
 - insert:
+    # 0. Living next to other plugins (qq-bridge today): whose session is this, which of our tools it
+    #    may see, where its commands run, which QQ accounts are not hers to answer. Always on; it only
+    #    does something when qq-bridge is found (docs/qq-bridge.md). DSH_DOT_COMPAT=off turns it off.
+    - id: dot-compat
+      disabled: !!js "process.env.DSH_DOT_COMPAT === 'off'"
+      name: 'dsh-dot-life/compat'
     - id: dot-computer
       disabled: !!js "process.env.DSH_DOT_COMPUTER === 'off'"
       name: 'dsh-dot-life/computer'

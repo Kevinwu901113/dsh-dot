@@ -5,6 +5,7 @@
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
+import { basename, isAbsolute } from 'node:path';
 import { promisify } from 'node:util';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess';
@@ -31,16 +32,32 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     this.vm = ctx.dshComputer;
     this.backend = this.vm.backend;
     this.log = ctx.logger('dsh-computer');
+    // Whose command is this (by its cwd): src/compat/qq-bridge.js, when that component is on.
+    this.compat = () => { try { return ctx.get?.('dshDotCompat'); } catch { return undefined; } };
     this.log.info(`subprocess routed into computer "${this.vm.container}" (${this.backend.kind})`);
+  }
+
+  /**
+   * Where a command from this cwd goes: 'vm' (hers and everyone else's: into her computer),
+   * 'vm-noshare' (a qq-bridge session: into the VM, but its folder is never shared in — sharing
+   * re-creates the VM and her QQ inside it would drop, and nothing under qq-bridge's state/ belongs
+   * in there), or 'host' (a qq-bridge owner chat with compat.ownerComputer 'host': dsh's own local
+   * runner, as if this plugin were not installed).
+   */
+  routeFor(cwd) {
+    const c = this.compat();
+    const owner = c?.ownerOfCwd?.(cwd) ?? 'other';
+    if (owner === 'qqb-owner' && c.ownerComputer === 'host') return 'host';
+    return owner === 'qqb-owner' || owner === 'qqb-sandbox' ? 'vm-noshare' : 'vm';
   }
 
   /**
    * Map a host cwd into the VM. A workspace that is not shared yet gets shared now (the VM is
    * re-created with the extra folder; the spawn waits on the remount lock). Folders that may not
-   * be shared run in the VM home.
+   * be shared — or must not be (route 'vm-noshare') — run in the VM home.
    */
-  vmCwd(cwd) {
-    if (!this.vm.isShared(cwd)) this.vm.ensureShared?.(cwd);
+  vmCwd(cwd, route = this.routeFor(cwd)) {
+    if (route === 'vm' && !this.vm.isShared(cwd)) this.vm.ensureShared?.(cwd);
     return this.vm.isShared(cwd) ? this.backend.toGuestPath(cwd) : VM_HOME;
   }
 
@@ -102,6 +119,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
   }
 
   spawn(spec) {
+    if (this.routeFor(spec.cwd) === 'host') return this.spawnOnHost(spec);
     const id = randomUUID();
     const cwd = this.vmCwd(spec.cwd);
     this.vm.audit?.({ kind: 'exec', argv: clip(spec.argv.join(' ')), cwd });
@@ -115,9 +133,26 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     return handle;
   }
 
+  /**
+   * Route 'host': dsh's own local runner. resolveExecutable() has no cwd to route by, so argv[0]
+   * may be the VM's answer (`/bin/bash`); one that does not exist here goes back to its bare name
+   * for the host's PATH.
+   */
+  hostArgv(argv) {
+    const [cmd, ...rest] = argv;
+    return isAbsolute(cmd) && !existsSync(cmd) ? [basename(cmd), ...rest] : argv;
+  }
+
+  spawnOnHost(spec) {
+    this.vm.audit?.({ kind: 'exec-host', argv: clip(spec.argv.join(' ')), cwd: spec.cwd });
+    return super.spawn({ ...spec, argv: this.hostArgv(spec.argv) });
+  }
+
   async spawnTerminal(spec) {
+    const route = this.routeFor(spec.cwd);
+    if (route === 'host') return super.spawnTerminal({ ...spec, argv: this.hostArgv(spec.argv) });
     this.usable();
-    const shared = this.vm.isShared(spec.cwd) ? null : this.vm.ensureShared?.(spec.cwd);
+    const shared = route !== 'vm' || this.vm.isShared(spec.cwd) ? null : this.vm.ensureShared?.(spec.cwd);
     if (shared) await shared;
     const argv = this.backend.execArgv({ user: this.vm.user, cwd: this.vmCwd(spec.cwd), env: spec.env, argv: spec.argv, tty: true });
     this.vm.audit?.({ kind: 'terminal', argv: clip(spec.argv.join(' ')) });

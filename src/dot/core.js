@@ -14,6 +14,7 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
@@ -440,7 +441,8 @@ export function apply(ctx, config = {}) {
   const setLast = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
-  const isDotSession = (id, cwd) => cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id));
+  // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers, whatever the scope says.
+  const isDotSession = (id, cwd) => !BRIDGE_ID_RE.test(String(id ?? '')) && (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id)));
 
   // Her errand session (see defaults.errands). Created on first use in <home>, remembered across
   // restarts, archived and replaced once it grows past errandMaxTokens.
@@ -1183,7 +1185,7 @@ export function apply(ctx, config = {}) {
   // something still has to be installed, and when a device fails; problems go to the log and his IM.
   let lastDoctor = null;
   const runDoctor = async () => {
-    const items = await doctorFor({ phone: phone(), computer: computer(), home: dshHome() });
+    const items = await doctorFor({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() });
     lastDoctor = { at: Date.now(), bad: items.filter((i) => i.level === 'bad').length, warn: items.filter((i) => i.level === 'warn').length };
     audit('doctor', { bad: lastDoctor.bad, warn: lastDoctor.warn, problems: items.filter((i) => i.level !== 'ok').map((i) => i.name) });
     return items;
@@ -1312,6 +1314,8 @@ export function apply(ctx, config = {}) {
     say: (text) => noteToConversation('say', text, prompt('dot.interlude-say', { text: String(text).trim() })),
     stats,
     isErrand,
+    /** Is this session hers (her conversation, an IM-opened one, her errand): what compat asks before letting it see her tools. */
+    hers: (id, cwd) => isDotSession(id, cwd) || isErrand(id),
     busy: (id) => turns.has(id),
     /** One open turn as the watchdog sees it (turnState + who and what), or null. */
     turn: (id) => turnInfo(id),

@@ -1,6 +1,6 @@
 {
   "name": "dsh-dot-life",
-  "version": "0.21.1",
+  "version": "0.22.0",
   "description": "dot — a character who lives on her own phone, for DeepSeek Harness (dsh): an Android phone the plugin installs and runs, her own QQ, memory and a diary from real events, a life between conversations (幕间, after HDS-Interlude), an optional microVM computer with approval gates. One plugin, six components.",
   "type": "module",
   "license": "AGPL-3.0-only",
@@ -44,7 +44,8 @@
     "./interlude": "./src/interlude/core.js",
     "./memory": "./src/memory/memory.js",
     "./phone": "./src/phone/phone.js",
-    "./qq": "./src/qq/qq.js"
+    "./qq": "./src/qq/qq.js",
+    "./compat": "./src/compat/qq-bridge.js"
   },
   "files": [
     "src",

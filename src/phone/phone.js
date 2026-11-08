@@ -438,7 +438,7 @@ export function apply(ctx, config = {}, deps = {}) {
   phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, gpu: gpuMode(cfg.gpu), crashed: lastCrash, paths: { emulator: paths.emulator } });
   /** Android's own verdict on its network: validated | partial | none (null when it cannot be read). */
   /** The machine check (src/doctor.js) for the phone and, when it is on, the computer. */
-  phone.doctor = () => doctorFor({ phone, computer: (() => { try { return ctx.get('dshComputer'); } catch { return undefined; } })(), home: dshHome() });
+  phone.doctor = () => { const svc = (n) => { try { return ctx.get(n); } catch { return undefined; } }; return doctorFor({ phone, computer: svc('dshComputer'), compat: svc('dshDotCompat'), home: dshHome() }); };
   phone.network = async () => {
     if (!phone.isReady) return null;
     const out = String((await phone.adbExec(['shell', 'dumpsys connectivity']).catch(() => ({ stdout: '' }))).stdout);

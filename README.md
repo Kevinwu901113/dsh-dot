@@ -240,6 +240,7 @@ flowchart LR
 - **MCP 工具名有命名空间**：`mcp__dot-vm__*`、`mcp__dot-phone__*`，前缀定义在 `src/tool-prefixes.js`。
 - **记忆共存**：`DSH_DOT_MEMORY_COEXIST` 默认 `auto`，发现 `hermesMemory` / `autoMemory` / `dshMemory` / `memoryBank` 等就切到 `people-only`，只保留人物卡、还没了的事、日记和召回，免得两个插件一起"讲记忆"。`full` / `people-only` 可强制。
 - **一个 QQ 号只能有一个应答者**：不要在她的号上再跑别的 OneBot 机器人。
+- **[qq-bridge](https://github.com/Derpyu520/qq-bridge)**：自动认出并共处，见 [docs/qq-bridge.md](docs/qq-bridge.md)——它的会话里不出现 dot 的工具，它的目录不进她的虚拟机，它的机器人号她不回；它 closed-agent 模式的管理员私聊能用她的手机和电脑（`compat` 设置）。
 - **`bash` 也过电脑闸门**：别的插件再给 `bash` 加审批，同一条命令会弹两次。
 - **上下文压缩插件**：dsh-dot 注入的消息带固定 `source`，压缩时请保留、别当成用户原话：
 

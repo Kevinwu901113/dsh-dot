@@ -26,7 +26,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 **给 agent 的规则**（dsh、Claude、Codex 等改这个文件时照做）：
 
 1. 先读现有文件；不存在就新建 `{}`。只增改相关的键，**不要删别的段和键**。
-2. 顶层按组件分段：`phone`、`computer`、`gate`、`qq`、`memory`、`interlude`、`dot`。键名和类型照下面的表，不要发明新键。
+2. 顶层按组件分段：`phone`、`computer`、`gate`、`qq`、`memory`、`interlude`、`dot`、`compat`。键名和类型照下面的表，不要发明新键。
 3. 写合法 JSON（不能有注释、尾逗号）。想留说明就用 `_` 开头的键，如 `"_note": "..."`，会被忽略。
 4. 下文标 **🔒 建立时** 的项只对新建的手机 / 虚拟机生效，改之前先告诉用户要重建、会丢什么，得到同意再动。
 5. 有专门命令的（`/phone size`、`/dot memory recall …`、`/qq owner` 等），优先告诉用户用命令，命令不用重启。
@@ -157,6 +157,9 @@ setx DSH_DOT_COMPUTER off
 | `typingMsPerChar` | `60` | 分条发送的打字停顿，0 一次发完 |
 | `tidy` | `true` | 去掉句号、引号、破折号等书面符号 |
 | `dropLatinLeaks` | `true` | 不发整条都是英文的气泡（思考漏出来），短英文照发 |
+| `ignore` | `""` | 不回复的 QQ 号（别的机器人），逗号或空格分开；qq-bridge 的机器人号自动认出，不用填 |
+| `loopMax` | `4` | 防互刷：一个聊天里和同一个号一来一回这么多轮、中间没别人说话，就暂停理它；0 关 |
+| `loopCooldownMinutes` | `10` | 防互刷暂停多久 |
 
 ### `memory`
 
@@ -227,6 +230,17 @@ setx DSH_DOT_COMPUTER off
 | `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
 | `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
+
+### `compat`（和 qq-bridge 共处，见 [qq-bridge.md](qq-bridge.md)）
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `qqBridge` | `"auto"` | `auto` 装了 qq-bridge 就认 / `true` / `false` |
+| `qqBridgeRoot` | `""` | 自动找不到时填它的目录 |
+| `ownerDevices` | `true` | qq-bridge closed-agent 模式的管理员私聊能用她的手机和电脑 |
+| `ownerComputer` | `"vm"` | 那个私聊里的命令：`vm` 她的电脑（不共享它的目录）/ `host` 本机 |
+| `hideBridgeTools` | `true` | 她的会话里不出现 qq-bridge 的 MCP 工具 |
+| `refreshMs` | `5000` | 多久重读一次它的配置 |
 
 ## 优先级和旧文件
 

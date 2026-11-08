@@ -32,14 +32,14 @@ function writeSetup(patch) {
 
 function services(ctx) {
   const get = (n) => { try { return ctx.get(n); } catch { return undefined; } };
-  return { phone: get('dshPhone'), computer: get('dshComputer'), qq: get('dshQq'), dot: get('dshDot'), interlude: get('dshInterlude') };
+  return { phone: get('dshPhone'), computer: get('dshComputer'), qq: get('dshQq'), dot: get('dshDot'), interlude: get('dshInterlude'), compat: get('dshDotCompat') };
 }
 
 /** Each component's status (null = component off). */
 export function statusOf(ctx) {
   const s = services(ctx);
   const st = (svc) => { try { return svc?.status?.() ?? (svc ? {} : null); } catch (err) { return { state: 'error', error: err.message }; } };
-  return { phone: st(s.phone), computer: st(s.computer), qq: st(s.qq), dot: s.dot ? { state: 'on' } : null, interlude: s.interlude ? { state: 'on' } : null };
+  return { phone: st(s.phone), computer: st(s.computer), qq: st(s.qq), dot: s.dot ? { state: 'on' } : null, interlude: s.interlude ? { state: 'on' } : null, compat: s.compat ? { state: 'on', qqBridge: (() => { try { const b = s.compat.bridge(); return b ? { root: b.root, mode: b.mode, bots: b.botUins } : null; } catch { return null; } })() } : null };
 }
 
 const need = (svc, what) => { if (!svc) throw new Error(`${what}组件没开（在 dsh 的插件页打开）`); return svc; };
@@ -102,7 +102,7 @@ async function readJson(req, limit = 256 * 1024) {
 
 export function createApi(ctx, logger) {
   const json = (res, status, body) => res.writeHead(status, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }).end(JSON.stringify(body));
-  const doctor = () => { const s = services(ctx); return doctorFor({ phone: s.phone, computer: s.computer, home: dshHome() }); };
+  const doctor = () => { const s = services(ctx); return doctorFor({ phone: s.phone, computer: s.computer, compat: s.compat, home: dshHome() }); };
   const info = () => { const s = services(ctx); const st = statusOf(ctx); return versions({ pluginVersion, dshVersion, phone: s.phone ? { ...st.phone } : null, computer: s.computer ? { ...st.computer, image: s.computer.doctorInfo?.().image, backend: s.computer.doctorInfo?.().backend } : null }); };
   const dotHome = () => services(ctx).dot?.home || join(homedir(), 'dot');
 

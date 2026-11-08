@@ -136,6 +136,7 @@ The **◎** button at the top of a conversation opens the dot panel: device stat
 - MCP tools are namespaced: `mcp__dot-vm__*`, `mcp__dot-phone__*`.
 - Memory coexistence (`DSH_DOT_MEMORY_COEXIST=auto`) drops to `people-only` when another memory service is found.
 - One QQ account, one responder. `bash` also passes the computer gate.
+- [qq-bridge](https://github.com/Derpyu520/qq-bridge) is detected and lived with (`compat` settings, [docs/qq-bridge.md](docs/qq-bridge.md)): none of dot's tools in its sessions, its folder never shared into her VM, its bot never answered; its closed-agent owner chat gets her phone and computer.
 
 See the [Chinese README](README.md#-与其他插件共存) for injected message `source` tags (for context-compression plugins) and upgrade notes.
 

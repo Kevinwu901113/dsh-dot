@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -37,7 +37,7 @@ class FakeSocket extends EventEmitter {
   close() { this.readyState = 3; this.emit('close'); }
 }
 
-function harness({ installed = true, running = false, attachments, bytes = () => Buffer.from('GIF89a') } = {}) {
+function harness({ installed = true, running = false, attachments, bytes = () => Buffer.from('GIF89a') } = {}, config = {}) {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const shells = [], effects = [], tools = [], sections = [], warns = [];
   let cmd, onReady;
@@ -54,7 +54,7 @@ function harness({ installed = true, running = false, attachments, bytes = () =>
     inject(deps, fn) { if (deps.every((d) => ctx.get(d))) fn({ ...ctx, ...Object.fromEntries(deps.map((d) => [d, ctx.get(d)])) }); },
     get: (n) => ({ dshComputer: computer, attachments, tools: { register: (t) => { tools.push(t); return () => {}; } }, systemPrompt: { section: (c) => { sections.push(c); return () => {}; } }, commands: { register: (c) => { cmd = c; return () => {}; } } }[n]),
   };
-  apply(ctx, { qq: '10001', typingMsPerChar: 0 }, { WebSocket: FakeSocket, rootShell, fetch });
+  apply(ctx, { qq: '10001', typingMsPerChar: 0, ...config }, { WebSocket: FakeSocket, rootShell, fetch });
   return { ctx, shells, fetched, tools, sections, warns, cmd: () => cmd, ready: () => onReady(), stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 const tick = (ms = 20) => new Promise((r) => setTimeout(r, ms));
@@ -632,4 +632,65 @@ test('imageType sniffs PNG, JPEG, GIF, WebP; a typed [图 /sdcard/…] bubble is
   const opt = { owner: '20002', policy: 'reply', recent: () => Date.now() };
   assert.match(sendGate({ to: 'user:30003', text: '给你看\n[图 /sdcard/DCIM/a.jpg]' }, opt), /file\(s\) from her devices/);
   assert.equal(sendGate({ to: 'user:30003', text: '[表情包 sticker:9384f5360b]' }, opt), null);
+});
+
+test('qq: ignore list — hers to skip: the setting, and qq-bridge\'s bot from compat; the owner is never ignored', async () => {
+  const h = harness();
+  const compat = { ignoredUins: () => ['30003'] };
+  const get = h.ctx.get; h.ctx.get = (n) => (n === 'dshDotCompat' ? compat : get(n));
+  const got = []; h.ctx.dshQq.onMessage((m) => got.push(m));
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
+  await h.cmd().handler({ rawInput: 'owner 20002' });
+  const at = (uid, text) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'group', group_id: 777, user_id: uid, self_id: 10001, message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text } }], sender: { card: String(uid) } }));
+  at(30003, 'bot here'); // qq-bridge's bot
+  at(40004, 'a person');
+  sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 30003, self_id: 10001, message: [{ type: 'text', data: { text: 'pm' } }] }));
+  assert.deepEqual(got.map((m) => m.userId), ['40004']);
+  const status = await h.cmd().handler({ rawInput: '' });
+  assert.match(status.text, /not answered: 30003 \(30003: qq-bridge's bot\)/);
+  h.stop();
+});
+
+test('qq: parseIgnore and the loop breaker', () => {
+  assert.deepEqual(parseIgnore('30003, 40004\n 5'), ['30003', '40004']);
+  assert.deepEqual(parseIgnore(['30003', 30003, '']), ['30003']);
+  assert.deepEqual(parseIgnore(undefined), []);
+  let t = 0;
+  const b = createLoopBreaker({ max: 3, cooldownMs: 100, now: () => t });
+  // bot 1 and her, back and forth: round 1, 2 → fine; the third trips
+  assert.equal(b.heard('group:7', '1'), ''); b.said('group:7');
+  assert.equal(b.heard('group:7', '1'), ''); b.said('group:7');
+  assert.equal(b.heard('group:7', '1'), ''); b.said('group:7');
+  assert.equal(b.heard('group:7', '1'), 'tripped');
+  assert.equal(b.heard('group:7', '1'), 'cooling');
+  assert.ok(b.cooling('group:7', '1') && !b.cooling('group:8', '1'));
+  t = 101;
+  assert.equal(b.heard('group:7', '1'), '', 'cooled down');
+  // someone else in between resets the count; two messages in a row from the same account is not a round
+  b.said('group:7'); assert.equal(b.heard('group:7', '1'), ''); b.said('group:7');
+  assert.equal(b.heard('group:7', '2'), '');
+  b.said('group:7'); assert.equal(b.heard('group:7', '1'), '');
+  assert.equal(b.heard('group:7', '1'), ''); assert.equal(b.heard('group:7', '1'), '');
+  b.said('group:7'); assert.equal(b.heard('group:7', '1'), '');
+  b.said('group:7'); assert.equal(b.heard('group:7', '1'), '', 'the owner-style reset earlier left two rounds, not three');
+  assert.equal(createLoopBreaker({ max: 0 }).heard('g', '1'), '');
+});
+
+test('qq: two bots in one group — after loopMax rounds with nobody else she stops answering that account there', async () => {
+  const h = harness({}, { loopMax: 2, loopCooldownMinutes: 1 });
+  const got = []; h.ctx.dshQq.onMessage((m) => got.push(m));
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
+  const at = (uid, text) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'group', group_id: 77777, user_id: uid, self_id: 10001, message: [{ type: 'at', data: { qq: '10001' } }, { type: 'text', data: { text } }], sender: { card: String(uid) } }));
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  const reply = async (text) => { const p = tool.execute({ to: 'group:77777', text }); await tick(5); sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: sock.sent.length }, echo: sock.sent.at(-1).echo })); await p; };
+  at(50005, 'hi'); await reply('hello');
+  at(50005, 'hi again'); await reply('hello again');
+  at(50005, 'still here');
+  assert.equal(got.length, 2, 'the third wake is held: two rounds back and forth, nobody else');
+  at(60006, 'someone else'); assert.equal(got.length, 3);
+  h.stop();
 });
