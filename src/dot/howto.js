@@ -27,7 +27,7 @@ const noUrls = (s) => String(s ?? '').replace(/\bhttps?:\/\/\S+|\bwww\.\S+/gi, '
 /** An error as a short type: the first line, no addresses, no quoted text from the screen. */
 export const errorType = (e) => clip(noUrls(String(e ?? '').split('\n')[0]).replace(/[「“"].{12,}?[」”"]/g, '"…"'), 100);
 /** Refusals (approvals, gates, the phone busy) are not her mistakes in the app. */
-export const isRefusal = (e) => /denied|rejected|not allowed|approval|审批|批准|拒绝|被拦|用不了|lease|另一个会话|dsh-interlude:|dsh-dot/i.test(String(e ?? ''));
+export const isRefusal = (e) => /denied|rejected|not allowed|approval|审批|批准|拒绝|被拦|用不了|lease|另一个会话|同一件事已经试了|dsh-interlude:|dsh-dot/i.test(String(e ?? ''));
 
 /** One call as she would read it back: "launch_app(com.max.xiaoheihe)", "click(421,428)", "type(浮游世界)". */
 export function callLine(tool, input) {

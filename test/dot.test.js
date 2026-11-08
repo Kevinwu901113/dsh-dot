@@ -1027,6 +1027,9 @@ test('loop: the same call (digits aside) loopRepeat times in a turn; further one
   assert.ok(h.audit.some((e) => e.event === 'loop-stopped' && e.times === 3));
   h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 });
   assert.equal(await call('crop 1x1'), 'ran', 'a new turn starts over');
+  // looking and scrolling again is reading a changing screen, never a loop
+  for (let i = 0; i < 6; i++) assert.equal(await pre({ name: 'mcp__dot-phone__mobile_list_elements_on_screen', input: { device: 'dot' }, agent }, async () => 'ran'), 'ran');
+  for (let i = 0; i < 6; i++) assert.equal(await pre({ name: 'mcp__dot-phone__mobile_swipe_on_screen', input: { device: 'dot', direction: 'up' }, agent }, async () => 'ran'), 'ran');
   stop(h);
 });
 

@@ -254,6 +254,8 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
 /** Errand turns whose conclusion is noted in her conversation (observations hand theirs to the interlude). */
 const NOTED = ['phone-check', 'phone-notification', 'play', 'try'];
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
+/** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
+export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
@@ -1082,7 +1084,8 @@ export function apply(ctx, config = {}) {
     const id = exec.agent?.session?.id;
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
     const t = turns.get(id);
-    if (t && cfg.loopRepeat > 0) {
+    // Looking and scrolling repeat by nature (the screen changes, the call does not): never a loop.
+    if (t && cfg.loopRepeat > 0 && !LOOP_EXEMPT.test(exec.name)) {
       const key = loopKey(exec.name, args), times = (t.calls ??= new Map()).get(key) ?? 0;
       if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return { kind: 'deny', reason: prompt('dot.loop-stopped', { times }) }; }
       t.calls.set(key, times + 1);
