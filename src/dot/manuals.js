@@ -4,8 +4,9 @@
 // The phone section, the phone's and the computer's MCP instructions are long how-to text. In every
 // turn of her conversation they sat between who she is (the Canon) and what she says, and outweighed
 // it. Now, in her sessions, each of those sections is replaced by one line (what she has, and that the
-// manual comes when she first uses it); the first call of one of its tools in a session is refused once
-// with the manual as the reason, and she calls again knowing how. The prompt of a session stays the
+// manual comes when she first uses it); the first call of one of its tools in a session runs as usual and
+// the manual comes along with its result (not as a refusal: an error made her stop and think in circles).
+// The one line keeps what a first call needs (the device). The prompt of a session stays the
 // same from its first step to its last (the cached prefix holds); a new session (handoff, a fresh
 // errand) gets the manual again on first use.
 
@@ -22,9 +23,9 @@ const matches = (name, patterns) => patterns.some((p) => p && (p.endsWith('__') 
 /**
  * routes: [{ key, sections: [section names], tools: [tool names, or prefixes ending in "__"] }]
  * hint(key): the one line that stands in for the manual in the system prompt
- * deny(key, manual): the refusal text that carries the manual
+ * given(key, manual): the note that carries the manual, after the first call's result
  */
-export function createManuals({ routes = [], hint, deny }) {
+export function createManuals({ routes = [], hint, given }) {
   const stash = new Map();     // session id → Map(key → [section texts])
   const delivered = new Map(); // session id → Set(keys)
   const routeOf = (section) => routes.find((r) => r.sections.includes(section));
@@ -47,8 +48,8 @@ export function createManuals({ routes = [], hint, deny }) {
       stash.set(sessionId, kept);
       return { ...assembly, sections };
     },
-    /** The first call of a routed tool in a session: refused once, with the manual. null = go on. */
-    gate(toolName, sessionId) {
+    /** The first call of a routed tool in a session: the note with its manual (to go with the result), else null. */
+    take(toolName, sessionId) {
       if (!sessionId) return null;
       const r = routes.find((x) => matches(toolName, x.tools));
       if (!r) return null;
@@ -57,7 +58,7 @@ export function createManuals({ routes = [], hint, deny }) {
       const texts = stash.get(sessionId)?.get(r.key);
       if (!texts?.length) return null; // never routed in this session (not hers, or the section was empty)
       done.add(r.key); delivered.set(sessionId, done);
-      return { kind: 'deny', reason: deny(r.key, texts.join('\n\n')) };
+      return given(r.key, texts.join('\n\n'));
     },
     /** Has this session been handed the manual for `key`. */
     has: (sessionId, key) => Boolean(delivered.get(sessionId)?.has(key)),

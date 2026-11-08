@@ -203,7 +203,7 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉联系人层 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
-| `manuals` | `true` | 她的会话里，手机那段和手机、电脑的 MCP 说明不每轮都带：换成一行，第一次用手机 / 电脑工具时那一下被拦下、把说明书给她（`dot.manuals.*` 提示词）；`false` 恢复每轮都带 |
+| `manuals` | `true` | 她的会话里，手机那段和手机、电脑的 MCP 说明不每轮都带：换成一行，第一次用手机 / 电脑工具时那一下照常执行，说明书跟着结果一起给她（`dot.manuals.*` 提示词）；`false` 恢复每轮都带 |
 | `promptsPort` | `7870` | `/dot prompts` 提示词页面的端口（只监听 127.0.0.1） |
 | `notifyHours` | `""` | 只在这个时段内通知叫醒她；空 = 一直 |
 | `notifyBatchMs` | `1000` | 多少毫秒内的通知合并成一次叫醒（别人的；你的话见下面四项） |

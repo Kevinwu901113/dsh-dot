@@ -515,6 +515,7 @@ export function apply(ctx, config = {}) {
   // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
   const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
+  let manualFor = () => null; // set where the manuals are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
@@ -655,12 +656,17 @@ export function apply(ctx, config = {}) {
     }
   }, { prepend: true });
   // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
+  // And the first call of her phone or computer tools in a session brings their manual along (manuals.js).
   ctx.on('tools/post-execute', async (exec, result, next) => {
     const minutes = expiredCalls.get(exec?.callId);
-    if (minutes === undefined) return next();
-    expiredCalls.delete(exec.callId);
+    const note = cfg.manuals && exec?.name ? manualFor(exec) : null;
+    if (minutes === undefined && !note) return next();
+    if (minutes !== undefined) expiredCalls.delete(exec.callId);
     const d = await next();
-    return { kind: 'block', feedback: [{ type: 'text', text: approvalTimeoutText(minutes) }], ...(d?.additionalContexts?.length ? { additionalContexts: d.additionalContexts } : {}) };
+    const contexts = [...(d?.additionalContexts ?? []), ...(note ? [createUserMessage({ content: [{ type: 'text', text: note }], source: { kind: 'dsh-dot', form: 'manual' } })] : [])];
+    const out = minutes !== undefined ? { kind: 'block', feedback: [{ type: 'text', text: approvalTimeoutText(minutes) }] } : { ...d };
+    if (contexts.length) out.additionalContexts = contexts; else delete out.additionalContexts;
+    return out;
   });
 
   // Working rules are a system-prompt section for sessions in <home> (static per session, so the
@@ -669,14 +675,15 @@ export function apply(ctx, config = {}) {
   const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
   const manuals = createManuals({
     routes: cfg.manuals ? defaultManuals({ phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX, phoneZoom: PHONE_ZOOM_TOOL }) : [],
-    hint: (key) => table('dot.manuals.hint')[key] ?? '',
-    deny: (key, manual) => prompt('dot.manuals.deny', { what: table('dot.manuals.what')[key] ?? key, manual }),
+    hint: (key) => table('dot.manuals.hint', { serial: phone()?.status?.()?.serial ?? phone()?.serial ?? '' })[key] ?? '',
+    given: (key, manual) => prompt('dot.manuals.given', { what: table('dot.manuals.what')[key] ?? key, manual }),
   });
-  ctx.on('tools/pre-execute', async (exec, next) => {
-    const d = cfg.manuals ? manuals.gate(exec.name, exec.agent?.session?.id) : null;
-    if (d) { audit('manual-handed', { session: exec.agent?.session?.id, tool: exec.name }); return d; }
-    return next();
-  }, { prepend: true });
+  // The manual rides along with the first call's result, for her next step (in the post-execute hook above).
+  manualFor = (exec) => {
+    const note = manuals.take(exec.name, exec.agent?.session?.id);
+    if (note) audit('manual-handed', { session: exec.agent?.session?.id, tool: exec.name });
+    return note;
+  };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.on('system-prompt/assemble', async (_a, c, next) => {
       const assembly = await next();

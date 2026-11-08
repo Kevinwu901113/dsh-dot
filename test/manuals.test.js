@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { createManuals, defaultManuals } from '../src/dot/manuals.js';
 
 const routes = defaultManuals({ phonePrefix: 'mcp__dot-phone__', vmPrefix: 'mcp__dot-vm__', phoneZoom: 'phone_zoom' });
-const make = () => createManuals({ routes, hint: (k) => `[${k} hint]`, deny: (k, m) => `first ${k}:\n${m}` });
+const make = () => createManuals({ routes, hint: (k) => `[${k} hint]`, given: (k, m) => `first ${k}:\n${m}` });
 const assembly = () => ({ sections: [
   { name: 'interlude:canon', text: '# 你是小点' },
   { name: 'phone:device', text: 'PHONE MANUAL' },
@@ -27,21 +27,19 @@ test('manuals: routed sections become one line each in the prompt, the same ever
   assert.deepEqual(empty.sections, [{ name: 'phone:device', text: '' }]);
 });
 
-test('manuals: the first call of a routed tool in a session is refused once with the whole manual; later calls and other tools pass', () => {
+test('manuals: the first call of a routed tool in a session brings the whole manual along (once per session); later calls and other tools bring nothing', () => {
   const m = make();
   m.assemble(assembly(), 's1');
-  const first = m.gate('mcp__dot-phone__mobile_list_apps', 's1');
-  assert.equal(first.kind, 'deny');
-  assert.equal(first.reason, 'first phone:\nPHONE MANUAL\n\nPHONE MCP');
-  assert.equal(m.gate('mcp__dot-phone__mobile_list_apps', 's1'), null);
-  assert.equal(m.gate('account', 's1'), null, 'same manual');
-  assert.equal(m.gate('mcp__dot-vm__browser_navigate', 's1').reason, 'first computer:\nVM MCP');
-  assert.equal(m.gate('qq_send', 's1'), null);
-  assert.equal(m.gate('mcp__dot-phone__mobile_list_apps', 'other'), null, 'a session whose prompt was never routed (not hers)');
+  assert.equal(m.take('mcp__dot-phone__mobile_list_apps', 's1'), 'first phone:\nPHONE MANUAL\n\nPHONE MCP');
+  assert.equal(m.take('mcp__dot-phone__mobile_list_apps', 's1'), null);
+  assert.equal(m.take('account', 's1'), null, 'same manual');
+  assert.equal(m.take('mcp__dot-vm__browser_navigate', 's1'), 'first computer:\nVM MCP');
+  assert.equal(m.take('qq_send', 's1'), null);
+  assert.equal(m.take('mcp__dot-phone__mobile_list_apps', 'other'), null, 'a session whose prompt was never routed (not hers)');
   assert.equal(m.has('s1', 'phone'), true);
   // a new session gets the manual again
   m.assemble(assembly(), 's2');
-  assert.equal(m.gate('phone_zoom', 's2').kind, 'deny');
+  assert.match(m.take('phone_zoom', 's2'), /^first phone/);
   m.forget('s2');
-  assert.equal(m.gate('phone_zoom', 's2'), null);
+  assert.equal(m.take('phone_zoom', 's2'), null);
 });
