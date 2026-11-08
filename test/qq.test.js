@@ -694,3 +694,16 @@ test('qq: two bots in one group — after loopMax rounds with nobody else she st
   at(60006, 'someone else'); assert.equal(got.length, 3);
   h.stop();
 });
+
+test('qq: the channel section goes to her sessions only when compat is here', async () => {
+  const h = harness();
+  const owners = { s1: 'dot', s2: 'other', s3: 'qqb-sandbox', s4: 'qqb-owner' };
+  const compat = { ownerOf: (c) => owners[c.agent.session.id], ignoredUins: () => [] };
+  const get = h.ctx.get; h.ctx.get = (n) => (n === 'dshDotCompat' ? compat : get(n));
+  h.ready(); await tick(30);
+  FakeSocket.last.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
+  const text = (id) => h.sections[0].text({ agent: { session: { id, header: { cwd: '/x' } } } });
+  assert.match(text('s1'), /qq_send/);
+  for (const id of ['s2', 's3', 's4']) assert.equal(text(id), '', `${id} (${owners[id]}) gets no QQ section`);
+  h.stop();
+});

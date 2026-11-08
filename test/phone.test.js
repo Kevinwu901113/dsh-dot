@@ -518,3 +518,19 @@ test('phone QQ: typing or Enter with QQ in front is refused (search excepted); o
   assert.equal((await h2.gate('mcp__dot-phone__mobile_type_keys', { text: 'hi' }, 's')).via, 'next');
   h2.stop();
 });
+
+test('phone: the device section — everyone with the phone gets it, her parts (wake, stickers, memory) only in her sessions, a qq-bridge sandbox nothing', async () => {
+  const h = harness({ running: true });
+  const owners = { s1: 'dot', s2: 'other', s3: 'qqb-sandbox', s4: 'qqb-owner' };
+  const get = h.ctx.get;
+  h.ctx.get = (n) => ({ dshDotCompat: { ownerOf: (c) => owners[c.agent.session.id] }, dshDot: {}, dshQq: {}, dotMemory: {} }[n] ?? get(n));
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'attached and ready');
+  const text = (id) => h.sections[0].text({ agent: { session: { id, header: { cwd: '/x' } } } });
+  assert.match(text('s1'), /表情包|sticker/, 'hers: the sticker album');
+  assert.match(text('s2'), /设备 dot，/, 'another plugin\'s session: the phone itself');
+  assert.doesNotMatch(text('s2'), /表情包|sticker/, 'but not her album');
+  assert.match(text('s4'), /设备 dot，/);
+  assert.doesNotMatch(text('s4'), /表情包|sticker/);
+  assert.equal(text('s3'), '', 'a qq-bridge sandbox session does not see the phone');
+  h.stop();
+});

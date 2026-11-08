@@ -179,6 +179,7 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
  * The compat service, `ctx.dshDotCompat`:
  *   bridge()            → the qq-bridge facts (readBridge) or null when it is not here / turned off
  *   owner(id, cwd, preset) → 'dot' | 'qqb-sandbox' | 'qqb-owner' | 'other' (preset: session.header.agentPreset)
+ *   ownerOf(c)          → the same, for a system-prompt context `c` (c.agent.session)
  *   ownerOfCwd(cwd)     → the same, from the cwd alone (what the subprocess provider sees)
  *   ignoredUins()       → qq-bridge's bot accounts (strings)
  *   ownerComputer       → 'vm' | 'host' (where a qqb-owner command runs)
@@ -207,8 +208,10 @@ export function apply(ctx, config = {}) {
   const owner = (id, cwd, preset) => classify({ id, cwd, preset }, bridge(), hers);
   const ownerOfCwd = (cwd) => classify({ cwd }, bridge(), (i, c) => hers('', c));
 
+  /** Whose session is the one a system-prompt `text: (c) => …` is being built for. */
+  const ownerOf = (c) => { const s = c?.agent?.session; return owner(s?.id ?? '', s?.header?.cwd ?? '', s?.header?.agentPreset); };
   const api = {
-    bridge, owner, ownerOfCwd,
+    bridge, owner, ownerOf, ownerOfCwd,
     ignoredUins: () => bridge()?.botUins ?? [],
     get ownerComputer() { return cfg.ownerComputer === 'host' ? 'host' : 'vm'; },
     hiddenFor: (o, names) => hiddenFor(o, names, cfg),

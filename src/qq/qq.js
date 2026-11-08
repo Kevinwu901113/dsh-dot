@@ -1303,10 +1303,13 @@ export function apply(ctx, config = {}, deps = {}) {
   });
 
   ctx.inject(['systemPrompt'], (scope) => {
+    // Her QQ is hers: the section goes only to her sessions (compat says whose a session is; without
+    // compat, every session, as before). Another plugin's session has no qq_send to use it with.
+    const hers = (c) => { try { const o = ctx.get('dshDotCompat')?.ownerOf?.(c); return o === undefined || o === 'dot'; } catch { return true; } };
     scope.effect(() => scope.systemPrompt.section({
       name: 'qq:channel',
       order: 61,
-      text: () => (qq.connected
+      text: (c) => (qq.connected && hers(c)
         ? channelText({ qq: qq.qq, owner: qq.owner, groupPolicy: cfg.groupPolicy, stickers: stickers.prompt() })
         : ''),
     }), 'dsh-dot/qq: channel section');

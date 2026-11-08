@@ -922,12 +922,21 @@ export function apply(ctx, config = {}, deps = {}) {
   }, { prepend: true });
 
   ctx.inject(['systemPrompt'], (scope) => {
+    // The phone section goes to every session that has the phone tools; the parts about her (wake-ups
+    // through dot, her sticker album, remembering) only to her own sessions (compat says whose a
+    // session is; without compat every session counts as hers, as before). A session compat hides
+    // the phone from (a qq-bridge sandbox) gets nothing.
+    const ownerOf = (c) => { try { return ctx.get?.('dshDotCompat')?.ownerOf?.(c) ?? 'dot'; } catch { return 'dot'; } };
     scope.effect(() => scope.systemPrompt.section({
       name: 'phone:device',
       order: 60,
-      text: () => (phone.state === 'ready'
-        ? deviceText(mcpDevice(), cfg.number, { dot: Boolean(ctx.get?.('dshDot')), qq: Boolean(ctx.get?.('dshQq')), memory: Boolean(ctx.get?.('dotMemory')) })
-        : ''),
+      text: (c) => {
+        if (phone.state !== 'ready') return '';
+        const o = ownerOf(c);
+        if (o === 'qqb-sandbox') return '';
+        const hers = o === 'dot';
+        return deviceText(mcpDevice(), cfg.number, { dot: hers && Boolean(ctx.get?.('dshDot')), qq: hers && Boolean(ctx.get?.('dshQq')), memory: hers && Boolean(ctx.get?.('dotMemory')) });
+      },
     }), 'dsh-dot/phone: device section');
   });
 
