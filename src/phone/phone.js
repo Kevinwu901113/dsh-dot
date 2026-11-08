@@ -406,7 +406,11 @@ export function apply(ctx, config = {}, deps = {}) {
     audit({ kind: 'status', state, error });
     for (const fn of listeners) { try { fn(phone.status()); } catch {} }
   };
-  phone.status = () => ({ state: phone.state, ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
+  // The device id her mobile-mcp tools take: mobilecli names an emulator by its AVD ("dot"), not by the
+  // adb serial (emulator-5554) — with the serial every first call failed with "Device … not found".
+  // MOBILEMCP_LEGACY_ROBOT=1 makes mobile-mcp use adb serials again.
+  const mcpDevice = () => (process.env.MOBILEMCP_LEGACY_ROBOT === '1' ? serial : String(cfg.avd).replace(/_/g, ' '));
+  phone.status = () => ({ state: phone.state, device: mcpDevice(), ...(phone.progress && phone.state === 'downloading' ? { progress: progressView(phone.progress) } : {}), serial, error: phone.error, api: cfg.api, abi, window: cfg.window, home, liveViewUrl: phone.liveViewUrl, publicLiveViewUrl: phone.publicLiveViewUrl });
   phone.onStatus = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   /** For /dot doctor: what is configured, and what is already on disk / running. */
   phone.doctorInfo = () => ({ installed: installed(), running: Boolean(child) || phone.isReady, ramMb: cfg.ramMb, dataGb: phone.storage().gb, port, adbPort: cfg.adbPort || 5037, paths: { emulator: paths.emulator } });
@@ -828,7 +832,7 @@ export function apply(ctx, config = {}, deps = {}) {
       name: 'phone:device',
       order: 60,
       text: () => (phone.state === 'ready'
-        ? deviceText(serial, cfg.number, { dot: Boolean(ctx.get?.('dshDot')), qq: Boolean(ctx.get?.('dshQq')), memory: Boolean(ctx.get?.('dotMemory')) })
+        ? deviceText(mcpDevice(), cfg.number, { dot: Boolean(ctx.get?.('dshDot')), qq: Boolean(ctx.get?.('dshQq')), memory: Boolean(ctx.get?.('dotMemory')) })
         : ''),
     }), 'dsh-dot/phone: device section');
   });

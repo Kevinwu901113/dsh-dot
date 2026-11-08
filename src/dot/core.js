@@ -675,7 +675,7 @@ export function apply(ctx, config = {}) {
   const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
   const manuals = createManuals({
     routes: cfg.manuals ? defaultManuals({ phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX, phoneZoom: PHONE_ZOOM_TOOL }) : [],
-    hint: (key) => table('dot.manuals.hint', { serial: phone()?.status?.()?.serial ?? phone()?.serial ?? '' })[key] ?? '',
+    hint: (key) => table('dot.manuals.hint', { serial: phone()?.status?.()?.device ?? 'dot' })[key] ?? '',
     given: (key, manual) => prompt('dot.manuals.given', { what: table('dot.manuals.what')[key] ?? key, manual }),
   });
   // The manual rides along with the first call's result, for her next step (in the post-execute hook above).

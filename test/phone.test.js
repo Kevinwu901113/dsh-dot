@@ -176,7 +176,7 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');
   assert.equal(h.plugins[0].c.transport, 'stdio');
   assert.match(h.plugins[0].c.args[0], /mobile-mcp/);
-  assert.match(h.sections[0].text(), /emulator-5554/);
+  assert.match(h.sections[0].text(), /设备 dot，/, 'the id mobile-mcp takes (the AVD), not the adb serial');
   const out = await h.cmd().handler({ rawInput: '' });
   assert.match(out.text, /phone: ready/);
   assert.match(out.text, /live view: http:\/\/127\.0\.0\.1:3080\/dsh-dot\/phone\//, 'the live view lives on dsh\'s own web server');
