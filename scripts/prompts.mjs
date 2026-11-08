@@ -75,6 +75,8 @@ export const entries = [
     render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
   { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；通知叫醒她那句要 dot 组件在；设了手机号（/phone number）才有那一句；表情包段要 qq 组件在，最后"记到 self"要 memory 在', files: ['phone.device', 'phone.device.wake', 'phone.device.no-wake', 'phone.device.number', 'phone.stickers', 'phone.stickers.learned'],
     render: () => variant([['设了手机号', deviceText('emulator-5554', '13800138000')], ['没设手机号', deviceText('emulator-5554')], ['只装手机（没有 dot、qq、memory）', deviceText('emulator-5554', '', { dot: false, qq: false, memory: false })]]) },
+  { id: 'manuals', group: 'system', name: '说明书（第一次用时才给）', note: '她的会话里，「手机」那段和手机、电脑的 MCP 说明不放进系统提示词，换成一行（.hint）；这个会话第一次用手机或电脑工具时，那一下被拦下，理由里就是整份说明书（.deny），她看完重新调用。dot.manuals = false 恢复成每轮都带着', files: ['dot.manuals.hint', 'dot.manuals.what', 'dot.manuals.deny'],
+    render: () => variant([['系统提示词里的那一行（手机）', P.table('dot.manuals.hint').phone], ['系统提示词里的那一行（电脑）', P.table('dot.manuals.hint').computer], ['第一次用手机时', P.prompt('dot.manuals.deny', { what: '手机', manual: '（这里是「手机」那段的全文）' })]]) },
   { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
     render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
@@ -82,6 +84,8 @@ export const entries = [
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
   { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、还没了的事（加一行先搁着的）', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
+  { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话、幕间数据之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
+    render: () => P.prompt('interlude.voice', { name: '小点' }) },
 
   { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：等他停下（1.5 秒没新消息，最多 6 秒）一批盖一个时间戳，后面是他打的原话；她这轮还没做完时插进这一轮，多一行 dot.owner-words.busy', files: ['dot.owner-words', 'dot.owner-words.busy'],
     render: () => variant([['她空闲', D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }])], ['她这轮进行中', D.ownerWords([{ text: '算了' }, { text: '先别弄了' }], Date.now(), { whileBusy: true })]]) },
@@ -133,12 +137,12 @@ export const entries = [
 const entryOf = (id) => entries.find((e) => e.files.includes(id));
 
 // ── her Canon (<home>/interlude/canon.json): not a prompt file, but the first thing she reads ──
-const CANON_FIELDS = [['characterName', '名字'], ['characterProfile', '角色设定'], ['perspective', '视角'], ['relationship', '和用户的关系'], ['userProfile', '用户'], ['supportingCast', '配角'], ['world', '世界'], ['location', '主要地点'], ['replyRules', '回复规则'], ['style', '叙事文风（只给幕间）'], ['blacklist', '不要这样说（一行一条）'], ['examples', '对话范例']];
+const CANON_FIELDS = [['characterName', '名字'], ['characterProfile', '角色设定'], ['perspective', '视角'], ['relationship', '和用户的关系'], ['userProfile', '用户'], ['supportingCast', '配角'], ['world', '世界'], ['location', '主要地点'], ['replyRules', '回复规则'], ['style', '叙事文风（只给幕间）'], ['blacklist', '不要这样说（一行一条）'], ['examples', '对话范例'], ['voice', '说话提醒（放在每轮最后；空着就用内置的 interlude.voice）']];
 const HOME = P.promptHome(); // before --src moves the prompt home to a temp dir
 const canonPath = () => join(HOME, 'interlude', 'canon.json');
 const readCanon = () => { try { return JSON.parse(readFileSync(canonPath(), 'utf8')); } catch { return null; } };
-const canonField = (c, k) => (k === 'blacklist' ? (Array.isArray(c?.blacklist) ? c.blacklist.join('\n') : String(c?.blacklist ?? '')) : k === 'examples' ? String(c?.examples ?? '') : String(c?.storyDefaults?.[k] ?? ''));
-const withCanonField = (c, k, v) => { const n = structuredClone(c ?? { storyDefaults: {} }); n.storyDefaults ??= {}; if (k === 'blacklist') n.blacklist = v.split('\n').map((l) => l.trim()).filter(Boolean); else if (k === 'examples') n.examples = v; else n.storyDefaults[k] = v; return n; };
+const canonField = (c, k) => (k === 'blacklist' ? (Array.isArray(c?.blacklist) ? c.blacklist.join('\n') : String(c?.blacklist ?? '')) : k === 'examples' ? String(c?.examples ?? '') : k === 'voice' ? String(c?.voice ?? '') : String(c?.storyDefaults?.[k] ?? ''));
+const withCanonField = (c, k, v) => { const n = structuredClone(c ?? { storyDefaults: {} }); n.storyDefaults ??= {}; if (k === 'blacklist') n.blacklist = v.split('\n').map((l) => l.trim()).filter(Boolean); else if (k === 'examples') n.examples = v; else if (k === 'voice') n.voice = v; else n.storyDefaults[k] = v; return n; };
 const isCanon = (id) => id?.startsWith('canon.') && CANON_FIELDS.some(([k]) => id === `canon.${k}`);
 entries.unshift({ id: 'canon', group: 'system', name: '人设（Canon）', note: '她是谁、怎么说话。存在 ' + canonPath() + '，改了她下一轮就用；每天第一次保存前自动备份一份', files: CANON_FIELDS.map(([k]) => `canon.${k}`),
   render: () => I.renderCanon(readCanon() ?? CANON, { withStyle: true }) });
@@ -152,7 +156,8 @@ export async function full() {
   const parts = [
     ['人设（Canon）', I.renderCanon(readCanon() ?? CANON)],
     ['工作方式', D.workingRules({ computer: true, phone: true })],
-    ['手机', deviceText('emulator-5554', '13800138000')],
+    // dot.manuals: the phone section (and the phone's / computer's MCP instructions) stand as one line each; the manual comes on first use.
+    ['手机、电脑（说明书第一次用时才给）', [P.table('dot.manuals.hint').phone, P.table('dot.manuals.hint').computer].join('\n')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
     ['—— 以下在对话历史之后 ——', ''],
     ['现在几点', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)],
@@ -160,6 +165,7 @@ export async function full() {
     ['记忆', standing()],
     ['想起的原话', await recallText()],
     ['幕间的连续性（数据，没有文字）', context()],
+    ['说话提醒（最后一段）', String((readCanon() ?? CANON)?.voice ?? '').trim() || P.prompt('interlude.voice', { name: (readCanon() ?? CANON)?.storyDefaults?.characterName ?? '她' })],
   ];
   return parts.map(([k, v]) => (v ? `━━━━ ${k} ━━━━\n${v}` : `━━━━ ${k} ━━━━`)).join('\n\n');
 }
@@ -248,7 +254,7 @@ async function full() {
   cur = ''; const main = document.getElementById('main');
   main.replaceChildren($('p', { class: 'mute' }, '正在拼…'));
   const { text } = await api('/api/full');
-  main.replaceChildren($('h2', { class: 't' }, '全貌'), $('p', { class: 'hint' }, '她的对话里，插件加进系统提示词的部分从上到下拼起来的样子（样例数据）。dsh 自己的段落不在这里。'), $('pre', { id: 'fulltext' }, text));
+  main.replaceChildren($('h2', { class: 't' }, '全貌'), $('p', { class: 'hint' }, '她的对话里，插件加进系统提示词的部分从上到下拼起来的样子（样例数据）。dsh 自己的段落不在这里；手机和电脑的说明书不在每轮里，第一次用时才给（见「说明书」）。'), $('pre', { id: 'fulltext' }, text));
   mark();
 }
 async function show(id) {

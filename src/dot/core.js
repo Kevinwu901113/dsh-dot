@@ -13,7 +13,8 @@
 //      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
-import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { createManuals, defaultManuals } from './manuals.js';
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { get as httpGet } from 'node:http';
@@ -205,6 +206,9 @@ export const defaults = {
   // notification is queued or held for an errand and no errand turn runs.
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
+  // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
+  // session (manuals.js), instead of riding along in every system prompt between the Canon and her words.
+  manuals: true,
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
   // (0 = wait for ever). A turn with no session event for turnStallMs is stalled; an errand stalled
@@ -663,7 +667,21 @@ export function apply(ctx, config = {}) {
   // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
   // schedule wakes, as a dynamic context; only those turns get it.
   const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
+  const manuals = createManuals({
+    routes: cfg.manuals ? defaultManuals({ phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX, phoneZoom: PHONE_ZOOM_TOOL }) : [],
+    hint: (key) => table('dot.manuals.hint')[key] ?? '',
+    deny: (key, manual) => prompt('dot.manuals.deny', { what: table('dot.manuals.what')[key] ?? key, manual }),
+  });
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    const d = cfg.manuals ? manuals.gate(exec.name, exec.agent?.session?.id) : null;
+    if (d) { audit('manual-handed', { session: exec.agent?.session?.id, tool: exec.name }); return d; }
+    return next();
+  }, { prepend: true });
   ctx.inject(['systemPrompt'], (scope) => {
+    scope.effect(() => scope.on('system-prompt/assemble', async (_a, c, next) => {
+      const assembly = await next();
+      return cfg.manuals && inHome(c) ? manuals.assemble(assembly, c.agent?.session?.id) : assembly;
+    }), 'dsh-dot: manuals on first use');
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,

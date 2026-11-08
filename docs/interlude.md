@@ -109,6 +109,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 | `canon` | 无 | HDSI `storyDefaults` 对象，作为初始人设；导入过预设后以 `canon.json` 为准 |
 | `trimSections` | `harness:identity, deployment:persona-prefix, context:file-reference` | 主角的会话里从系统提示删掉的段（dsh 的「You are an AI agent / coding agent」开头，社区公认的 AI 味来源），让 Canon 成为第一段；`[]` 不删 |
 | `canonOnly` | `false` | `true` 时主角的会话只保留 Canon、dot 规则和 MCP（虚拟机）工具段 |
+| `voice` | `true` | 她和他的对话里，每轮最后（记忆、原话、幕间数据之后）放一两句「怎么说话」：人设里填了「说话提醒」（canon.json 的 `voice`）就用它，空着用 `interlude.voice`；跑腿会话不带 |
 | `presetHub` | `https://typ0.space` | HDSI 预设分享站 |
 | `identityFile` | 无 | 可选：额外追加到 Canon 后面的文本文件 |
 | `idleMinutes` | `10` | 安静多久算一幕结束 |

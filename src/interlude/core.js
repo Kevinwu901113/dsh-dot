@@ -45,6 +45,9 @@ export const defaults = {
   // are what the community calls the root of the AI flavour. [] keeps everything.
   trimSections: ['harness:identity', 'deployment:persona-prefix', 'context:file-reference'],
   canonOnly: false,           // true: keep only the Canon, dot's rules and MCP (VM) sections
+  // A line or two on how she talks, after everything else in her conversation's prompt (the Canon's
+  // `voice` field, or interlude.voice from her name). false: none.
+  voice: true,
   // HDSI browsing (the character's browserIntent runs after the round). Two ways to look:
   //   web — dsh's `web` service: anonymous, read-only, cheap, invisible. Curiosity.
   //   vm  — a read-only turn in the character's own session using dsh-computer's VM browser: her
@@ -518,6 +521,13 @@ export function apply(ctx, config = {}) {
     let extra = '';
     if (cfg.identityFile) { try { extra = readFileSync(cfg.identityFile, 'utf8'); } catch (error) { void error; } }
     return [renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
+  };
+  /** The reminder of how she talks: the Canon's own (`voice`) when it has one, else the built-in from her name. */
+  const voiceText = () => {
+    const own = String(canon?.voice ?? canon?.storyDefaults?.voice ?? '').trim();
+    const name = canon?.storyDefaults?.characterName ?? '';
+    if (own) return own;
+    return name || canon?.storyDefaults?.characterProfile ? prompt('interlude.voice', { name: name || '你自己' }) : '';
   };
   const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
@@ -1241,6 +1251,17 @@ export function apply(ctx, config = {}) {
       const sections = assembly.sections.filter((sec) => (cfg.canonOnly ? keep(sec.name) : !cfg.trimSections.includes(sec.name)));
       return sections.length === assembly.sections.length ? assembly : { ...assembly, sections };
     }), 'dsh-interlude: prompt trim');
+    // How she talks, as the very last thing before she answers (after the history, the memory and the
+    // interlude): what is read last weighs most (cf. SillyTavern's Author's Note at depth 0, Character
+    // Card V2 post_history_instructions). Her conversation only: errands report, they do not chat.
+    scope.systemPrompt.context({
+      name: 'interlude:voice',
+      order: 990,
+      text: (c) => {
+        if (!cfg.voice || !inHome(c) || dshDot()?.isErrand?.(c.agent?.session?.id)) return '';
+        return voiceText();
+      },
+    });
     scope.systemPrompt.context({
       name: 'interlude',
       order: 905,
