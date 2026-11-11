@@ -56,8 +56,7 @@
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "docs",
-    "!docs/demo.gif"
+    "docs"
   ],
   "dsh": {
     "bundle": {
