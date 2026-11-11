@@ -9,7 +9,6 @@ import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-export const KEY_ENV = 'SANDBOX_API_KEY';
 /** Header the image documents for the key; it leaves `Authorization` free for the proxied service. */
 export const KEY_HEADER = 'X-AIO-API-Key';
 

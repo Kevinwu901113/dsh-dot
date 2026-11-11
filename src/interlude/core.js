@@ -115,7 +115,6 @@ export const defaults = {
   imTarget: '',
 };
 
-const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 /** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
 export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
 export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));

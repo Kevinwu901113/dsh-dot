@@ -25,7 +25,7 @@
 //              off.
 // Passwords and keys never reach the index, the cloud, or her prompt (store.js's filter).
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';

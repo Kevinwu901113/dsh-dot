@@ -204,7 +204,7 @@ flowchart LR
 ## ⌨️ 命令与文件
 
 ```text
-/phone [accept|restart|screenshot]
+/phone [doctor|accept|restart|screenshot]
 /interlude [now|advance|seed|preset <code>|canon]
 /dot [test|check|doctor|prompts [stop]]
 /dot memory [now|diary|handoff|recall …]

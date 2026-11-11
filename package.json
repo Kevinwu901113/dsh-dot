@@ -51,12 +51,13 @@
   "files": [
     "src",
     "lib",
-    "scripts",
+    "scripts/prompts.mjs",
     "examples",
     "cordis.patch.yml",
     "README.md",
     "LICENSE",
-    "docs"
+    "docs",
+    "!docs/demo.gif"
   ],
   "dsh": {
     "bundle": {
