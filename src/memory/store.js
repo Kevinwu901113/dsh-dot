@@ -46,19 +46,6 @@ export function jaccard(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
-/**
- * Character-bigram Jaccard: looser than the 3-gram one, for "is this the same fact said again"
- * about one person (Chinese paraphrases share bigrams far more than trigrams).
- */
-export function similar2(a, b) {
-  const grams = (t) => { const s = normText(t); const out = new Set(); for (let i = 0; i + 2 <= s.length; i++) out.add(s.slice(i, i + 2)); if (s.length < 2 && s) out.add(s); return out; };
-  const A = grams(a), B = grams(b);
-  if (!A.size || !B.size) return 0;
-  let inter = 0;
-  for (const g of A) if (B.has(g)) inter++;
-  return inter / (A.size + B.size - inter);
-}
-
 /** Chinese runs ~1.4–1.6 characters per token; estimate conservatively. */
 export const estimateTokens = (text) => Math.ceil(String(text ?? '').length / 1.5);
 
@@ -146,9 +133,6 @@ export function handleOf(platform, { uid = '', name = '' } = {}) {
   const n = String(name ?? '').trim();
   return n ? `${p}:name:${n}` : '';
 }
-/** Kept for callers that still build "<platform>:name:<x>" handles directly. */
-export const personId = (platform, handle) => `${String(platform ?? '').trim().toLowerCase() || 'unknown'}:${String(handle ?? '').trim()}`;
-
 const platformOf = (handle) => String(handle).split(':')[0];
 const nameOfHandle = (handle) => { const m = /^[^:]+:name:(.+)$/.exec(String(handle)); return m ? m[1] : ''; };
 

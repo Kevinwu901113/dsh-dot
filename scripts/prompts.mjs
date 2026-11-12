@@ -8,7 +8,6 @@ import { join, dirname, resolve } from 'node:path';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // dsh's own packages are peer dependencies: present where the plugin runs, usually absent in a bare
 // source checkout. The prompts never need them, so a missing one is replaced by a stub.
 {

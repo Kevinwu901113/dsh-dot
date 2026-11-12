@@ -6,7 +6,7 @@
 
 Give [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) (dsh) its own computer: a persistent Linux microVM with a browser, a live desktop view, and approval gates. No Docker required.
 
-![dsh-computer demo](docs/demo.gif)
+![dsh-computer demo](demo.gif)
 
 *The agent runs commands and opens a page inside its own VM; the Computer panel in dsh shows its desktop live. (Recorded with a scripted model.)*
 

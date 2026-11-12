@@ -51,7 +51,7 @@
   "files": [
     "src",
     "lib",
-    "scripts",
+    "scripts/prompts.mjs",
     "examples",
     "cordis.patch.yml",
     "README.md",
