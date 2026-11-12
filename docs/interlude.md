@@ -4,11 +4,9 @@
 
 **English** | [中文](#中文说明)
 
-> 聊天在幕前发生，生活在幕间继续。 — [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)
+An independent implementation, for [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness), of the *interlude* idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude) (Hyperrealistic Dialogue System, a Koishi plugin by MOMOR1A); none of its code or prompt text is used. **On stage** is any dsh conversation in your agent's home directory; dsh runs it, dsh-im carries it. **Between acts**, this plugin gives the character one bounded model call per round, in which it writes the life that happened since the last *story cursor*, keeps a small continuity snapshot, stores intents for later, and decides whether it has a real reason to reach out. The next conversation opens with that continuity in view.
 
-A port of the *interlude* idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude) (Hyperrealistic Dialogue System, a Koishi plugin by MOMOR1A) to [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness). **On stage** is any dsh conversation in your agent's home directory; dsh runs it, dsh-im carries it. **Between acts**, this plugin gives the character one bounded model call per round, in which it writes the life that happened since the last *story cursor*, keeps a small continuity snapshot, stores intents for later, and decides whether it has a real reason to reach out. The next conversation opens with that continuity in view.
-
-Three kinds of rounds, after HDSI's phases:
+Three kinds of rounds:
 
 | Round | When |
 |---|---|
@@ -32,7 +30,7 @@ No memory database, no retrieval, no tools inside the round; metered by dsh-budg
 
 ### 一、来源
 
-这是 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)（Hyperrealistic Dialogue System，MOMOR1A 的 Koishi 插件，AGPL-3.0）里"幕间"这一层想法在 dsh 上的实现。HDSI 的一句话："聊天在幕前发生，生活在幕间继续"。它把角色的连续性做成了一个生活在时间里的故事：对话只是故事里被看见的那部分，对话之外角色也在过自己的日子，有情绪漂移、有打算、有在合适时机主动找人的意愿。
+这是 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)（Hyperrealistic Dialogue System，MOMOR1A 的 Koishi 插件）里"幕间"这一层想法在 dsh 上的独立实现（不含它的代码和提示词文字）。它把角色的连续性做成了一个生活在时间里的故事：对话只是故事里被看见的那部分，对话之外角色也在过自己的日子，有情绪漂移、有打算、有在合适时机主动找人的意愿。
 
 dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM 由 dsh-im 接，定时结果由 dsh-dot 推。缺的只是幕间。所以这个插件只做 HDSI 里"对话之外"的部分，并且做得小。
 
@@ -45,7 +43,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
    - `state`：`mood` 一句话、`now` 在做什么、`next` 接下来打算、`threads` 挂念的事；
    - `intents`：确实要在未来某个时刻处理的事，带时间、类型（提醒 / 答应的回复 / 想联系）和意愿值；
    - `contact`：现在有没有具体理由想对用户说一句话，带意愿值和理由；没有就 `null`。
-   - **提示词**：这一轮的系统提示词整段是一个文件 `src/prompts/interlude.round.txt`，全中文。它由 HDS-Interlude 1.0.1-rc57 的提示词块（`src/narrator.ts`、`src/specialization.ts`，AGPL-3.0 © MOMOR1A/MomoiCore）译成中文、按 HDSI "lite" 档的组装顺序合并而成，中间插着本插件自己的几段（观察到的账本、她自己的生活、`<contact/>` 标记、玩、字段清单）；字段名和 JSON 键保持英文。随轮次变化的部分是 `{phase}` `{length}` `{contact}` 这类占位符，各自对应一个 `interlude.round.<名字>.txt` 小文件（阶段、按模型选的篇幅段、主动联系开/关、浏览、玩……）；某个占位符为空时那一行整行省掉。把它复制到 `~/dot/prompts/interlude.round.txt` 再改，替换的就是整段系统提示词；`npm run prompts` 页面里能直接改、预览。
+   - **提示词**：这一轮的系统提示词整段是一个文件 `src/prompts/interlude.round.txt`，全中文。它分几节：她在写什么、时间、什么是真的（观察到的账本、她自己的生活、`<contact/>` 标记）、上网看到的、这一段怎么写、输出字段（字段清单）；字段名和 JSON 键保持英文。随轮次变化的部分是 `{phase}` `{length}` `{contact}` 这类占位符，各自对应一个 `interlude.round.<名字>.txt` 小文件（阶段、篇幅、主动联系开/关、浏览、玩……）；某个占位符为空时那一行整行省掉。把它复制到 `~/dot/prompts/interlude.round.txt` 再改，替换的就是整段系统提示词；`npm run prompts` 页面里能直接改、预览。
 3. **三种触发**：对话安静 `idleMinutes` 后一次 `follow-up`；没有对话时每 `advanceEveryMinutes` 一次 `advance`（只在 `activeHours` 内）；某个 intent 到时间时一次 `intent`。每天最多 `maxRoundsPerDay` 次。
 4. **带进下一幕**：`~/dot` 里之后的每一轮，系统提示里多一段 `<interlude>`：状态、最近的剧本、待办的打算、距上次幕间多久、期间 dsh 有没有重启过。放在对话历史之后，不影响提示前缀缓存。
 5. **网页观察（HDSI 的 browserIntent）**：主角在幕间里"想查点什么"（搜索或打开一个公开页面）时写进 `browserIntents`，这一轮写完后插件去看，结果存进 `web-context.jsonl`，作为下一轮的 `webContext`。这是她自己的好奇心驱动的"闲逛"，不是兴趣清单定时抓取；每天有上限。看的方式有两种：
@@ -86,7 +84,7 @@ dsh 这边不需要重做一个对话系统——对话由 dsh 自己跑，IM �
 
 `/interlude` 查看状态，`/interlude canon` 看当前人设，`/interlude seed` 给空剧本写一个开场（最近一天的 3–5 段，HDSI 的「剧本起点」），`/interlude now` 立即来一次 follow-up，`/interlude advance` 立即来一次生活推进。
 
-`examples/canon.minase-style.json`（在 dsh-dot 仓库根目录） 是一份按 Minase 风格拼出来的 Canon（角色设定来自 @MomoiCore 的预设，回复规则来自 @Tangink 的预设，均 CC-BY-NC；对话范例取自 HDSI 作者公开的聊天截图），放到 `~/dot/interlude/canon.json` 即可使用。
+`examples/canon.example.json`（在 dsh-dot 仓库根目录）是一份自带的示例 Canon，放到 `~/dot/interlude/canon.json` 即可使用，可以随意改。从预设站导入的人设各有自己的许可（导入时会显示），不随本仓库的 MIT。
 
 ### 五、配置
 
@@ -152,7 +150,7 @@ dsh 0.2.0-rc.2，云端，模拟模型：一幕结束后 `/interlude now` 发起
 
 待验证：真机上用真实模型跑几天，看剧本是否自然、主动联系是否节制。
 
-AGPL-3.0-only（随 dsh-dot）。想法和 lite 档提示词来自 HDS-Interlude（AGPL-3.0）；对话层没有复用其代码。
+MIT（随 dsh-dot）。想法来自 HDS-Interlude；代码和提示词都是这里自己写的。
 
 
 ## 说话的样子（口癖、标点、长度）

@@ -8,7 +8,7 @@
 你们不聊天的时候，她也在过日子。
 
 [![npm](https://img.shields.io/npm/v/dsh-dot-life?style=flat-square&color=4f46e5&label=npm)](https://www.npmjs.com/package/dsh-dot-life)
-[![license](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![dsh](https://img.shields.io/badge/dsh-%E2%89%A5%200.2.1-111827?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2022-339933?style=flat-square&logo=node.js&logoColor=white)](package.json)
 [![stars](https://img.shields.io/github/stars/Kevinwu901113/dsh-dot?style=flat-square&color=f59e0b)](https://github.com/Kevinwu901113/dsh-dot/stargazers)
@@ -47,7 +47,7 @@ NapCat / SnowLuma（OneBot 11）和她手机上同一个账号。你发消息 **
 <td valign="top">
 
 ### 🌙 两次对话之间也在生活
-「幕间」移植自 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)：写下这段时间的日子、记下打算、拿手机去看她好奇的东西，偶尔有真实的理由来找你。
+「幕间」的想法来自 [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude)，这里是独立实现：写下这段时间的日子、记下打算、拿手机去看她好奇的东西，偶尔有真实的理由来找你。
 
 </td>
 <td valign="top">
@@ -123,7 +123,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 
 1. **手机**：`/phone accept` 后插件下载模拟器、platform-tools、系统镜像（约 2 GB，常见 10–30 分钟；进度在 `/phone` 和 dsh-dot 面板里），装完自动开机，桌面出现手机窗口，她会自己跟你说一声。装的过程中照常聊天，她不会等。存储大小建好后不能再改。`/phone` 看状态。
 2. **装 App、登录**：在手机窗口里像真手机一样操作，或者让她自己装（`mobile_install_app` 会弹审批）。登录、验证码、人脸由你亲手过，她遇到会停下来叫你。**用小号**，各平台条款都不允许自动化。
-3. **人设**：`/interlude preset <分享码>`，或把 [`examples/canon.minase-style.json`](examples/canon.minase-style.json) 放到 `~/dot/interlude/canon.json`。
+3. **人设**：`/interlude preset <分享码>`，或把 [`examples/canon.example.json`](examples/canon.example.json) 放到 `~/dot/interlude/canon.json`。
 4. **她逛什么**：不用配。常见社区 App 的站点 → 包名表是内置的，只对她**自己装了**的 App 生效。其他 App 在 `cordis.patch.yml` 里给 `dot-interlude` 加 `phoneApps` / `playApps`。
 5. **QQ**：详见 [docs/qq.md](docs/qq.md)。不想用协议端，也可以按 dsh-im 的说明接官方机器人。
 6. **电脑（可选）**：默认装上并启动；不要就设 `DSH_DOT_COMPUTER=off`。公网看实时画面见 [docs/computer.md](docs/computer.md)。
@@ -285,7 +285,7 @@ flowchart LR
 
 ## 📄 许可证
 
-[AGPL-3.0-only](LICENSE)。幕间组件按原文使用 HDS-Interlude（AGPL-3.0）的提示词，所以整个包按 AGPL 发布；v0.3 之前以 MIT 发布的 computer / dot 代码，那些版本仍按 MIT 可用。
+[MIT](LICENSE)。0.3 到 0.22 的版本以 AGPL-3.0-only 发布（当时幕间用了 HDS-Interlude 的提示词译文），那些版本仍按 AGPL；之后的版本幕间提示词全部重写，不含 HDS-Interlude 的代码或文字，整包按 MIT 发布。
 
 <div align="center">
 

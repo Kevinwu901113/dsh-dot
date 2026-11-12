@@ -14,7 +14,7 @@
 - **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
 - `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
-- `interlude.round` 是幕间一轮的整段系统提示词，从上到下就是模型看到的顺序（HDS-Interlude 1.0.1-rc57 的提示词，AGPL-3.0 © MOMOR1A/MomoiCore，译成中文后合并）。覆盖它就替换整段；`{phase}` `{length}` 这类占位符各对应一个 `interlude.round.<名字>` 小文件，空的那行省掉。
+- `interlude.round` 是幕间一轮的整段系统提示词，从上到下就是模型看到的顺序。覆盖它就替换整段；`{phase}` `{length}` 这类占位符各对应一个 `interlude.round.<名字>` 小文件，空的那行省掉。
 
 **页面**：在 dsh 里发 `/dot prompts`，打开它回的网址（默认 http://127.0.0.1:7870/，只监听本机，端口用 `dot.promptsPort` 换；日志 `~/.dsh/dsh-dot-prompts.log`），`/dot prompts stop` 关掉，dsh 退出时也跟着关。开发时在仓库根目录跑 `npm run prompts` 是同一个页面（`PORT=xxxx` 换端口）。左边第一项是人设（canon.json），其余按她看到的顺序列出全部文件，标着「内置」或「已改过」；右边是整个文件，「保存」写到 `<home>/prompts/`，「恢复内置」删掉覆盖文件，「预览」用样例数据跑真实代码（没保存的改动也能预览），「全貌」拼出她对话里插件加的整段系统提示词。`npm run prompts -- --src` 时「保存」直接写进 `src/prompts/`，改的是内置版本。
 
@@ -43,7 +43,7 @@
 | 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
 | | 日记 | `memory.diary` |
 | | 成长：每周回顾 | `interlude.growth.system` `.too-much` `.too-long`；放进系统提示词的那段 `interlude.growth.section` |
-| | 幕间一轮 | `interlude.round`（整段系统提示词，HDS-Interlude 的规则译成中文后合并）；按情况填进去的：`.canon` `.length` `.length.deepseek` `.length.claude` `.length.gemini-flash` `.length.gpt` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.glm` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
+| | 幕间一轮 | `interlude.round`（整段系统提示词）；按情况填进去的：`.canon` `.length` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 
 **还在代码里的**：

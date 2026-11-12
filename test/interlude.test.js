@@ -114,7 +114,7 @@ test('follow-up round: writes script, state, intents; later acts in home see the
   assert.match(h.calls[0].system, /^故事设定（Canon）：\n# 你是 dot[\s\S]*不打句号/);
   assert.match(h.canonText(), /^# 你是 dot/, 'the Canon is a prompt section for home sessions');
   assert.equal(h.canonText('x', '/elsewhere'), '', 'and absent elsewhere');
-  assert.match(h.calls[0].system, /当前阶段：对话余波/);
+  assert.match(h.calls[0].system, /这一段：他们刚聊完/);
   assert.match(h.calls[0].system, /contact：null（宿主关闭了主动联系）/);
   const user = h.calls[0].messages[0].content[0].text;
   assert.match(user, /"owner": "scheduled-task"[\s\S]*DOT_SILENT/);
@@ -139,7 +139,7 @@ test('advance round runs without any conversation and says so to the model; the 
   const h = harness({ reply: `TOOL:${GOOD.replace(/```(json)?/g, '').trim()}` });
   const r = await h.cmd().handler({ rawInput: 'advance' });
   assert.match(r.text, /ran:/);
-  assert.match(h.calls[0].system, /当前阶段：独立的生活推进/);
+  assert.match(h.calls[0].system, /这一段：没有新消息进来/);
   assert.match(h.calls[0].system, /把整轮写成对 `interval` 工具的一次调用/);
   assert.equal(h.calls[0].tools[0].name, 'interval');
   assert.deepEqual(h.calls[0].tools[0].parameters.required, ['script', 'continuity', 'intents', 'browserIntents', 'playIntents', 'contact']);
@@ -176,7 +176,7 @@ test('a due intent is resolved by an intent round and removed', async () => {
   h.tick();
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /当前阶段：到期的打算/);
+  assert.match(h.calls[0].system, /这一段：有她之前定下、现在到点的打算/);
   assert.match(h.calls[0].messages[0].content[0].text, /提醒他喝水/);
   assert.deepEqual(JSON.parse(readFileSync(join(seeded.home, 'interlude', 'intents.json'), 'utf8')), [], 'settled, and no new intent planted by an intent round');
   assert.match(readFileSync(join(seeded.home, 'interlude', 'script.md'), 'utf8'), /· intent\n/);
@@ -198,7 +198,7 @@ test('scheduler: follow-up after quiet acts, advance on interval, nothing while 
   h.tick();
   await new Promise((r) => setTimeout(r, 50));
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].system, /当前阶段：对话余波/);
+  assert.match(h.calls[0].system, /这一段：他们刚聊完/);
   h.stop();
   const adv = harness({ reply: GOOD, config: { advanceEveryMinutes: 1 } });
   adv.tick();
@@ -262,14 +262,13 @@ test('daily round cap', async () => {
 test('buildPrompt phases', () => {
   const now = Date.now();
   const ip = buildPrompt({ phase: 'intent', identity: '', state: null, overlay: '', script: '', digest: '', cursor: now - 3600000, now, intent: { text: '提醒他喝水', kind: 'reminder', at: new Date(now).toISOString() }, speak: true, model: 'deepseek-flash' });
-  assert.match(ip.system, /当前阶段：到期的打算[\s\S]*contact：null，或者 \{"content"/);
-  assert.match(ip.system, /绝不要把四字成语串成一串/, 'DeepSeek length block');
-  assert.match(ip.system, /^这一轮不能进行新的浏览。/m, 'browser off by default');
+  assert.match(ip.system, /这一段：有她之前定下、现在到点的打算[\s\S]*contact：她这一刻真要发给他的话，\{"content"/);
+  assert.match(ip.system, /^篇幅看这段时间里有多少事。/m, 'one length block for every model');
+  assert.match(ip.system, /^这一段不能上网看新东西/m, 'browser off by default');
   assert.doesNotMatch(ip.system, /\{[A-Za-z]\w*\}/, 'every placeholder filled');
   assert.match(ip.user, /提醒他喝水/);
   const ap = buildPrompt({ phase: 'advance', identity: '', state: null, overlay: '', script: '', digest: '', cursor: 0, now, speak: false, model: 'claude-x' });
-  assert.match(ap.system, /当前阶段：独立的生活推进/);
-  assert.match(ap.system, /从她的身体和手头正在做的事开场/, 'Claude length block');
+  assert.match(ap.system, /这一段：没有新消息进来/);
   assert.doesNotMatch(ap.system, /故事设定（Canon）|情绪基调|先写主角的生活/, 'no Canon, no GLM block, no agency when contact is off');
   assert.match(ap.user, /"from": null/);
 });
@@ -358,7 +357,7 @@ test('a prose-only reply gets a continuity refresh call; its JSON becomes the sn
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
   assert.equal(h.calls.length, 2);
-  assert.match(h.calls[1].system, /写完后的连续性刷新：剧本已经写好了[\s\S]*不要改写剧本。$/);
+  assert.match(h.calls[1].system, /^剧本已经写好了，现在补上其余字段[\s\S]*不要改写剧本。$/);
   assert.match(h.calls[1].messages[0].content[0].text, /她把碗推到床尾/);
   const state = JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8'));
   assert.equal(state.current, '窝在被子里');
@@ -373,7 +372,7 @@ test('browsing: a browserIntent runs through the web service after the round; th
   const h = harness({ reply: withBrowse, web, config: { browseDailyCap: 1 } });
   h.act('s1', 'hi', 'hello');
   await h.cmd().handler({ rawInput: 'now' });
-  assert.match(h.calls[0].system, /这一轮的浏览是延后执行的/);
+  assert.match(h.calls[0].system, /这一段写完才会去看/);
   assert.deepEqual(searches, ['HDS-Interlude 最新版本']);
   const ctxLines = readFileSync(join(h.home, 'interlude', 'web-context.jsonl'), 'utf8').trim().split('\n');
   assert.equal(ctxLines.length, 1);
@@ -382,13 +381,13 @@ test('browsing: a browserIntent runs through the web service after the round; th
   h.act('s1', 'again', 'ok');
   await h.cmd().handler({ rawInput: 'now' });
   assert.match(h.calls[1].messages[0].content[0].text, /"webContext"[\s\S]*HDSI rc57 出了/);
-  assert.match(h.calls[1].system, /这一轮不能进行新的浏览/);
+  assert.match(h.calls[1].system, /这一段不能上网看新东西/);
   assert.equal(searches.length, 1, 'daily cap holds');
   h.stop();
   const off = harness({ reply: withBrowse, web: null });
   off.act('s1', 'hi', 'hello');
   await off.cmd().handler({ rawInput: 'now' });
-  assert.match(off.calls[0].system, /这一轮不能进行新的浏览/);
+  assert.match(off.calls[0].system, /这一段不能上网看新东西/);
   assert.ok(!existsSync(join(off.home, 'interlude', 'web-context.jsonl')));
   off.stop();
 });
@@ -553,7 +552,7 @@ test('contact marker: what really went out, or her deleting it; the prompt forbi
   assert.match(off, /^contact：null（宿主关闭了主动联系）。$/m);
   const on = buildPrompt({ phase: 'advance', speak: true, now: Date.now() }).system;
   assert.ok(on.includes(prompt('interlude.round.contact-rule')) && /给用户的消息只写 <contact\/> 标记/.test(on));
-  assert.match(on, /^先写主角的生活；/m, 'agency outside follow-up when contact is on');
+  assert.match(on, /^找不找他：先把她的日子写完/m, 'agency outside follow-up when contact is on');
 });
 
 test('fiction follows reality: the round sees what she really did in the last half hour, and on which device', async () => {

@@ -1,5 +1,4 @@
-// dsh-interlude/core: 幕间 for DeepSeek Harness, after HDS-Interlude (https://github.com/REcklessNOLOve117/HDS-Interlude):
-// "聊天在幕前发生，生活在幕间继续。"
+// dsh-interlude/core: 幕间 for DeepSeek Harness — the life she has between conversations.
 //
 // 幕前 (on stage) is any dsh conversation in <home>: dsh runs it, dsh-im carries it, dsh-dot pushes
 // scheduled results. 幕间 (between acts) is this plugin: one model call per round in which the
@@ -7,14 +6,17 @@
 // reason to reach out, and leaves a small continuity snapshot behind. Later acts open with that
 // snapshot in view.
 //
-// Rounds, after HDSI's fixed phases (a user message is phase 1 and is handled by dsh itself):
+// Rounds (a user message is handled by dsh itself):
 //   follow-up  — a conversation has just gone quiet (idleMinutes)
 //   advance    — independent life progression at a regular interval, even with no conversation
 //   intent     — a stored intent (reminder, promised reply, contact check) came due
-// Continuity layers kept from HDSI: Canon (the identity file), recent script (script.md), the
-// continuity snapshot (state.json), intents; slow change in who she is lives in dsh-dot/memory's self bank
-// (intents.json). Not ported: long-term facts with retrieval, Alter (mood drift), Perspective,
-// multi-participant stories, seen/delayed replies inside a conversation.
+// What carries over between rounds: the Canon (the identity file), the recent script (script.md), the
+// continuity snapshot (state.json) and intents (intents.json); slow change in who she is lives in
+// dsh-dot/memory's self bank.
+//
+// The idea of an interlude comes from HDS-Interlude (https://github.com/REcklessNOLOve117/HDS-Interlude).
+// This is an independent implementation: none of its code or prompt text is used here. The Canon file
+// keeps the `storyDefaults` field names so that personas shared on its preset hub can be imported.
 import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -38,8 +40,8 @@ export const KNOWN_APPS = {
 export const defaults = {
   home: '',                   // default ~/dot; the interlude files live in <home>/interlude
   scope: 'home+im',           // which sessions are acts: 'home' (cwd inside home), 'im' (opened from an IM bot), 'home+im', 'all'
-  canon: null,                // HDSI storyDefaults used until a preset is imported ({ characterName, characterProfile, ... })
-  presetHub: 'https://typ0.space', // HDSI preset hub; `/interlude preset <share code>` imports from here
+  canon: null,                // a storyDefaults object used until a preset is imported ({ characterName, characterProfile, ... })
+  presetHub: 'https://typ0.space', // community preset hub (HDS-Interlude's persona format); `/interlude preset <share code>` imports from here
   // System-prompt sections dropped for the character's sessions so the Canon opens the prompt. dsh's
   // "You are an AI agent powered by DeepSeek Harness" + the agent preset's "You are a coding agent"
   // are what the community calls the root of the AI flavour. [] keeps everything.
@@ -48,7 +50,7 @@ export const defaults = {
   // A line or two on how she talks, after everything else in her conversation's prompt (the Canon's
   // `voice` field, or interlude.voice from her name). false: none.
   voice: true,
-  // HDSI browsing (the character's browserIntent runs after the round). Two ways to look:
+  // Browsing (the character's browserIntent runs after the round). Two ways to look:
   //   web — dsh's `web` service: anonymous, read-only, cheap, invisible. Curiosity.
   //   vm  — a read-only turn in the character's own session using dsh-computer's VM browser: her
   //         logins, her tabs, visible in the live view. Nothing is approved in that turn: tools
@@ -245,10 +247,9 @@ export function msLeftInHours(spec, date = new Date()) {
 }
 
 // ── The round's system prompt is one file, src/prompts/interlude.round.txt (overridable whole from
-// <home>/prompts/). Its rules are HDS-Interlude's (1.0.1-rc57, src/narrator.ts and src/specialization.ts,
-// AGPL-3.0 © MOMOR1A/MomoiCore), translated into Chinese and merged, in the order HDSI's "lite" tier
-// assembles them, with this plugin's own lines (the observed ledger, her own life, the <contact/>
-// marker, playing, the field list). What varies per round is a small file filled into a placeholder.
+// <home>/prompts/): what she is writing, the clock, what counts as real (the observed ledger, her
+// own life, the <contact/> marker, playing), how to write it, and the field list. What varies per
+// round is a small file filled into a placeholder.
 
 /** What the <contact/> marker becomes once the host knows whether her message went out ('handed': her conversation decides). */
 export function fillContact(script, contact, said) {
@@ -259,16 +260,6 @@ export function fillContact(script, contact, said) {
   return { script: filled, marked: filled !== String(script ?? '') };
 }
 
-/** HDSI's model-family detection (specialization.ts): the length block differs per family. */
-export function lengthBlockFor(model = '') {
-  const m = String(model).toLowerCase();
-  if (/deepseek/.test(m)) return prompt('interlude.round.length.deepseek');
-  if (/claude/.test(m)) return prompt('interlude.round.length.claude');
-  if (/gemini/.test(m) && /flash|lite|mini/.test(m)) return prompt('interlude.round.length.gemini-flash');
-  if (/gpt|o\d/.test(m)) return prompt('interlude.round.length.gpt');
-  return prompt('interlude.round.length');
-}
-
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
@@ -276,7 +267,7 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
   const playing = Boolean(play && playApps.length);
   const system = prompt('interlude.round', {
     canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
-    length: lengthBlockFor(model),
+    length: prompt('interlude.round.length'),
     phase: prompt(PHASES[phase] ?? PHASES.advance), // seed writes like an advance round
     herLife: herLife.length ? prompt('interlude.round.her-life') : '',
     returned: returned.length ? prompt('interlude.round.returned') : '',
@@ -286,7 +277,6 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     play: playing ? prompt('interlude.round.play', { playRules: playRules(), playApps: playApps.join('、'), collect: playActions.includes('collect') && stickers >= 0 && stickers < 5 ? prompt('interlude.round.play.collect', { stickers }) : '' }) : '',
     free: prompt('interlude.round.free'),
     doings: doings ? prompt('interlude.round.doings') : '',
-    glm: /glm/i.test(String(model)) ? prompt('interlude.round.glm') : '',
     style: style?.trim() || prompt('interlude.round.style.none'),
     // The field list travels as the arguments of one `interval` tool call, so the provider guarantees
     // their shape; a reply that is prose only is still accepted (the host fills the rest afterwards).
@@ -374,7 +364,7 @@ export function parseReply(text, now = Date.now()) {
       const cont = o.continuity ?? o.state ?? {};
       return {
         script: str(o.script),
-        // HDSI continuity snapshot: current / recent / salient (older replies' mood/now/next/threads are folded in).
+        // The continuity snapshot: current / recent / salient (older replies' mood/now/next/threads are folded in).
         state: {
           current: str(cont.current ?? cont.now ?? cont.mood),
           recent: [].concat(cont.recent ?? cont.next ?? []).map(str).filter(Boolean).slice(0, 5),
@@ -403,7 +393,7 @@ export function parseReply(text, now = Date.now()) {
   return null;
 }
 
-/** Render the context later acts see: HDSI's continuity fields as data, no added prose. */
+/** Render the context later acts see: the continuity fields as data, no added prose. */
 export function renderContext({ state, entries, intents, cursor, restarted, now = Date.now() }) {
   if (!state && !entries.length) return '';
   const upcoming = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text }));
@@ -470,7 +460,7 @@ export function castNames(canon) {
   return [...new Set([...cast.matchAll(new RegExp(`(?:名叫|叫做|名字是)(${name})|(?:^|[\\n；;。])\\s*(${name})\\s*[：:]`, 'g'))].map((m) => m[1] || m[2]))];
 }
 
-/** HDSI storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
+/** storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
 export function renderCanon(canon, { withStyle = false } = {}) {
   const sd = canon?.storyDefaults ?? canon ?? {};
   const name = String(sd.characterName ?? '').trim();
@@ -487,7 +477,7 @@ export function renderCanon(canon, { withStyle = false } = {}) {
   ].filter(Boolean).join('\n\n');
 }
 
-/** Import a preset from the HDSI hub by share code (public API; the page needs no login for this). */
+/** Import a preset from the preset hub by share code (public API; the page needs no login for this). */
 export async function fetchPreset(hub, code, fetchImpl = globalThis.fetch) {
   const want = String(code).replace(/[^0-9a-z]/gi, '').toUpperCase();
   if (want.length < 6) throw new Error('share code looks wrong');
@@ -614,7 +604,7 @@ export function apply(ctx, config = {}) {
     }
   });
 
-  // Web observations (HDSI webContext), bounded; the newest cfg.webContextLimit are shown.
+  // Web observations (webContext), bounded; the newest cfg.webContextLimit are shown.
   const readWebContext = () => {
     let lines = [];
     try { lines = readFileSync(files.web, 'utf8').split('\n').filter(Boolean); } catch (error) { void error; }
@@ -784,7 +774,7 @@ export function apply(ctx, config = {}) {
     try {
       const identity = [canonText(), portraitSection()].filter(Boolean).join('\n\n');
       const sel = ctx.agentDefaultModel.currentSelection();
-      // Acts become recentScript entries with HDSI ownership labels.
+      // Acts become recentScript entries with owner labels.
       const entries = items.flatMap((i) => [
         i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try', 'free'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
         i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
@@ -815,7 +805,7 @@ export function apply(ctx, config = {}) {
       const script = parsed?.script || r1.text.trim();
       if (!script) throw new Error('empty script');
       // Prose without the fields (the model wrote the passage as text, or was cut off): a second
-      // call over the script just written fills every other field — HDSI's post-commit continuity
+      // call over the script just written fills every other field — the post-commit continuity
       // refresh, widened so nothing the round should have produced is lost.
       if (!parsed?.state) {
         const r2 = await collectReply(ctx.llm.stream({
@@ -874,7 +864,7 @@ export function apply(ctx, config = {}) {
       for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
       if (phase === 'advance') meta.lastAdvance = now;
       saveMeta();
-      // HDSI deferred browsing: the character's browserIntent runs now through dsh's web service;
+      // Deferred browsing: the character's browserIntent runs now through dsh's web service;
       // the observation is evidence for later rounds (webContext), never for this script.
       for (const b of parsed?.browserIntents ?? []) await browse(b, phase);
       for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
@@ -1162,7 +1152,7 @@ export function apply(ctx, config = {}) {
     return next();
   }, { prepend: true });
 
-  // Agency, simplified from HDSI: speak enabled, active hours, willingness, daily cap.
+  // Agency: speak enabled, active hours, willingness, daily cap.
   async function contact(c, phase) {
     if (!cfg.speak) return false;
     if (!inHours(cfg.activeHours)) { audit('contact-held', { phase, why: 'outside active hours' }); return false; }
@@ -1195,7 +1185,7 @@ export function apply(ctx, config = {}) {
         }
       }
       if (!bot || !target) return false;
-      // HDSI's <sep/> marks separate sends of the same moment; deliver them as separate messages.
+      // <sep/> marks separate sends of the same moment; deliver them as separate messages.
       const parts = c.text.split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
       let ok = false;
       for (const part of parts) ok = (await im.send(bot, target, part, { format: 'plain' }))?.sent === true || ok;
@@ -1306,7 +1296,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the HDSI hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id), "free" gives her own time now, "growth" shows her portrait and its history ("growth now" reviews this week, "growth <week>" shows one, "growth rollback <week>" goes back to it)',
+      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id), "free" gives her own time now, "growth" shows her portrait and its history ("growth now" reviews this week, "growth <week>" shows one, "growth rollback <week>" goes back to it)',
       input: { hint: '[now | advance | seed | preset <code> | canon | doings | feedback [#id] <text> | free | growth [now | <week> | rollback <week>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
@@ -1359,7 +1349,7 @@ export function apply(ctx, config = {}) {
 
   // For the panel (dsh-dot/dot): where her life stands, as data.
   ctx.provide?.('dshInterlude', {
-    /** Import her persona from the HDSI hub by share code (the dot page's setup; /interlude preset does the same). */
+    /** Import her persona from the preset hub by share code (the dot page's setup; /interlude preset does the same). */
     async importPreset(code) {
       canon = await fetchPreset(cfg.presetHub, code);
       writeFileSync(files.canon, JSON.stringify(canon, null, 2));

@@ -27,7 +27,7 @@ test('prompts page: lists every file exactly once, and every entry renders', asy
   for (const e of entries) {
     const r = await renderEntry(e);
     assert.ok(r && !r.startsWith('（没拼出来'), `${e.id}: ${r.slice(0, 200)}`);
-    assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps|canon|length|phase|contactRule|agency|browsing|herLife|play|playRules|playApps|playActions|collect|glm|style|seed|playIntents|contact)\}/, e.id);
+    assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps|canon|length|phase|contactRule|agency|browsing|herLife|play|playRules|playApps|playActions|collect|style|seed|playIntents|contact)\}/, e.id);
   }
   assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机（Android，设备 dot，工具 mcp__dot-phone__\*）[\s\S]*<memory>[\s\S]*说话提醒（最后一段）[\s\S]*小点在 IM 里回他/);
 });
@@ -134,11 +134,11 @@ test('prompts render: separate model calls (group score, memory consolidation)',
 test('prompts render: the interlude round is one file; an override of it replaces the whole system prompt', async () => {
   const { buildPrompt } = await import('../src/interlude/core.js');
   const text = raw('interlude.round');
-  for (const k of ['canon', 'length', 'phase', 'herLife', 'contactRule', 'browsing', 'agency', 'play', 'glm', 'style', 'seed', 'playIntents', 'contact']) assert.ok(text.includes(`{${k}}`), k);
+  for (const k of ['canon', 'length', 'phase', 'herLife', 'contactRule', 'browsing', 'agency', 'play', 'style', 'seed', 'playIntents', 'contact']) assert.ok(text.includes(`{${k}}`), k);
   const args = { phase: 'advance', identity: '# 你是 小点', speak: true, model: 'deepseek-chat', browser: 'deferred', play: true, playApps: ['小黑盒'], playActions: ['like'], herLife: ['x'], now: Date.now() };
   const sys = buildPrompt(args).system;
-  assert.match(sys, /^故事设定（Canon）：\n# 你是 小点\n把这一段写成/);
-  assert.match(sys, /\nplayIntents：\[\{"app":"小黑盒 之一","action":"like"[\s\S]*\ncontact：null，或者 \{"content"[\s\S]*没有具体动机时，返回 null。$/);
+  assert.match(sys, /^故事设定（Canon）：\n# 你是 小点\n【你在写什么】\n这是她两次聊天之间的日子/);
+  assert.match(sys, /\nplayIntents：\[\{"app":"小黑盒 之一","action":"like"[\s\S]*\ncontact：她这一刻真要发给他的话，\{"content"[\s\S]*都不算发，留在 script 里。$/);
   assert.doesNotMatch(sys, /\{[A-Za-z]\w*\}/);
   mkdirSync(join(HOME, 'prompts'), { recursive: true });
   writeFileSync(overridePath('interlude.round'), '只有这一行。{phase}\n{agency}\n');

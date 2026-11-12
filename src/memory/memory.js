@@ -728,7 +728,7 @@ export function apply(ctx, config = {}) {
       return [].concat(items ?? []).map((n) => resolvePerson(memory.people, { handles: n?.handles ?? (n?.from ? [n.from] : []), platform: n?.platform, name: n?.name }))
         .filter((p) => p && p.tier !== 'owner' && !seen.has(p.id) && seen.add(p.id)).map((p) => renderPerson(p)).join('\n');
     },
-    /** For the interlude: what she knows to be true about him (memories, in HDSI's payload terms). */
+    /** For the interlude: what she knows to be true about him (the round payload's `memories`). */
     forInterlude() { return memory.owner.map((e) => `关于他：${e}`); },
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },

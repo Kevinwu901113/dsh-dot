@@ -131,6 +131,7 @@ Kevin："interlude 也合并到 dot 里面。然后所有仓库清理掉不要�
 
 - dsh-interlude 的历史同样 merge 进来；代码在 `src/interlude/core.js`，组件 `dsh-dot/interlude`，测试 `test/interlude.test.js`，示例 Canon 在 `examples/`，文档 `docs/interlude.md` / `docs/INTERLUDE-DESIGN.md`。
 - **许可证变成 AGPL-3.0-only**：幕间按原文使用 HDS-Interlude 的提示词，HDSI 是 AGPL；并进同一个包，整个包就是 AGPL。v0.3 以前以 MIT 发布的 computer / dot 代码，那些版本仍是 MIT。
+- **2026-11：许可证改回 MIT**：幕间一轮的提示词（`interlude.round` 及其阶段、篇幅、联系、浏览几个小段）全部重写，按模型家族选篇幅段的逻辑删掉，示例 Canon 换成自带的 `examples/canon.example.json`。仓库里不再有 HDS-Interlude 的代码或文字，只保留 `storyDefaults` 字段名以便导入预设。0.3–0.22 的版本仍是 AGPL。
 - `dsh-computer`、`dsh-interlude` 两个仓库不再需要（历史都在这里）。
 
 ## v0.5（2026-10-23）：转向——养鱼是主基调，她有了一部手机

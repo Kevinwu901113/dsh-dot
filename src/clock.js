@@ -21,10 +21,10 @@ export function stamp(ms = Date.now(), now = Date.now()) {
   return `${dayMark(d.getTime(), now)} ${p2(d.getHours())}:${p2(d.getMinutes())}`;
 }
 
-/** The daylight period HDSI names with nowLocal. */
+/** The part of the day, named next to nowLocal. */
 export const periodOf = (h) => (h < 5 ? '深夜' : h < 9 ? '清晨' : h < 12 ? '上午' : h < 14 ? '中午' : h < 18 ? '下午' : h < 20 ? '傍晚' : '夜里');
 
-/** HDSI sends nowLocal with weekday and daylight period as the authoritative endpoint. */
+/** nowLocal with weekday and part of day: the clock a round is written against. */
 export function describeNow(input = new Date()) {
   const d = input instanceof Date ? input : new Date(input);
   const h = d.getHours();

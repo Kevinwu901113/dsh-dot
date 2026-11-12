@@ -8,7 +8,7 @@ She has her own Android phone, her own QQ, her own days and diary.<br>
 Between your conversations, she keeps living.
 
 [![npm](https://img.shields.io/npm/v/dsh-dot-life?style=flat-square&color=4f46e5&label=npm)](https://www.npmjs.com/package/dsh-dot-life)
-[![license](https://img.shields.io/badge/license-AGPL--3.0-blue?style=flat-square)](LICENSE)
+[![license](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![dsh](https://img.shields.io/badge/dsh-%E2%89%A5%200.2.1-111827?style=flat-square)](https://github.com/deepseek-ai/deepseek-harness)
 [![node](https://img.shields.io/badge/node-%E2%89%A5%2022-339933?style=flat-square&logo=node.js&logoColor=white)](package.json)
 [![stars](https://img.shields.io/github/stars/Kevinwu901113/dsh-dot?style=flat-square&color=f59e0b)](https://github.com/Kevinwu901113/dsh-dot/stargazers)
@@ -30,7 +30,7 @@ Between your conversations, she keeps living.
 
 - 📱 **A real phone** — the plugin downloads, builds and boots an Android emulator (no Java / Android Studio). No app store: **she installs her own apps**.
 - 💬 **Her own QQ** — NapCat or SnowLuma (OneBot 11), same account as on her phone. Your message wakes her in **1–2 s**; she replies in several short messages and sends stickers.
-- 🌙 **A life between conversations** — the interlude, ported from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): she writes down her days, keeps intents, goes to look at what she's curious about, and sometimes has a real reason to message you.
+- 🌙 **A life between conversations** — the interlude, an idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude): she writes down her days, keeps intents, goes to look at what she's curious about, and sometimes has a real reason to message you.
 - 🧠 **Memory** — the words are the evidence, three short notes hold what stays true: every time she wakes, the past turns that bear on it (vector + BM25 candidates, reranked on your machine) come back to her by date; what she knows about you, about herself and what is not over yet is a small note; one card per person. Handoff at 150k tokens, a diary every night at 23:30.
 - 🎮 **She browses and plays** — likes, comments and follows in the apps she installed herself. How much is her own habit, not a quota.
 - 🖥️ **An optional computer** — a bundled microVM (no Docker): shell, browser, desktop, live view, approval gates, audit log.
@@ -146,7 +146,7 @@ See the [Chinese README](README.md#-与其他插件共存) for injected message 
 
 ## 📄 License
 
-[AGPL-3.0-only](LICENSE). The interlude uses HDS-Interlude's (AGPL-3.0) prompts verbatim, so the whole package is AGPL. Computer / dot code released under MIT before v0.3 remains MIT in those versions.
+[MIT](LICENSE). Versions 0.3 through 0.22 were released under AGPL-3.0-only (the interlude then used a translation of HDS-Interlude's prompts) and stay AGPL; from the next version on the interlude prompts are rewritten from scratch, nothing of HDS-Interlude's code or text is included, and the whole package is MIT.
 
 <div align="center">
 
