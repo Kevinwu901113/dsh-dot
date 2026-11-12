@@ -260,6 +260,9 @@ export function fillContact(script, contact, said) {
   return { script: filled, marked: filled !== String(script ?? '') };
 }
 
+/** An event's recorded time (ISO, UTC) as her local "MM-DD HH:MM": the same clock as interval.nowLocal. */
+export const localStamp = (ts) => { const d = new Date(ts); const p = (n) => String(n).padStart(2, '0'); return Number.isFinite(d.getTime()) ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}` : ''; };
+
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
@@ -756,7 +759,7 @@ export function apply(ctx, config = {}) {
     let lines = [];
     try { lines = readFileSync(files.pending, 'utf8').split('\n').filter(Boolean); } catch (error) { void error; }
     const items = lines.map((l) => { try { return JSON.parse(l); } catch (error) { void error; return null; } }).filter(Boolean);
-    const text = items.map((i) => `[${i.ts.slice(5, 16).replace('T', ' ')}${i.origin === 'schedule' ? ' 定时任务' : ' 用户'}]${i.approvals ? `（有 ${i.approvals} 次审批）` : ''}\n用户/任务：${i.user || '（无）'}\n我：${i.assistant || '（无回复）'}`).join('\n\n');
+    const text = items.map((i) => `[${localStamp(i.ts)}${i.origin === 'schedule' ? ' 定时任务' : ' 用户'}]${i.approvals ? `（有 ${i.approvals} 次审批）` : ''}\n用户/任务：${i.user || '（无）'}\n我：${i.assistant || '（无回复）'}`).join('\n\n');
     return { items, text: text.length > cfg.digestChars ? `…${text.slice(-cfg.digestChars)}` : text };
   }
   let busy = false, fails = 0, pausedUntil = 0;
@@ -776,7 +779,7 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       // Acts become recentScript entries with owner labels.
       const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try', 'free'].includes(i.origin) ? 'character' : 'user', at: i.ts.slice(5, 16).replace('T', ' '), content: i.user } : null,
+        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try', 'free'].includes(i.origin) ? 'character' : 'user', at: localStamp(i.ts), content: i.user } : null,
         i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
       ]).filter(Boolean);
       const back = meta.returned ?? [];
@@ -789,7 +792,7 @@ export function apply(ctx, config = {}) {
       const { system, user, tools } = buildPrompt({
         phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
         digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
-        lastHalfHour: lastHalfHour.map((a) => ({ at: a.ts.slice(5, 16).replace('T', ' '), on: a.on, did: a.did })),
+        lastHalfHour: lastHalfHour.map((a) => ({ at: localStamp(a.ts), on: a.on, did: a.did })),
         browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
         play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
         memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
