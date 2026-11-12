@@ -919,3 +919,11 @@ test('voice: how she talks is the last thing in her conversation (after the memo
   assert.equal(off.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', off.home)), '');
   off.stop();
 });
+
+test('a round sees what she has already set for later, so she does not set it again', () => {
+  const now = Date.parse('2026-11-12T08:00:00Z');
+  const p = buildPrompt({ phase: 'advance', now, speak: false, upcoming: [{ at: '2026-11-13 12:00 星期五 中午', kind: 'reminder', text: '问姐姐吃饭的地点' }] });
+  assert.deepEqual(JSON.parse(p.user).upcomingPlans, [{ at: '2026-11-13 12:00 星期五 中午', kind: 'reminder', text: '问姐姐吃饭的地点' }]);
+  assert.match(p.system, /upcomingPlans 是她已经定下、还没到点的事：里面有的不要再定一遍/);
+  assert.deepEqual(JSON.parse(buildPrompt({ phase: 'advance', now, speak: false }).user).upcomingPlans, []);
+});

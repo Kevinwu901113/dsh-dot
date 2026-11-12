@@ -266,7 +266,7 @@ export const localStamp = (ts) => { const d = new Date(ts); const p = (n) => Str
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false, upcoming = [] }) {
   const playing = Boolean(play && playApps.length);
   const system = prompt('interlude.round', {
     canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
@@ -299,6 +299,8 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     // What she really did in the last half hour, already woven into earlier rounds: where she is now follows from it.
     lastHalfHour,
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
+    // What she has already set for later (intents.json, minus the one that is due now): she should not set it again.
+    upcomingPlans: upcoming,
     webContext,
     // What she knows to be true (dsh-dot/memory): established past, like recentScript.
     memories,
@@ -797,6 +799,7 @@ export function apply(ctx, config = {}) {
         play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
         memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
         doings: view, trying: tryOpen(),
+        upcoming: intents.filter((i) => i.id !== intent?.id).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text })),
       });
       const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
         messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };

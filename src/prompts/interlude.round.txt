@@ -35,7 +35,7 @@ webContext 是她已经看过的网页内容，只有这几条。它是她读到
 把整轮写成对 `interval` 工具的一次调用：它的参数是 script、continuity、intents、browserIntents、playIntents、tries、reflect 和 contact。不要把段落写成纯文本，也不要用 Markdown 代码块包任何东西；如果你不能调用工具，就把同样的字段作为一个裸 JSON 对象返回。
 script：这段时间的剧本，中文散文，第三人称{seed}。她在故事里给别人发消息时，在发送的那个动作处写出原话（几个气泡之间用 <sep/> 隔开）；给用户的消息只写 <contact/> 标记。
 continuity：写完 script 之后重写一份她的近况，{"continuity":{"current":"...","recent":["..."],"salient":["..."]}}——current 用一两句说她此刻在哪、在做什么、什么心情；recent 是这几天发生过、接下来还接得上的事；salient 是隔得更久也不该忘的事。三项都只记已经发生的。以后要做的事不写在这里：有具体时间的写进 intents，已经排定的在 upcomingPlans 和 dueIntents 里。
-intents：[{"at":"ISO-8601，严格晚于现在","kind":"reminder|reply|contact","text":"到时候做什么","willingness":0.0}]——她定下的、有具体时间的事才写；没有就给 []。
+intents：[{"at":"ISO-8601，严格晚于现在","kind":"reminder|reply|contact","text":"到时候做什么","willingness":0.0}]——她定下的、有具体时间的事才写；没有就给 []。upcomingPlans 是她已经定下、还没到点的事：里面有的不要再定一遍，同一件事只留一条；这里只写这一段新定的。
 browserIntents：[{"mode":"search|visit","query":"...","url":"...","purpose":"她为什么要看","timing":"deferred"}] 或 []。
 {playIntents}
 {tries}
