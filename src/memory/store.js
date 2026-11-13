@@ -388,7 +388,9 @@ export function openOp(memory, op, { now = Date.now() } = {}) {
     if (!content) return { ok: false, error: 'content is required' };
     const why = rejectReason(content);
     if (why) return { ok: false, error: `not kept (${why})` };
-    const same = memory.open.find((x) => normText(x.text) === normText(content) || jaccard(x.text, content) >= 0.82);
+    // Due the same day, a looser match is the same thing reworded (0.55: on the benchmark's replies the
+    // rewordings scored 0.57+, while two different errands "明天…" shared a template at 0.52).
+    const same = memory.open.find((x) => normText(x.text) === normText(content) || jaccard(x.text, content) >= (due && x.due === due ? 0.55 : 0.82));
     if (same) { same.saidAt = now; return { ok: true, note: 'already there' }; }
     memory.open.push({ id: `o${String((memory.oseq = (memory.oseq ?? 0) + 1)).padStart(4, '0')}`, text: content, at: now, due: due || '' });
     return { ok: true };
@@ -481,14 +483,14 @@ const TODAY_MAX = 5;
 const openOrder = (a, b) => (a.due && b.due ? a.due.localeCompare(b.due) : (b.due ? 1 : 0) - (a.due ? 1 : 0)) || (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id);
 
 /**
- * 还没了的事 as she is shown it, from all live items: `today` — due today, or overdue and still kept,
- * that nobody has brought up since the day came (most overdue first, at most TODAY_MAX); `list` — the
- * rest in openOrder, as many as fit in `limits.open` characters (what does not fit is still stored).
+ * 还没了的事 as she is shown it, from all live items: `today` — due today and not brought up yet today
+ * (at most TODAY_MAX; overdue ones are in the list, where dated items come first); `list` — the rest in
+ * openOrder, as many as fit in `limits.open` characters (what does not fit is still stored).
  */
 export function openView(memory, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle } = {}) {
   const live = memory.open.filter((x) => isLive(x, { now, keepAfterDue, keepIdle }));
-  const today = live.filter((x) => x.due && daysBetween(dueMs(x), now) >= 0 && !((x.saidAt ?? 0) >= dueMs(x)))
-    .sort((a, b) => a.due.localeCompare(b.due) || (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id)).slice(0, TODAY_MAX);
+  const today = live.filter((x) => x.due && daysBetween(dueMs(x), now) === 0 && !((x.saidAt ?? 0) >= dueMs(x)))
+    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id)).slice(0, TODAY_MAX);
   const list = [];
   let used = 0;
   for (const x of live.filter((y) => !today.includes(y)).sort(openOrder)) {

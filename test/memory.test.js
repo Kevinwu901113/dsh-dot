@@ -95,7 +95,7 @@ test('还没了的事 expire by code: a dated item a few days after its day, one
   assert.equal('owed' in m.open[0], false);
 });
 
-test('今天到期的: its own section above the rest until it has come up since the day; overdue ones while kept; at most five, outside the budget', () => {
+test('今天到期的: only what is due today and has not come up today, above the rest; overdue ones sit first in the list; at most five, outside the budget', () => {
   const T = new Date(2026, 5, 22, 20, 0).getTime();
   const m = emptyMemory();
   for (let i = 0; i < 12; i++) openOp(m, { action: 'add', content: `第 ${i} 件很长很长很长很长很长很长很长很长的事情要做` }, { now: T + i });
@@ -105,29 +105,40 @@ test('今天到期的: its own section above the rest until it has come up since
   openOp(m, { action: 'add', content: '06-21 他说 06-25 搬家', due: '06-25' }, { now: T - 864e5 });
   const limits = { ...DEFAULT_LIMITS, open: 120 };
   const s = renderStanding(m, { now: T, limits });
-  assert.match(s, /## 今天到期的[^\n]*\n- 06-18 他说 06-20 交报告（到 06-20）\n- 06-20 她答应老贺 06-22 寄画册（到 06-22）\n## 还没了的事[^\n]*\n- 06-21 他说 06-25 搬家（到 06-25）\n- 第 11 件/);
+  assert.match(s, /## 今天到期的[^\n]*\n- 06-20 她答应老贺 06-22 寄画册（到 06-22）\n## 还没了的事[^\n]*\n- 06-18 他说 06-20 交报告（到 06-20）\n- 06-21 他说 06-25 搬家（到 06-25）\n- 第 11 件/);
   assert.doesNotMatch(s, /体检/);
-  assert.ok(s.indexOf('## 今天到期的') < s.indexOf('## 还没了的事'));
   assert.equal(s, renderStanding(m, { now: T + 3600000, limits }), 'byte-stable within the day');
-  // brought up on or after its day (a replace, said again): back in the list
+  // brought up on its day (a replace, said again): back in the list
   openOp(m, { action: 'replace', oldText: '老贺', content: '06-20 她答应老贺 06-22 寄画册，今天说了在打包', due: '06-22' }, { now: T });
   const after = renderStanding(m, { now: T + 1, limits });
-  assert.doesNotMatch(after.split('## 还没了的事')[0], /老贺/);
-  assert.match(after, /## 还没了的事[^\n]*\n- 06-20 她答应老贺[^\n]*（到 06-22）\n- 06-21 他说 06-25 搬家/);
-  // touched before the day does not count
+  assert.doesNotMatch(after, /今天到期的/);
+  assert.match(after, /## 还没了的事[^\n]*\n- 06-18 他说 06-20 交报告[^\n]*\n- 06-20 她答应老贺[^\n]*（到 06-22）\n- 06-21 他说 06-25 搬家/);
+  // touched before the day does not count; the next day it is no longer in the section
   openOp(m, { action: 'add', content: '06-21 他说 06-23 去银行', due: '06-23' }, { now: T });
   openOp(m, { action: 'replace', oldText: '银行', content: '06-21 他说 06-23 上午去银行', due: '06-23' }, { now: T });
-  assert.match(renderStanding(m, { now: T + 864e5, limits }), /## 今天到期的[^\n]*\n(- [^\n]*\n)*- 06-21 他说 06-23 上午去银行/);
-  // at most five, the most overdue first; the rest go back to the list
+  assert.match(renderStanding(m, { now: T + 864e5, limits }), /## 今天到期的[^\n]*\n- 06-21 他说 06-23 上午去银行（到 06-23）\n## /);
+  assert.doesNotMatch(renderStanding(m, { now: T + 2 * 864e5, limits }), /今天到期的/);
+  // at most five; the rest go to the list
   const n = emptyMemory();
-  for (let d = 19; d <= 24; d++) openOp(n, { action: 'add', content: `事情 ${d} 号要办`, due: `06-${d}` }, { now: T - 10 * 864e5 });
+  for (let d = 0; d < 6; d++) openOp(n, { action: 'add', content: `${['给老贺寄画册', '给罗姐交报告', '去店里取眼镜', '还钱给知遥', '去牙科洗牙', '修厨房水龙头'][d]}`, due: '06-24' }, { now: T + d });
+  openOp(n, { action: 'add', content: '去银行办卡', due: '06-23' }, { now: T });
   const v = openView(n, { now: new Date(2026, 5, 24, 9).getTime() });
-  assert.deepEqual(v.today.map((x) => x.due.slice(5)), ['06-21', '06-22', '06-23', '06-24'], 'overdue past three days is gone; four left');
-  for (let d = 25; d <= 26; d++) openOp(n, { action: 'add', content: `另外 ${d}`, due: '06-24' }, { now: T });
-  const w = openView(n, { now: new Date(2026, 5, 24, 9).getTime() });
-  assert.equal(w.today.length, 5);
-  assert.equal(w.today[0].due, '2026-06-21');
-  assert.equal(w.list.length, 1, 'the sixth is in the normal list');
+  assert.deepEqual(v.today.map((x) => x.text), ['给老贺寄画册', '给罗姐交报告', '去店里取眼镜', '还钱给知遥', '去牙科洗牙']);
+  assert.deepEqual(v.list.map((x) => x.text), ['去银行办卡', '修厨房水龙头'], 'yesterday\'s and the sixth are in the list');
+});
+
+test('还没了的事 due the same day: a reworded add counts as already there (Jaccard 0.55); different errands that day, or the same words another day, do not', () => {
+  const T = new Date(2026, 9, 8, 21, 0).getTime();
+  const m = emptyMemory();
+  openOp(m, { action: 'add', content: '10-08 他打算明天（=10-09）上午先把甲方剩下的意见理一理，能改的先改。', due: '10-09' }, { now: T });
+  const r = openOp(m, { action: 'add', content: '10-08 他打算明天（=10-09）把甲方剩下的意见理一理，能改的先改。', due: '10-09' }, { now: T + 5 });
+  assert.equal(r.note, 'already there');
+  assert.equal(m.open[0].saidAt, T + 5);
+  openOp(m, { action: 'add', content: '10-08 他打算明天（=10-09）顺路买猫粮。', due: '10-09' }, { now: T });
+  openOp(m, { action: 'add', content: '10-08 他打算明天（=10-09）早起排节点。', due: '10-09' }, { now: T });
+  assert.equal(m.open.length, 3, 'two errands sharing the 明天 template (0.52) stay two');
+  openOp(m, { action: 'add', content: '10-08 他打算明天（=10-10）上午先把甲方剩下的意见理一理。', due: '10-10' }, { now: T });
+  assert.equal(m.open.length, 4, 'another day: the strict rule');
 });
 
 test('还没了的事 shown: dated first by the nearest day, then the newest; the budget limits what is shown, never what is kept', () => {
