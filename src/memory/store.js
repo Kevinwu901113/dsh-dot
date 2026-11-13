@@ -81,7 +81,7 @@ export const bankSize = (entries) => (entries ?? []).reduce((n, e) => n + e.leng
 
 /**
  * One Hermes-style operation on a bank. Returns { ok, entries, over } or { ok: false, error }.
- * replace/remove match by a short unique substring (oldText); a failed match also says `miss`.
+ * replace/remove match by a short unique substring (oldText).
  * Nothing is refused for size: a bank may go over its limit (`over`), and the daily tidy brings it
  * back under (the transcript is the store; a bank is a view of it, so an add is never lost).
  */
@@ -103,11 +103,11 @@ export function bankOp(entries, op, limit) {
     if (list.some((e) => normText(e) === normText(content) || jaccard(e, content) >= 0.82)) return { ok: true, entries: list, note: 'already there', over: bankSize(list) > limit };
     list.push(content);
   } else if (op?.action === 'replace') {
-    const f = find(); if (f.error) return { ok: false, error: f.error, miss: true };
+    const f = find(); if (f.error) return { ok: false, error: f.error };
     if (!content) return { ok: false, error: 'content is required (use remove to delete)' };
     list[f.index] = content;
   } else if (op?.action === 'remove') {
-    const f = find(); if (f.error) return { ok: false, error: f.error, miss: true };
+    const f = find(); if (f.error) return { ok: false, error: f.error };
     list.splice(f.index, 1);
   } else return { ok: false, error: `unknown action ${op?.action}` };
   return { ok: true, entries: list, over: bankSize(list) > limit };

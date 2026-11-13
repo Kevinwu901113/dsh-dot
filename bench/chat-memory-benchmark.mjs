@@ -94,15 +94,11 @@ export function createModel({ fake = false, baseUrl, apiKey, model, extraBody = 
       return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
     }
     const said = [...all.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
-    const last = said.at(-1) ?? '';
-    if (purpose === 'diary' || /写今天的日记/.test(all)) {
-      const text = '今天和他聊了几句。';
+    if (/写今天的日记/.test(all)) { // the daily call: a diary, banks left as they are
+      const text = JSON.stringify({ diary: '今天和他聊了几句。' });
       return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
     }
-    const out = {
-      owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [],
-      open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })),
-    };
+    const out = { people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })) };
     const text = JSON.stringify(out);
     return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
   }

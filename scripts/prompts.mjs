@@ -119,16 +119,18 @@ export const entries = [
   { id: 'try', group: 'wake', name: '幕间：试点新的', note: '她想做一件没做过的事：交给跑腿真去做，只有几条硬边界；做了什么、花了多少 token、他怎么说，都记在她的账上（doings 工具让对话里的她记下他的反应）', files: ['interlude.try', 'interlude.try.on', 'interlude.try.refused', 'interlude.doings-tool', 'interlude.doings-tool.elsewhere'],
     render: () => variant([['在电脑上', I.tryPrompt({ what: '用画图软件给自己画个新头像', on: 'computer', why: '看腻了现在这个' })], ['手机或电脑都行', I.tryPrompt({ what: '找个记账 App 试试', on: 'either' })], ['doings 工具的说明', P.prompt('interlude.doings-tool')], ['试的那一趟里想发 QQ', P.prompt('interlude.try.refused', { tool: 'qq_send' })], ['别处用 doings', P.prompt('interlude.doings-tool.elsewhere')]]) },
 
-  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进三栏笔记和人物卡：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off'],
+  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进还没了的事和人物卡（关于他 / 她自己不在这里写，归每天那一次）：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input'],
     render: () => {
       const m = sampleMemory();
-      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
+      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
     } },
-  { id: 'diary', group: 'call', name: '日记', note: '每天 dailyAt（23:30），当天有记录才写，单独一次调用；关于他 / 她自己超过上限时换成 memory.tidy：同一次调用写日记（当天有记录时）并把超了的栏整栏重写到上限的八成左右，换下来的存进 tidy.jsonl', files: ['memory.diary', 'memory.tidy', 'memory.tidy.bank'],
+  { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录（或有栏超了上限）时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——把当天值得一直记着的写进去（要改的栏整栏给回，不改的不写），超了上限的栏整栏重写到上限的八成左右；换下来的存进 tidy.jsonl。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank'],
     render: () => {
       const m = sampleMemory();
-      return variant([['日记', M.diaryPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n') })],
-        ['关于他超了上限（样例把上限设成 20 字）', M.tidyPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n'), banks: [{ bank: 'owner', entries: m.owner, limit: 20 }] })]]);
+      const text = LINES.slice(0, 2).map(M.transcriptLine).join('\n');
+      return variant([['日记和笔记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self } })],
+        ['关于他超了上限（样例把上限设成 20 字）', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self }, limits: { ...S.DEFAULT_LIMITS, owner: 20 } })],
+        ['和别的记忆插件共存（people-only）：只写日记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: null })]]);
     } },
   { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活：interlude.round 是整段系统提示词，后面是按情况填进去的小段', files: ['interlude.round', 'interlude.round.canon', 'interlude.round.length', 'interlude.round.phase.advance', 'interlude.round.phase.follow-up', 'interlude.round.phase.intent', 'interlude.round.her-life', 'interlude.round.free', 'interlude.round.doings', 'interlude.round.returned', 'interlude.round.contact-rule', 'interlude.round.contact-rule.off', 'interlude.round.browsing.deferred', 'interlude.round.browsing.disabled', 'interlude.round.agency', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.style.none', 'interlude.round.seed', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.tries', 'interlude.round.tries.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh'],
     render: () => {
