@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, renderItem, setImpression,
+  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
@@ -527,7 +527,9 @@ export function apply(ctx, config = {}) {
     const text = fresh.map(transcriptLine).join('\n');
     const bankless = peopleOnly();
     const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
-    const ask = extractPrompt({ text, bankless, owner: memory.owner, self: memory.self, known, open: memory.open.map((x) => `- ${renderItem(x)}`).join('\n') });
+    // The items she is shown, in her order (not every stored one: those are many and go by themselves).
+    const view = openView(memory, { limits: cfg.limits, ...keep });
+    const ask = extractPrompt({ text, bankless, owner: memory.owner, self: memory.self, known, open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n') });
     const r = await complete(ask, 'consolidation');
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }

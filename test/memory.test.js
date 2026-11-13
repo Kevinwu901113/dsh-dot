@@ -146,6 +146,33 @@ test('还没了的事 shown: dated first by the nearest day, then the newest; th
   assert.equal(search(m.open, '吉他')[0].text, '06-01 他说想学吉他', 'what is not shown is still found');
 });
 
+test('the consolidation sees 还没了的事 as she is shown them (today first, then the list within the budget), not every stored one; a done that matches nothing fails softly', async () => {
+  const h = harness({ llmReply: JSON.stringify({ open: [{ action: 'done', oldText: '没有这一条' }, { action: 'replace', oldText: '也没有', content: '随便写点什么东西' }] }) });
+  const { mkdirSync } = await import('node:fs');
+  const dir = join(h.home, 'memory'); mkdirSync(dir, { recursive: true });
+  const now = Date.now();
+  const due = (d) => { const t = new Date(now + d * 864e5); return `${t.getFullYear()}-${String(t.getMonth() + 1).padStart(2, '0')}-${String(t.getDate()).padStart(2, '0')}`; };
+  const open = [
+    ...Array.from({ length: 30 }, (_, i) => ({ id: `o${String(i + 1).padStart(4, '0')}`, text: `第 ${i} 件很长很长很长很长很长的事情要做`, at: now - (30 - i) * 60000, due: '' })),
+    { id: 'o0031', text: '他说今天交报告', at: now - 5 * 864e5, due: due(0) },
+    { id: 'o0032', text: '他说过几天搬家', at: now - 5 * 864e5, due: due(5) },
+  ];
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify({ ...emptyMemory(), open, oseq: 32 }));
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { open: 100 } });
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
+  const r = await h.services.dotMemory.consolidate({ reason: 'manual' });
+  assert.ok(r.ok);
+  assert.equal(r.report.errors.length, 2, 'unmatched done / replace: errors in the report, nothing thrown');
+  const ask = h.calls[0].messages[0].content[0].text;
+  const part = ask.split('=== 已有：还没了的事 ===\n')[1].split('\n=== ')[0].split('\n');
+  assert.equal(part[0], '- 他说今天交报告（到 ' + dayMark(new Date(`${due(0)}T00:00:00`).getTime()) + '）', 'due today first');
+  assert.match(part[1], /^- 他说过几天搬家/, 'then the dated ones');
+  assert.match(part[2], /^- 第 29 件/, 'then the newest');
+  assert.ok(part.length < 8, 'within the budget');
+  assert.doesNotMatch(ask, /第 0 件/);
+  assert.equal(JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8')).open.length, 32, 'all still stored');
+});
+
 test('0.23 memory.json: the shelf is folded into 还没了的事 (and runs out like the rest), owed is dropped; the tool notes shelve / restore are gone', async () => {
   const now = Date.now();
   const legacy = { version: 2, gen: 4, owner: [], self: [], people: {}, merges: [], oseq: 3,
