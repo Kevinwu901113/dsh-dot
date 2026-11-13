@@ -2,6 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import { background, createGate, gateFor, installLlmGate, statusLine } from '../src/llm-gate.js';
 import { statusOf } from '../src/page/api.js';
+import { validatePatch } from '../src/settings-schema.js';
 
 const flush = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 
@@ -180,6 +181,48 @@ test('429: cooldown for background, cap halved, additive recovery; retry-after h
   assert.equal(prov(g2).cap, 10);
   assert.equal(prov(g2).rateLimited, 3);
   assert.equal(prov(g2).coolingUntil, c.now() + 60_000);
+});
+
+test('one rate-limit incident is one hit: dsh\'s retries 1.5 s apart cost one halving and ~60 s', async () => {
+  const c = clock(), gate = gateWith(c, { holdRetries: false });
+  let last = 0;
+  for (let i = 0; i < 6; i++) {
+    const r = request(gate, { provider: 'p', sessionId: 'her-chat' });
+    await flush(); last = c.now(); r.release(RATE_LIMIT()); await r.promise;
+    if (i < 5) await c.advance(1500);
+  }
+  let p = prov(gate);
+  assert.equal(p.rateLimited, 6);
+  assert.equal(p.cap, 10);
+  assert.equal(p.coolingUntil, last + 60_000, 'covers the 60 s after the latest refusal');
+  // a fresh window refused again is a repeat: halved again, cooldown doubled
+  await c.advance(60_000);
+  const again = request(gate, { provider: 'p', sessionId: 'her-chat' });
+  await flush(); again.release(RATE_LIMIT()); await again.promise;
+  p = prov(gate);
+  assert.equal(p.cap, 5);
+  assert.equal(p.coolingUntil, c.now() + 120_000);
+});
+
+test('a foreground stream that is never read stops holding the background after 10 min', async () => {
+  const c = clock(), gate = gateWith(c);
+  gate.wrap({ provider: 'p', sessionId: 'chat' }, () => (async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; })()); // never iterated
+  assert.equal(prov(gate).foregroundInFlight, 1);
+  const a = request(gate, background({ provider: 'p' }));
+  await c.advance(179_999); assert.ok(!a.started);
+  await c.advance(1); assert.ok(a.started, 'the bound still applies');
+  a.release(); await a.promise;
+  await c.advance(420_000); // 10 min since it started
+  assert.equal(prov(gate).foregroundInFlight, 0);
+  const b = request(gate, background({ provider: 'p' }));
+  await flush(); assert.ok(b.started, 'no longer waits');
+  b.release(); await b.promise;
+});
+
+test('maxBackgroundWaitSeconds stays below dot.turnStallMs', () => {
+  assert.equal(createGate({ config: { maxBackgroundWaitSeconds: 3600 } }).config.maxWaitMs, 270_000);
+  assert.throws(() => validatePatch({ llm: { maxBackgroundWaitSeconds: 3600 } }), /270/);
+  assert.deepEqual(validatePatch({ llm: { maxBackgroundWaitSeconds: 270 } }), { llm: { maxBackgroundWaitSeconds: 270 } });
 });
 
 test('holdRetries: dsh\'s fast retry of a rate-limited request waits for room, bounded', async () => {

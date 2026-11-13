@@ -76,7 +76,7 @@ export const SCHEMA = [
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
   e('llm', 'backgroundRpm', '模型请求', 'int', 'restart-dsh', '她后台的请求每分钟最多几次（幕间、整理记忆、跑腿、群聊评分；和你的对话不限；0 = 不限速）', { min: 0, max: 600 }),
   e('llm', 'foregroundQuietSeconds', '模型请求', 'int', 'restart-dsh', '你们的对话发完请求后，后台再等几秒（秒）', { min: 0, max: 600 }),
-  e('llm', 'maxBackgroundWaitSeconds', '模型请求', 'int', 'restart-dsh', '一个后台请求最多被压后多久（秒）', { min: 10, max: 3600 }),
+  e('llm', 'maxBackgroundWaitSeconds', '模型请求', 'int', 'restart-dsh', '一个后台请求最多被压后多久（秒；最多 270：再长她的跑腿会被当成卡住，dot.turnStallMs 是 300 秒）', { min: 10, max: 270 }),
   e('llm', 'holdRetries', '模型请求', 'bool', 'restart-dsh', '对话被限流（429）后，dsh 的快速重试先等到这一分钟有余量再发（最多等 retryHoldMaxSeconds，默认 30 秒）'),
   // compat (living next to qq-bridge)
   e('compat', 'qqBridge', '兼容·qq-bridge', choice('auto', true, false), 'restart-dsh', '认 qq-bridge（auto = 装了就认）'),

@@ -36,13 +36,14 @@
 //   - counts every request started in the last 60 s (both classes);
 //   - a background request starts only when the window holds fewer than `backgroundRpm` requests,
 //     at least 60 s / cap after the previous background one (bucket refill: no bursts), one at a
-//     time, and not while a foreground request is in flight or within `foregroundQuietSeconds` after
-//     one ended (the owner's turn has several steps);
+//     time, and not while a foreground request is in flight (one open for 10 min is taken as
+//     abandoned) or within `foregroundQuietSeconds` after one ended (the owner's turn has several steps);
 //   - a RATE_LIMIT finish (any class) starts a cooldown for background requests — at least the 60 s
-//     window of the hit, doubling with jitter on repeated hits (≤ 10 min), or the provider's
-//     retry-after — and halves the background cap (≥ 1); after 3 min without a 429 the cap grows
-//     back by 1 a minute (AIMD);
-//   - a background request never waits longer than `maxBackgroundWaitSeconds` (below dot's
+//     60 s after the latest refusal, doubling with jitter when a fresh window is refused again
+//     (≤ 10 min), or the provider's retry-after — and halves the background cap (≥ 1) once per
+//     incident (refusals within 60 s of the counted one, e.g. dsh's retries, are the same incident);
+//     after 3 min without a 429 the cap grows back by 1 a minute (AIMD);
+//   - a background request never waits longer than `maxBackgroundWaitSeconds` (≤ 270 s, below dot's
 //     turnStallMs, so an errand step is never taken for a stalled turn), and stops waiting at once
 //     when its signal aborts (the adapter then ends it with dsh's own aborted finish);
 //   - `holdRetries`: see holdFor() — the one case a foreground request is touched;
@@ -52,7 +53,7 @@ import { sectionOf } from './settings.js';
 export const defaults = {
   backgroundRpm: 20,          // see DEFAULT_RPM_WHY; 0 = no pacing at all (the gate only counts)
   foregroundQuietSeconds: 15, // background waits this long after her conversation's last request ended
-  maxBackgroundWaitSeconds: 180, // a background request never waits longer (dot's turnStallMs is 300)
+  maxBackgroundWaitSeconds: 180, // a background request never waits longer; capped at MAX_WAIT_CAP_SECONDS
   holdRetries: true,          // hold dsh's fast retry of a rate-limited request until the window has room
   retryHoldMaxSeconds: 30,    // …but never longer than this
 };
@@ -66,6 +67,9 @@ const RETRY_WINDOW_MS = 12000;   // dsh's retry waits ≤ 10 s (+10% jitter) aft
 const COOLDOWN_MAX_MS = 600000;
 const RECOVER_AFTER_MS = 180000; // no 429 for this long: the cap grows again, repeated-hit count resets
 const RAISE_EVERY_MS = 60000;
+const FG_STALE_MS = 600000;      // a foreground request "in flight" this long is taken as abandoned (never iterated / dropped)
+// dot's turnStallMs is 300 s: a background agent step held longer would make her errand look stalled.
+export const MAX_WAIT_CAP_SECONDS = 270;
 const JITTER = 0.25;
 
 // Hand-built requests the plugin makes for background work. A WeakSet of the options objects:
@@ -82,7 +86,7 @@ function normalize(c = {}) {
   return {
     backgroundRpm: Math.floor(num(c.backgroundRpm, defaults.backgroundRpm)),
     quietMs: num(c.foregroundQuietSeconds, defaults.foregroundQuietSeconds) * 1000,
-    maxWaitMs: num(c.maxBackgroundWaitSeconds, defaults.maxBackgroundWaitSeconds) * 1000,
+    maxWaitMs: Math.min(MAX_WAIT_CAP_SECONDS, num(c.maxBackgroundWaitSeconds, defaults.maxBackgroundWaitSeconds)) * 1000,
     holdRetries: c.holdRetries === undefined ? defaults.holdRetries : c.holdRetries !== false,
     retryHoldMaxMs: num(c.retryHoldMaxSeconds, defaults.retryHoldMaxSeconds) * 1000,
   };
@@ -107,7 +111,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   const P = (name) => {
     let p = providers.get(name);
     if (!p) {
-      p = { name, starts: [], bgStarts: [], fgInFlight: 0, fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0 };
+      p = { name, starts: [], bgStarts: [], fg: new Map(), fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, lastAnyHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0 };
       providers.set(name, p);
     }
     return p;
@@ -118,7 +122,9 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     while (p.bgStarts.length && p.bgStarts[0] <= t - WINDOW_MS) p.bgStarts.shift();
     while (p.cap < cfg.backgroundRpm && t >= p.raiseAt) { p.cap++; p.raiseAt += RAISE_EVERY_MS; } // additive increase
     if (p.cap >= cfg.backgroundRpm) p.raiseAt = Infinity;
-    if (p.hits && t - p.lastHitAt >= RECOVER_AFTER_MS) p.hits = 0;
+    if (p.hits && t - p.lastAnyHitAt >= RECOVER_AFTER_MS) p.hits = 0;
+    for (const [rec, at] of p.fg) if (at <= t - FG_STALE_MS) p.fg.delete(rec); // abandoned: never held the background for ever
+    for (const [k, l] of limits) if (t - l.at > RETRY_WINDOW_MS) limits.delete(k); // only ever read within RETRY_WINDOW_MS
     if (p.coolingUntil && t >= p.coolingUntil) {
       p.coolingUntil = 0;
       info(`${p.name}: cooldown over, background requests resume (cap ${p.cap}/min)`);
@@ -128,8 +134,9 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
 
   /** The earliest time the head of the background queue may start (Infinity: wait for an event). */
   function readyAt(p, t) {
-    if (p.fgInFlight > 0) return Infinity;
-    let at = Math.max(t, p.fgLastEnd + cfg.quietMs, p.coolingUntil, p.lastBgStart + WINDOW_MS / p.cap);
+    // While his request is in flight: not before it ends (an event pumps then) or is taken as abandoned.
+    const fgOpen = p.fg.size ? Math.min(...p.fg.values()) + FG_STALE_MS : -Infinity;
+    let at = Math.max(t, fgOpen, p.fgLastEnd + cfg.quietMs, p.coolingUntil, p.lastBgStart + WINDOW_MS / p.cap);
     if (p.starts.length >= p.cap) at = Math.max(at, p.starts[p.starts.length - p.cap] + WINDOW_MS);
     return at;
   }
@@ -137,9 +144,9 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   /** Count one request as started now. */
   function start(rec, t) {
     const p = rec.p;
-    rec.started = true; rec.startedAt = t;
+    rec.started = true;
     p.starts.push(t);
-    if (rec.cls === 'foreground') p.fgInFlight++;
+    if (rec.cls === 'foreground') p.fg.set(rec, t);
     else { p.bgStarts.push(t); p.lastBgStart = t; }
   }
 
@@ -220,7 +227,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     const t = now();
     const p = P(String(options?.provider ?? '?'));
     refresh(p, t);
-    const rec = { p, cls: classify(options), session: options?.sessionId ? String(options.sessionId) : '', started: false, startedAt: -Infinity, signal: options?.signal };
+    const rec = { p, cls: classify(options), session: options?.sessionId ? String(options.sessionId) : '', started: false, signal: options?.signal };
     // An already aborted request is not counted: the adapter ends it at once without a provider call.
     if (rec.signal?.aborted) return { rec, wait: null };
     if (rec.cls === 'foreground') {
@@ -249,14 +256,16 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     const retryAfterMs = Number(failure?.providerRetryAfterMs) > 0 ? Number(failure.providerRetryAfterMs) : 0;
     if (rec.session) limits.set(`${p.name}\0${rec.session}`, { at: t, retryAfterMs, inWindow: p.starts.length });
     if (!pacing) return;
-    // Requests already in flight when the last hit came (a burst refused together) are the same hit:
-    // only one that started after it counts as a repeat (halves the cap again, doubles the cooldown).
-    const repeat = rec.startedAt > p.lastHitAt;
+    // One incident, one hit: refusals within WINDOW_MS of the last counted hit (a burst refused
+    // together, dsh's five fast retries) are the same incident. Only a fresh window refused again is a
+    // repeat (halves the cap again, doubles the cooldown); every hit still extends the cooldown below.
+    const repeat = t - p.lastHitAt >= WINDOW_MS;
     if (repeat) {
       p.hits++; p.lastHitAt = t;
       p.cap = Math.max(1, Math.floor(p.cap / 2)); // multiplicative decrease
-      p.raiseAt = t + RECOVER_AFTER_MS;
     }
+    p.lastAnyHitAt = t;
+    p.raiseAt = t + RECOVER_AFTER_MS; // recovery counts from the latest refusal
     const backoff = repeat ? Math.min(COOLDOWN_MAX_MS, WINDOW_MS * 2 ** (p.hits - 1) * (1 + JITTER * random())) : WINDOW_MS;
     const until = t + Math.min(COOLDOWN_MAX_MS, Math.max(backoff, retryAfterMs));
     if (until <= p.coolingUntil) return;
@@ -274,7 +283,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   function finish(rec, reason) {
     const p = rec.p, t = now();
     refresh(p, t);
-    if (rec.cls === 'foreground' && rec.started) { p.fgInFlight = Math.max(0, p.fgInFlight - 1); p.fgLastEnd = t; }
+    if (rec.cls === 'foreground' && rec.started) { p.fg.delete(rec); p.fgLastEnd = t; }
     rec.started = false;
     if (reason?.kind === 'error' && reason.failure?.code === 'RATE_LIMIT') hit(p, rec, reason.failure, t);
     else if (rec.session && reason) limits.delete(`${p.name}\0${rec.session}`);
@@ -325,7 +334,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
         pacing, backgroundRpm: cfg.backgroundRpm, quietSeconds: cfg.quietMs / 1000, maxWaitSeconds: cfg.maxWaitMs / 1000, holdRetries: cfg.holdRetries,
         providers: [...providers.values()].map((p) => {
           try { refresh(p, t); } catch { /* status only */ }
-          return { provider: p.name, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fgInFlight, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries };
+          return { provider: p.name, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fg.size, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries };
         }),
       };
     },

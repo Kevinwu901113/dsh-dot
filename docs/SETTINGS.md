@@ -242,12 +242,12 @@ setx DSH_DOT_COMPUTER off
 | 键 | 默认 | 作用 |
 |---|---|---|
 | `backgroundRpm` | `20` | 后台请求每分钟最多几次（近 60 秒内所有请求都算进去，但只压后台的；间隔至少 60/上限 秒，一次放一个）。`0` = 不限速（只计数） |
-| `foregroundQuietSeconds` | `15` | 你们的对话有请求在发时后台不发；发完后再等这么多秒（她一轮有好几步） |
-| `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行（比 `dot.turnStallMs` 短，跑腿不会被当成卡住） |
+| `foregroundQuietSeconds` | `15` | 你们的对话有请求在发时后台不发（一个请求开着超过 10 分钟就当它已经被丢下）；发完后再等这么多秒（她一轮有好几步） |
+| `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行。最多 270（比 `dot.turnStallMs` 的 300 秒短，跑腿不会被当成卡住；填更大也按 270） |
 | `holdRetries` | `true` | 你们的对话被限流（429）后，dsh 自己的快速重试（几秒内连试 5 次，都在同一分钟里）先等到这一分钟有余量（或 provider 给的 retry-after）再发 |
 | `retryHoldMaxSeconds` | `30` | 上一项最多等多久 |
 
-被限流（任何请求收到 `RATE_LIMIT`）时：后台至少停到这一分钟过去，连续被限流就加倍（带随机抖动，最多 10 分钟；provider 给了 retry-after 就按它），后台上限减半（最少 1）；3 分钟没再被限流后每分钟加回 1。冷却开始和结束各记一行日志和审计（`kind: llm-gate`）。
+被限流（任何请求收到 `RATE_LIMIT`）时：后台至少停到最近一次被拒后的 60 秒，后台上限减半（最少 1）。60 秒内的再次被拒（一批一起被拒、dsh 的几次重试）算同一次；过了这一分钟又被拒才算再一次：再减半，冷却加倍（带随机抖动，最多 10 分钟）；provider 给了 retry-after 就按它。3 分钟没再被限流后每分钟加回 1。冷却开始和结束各记一行日志和审计（`kind: llm-gate`）。
 
 ### `compat`（和 qq-bridge 共处，见 [qq-bridge.md](qq-bridge.md)）
 
