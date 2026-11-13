@@ -41,7 +41,7 @@
 | | 幕间：自己的时间 | `interlude.free` `.tidy` `.budget` `.over` `.refused` `.typing`；`interlude.tell-him` `.elsewhere` |
 | | 幕间：试点新的 | `interlude.try` `interlude.try.on` `interlude.try.refused`（那一趟里发 QQ 被拦下的理由）；她对话里记他反应的工具说明 `interlude.doings-tool` `interlude.doings-tool.elsewhere` |
 | 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
-| | 日记 | `memory.diary` |
+| | 日记 | `memory.diary`；关于他 / 她自己超过上限时换成同一次调用里的日记 + 收拾：`memory.tidy` `memory.tidy.bank` |
 | | 成长：每周回顾 | `interlude.growth.system` `.too-much` `.too-long`；放进系统提示词的那段 `interlude.growth.section` |
 | | 幕间一轮 | `interlude.round`（整段系统提示词）；按情况填进去的：`.canon` `.length` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |

@@ -1,0 +1,2 @@
+owner==== 关于他（现在 {size} 字，上限 {limit}，目标约 {target} 字）===
+self==== 她自己记下的（现在 {size} 字，上限 {limit}，目标约 {target} 字）===

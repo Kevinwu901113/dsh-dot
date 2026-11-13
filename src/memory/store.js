@@ -2,8 +2,9 @@
 //
 // The words she said and heard are the evidence (transcript + recall.js); what is kept here is only
 // what stays true, small enough to be in front of her every turn:
-//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): bounded lists
-//                of short entries edited by add / replace / remove under a character budget.
+//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): lists of short
+//                entries edited by add / replace / remove, with a character budget that an add may pass
+//                and the daily tidy brings them back under (memory.js).
 //                `owner` (what she knows about you) and `self` (her own notes).
 //   open       — 还没了的事: things planned, promised or put off that have no outcome yet. One item
 //                each (what, when it was said, a due date). Done or called off → removed; code lets
@@ -76,11 +77,13 @@ export function rejectReason(text) {
 
 // ── banks (Hermes) ────────────────────────────────────────────────────────────
 
-const bankSize = (entries) => entries.reduce((n, e) => n + e.length + 1, 0);
+export const bankSize = (entries) => (entries ?? []).reduce((n, e) => n + e.length + 1, 0);
 
 /**
- * One Hermes-style operation on a bank. Returns { ok, entries } or { ok: false, error }.
- * replace/remove match by a short unique substring (oldText).
+ * One Hermes-style operation on a bank. Returns { ok, entries, over } or { ok: false, error }.
+ * replace/remove match by a short unique substring (oldText); a failed match also says `miss`.
+ * Nothing is refused for size: a bank may go over its limit (`over`), and the daily tidy brings it
+ * back under (the transcript is the store; a bank is a view of it, so an add is never lost).
  */
 export function bankOp(entries, op, limit) {
   const list = [...(entries ?? [])];
@@ -97,21 +100,47 @@ export function bankOp(entries, op, limit) {
     if (!content) return { ok: false, error: 'content is required' };
     const why = rejectReason(content);
     if (why) return { ok: false, error: `not kept (${why})` };
-    if (list.some((e) => normText(e) === normText(content) || jaccard(e, content) >= 0.82)) return { ok: true, entries: list, note: 'already there' };
+    if (list.some((e) => normText(e) === normText(content) || jaccard(e, content) >= 0.82)) return { ok: true, entries: list, note: 'already there', over: bankSize(list) > limit };
     list.push(content);
   } else if (op?.action === 'replace') {
-    const f = find(); if (f.error) return { ok: false, error: f.error };
+    const f = find(); if (f.error) return { ok: false, error: f.error, miss: true };
     if (!content) return { ok: false, error: 'content is required (use remove to delete)' };
     list[f.index] = content;
   } else if (op?.action === 'remove') {
-    const f = find(); if (f.error) return { ok: false, error: f.error };
+    const f = find(); if (f.error) return { ok: false, error: f.error, miss: true };
     list.splice(f.index, 1);
   } else return { ok: false, error: `unknown action ${op?.action}` };
-  if (bankSize(list) > limit) return { ok: false, error: `over the limit (${bankSize(list)}/${limit} chars): replace overlapping entries with shorter ones, or remove stale ones, then retry` };
-  return { ok: true, entries: list };
+  return { ok: true, entries: list, over: bankSize(list) > limit };
 }
 
-export const bankUsage = (entries, limit) => `${bankSize(entries ?? [])}/${limit} chars`;
+export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars${bankSize(entries) > limit ? ' (over: tidied at the daily run)' : ''}`;
+
+/**
+ * The daily tidy's rewrite of one bank, checked: an array of one-line strings, each fit to keep
+ * (rejectReason), not empty, the whole within the limit. Returns { ok, entries } or { ok: false, error }.
+ */
+export function checkRewrite(lines, limit) {
+  if (!Array.isArray(lines)) return { ok: false, error: 'not an array' };
+  const out = [];
+  for (const x of lines) {
+    if (typeof x !== 'string' || !x.trim()) return { ok: false, error: 'an empty or non-string line' };
+    const why = rejectReason(x);
+    if (why) return { ok: false, error: `a line not kept (${why}): ${x.trim().slice(0, 40)}` };
+    out.push(x.trim());
+  }
+  if (!out.length) return { ok: false, error: 'empty' };
+  if (bankSize(out) > limit) return { ok: false, error: `still over the limit (${bankSize(out)}/${limit} chars)` };
+  return { ok: true, entries: out };
+}
+
+/** A bank as the standing prompt shows it: all of it, unless it is past twice its limit (tidy failing): then its newest entries that fit in that. */
+export function shownBank(entries, limit) {
+  if (bankSize(entries) <= 2 * limit) return entries;
+  const out = [];
+  let used = 0;
+  for (let i = entries.length - 1; i >= 0 && used + entries[i].length + 1 <= 2 * limit; i--) { out.unshift(entries[i]); used += entries[i].length + 1; }
+  return out;
+}
 
 // ── people: one registry for everyone she meets, in any app ────────────────────
 //
@@ -506,13 +535,14 @@ export function openView(memory, { limits = DEFAULT_LIMITS, now = Date.now(), ke
  * Byte-stable for the same memory and day (no counters; the clock only through the day), because a
  * context snapshot is re-sent only when its text changes.
  */
-export function renderStanding(memory, { banks = true, now = Date.now(), ...view } = {}) {
-  const { today, list } = openView(memory, { now, ...view });
+export function renderStanding(memory, { banks = true, now = Date.now(), limits = DEFAULT_LIMITS, ...view } = {}) {
+  const { today, list } = openView(memory, { now, limits, ...view });
   const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
-  if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
-  if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
+  // Between daily tidies a bank may be over its limit; only past twice that is it cut, for the prompt only.
+  if (banks && memory.owner.length) parts.push(`${t.owner}\n${shownBank(memory.owner, limits.owner).map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.self.length) parts.push(`${t.self}\n${shownBank(memory.self, limits.self).map((e) => `- ${e}`).join('\n')}`);
   if (today.length) parts.push(`${t.today}\n${today.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
   if (list.length) parts.push(`${t.open}\n${list.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
   if (!parts.length) return '';
