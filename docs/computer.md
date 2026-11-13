@@ -56,7 +56,7 @@ Status: v0.5.0, verified on dsh desktop 0.2.0-rc.2 (macOS, Apple silicon). Want 
 | 系统 | macOS（Apple 芯片）、Linux（有 `/dev/kvm`）、Windows（开启 Hypervisor Platform）。Intel Mac 自动改用 Docker |
 | 内存 | 虚拟机默认 4GB 上限，空闲约 0.5GB |
 | 磁盘 | 约 10GB 空闲（虚拟机镜像） |
-| 网络 | 首次启动要从 `ghcr.io` 下载镜像；插件会自动使用系统代理 |
+| 网络 | 首次启动要下载镜像（默认从国内镜像 `enterprise-public-cn-beijing.cr.volces.com` 拉；`image` 可改回源头 `ghcr.io`）；插件会自动使用系统代理 |
 
 虚拟机由 [microsandbox](https://github.com/microsandbox/microsandbox) 运行（libkrun 微型虚拟机，macOS 用 Hypervisor.framework）。它随插件的 npm 依赖一起安装，不需要单独安装。
 
@@ -141,7 +141,7 @@ tailscale serve --bg --https=443 http://127.0.0.1:<dsh 端口>   # 只在你的 
 | `apiKey` | 自动生成 | 虚拟机网关密钥（`SANDBOX_API_KEY`）；空则用 `~/.dsh/dsh-computer.key` 里自动生成的那把 |
 | `mcp` | `true` | 由本组件挂载虚拟机的 `mcp__dot-vm__*` 工具（MCP 客户端带网关密钥）；不要再在 `cordis.patch.yml` 里单独配 dsh-mcp-client 指向 `/mcp` |
 | `DSH_COMPUTER_PORT` | `18080` | 虚拟机网关在本机的端口（仅监听 127.0.0.1，需要密钥）；只能用环境变量设置 |
-| `image` / `DSH_COMPUTER_IMAGE` | `ghcr.io/agent-infra/sandbox:latest` | 虚拟机镜像 |
+| `image` / `DSH_COMPUTER_IMAGE` | `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest` | 虚拟机镜像（v0.21.1 起默认用作者官方的国内镜像，与源头 `ghcr.io/agent-infra/sandbox:latest` 同一镜像；海外可改回 ghcr） |
 | `backend` / `DSH_COMPUTER_BACKEND` | `auto` | `microsandbox` 或 `docker` |
 | `DSH_COMPUTER_GATE` | `risky` | `off` 不拦截；`risky` 按上面的分类拦；`browser` 另外每个浏览器动作都审批。分类表（`readOnlyTools`、`alwaysAskTools`、`fileTools`、`protectedPaths`、`shellPatterns`、`vmHome`…）可在 `dot-gate` 的 config 里覆盖 |
 | `DSH_COMPUTER_PRESET` | `computer` | `computer-auto` 关闭审批，只建议在虚拟机里没有重要登录态时用 |
