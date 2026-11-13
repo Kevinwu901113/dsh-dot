@@ -53,9 +53,8 @@ function sampleMemory() {
   m.owner = ['他叫宽，在广州做 AI agent 开发', '不喜欢被叫"亲"'];
   m.self = ['装了小黑盒，常在晚上逛', '学会了在 B 站发弹幕'];
   S.openOp(m, { action: 'add', content: '10-31 他说这周要赶一个 benchmark，周五前交', due: '11-01' }, { now: T0 });
-  S.openOp(m, { action: 'add', content: '10-29 她答应周末陪他看新番', owed: true }, { now: T0 + 1 });
+  S.openOp(m, { action: 'add', content: '10-29 她答应周末陪他看新番' }, { now: T0 + 1 });
   S.openOp(m, { action: 'add', content: '10-20 他说想换个机械键盘，先搁着' }, { now: T0 - 9 * 864e5 });
-  S.openOp(m, { action: 'shelve', oldText: '机械键盘' }, { now: T0 });
   return m;
 }
 let recallDir = '';
@@ -64,7 +63,7 @@ async function recallText() {
   const r = createRecall({ cfg: { recallBackend: 'local', recallTopK: 3, recallChunkChars: 1200, recallMaxTokens: 800, recallWindowTurns: 0 }, dir: recallDir, lines: () => LINES, logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('preview')) });
   return (await r.query('你 benchmark 跑完了吗', { session: 's1', record: false })).text;
 }
-const standing = () => S.renderStanding(sampleMemory());
+const standing = () => S.renderStanding(sampleMemory(), { now: T0 + 3.5 * 864e5 }); // the day the benchmark is due: it shows under 今天到期的
 const context = () => I.renderContext({ state: STATE, entries: ['11-03 14:00：她把窗帘拉开一半，靠在床头改简历，咖啡放凉了。'], intents: [{ at: new Date(Date.now() + 3 * 36e5).toISOString(), kind: 'contact', text: '问他感冒好点没' }], cursor: Date.now() - 90 * 6e4, restarted: false });
 
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
@@ -83,7 +82,7 @@ export const entries = [
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
     render: () => variant([['隔了一阵', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)], ['刚说过话（不到一分钟，或者从没说过）', D.nowText(Date.now(), 0)]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
-  { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、还没了的事（加一行先搁着的）', files: ['memory.standing'], render: standing },
+  { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、今天到期的（到期当天和过期几天内、还没提过的）、还没了的事（有日子的在前，放不下的不显示）', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
   { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话、幕间数据之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
     render: () => P.prompt('interlude.voice', { name: '小点' }) },
@@ -123,8 +122,7 @@ export const entries = [
   { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进三栏笔记和人物卡：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off'],
     render: () => {
       const m = sampleMemory();
-      const item = (x) => `- ${S.renderItem(x)}${x.owed ? '（答应过）' : ''}`;
-      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map(item).join('\n'), shelved: m.shelved.map(item).join('\n') });
+      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
     } },
   { id: 'diary', group: 'call', name: '日记', note: '每天 dailyAt（23:30），当天有记录才写，单独一次调用', files: ['memory.diary'],
     render: () => M.diaryPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n') }) },

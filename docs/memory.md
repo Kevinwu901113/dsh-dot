@@ -14,7 +14,7 @@
 |---|---|---|---|
 | **原话库** | 她对话里真实发生的每一行：你的话、她真正发出去的 QQ、手机通知、跑腿的结论、定时任务 | 代码，入库不调模型 | 不直接给，召回从这里找 |
 | **自动召回** | 每轮一块（叫醒她的话 + 她回的话 + 日期）；向量和 BM25 各出候选，重排后最多 10 条 | 代码，每轮结束增量建索引 | 每次被叫醒，「你记得的相关原话」，按日期分组 |
-| **三栏笔记** | 关于他（1375 字以内）· 她自己（2200 字以内）· 还没了的事（800 字以内，外加「先搁着的」） | 整理时由模型写；她自己用 `memory` 工具改 | 她对话的每一轮，`<memory>` |
+| **三栏笔记** | 关于他（1375 字以内）· 她自己（2200 字以内）· 还没了的事（全部留着，每轮显示 800 字以内；今天到期的单列） | 整理时由模型写；她自己用 `memory` 工具改 | 她对话的每一轮，`<memory>` |
 | **人物卡** | 一张身份表，所有 App 共用；每人多个把手、档位、次数、一句印象 | 次数、时间、把手由代码按真实事件记；印象由模型写 | 这个人叫醒她时，跟在那条消息后面 |
 | **日记** | 每天一篇，她的口吻，40–120 字 | 每天 `dailyAt`（23:30）单独一次调用，当天有记录才写 | 不给她，给你看（面板、`diary.md`） |
 
@@ -55,10 +55,11 @@
 
 - **关于他**：长期有效的事（他是谁、在做什么、喜好、雷点、称呼、长期计划）。
 - **她自己**：学会了什么、在做的事、习惯、看法。人设不在这里（在 Canon）。幕间拿这一栏作为她的生活（`herLife`）。
-- **还没了的事**：说过要做的、答应了的、说好先搁着的、在等别人回的。一事一条：谁、什么事、哪天说的；有明确日子就带 `due`；有人答应了别人就标「答应过」。
-  - **只在办完时删**：原话里看到办完了、取消了、对方说不用了，整理时 `done`；只是没再提不算。
-  - **满了不截断**：先由模型合并、压缩；还超出 800 字，就把最不紧的挪到**先搁着的**（没答应过、没日子的先挪，同等的先挪最早的）。答应过的、有日子的留到最后。
-  - **先搁着的不会被忘**：栏尾常驻一行「另有 N 件先搁着的：…」（最近 8 件的前几个字）；整理时模型能看到它们、可以 `restore`；`recall` 工具也搜得到；相关的话一提起，原话会被召回。搁着的最多留 200 件。
+- **还没了的事**：说过要做的、答应了的、说好先搁着的、在等别人回的。一事一条：谁、什么事、哪天说的；有明确日子就带 `due`。
+  - **办完了才 `done`**：原话里看到办完了、取消了、对方说不用了，整理时 `done`；只是没再提不算。
+  - **其余由代码收走**：有日子的，过了日子 `openKeepDaysAfterDue`（3）天就拿掉；没日子的，`openKeepDaysIdle`（14）天没被碰过（新加、改过、又被提起）就拿掉。拿掉就是删掉，原话还在原话库里，提到时会被召回。
+  - **全部留着，只限显示**：800 字只管每轮给她看多少：有日子的在前（日子近的先），其余新的在前，放不下的这轮不显示（`recall` 工具和召回照样找得到）。
+  - **今天到期的**：到期当天、以及过期还在 3 天内、到期后还没人提过（没被整理改过、没被再记一次）的，单列在最前面一小段（最多 5 件，过期最久的先），让她在这次聊天里找个时候提一次；不占 800 字。
 
 笔记每轮都在她面前，所以要小：只记一直要用的和还没了的；一次性的事不记，原话会留着。
 
@@ -96,10 +97,12 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 第一次加载旧的 `memory.json` 时自动迁移：
 
-- 「还没了」的碎片 → 第三栏（`promise` 记为答应过）；放不下的挪到先搁着的。
+- 「还没了」的碎片 → 第三栏（之后和别的一样，到时候自己拿掉）。
 - 钉住的碎片 → 「关于他」，放得下的话。
 - 其余碎片、人物卡上的事实、待核实 → 不再保留，原样存进 `~/dot/memory/memory.v019.json`（只写一次，不覆盖）。它们来自的原话都还在原话库里，提到时会被召回。
-- `~/dot/memory/memory-migration.md` 写明每样去了哪里，尤其是**没放进第三栏、被搁着的事**。
+- `~/dot/memory/memory-migration.md` 写明每样去了哪里。
+
+0.23 的 `memory.json` 里还有「先搁着的」和「答应过」：读进来时搁着的并回第三栏（照常过期），「答应过」不再保留。
 
 召回索引不用重建。
 
@@ -111,7 +114,7 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `chunkLines` 80 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `chunkLines` 80 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
 自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（后端默认；`none` 不重排）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路）· `recallTopK` 10 · `recallMaxTokens` 1500 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35（不重排时）· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 

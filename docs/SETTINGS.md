@@ -174,7 +174,9 @@ setx DSH_DOT_COMPUTER off
 | `handoffTokens` | `150000` | 对话多长换新会话 |
 | `consolidateEveryLines` | `40` | 新记录攒满多少行整理一次（交班前也整理一次） |
 | `dailyAt` | `"23:30"` | 每天写日记的时间（当天有记录才写） |
-| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` | 三栏笔记各多少字、人物印象多少字、先搁着的最多几件 |
+| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
+| `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
+| `openKeepDaysIdle` | `14` | 没日子的还没了的事多少天没被碰过就拿掉 |
 | `coexist` | `"auto"` | `auto` / `people-only` / `full` |
 | `recallBackend` | `"local"` | `local` / `siliconflow` / `dashscope` / `off`（建议用 `/dot memory recall backend`，命令设的值优先） |
 | `recallModel` | `""` | 本机默认 `Xenova/multilingual-e5-small`；只用中文可填 `BAAI/bge-small-zh-v1.5`（更轻，23 MB / 约 0.13 GB）。建议用 `/dot memory recall model` |

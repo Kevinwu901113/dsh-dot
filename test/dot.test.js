@@ -554,7 +554,7 @@ test('panel: `/dsh-dot/` and `/dsh-dot/api/state` on dsh\'s web server; state ga
     dshPhone: { status: () => ({ state: 'ready' }) },
     dshQq: { status: () => ({ connected: true, selfId: '2450548644' }) },
     dshInterlude: { status: () => ({ state: { current: '在看帖' }, today: { rounds: 2, maxRounds: 12, plays: 1, browses: 0, contacts: 0, tokensIn: 100, tokensOut: 10 }, intents: [], script: [{ head: '2026-10-27 22:00 · advance', text: '她……' }], cursor: Date.now() }) },
-    dotMemory: { panel: async () => ({ gen: 2, owner: { entries: ['a'], chars: 2, limit: 1375 }, self: { entries: [], chars: 0, limit: 2200 }, open: { entries: ['06-22 答应寄画册'], chars: 10, limit: 800, shelved: 0 }, people: 3, contacts: 1, merges: 0, sinceCursor: 1, consolidateEvery: 40, consolidations: 1, ledger: { in: 5, out: 1, calls: 1 }, conversation: { session: 's1', tokens: 1234, handoffAt: 150000 }, diary: [{ day: '2026-10-27 周二', text: '今天没什么事。' }], dailyAt: '23:30' }) },
+    dotMemory: { panel: async () => ({ gen: 2, owner: { entries: ['a'], chars: 2, limit: 1375 }, self: { entries: [], chars: 0, limit: 2200 }, open: { entries: ['06-22 答应寄画册'], chars: 10, limit: 800 }, people: 3, contacts: 1, merges: 0, sinceCursor: 1, consolidateEvery: 40, consolidations: 1, ledger: { in: 5, out: 1, calls: 1 }, conversation: { session: 's1', tokens: 1234, handoffAt: 150000 }, diary: [{ day: '2026-10-27 周二', text: '今天没什么事。' }], dailyAt: '23:30' }) },
   };
   const provided = {};
   h.ctx.provide = (n, v) => { provided[n] = v; };

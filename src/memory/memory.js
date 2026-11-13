@@ -7,7 +7,7 @@
 //   recall      before each turn, the old turns that bear on the message that woke her (recall.js):
 //               vector + BM25 candidates, reranked, shown by day with exact dates.
 //   memory      <home>/memory/memory.json (+ memory.md for reading) — three notes (about him, her own,
-//               还没了的事 with its shelf) and the people (store.js). In front of her every turn.
+//               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
 //   consolidate one model call over the transcript since the last one: note edits and people. When
 //               `consolidateEveryLines` new lines have piled up, and before a handoff.
 //   diary       once a day at `dailyAt`, when there was anything that day: one short call.
@@ -20,7 +20,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, fitOpen, renderItem, setImpression,
+  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, renderItem, setImpression,
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
@@ -45,7 +45,9 @@ export const defaults = {
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
   dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
   maxTokens: 16384,
-  limits: DEFAULT_LIMITS,
+  limits: DEFAULT_LIMITS,        // limits.open is how much of 还没了的事 is shown each turn, not how much is kept
+  openKeepDaysAfterDue: 3,      // an item with a due date goes this many days after it
+  openKeepDaysIdle: 14,         // an item without one goes after this many days untouched (added, replaced, brought up again)
   // Living next to another memory plugin. full: everything on. people-only: keep people, 还没了的事
   // and the diary, but leave the owner/self notes (prompt text and consolidation) to the other one,
   // so two plugins do not both narrate what she knows about him. auto: people-only when one of
@@ -124,14 +126,14 @@ export const extractRules = () => prompt('memory.extract');
  * The whole consolidation prompt. The rules come first and never change, so every call shares that
  * prefix (the provider's cache); what she already has comes next; the new records last.
  */
-export function extractPrompt({ text = '', bankless = false, owner = [], self = [], known = '', open = '', shelved = '' }) {
+export function extractPrompt({ text = '', bankless = false, owner = [], self = [], known = '', open = '' }) {
   return [
     extractRules(),
     '',
     prompt('memory.extract.input', {
       records: text || '（这段时间没有新记录）',
       banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', open: open || '（没有）', shelved: shelved || '（没有）',
+      people: known || '（还没有）', open: open || '（没有）',
     }),
   ].join('\n');
 }
@@ -151,9 +153,12 @@ export function parseLooseJson(raw) {
   return null;
 }
 
-/** Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory). */
-export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const report = { owner: 0, self: 0, open: 0, done: 0, shelved: 0, people: 0, errors: [] };
+/**
+ * Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory).
+ * Items that have run out go afterwards (keepAfterDue / keepIdle: days, see isLive).
+ */
+export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle } = {}) {
+  const report = { owner: 0, self: 0, open: 0, done: 0, expired: 0, people: 0, errors: [] };
   for (const bank of ['owner', 'self']) {
     for (const op of [].concat(out?.[bank] ?? [])) {
       const r = bankOp(memory[bank], op, limits[bank]);
@@ -167,7 +172,7 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
     if (r.note) continue;
     if (op.action === 'done' || op.action === 'remove') report.done++; else report.open++;
   }
-  report.shelved = fitOpen(memory, { limits, now }).length;
+  report.expired = expireOpen(memory, { now, keepAfterDue, keepIdle });
   for (const u of [].concat(out?.people ?? [])) {
     if (!u || typeof u !== 'object') continue;
     let p = findPerson(memory.people, u.id) ?? resolvePerson(memory.people, { platform: u.platform, name: u.name });
@@ -259,6 +264,7 @@ export function apply(ctx, config = {}) {
   const user = sectionOf('memory', (m) => logger.warn(m));
   const cfg = { ...defaults, ...setValues(config), ...user };
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
+  const keep = { keepAfterDue: Number(cfg.openKeepDaysAfterDue), keepIdle: Number(cfg.openKeepDaysIdle) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
   configurePrompts({ home });
@@ -306,15 +312,13 @@ export function apply(ctx, config = {}) {
       `# 她记得的（第 ${memory.gen} 段，整理过 ${memory.consolidations} 次）`, '',
       `## 关于你（${bankUsage(memory.owner, cfg.limits.owner)}）`, ...memory.owner.map((e) => `- ${e}`), '',
       `## 她自己记下的（${bankUsage(memory.self, cfg.limits.self)}）`, ...memory.self.map((e) => `- ${e}`), '',
-      `## 还没了的事（${usage(memory.open, cfg.limits.open)}）`, ...memory.open.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
-      `## 先搁着的（${memory.shelved.length}）`, ...memory.shelved.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
+      `## 还没了的事（${usage(memory.open, cfg.limits.open)}）`, ...memory.open.map((x) => `- ${x.id} ${renderItem(x)}`), '',
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
       `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
     ].join('\n');
   }
   // A 0.19 memory was migrated on load: what is no longer kept goes to memory.v019.json (never
-  // overwritten), and memory-migration.md says where everything went — above all, the open items
-  // that did not fit and were shelved.
+  // overwritten), and memory-migration.md says where everything went.
   if (memory.migration) {
     const { archive, report } = memory.migration;
     delete memory.migration;
@@ -330,16 +334,17 @@ export function apply(ctx, config = {}) {
     try {
       writeFileSync(files.migration, [
         `# 记忆升级到 0.20（${new Date().toISOString()}）`, '',
-        `- 还没了的事：${report.open.length} 件进了第三栏${report.shelved.length ? `，${report.shelved.length} 件放不下，先搁着（仍会被提起、可以 recall）` : ''}`,
-        ...report.shelved.map((t) => `  - 搁着：${t}`),
+        `- 还没了的事：${report.open.length} 件进了第三栏（很久没再提的会自己拿掉，原话都还在）`,
         `- 钉住的碎片进了"关于他"：${report.toOwner.length} 条`, ...report.toOwner.map((t) => `  - ${t}`),
         `- 不再保留、存进 ${kept || '（没能写出，memory.json 未改动）'}：碎片 ${report.archived} 条、人物卡上的事实 ${report.facts} 条、待核实 ${report.pending} 条（原话都还在，提到时会翻出来）`, '',
       ].join('\n'));
     } catch (err) { logger.warn(`migration files: ${err.message}`); }
     save();
-    audit('migrated', { open: report.open.length, shelved: report.shelved.length, toOwner: report.toOwner.length, archived: report.archived, facts: report.facts, pending: report.pending });
-    logger.info(`memory migrated to 0.20: ${report.open.length} open, ${report.shelved.length} shelved, ${report.archived} fragment(s) archived → ${files.migration}`);
+    audit('migrated', { open: report.open.length, toOwner: report.toOwner.length, archived: report.archived, facts: report.facts, pending: report.pending });
+    logger.info(`memory migrated to 0.20: ${report.open.length} open, ${report.archived} fragment(s) archived → ${files.migration}`);
   }
+  // 还没了的事 that ran out while dsh was down (or a shelf from 0.23, folded in on load) go now.
+  if (expireOpen(memory, keep)) save();
 
   // ── transcript ──
   let lines = [];
@@ -522,24 +527,19 @@ export function apply(ctx, config = {}) {
     const text = fresh.map(transcriptLine).join('\n');
     const bankless = peopleOnly();
     const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
-    const item = (x) => `- ${renderItem(x)}${x.owed ? '（答应过）' : ''}`;
-    const ask = extractPrompt({
-      text, bankless, owner: memory.owner, self: memory.self, known,
-      open: memory.open.map(item).join('\n'),
-      shelved: memory.shelved.slice(-30).map(item).join('\n'),
-    });
+    const ask = extractPrompt({ text, bankless, owner: memory.owner, self: memory.self, known, open: memory.open.map((x) => `- ${renderItem(x)}`).join('\n') });
     const r = await complete(ask, 'consolidation');
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
     const out = parseLooseJson(r.raw);
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
     if (bankless) { delete out.owner; delete out.self; }
-    const report = applyExtraction(memory, out, { limits: cfg.limits });
+    const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep });
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();
     audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
-    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, open +${report.open} / done ${report.done} / shelved ${report.shelved}, people ${report.people}`);
+    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, open +${report.open} / done ${report.done} / expired ${report.expired}, people ${report.people}`);
     return { ok: true, report };
   }
 
@@ -637,7 +637,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         const s = c.agent?.session;
         if (!s || dot()?.isErrand?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
-        return renderStanding(memory, { banks: !peopleOnly() });
+        return renderStanding(memory, { banks: !peopleOnly(), limits: cfg.limits, ...keep });
       },
     });
     // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
@@ -668,8 +668,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条）、shelve（先搁着）、restore（搁着的又要办了），add/replace 时可带 due（MM-DD）和 owed（答应过别人填 true）。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
-      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done', 'shelve', 'restore'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' }, owed: { type: 'boolean' } }, required: ['target', 'action'], additionalProperties: false },
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了先合并或删掉旧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
         if (args.target === 'person') {
@@ -680,11 +680,12 @@ export function apply(ctx, config = {}) {
           save(); return { ok: true, usage: 'impression' };
         }
         if (args.target === 'open') {
+          if (args.action === 'shelve' || args.action === 'restore') return { ok: true, note: `${args.action} 已经没有了：还没了的事一直留着，办完了给 done，过了日子会自己拿掉` };
           const r = openOp(memory, { ...args, action: args.action === 'remove' ? 'done' : args.action });
           if (!r.ok) return { ok: false, error: r.error, items: memory.open.map((x) => x.text) };
-          const moved = fitOpen(memory, { limits: cfg.limits });
+          expireOpen(memory, keep);
           save(); audit('memory-tool', { target: 'open', action: args.action });
-          return { ok: true, usage: `${memory.open.length} open, ${memory.shelved.length} shelved`, note: r.note ?? (moved.length ? `满了，先搁着：${moved.map((x) => x.text).join('；')}` : undefined) };
+          return { ok: true, usage: `${memory.open.length} open`, note: r.note };
         }
         const bank = args.target === 'owner' ? 'owner' : 'self';
         if (!['add', 'replace', 'remove'].includes(args.action)) return { ok: false, error: `${args.action} is for target=open` };
@@ -697,12 +698,12 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot/memory: memory tool');
     scope.effect(() => scope.tools.register({
       name: 'recall',
-      description: '想不起来的时候翻一翻：在认识的人、还没了的事（含先搁着的）、和以前真实聊过的原话里找。query 写想找的事或关键词（人名、地点、事情）。',
+      description: '想不起来的时候翻一翻：在认识的人、还没了的事、和以前真实聊过的原话里找。query 写想找的事或关键词（人名、地点、事情）。',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { found: { type: 'string' } }, required: ['found'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.found ?? '' }] },
       async execute({ query }) {
         const people = search(Object.values(memory.people).map((p) => ({ text: `${p.names.join(' ')} ${p.impression}`, p })), query, 3).map((x) => renderPerson(x.p));
-        const items = search([...memory.open, ...memory.shelved], query, 5).map((x) => `- ${renderItem(x)}${memory.shelved.includes(x) ? '（先搁着的）' : ''}`);
+        const items = search(memory.open, query, 5).map((x) => `- ${renderItem(x)}`);
         let said = '';
         try { said = (await recall.find(query)).text; } catch (err) { logger.warn(`recall tool: ${err.message}`); }
         const found = [people.length ? `认识的人：\n${people.join('\n')}` : '', items.length ? `还没了的事：\n${items.join('\n')}` : '', said].filter(Boolean).join('\n\n');
@@ -735,7 +736,7 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, shelved: memory.shelved.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();
@@ -746,7 +747,7 @@ export function apply(ctx, config = {}) {
         gen: memory.gen, consolidations: memory.consolidations,
         owner: { entries: memory.owner, chars: memory.owner.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.owner },
         self: { entries: memory.self, chars: memory.self.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.self },
-        open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open, shelved: memory.shelved.length },
+        open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open },
         people: Object.values(memory.people).filter((p) => p.tier !== 'contact').length, contacts: Object.values(memory.people).filter((p) => p.tier === 'contact').length,
         merges: memory.merges.length, sinceCursor: sinceCursor().length, consolidateEvery: cfg.consolidateEveryLines,
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
@@ -774,7 +775,7 @@ export function apply(ctx, config = {}) {
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} (+${s.shelved} shelved) · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
         `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');

@@ -74,7 +74,7 @@ function fakeReply(text) {
   const said = [...text.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
   if (/写今天的日记|日记/.test(text.slice(0, 400))) return '今天和他聊了几句。';
   const last = said.at(-1) ?? '';
-  return JSON.stringify({ owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null, owed: false })) });
+  return JSON.stringify({ owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })) });
 }
 async function chat(text, maxTokens) {
   usage.chat.calls++;

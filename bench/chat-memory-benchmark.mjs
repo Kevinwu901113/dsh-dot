@@ -101,7 +101,7 @@ export function createModel({ fake = false, baseUrl, apiKey, model, extraBody = 
     }
     const out = {
       owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [],
-      open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null, owed: false })),
+      open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })),
     };
     const text = JSON.stringify(out);
     return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };

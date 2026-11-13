@@ -5,7 +5,7 @@
 {
   "owner": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
   "self": [{"action":"add|replace|remove","content":"...","oldText":"..."}],
-  "open": [{"action":"add|replace|done|shelve|restore","content":"...","oldText":"...","due":"MM-DD 或 null","owed":false}],
+  "open": [{"action":"add|replace|done","content":"...","oldText":"...","due":"MM-DD 或 null"}],
   "people": [{"id":"已认识的人的 id（u0001 这种），新认识的留空","platform":"qq/wechat/xiaoheihe/bilibili/…","name":"名字","tier":"talked|seen","impression":"一句话，40 字以内"}],
   "same": [{"a":"u0003","b":"u0007","why":"为什么认定是同一个人（记录里的证据）"}]
 }
@@ -15,9 +15,9 @@
 - self：她自己长期的东西：学会了什么（装了什么 App、学会怎么用）、在做的事、形成的习惯（比如常用哪个 App、多久看一次、喜欢在什么时候做什么）、自己的看法。人设、说话风格、「照着某某学」都不是关于她的事实，不写进 self；她的人设只在 Canon 里。
 - open：还没了结的事：他说要做的、她答应了的、说好先搁着回头再说的、在等别人回的。一件事一条，写清谁、什么事、哪天说的，日期照记录写（例如"06-22 她答应老贺寄画册"）。
   due：有明确的日子才填（记录里写着"（=07-15）"的直接用）；"月底""X 号"这种拿不准就给 null。
-  owed：有人答应了别人（她答应他或别人、他答应她）填 true。
   办完了、取消了、对方说不用了：action 给 done，oldText 写那条里独一无二的一小段。只是没再提，不算办完。
-  有了新进展、改了时间：replace。暂时不会有动静的可以 shelve；先搁着的又提起来了：restore。
+  有了新进展、改了时间：replace。
+  过了日子几天的、没日子又很久没再提的，会自己从这里拿掉，旧的不用去删；只有确知办完了或取消了才给 done。
 - people：除了他以外，这段记录里和她真正打过交道的人，不管在哪个 App。已认识的写 id；新认识的留空 id、写 platform 和 name。互发过消息的 tier=talked；只是看、点赞、评论过对方帖子的 tier=seen。impression 只写一句：她怎么认识的、对方是什么样的人；对方说过、做过的具体事不用写，原话会留着。
 - same：已认识的人里，记录明确显示是同一个人的两张卡（比如同一个人在 QQ 和小黑盒都出现、自己说了另一个号是他）。要有证据才写，拿不准就不写。
 - 日期：记录里的"（=07-15）"是程序按那句话说的日子算好的，可以照抄；别自己推算"下周三""月底"是哪天。

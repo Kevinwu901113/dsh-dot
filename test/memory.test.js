@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bankOp, emptyMemory, touchPerson, setImpression, openOp, fitOpen, renderStanding, renderPerson, rejectReason, jaccard, search,
+  bankOp, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt } from '../src/memory/memory.js';
@@ -42,39 +42,141 @@ test('people: counts by code, one line of impression by the model; no facts on t
   assert.equal(renderPerson(a).split('\n').length, 2, 'two lines: who, and the impression');
 });
 
-test('还没了的事: add / replace / done / shelve / restore; over the budget the least pressing go to the shelf, never cut', () => {
+test('还没了的事: add / replace / done; owed is ignored, shelve / restore are gone; storage is never cut', () => {
   const m = emptyMemory();
-  const limits = { owner: 1375, self: 2200, open: 60, impression: 80, shelved: 3 };
   const T = new Date(2026, 5, 22, 20, 0).getTime();
   assert.ok(openOp(m, { action: 'add', content: '06-22 她答应老贺下周三（=07-01）前寄画册', due: '07-01', owed: true }, { now: T + 1 }).ok);
   assert.ok(openOp(m, { action: 'add', content: '06-20 他说想换个机械键盘' }, { now: T + 2 }).ok);
   assert.equal(openOp(m, { action: 'add', content: '06-20 他说想换个机械键盘' }, { now: T + 3 }).note, 'already there');
+  assert.equal(m.open[1].saidAt, T + 3, 'said again: touched');
   assert.match(openOp(m, { action: 'add', content: '记住密码 abc' }).error, /secret/);
   assert.equal(m.open[0].due, '2026-07-01');
-  assert.equal(m.open[0].owed, true);
-  // a third one overflows the 60 characters: the keyboard (not owed, no date) moves to the shelf
-  openOp(m, { action: 'add', content: '06-23 他说周末去看房，还没定哪天' }, { now: T + 4 });
-  const moved = fitOpen(m, { limits, now: T + 5 });
-  assert.deepEqual(moved.map((x) => x.text), ['06-20 他说想换个机械键盘']);
-  assert.equal(m.shelved[0].shelvedAt, T + 5);
-  assert.ok(m.open.some((x) => x.owed), 'the promise stays');
-  const s = renderStanding(m, { now: T + 3 * 864e5 });
-  assert.match(s, /## 还没了的事[^\n]*\n- 06-23 他说周末去看房[^\n]*\n- 06-22 她答应老贺[^\n]*（到 07-01）\n- 另有 1 件先搁着的：06-20 他说想换个机械键…（/);
-  assert.equal(s, renderStanding(m, { now: T + 4 * 864e5 }), 'byte-stable');
-  assert.ok(openOp(m, { action: 'replace', oldText: '看房', content: '06-24 他说周六（=06-27）去看房', due: '06-27' }, { now: T }).ok);
-  assert.ok(openOp(m, { action: 'restore', oldText: '键盘' }).ok);
-  assert.equal(m.shelved.length, 0);
+  assert.equal('owed' in m.open[0], false);
+  for (let i = 0; i < 30; i++) openOp(m, { action: 'add', content: `第 ${i} 件很长很长很长很长很长很长的事情要做` }, { now: T + 10 + i });
+  assert.equal(m.open.length, 32, 'all kept, whatever the display budget');
+  assert.ok(openOp(m, { action: 'replace', oldText: '键盘', content: '06-24 他说周六（=06-27）去买键盘', due: '06-27', owed: true }, { now: T + 50 }).ok);
+  assert.equal(m.open[1].saidAt, T + 50);
+  assert.equal('owed' in m.open[1], false);
+  for (const action of ['shelve', 'restore']) {
+    const r = openOp(m, { action, oldText: '键盘' });
+    assert.ok(r.ok && /no longer exist/.test(r.note), `${action}: a note, nothing moved`);
+  }
+  assert.equal(m.open.length, 32);
   assert.ok(openOp(m, { action: 'done', oldText: '老贺' }).ok);
-  assert.ok(openOp(m, { action: 'shelve', oldText: '键盘' }).ok);
-  assert.ok(openOp(m, { action: 'done', oldText: '键盘' }).ok, 'done reaches the shelf too');
-  assert.deepEqual(m.open.map((x) => x.text), ['06-24 他说周六（=06-27）去看房']);
   assert.match(openOp(m, { action: 'done', oldText: '不存在' }).error, /no item/);
-  // the shelf keeps the newest `shelved`
-  for (let i = 0; i < 5; i++) { openOp(m, { action: 'add', content: `第 ${i} 件很长很长很长很长很长很长的事情要做` }, { now: T + 10 + i }); fitOpen(m, { limits, now: T + 20 + i }); }
-  assert.equal(m.shelved.length, 3);
   assert.equal(cleanDue('2026-7-1'), '2026-07-01'); assert.equal(cleanDue('月底'), ''); assert.equal(cleanDue('02-30'), '');
+  assert.equal(cleanDue('01-06', new Date(2026, 11, 20).getTime()), '2027-01-06', 'a January date said in December is next year');
   assert.ok(jaccard('参考文献还没弄', '还差参考文献') > 0);
   assert.equal(search([{ text: '他下周六搬家' }, { text: '猫叫团子' }], '搬家')[0].text, '他下周六搬家');
+});
+
+test('还没了的事 expire by code: a dated item a few days after its day, one without a date after days untouched', () => {
+  const day = (d, h = 12) => new Date(2026, 5, d, h, 0).getTime();
+  const m = emptyMemory();
+  openOp(m, { action: 'add', content: '06-01 她答应老贺 06-10 寄画册', due: '06-10' }, { now: day(1) });
+  openOp(m, { action: 'add', content: '06-01 他说想换个机械键盘' }, { now: day(1) });
+  openOp(m, { action: 'add', content: '06-01 他说想去看海' }, { now: day(1) });
+  openOp(m, { action: 'add', content: '06-01 他说想去看海' }, { now: day(10) }); // brought up again on 06-10
+  assert.equal(expireOpen(m, { now: day(13, 23) }), 0, 'three days past its day: still kept');
+  assert.equal(expireOpen(m, { now: day(14, 0) + 1 }), 1, 'the fourth: gone');
+  assert.equal(expireOpen(m, { now: day(15) }), 0, 'fourteen days untouched: still kept');
+  assert.equal(expireOpen(m, { now: day(16) }), 1);
+  assert.deepEqual(m.open.map((x) => x.text), ['06-01 他说想去看海'], 'touched on 06-10: it lives longer');
+  assert.equal(expireOpen(m, { now: day(25) }), 1);
+  // the windows are settings
+  openOp(m, { action: 'add', content: '06-01 他说想学吉他', due: '06-02' }, { now: day(1) });
+  assert.equal(expireOpen(m, { now: day(3), keepAfterDue: 0 }), 1);
+  // the consolidation lets run-out items go after its own operations
+  openOp(m, { action: 'add', content: '06-01 他说想学吉他' }, { now: day(1) });
+  const r = applyExtraction(m, { open: [{ action: 'add', content: '06-20 他说周末去看房', due: null, owed: true }, { action: 'shelve', oldText: '吉他' }] }, { now: day(20), keepIdle: 7 });
+  assert.equal(r.expired, 1);
+  assert.equal(r.errors.length, 0, 'shelve from an old prompt: ignored, no error');
+  assert.deepEqual(m.open.map((x) => x.text), ['06-20 他说周末去看房']);
+  assert.equal('owed' in m.open[0], false);
+});
+
+test('今天到期的: its own section above the rest until it has come up since the day; overdue ones while kept; at most five, outside the budget', () => {
+  const T = new Date(2026, 5, 22, 20, 0).getTime();
+  const m = emptyMemory();
+  for (let i = 0; i < 12; i++) openOp(m, { action: 'add', content: `第 ${i} 件很长很长很长很长很长很长很长很长的事情要做` }, { now: T + i });
+  openOp(m, { action: 'add', content: '06-20 她答应老贺 06-22 寄画册', due: '06-22' }, { now: T - 2 * 864e5 }); // the oldest: would not fit the list
+  openOp(m, { action: 'add', content: '06-18 他说 06-20 交报告', due: '06-20' }, { now: T - 4 * 864e5 });
+  openOp(m, { action: 'add', content: '06-10 他说 06-18 体检', due: '06-18' }, { now: T - 12 * 864e5 }); // four days past: gone
+  openOp(m, { action: 'add', content: '06-21 他说 06-25 搬家', due: '06-25' }, { now: T - 864e5 });
+  const limits = { ...DEFAULT_LIMITS, open: 120 };
+  const s = renderStanding(m, { now: T, limits });
+  assert.match(s, /## 今天到期的[^\n]*\n- 06-18 他说 06-20 交报告（到 06-20）\n- 06-20 她答应老贺 06-22 寄画册（到 06-22）\n## 还没了的事[^\n]*\n- 06-21 他说 06-25 搬家（到 06-25）\n- 第 11 件/);
+  assert.doesNotMatch(s, /体检/);
+  assert.ok(s.indexOf('## 今天到期的') < s.indexOf('## 还没了的事'));
+  assert.equal(s, renderStanding(m, { now: T + 3600000, limits }), 'byte-stable within the day');
+  // brought up on or after its day (a replace, said again): back in the list
+  openOp(m, { action: 'replace', oldText: '老贺', content: '06-20 她答应老贺 06-22 寄画册，今天说了在打包', due: '06-22' }, { now: T });
+  const after = renderStanding(m, { now: T + 1, limits });
+  assert.doesNotMatch(after.split('## 还没了的事')[0], /老贺/);
+  assert.match(after, /## 还没了的事[^\n]*\n- 06-20 她答应老贺[^\n]*（到 06-22）\n- 06-21 他说 06-25 搬家/);
+  // touched before the day does not count
+  openOp(m, { action: 'add', content: '06-21 他说 06-23 去银行', due: '06-23' }, { now: T });
+  openOp(m, { action: 'replace', oldText: '银行', content: '06-21 他说 06-23 上午去银行', due: '06-23' }, { now: T });
+  assert.match(renderStanding(m, { now: T + 864e5, limits }), /## 今天到期的[^\n]*\n(- [^\n]*\n)*- 06-21 他说 06-23 上午去银行/);
+  // at most five, the most overdue first; the rest go back to the list
+  const n = emptyMemory();
+  for (let d = 19; d <= 24; d++) openOp(n, { action: 'add', content: `事情 ${d} 号要办`, due: `06-${d}` }, { now: T - 10 * 864e5 });
+  const v = openView(n, { now: new Date(2026, 5, 24, 9).getTime() });
+  assert.deepEqual(v.today.map((x) => x.due.slice(5)), ['06-21', '06-22', '06-23', '06-24'], 'overdue past three days is gone; four left');
+  for (let d = 25; d <= 26; d++) openOp(n, { action: 'add', content: `另外 ${d}`, due: '06-24' }, { now: T });
+  const w = openView(n, { now: new Date(2026, 5, 24, 9).getTime() });
+  assert.equal(w.today.length, 5);
+  assert.equal(w.today[0].due, '2026-06-21');
+  assert.equal(w.list.length, 1, 'the sixth is in the normal list');
+});
+
+test('还没了的事 shown: dated first by the nearest day, then the newest; the budget limits what is shown, never what is kept', () => {
+  const T = new Date(2026, 5, 1, 20, 0).getTime();
+  const m = emptyMemory();
+  openOp(m, { action: 'add', content: '06-01 他说想去看海' }, { now: T });
+  openOp(m, { action: 'add', content: '06-01 他说 06-20 搬家', due: '06-20' }, { now: T + 1 });
+  openOp(m, { action: 'add', content: '06-01 他说想学吉他' }, { now: T + 2 });
+  openOp(m, { action: 'add', content: '06-01 他说 06-09 体检', due: '06-09' }, { now: T + 3 });
+  const all = openView(m, { now: T }).list.map((x) => x.text);
+  assert.deepEqual(all, ['06-01 他说 06-09 体检', '06-01 他说 06-20 搬家', '06-01 他说想学吉他', '06-01 他说想去看海']);
+  const few = openView(m, { now: T, limits: { ...DEFAULT_LIMITS, open: 40 } }).list.map((x) => x.text);
+  assert.deepEqual(few, ['06-01 他说 06-09 体检', '06-01 他说 06-20 搬家']);
+  assert.equal(m.open.length, 4, 'stored all the same');
+  assert.doesNotMatch(renderStanding(m, { now: T, limits: { ...DEFAULT_LIMITS, open: 40 } }), /吉他|看海/);
+  assert.equal(search(m.open, '吉他')[0].text, '06-01 他说想学吉他', 'what is not shown is still found');
+});
+
+test('0.23 memory.json: the shelf is folded into 还没了的事 (and runs out like the rest), owed is dropped; the tool notes shelve / restore are gone', async () => {
+  const now = Date.now();
+  const legacy = { version: 2, gen: 4, owner: [], self: [], people: {}, merges: [], oseq: 3,
+    open: [{ id: 'o0001', text: '她答应陪他看新番', at: now - 864e5, due: '', owed: true }],
+    shelved: [{ id: 'o0002', text: '他说想换个机械键盘', at: now - 2 * 864e5, due: '', owed: false, shelvedAt: now }, { id: 'o0003', text: '很久以前的一件事', at: now - 60 * 864e5, due: '', owed: true, shelvedAt: now - 30 * 864e5 }] };
+  const m = normalizeMemory(legacy);
+  assert.equal('shelved' in m, false);
+  assert.deepEqual(m.open.map((x) => x.id), ['o0001', 'o0002', 'o0003']);
+  assert.ok(m.open.every((x) => !('owed' in x) && !('shelvedAt' in x)));
+  const h = harness();
+  const { mkdirSync } = await import('node:fs');
+  const dir = join(h.home, 'memory'); mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, 'memory.json'), JSON.stringify(legacy));
+  apply(h.ctx, { home: h.home });
+  const saved = JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8'));
+  assert.deepEqual(saved.open.map((x) => x.id), ['o0001', 'o0002'], 'the long-untouched one ran out on load');
+  assert.equal('shelved' in saved, false);
+  assert.doesNotMatch(readFileSync(join(dir, 'memory.md'), 'utf8'), /搁着的（|答应过/);
+  assert.equal('shelved' in h.services.dotMemory.status(), false);
+  assert.doesNotMatch(await h.services.dotMemory.command('memory'), /shelved/);
+  const tool = h.tools.memory;
+  assert.deepEqual(tool.parameters.properties.action.enum, ['add', 'replace', 'remove', 'done']);
+  assert.equal('owed' in tool.parameters.properties, false);
+  for (const action of ['shelve', 'restore']) {
+    const r = await tool.execute({ target: 'open', action, oldText: '键盘' });
+    assert.ok(r.ok && /没有了/.test(r.note));
+  }
+  const r = await tool.execute({ target: 'open', action: 'add', content: '06-22 她答应老贺寄画册', owed: true });
+  assert.ok(r.ok);
+  const added = JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8')).open.at(-1);
+  assert.equal(added.text, '06-22 她答应老贺寄画册'); assert.equal('owed' in added, false);
 });
 
 test('extraction: banks, 还没了的事, people (new seen ones from apps); loose JSON', () => {
@@ -472,7 +574,7 @@ test('persona lives only in the Canon: the consolidation prompt keeps persona an
   assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
 });
 
-test('0.19 memory migrates: open fragments become 还没了的事 (a promise is owed), overflow is shelved and reported, pinned ones join the owner bank, the rest archived', async () => {
+test('0.19 memory migrates: open fragments become 还没了的事 (all of them), pinned ones join the owner bank, the rest archived', async () => {
   const frag = (id, text, extra = {}) => ({ id, text, hash: id, kind: 'event', importance: 1, refs: 1, pinned: false, createdAt: Number(id.slice(1)), ...extra });
   const old = {
     version: 1, gen: 3, owner: ['他住光谷'], self: [], people: {}, merges: [], pending: [{ id: 'p1', person: 'u0001', text: '阿满下个月搬家' }], cursor: 5, consolidations: 9,
@@ -487,11 +589,10 @@ test('0.19 memory migrates: open fragments become 还没了的事 (a promise is 
   const m = normalizeMemory(old);
   assert.equal(m.version, 2);
   assert.deepEqual(m.owner, ['他住光谷', '他的生日是 3 月 14 日']);
-  assert.ok(m.open.length > 0 && m.shelved.length > 0, 'over the budget: some shelved, none cut');
-  assert.equal(m.open.length + m.shelved.length, 62);
-  assert.ok(m.open.some((x) => x.text.includes('老贺') && x.owed), 'the promise is owed and stays in front of her');
+  assert.equal(m.open.length, 62, 'none cut, none shelved');
+  assert.equal('shelved' in m, false);
   const { report, archive } = m.migration;
-  assert.equal(report.shelved.length, m.shelved.length);
+  assert.equal(report.open.length, 62);
   assert.deepEqual(archive.fragments.map((f) => f.id), ['f0004']);
   assert.equal(archive.pending.length, 1);
   assert.equal(m.gen, 3); assert.equal(m.cursor, 5);
@@ -505,21 +606,11 @@ test('0.19 memory migrates: open fragments become 还没了的事 (a promise is 
   const saved = JSON.parse(readFileSync(join(dir, 'memory.json'), 'utf8'));
   assert.equal(saved.version, 2); assert.equal('migration' in saved, false); assert.equal('fragments' in saved, false);
   assert.equal(JSON.parse(readFileSync(join(dir, 'memory.v019.json'), 'utf8')).fragments.length, 1);
-  assert.match(readFileSync(join(dir, 'memory-migration.md'), 'utf8'), /放不下，先搁着[\s\S]*搁着：/);
+  assert.match(readFileSync(join(dir, 'memory-migration.md'), 'utf8'), /62 件进了第三栏/);
   assert.ok(h.audit.some((e) => e.event === 'migrated'));
 });
 
-test('review fixes: a restored item is not shelved again at once; an unreadable or unmigratable memory.json is copied aside, never overwritten', async () => {
-  const m = emptyMemory();
-  const limits = { owner: 1375, self: 2200, open: 40, impression: 80, shelved: 200 };
-  openOp(m, { action: 'add', content: '06-01 他说想换个机械键盘' }, { now: 1 });
-  openOp(m, { action: 'add', content: '06-02 他说想去看海' }, { now: 2 });
-  openOp(m, { action: 'add', content: '06-03 他说想学吉他' }, { now: 3 });
-  fitOpen(m, { limits, now: 4 });
-  assert.equal(m.shelved[0].text, '06-01 他说想换个机械键盘');
-  openOp(m, { action: 'restore', oldText: '键盘' }, { now: 5 });
-  fitOpen(m, { limits, now: 6 });
-  assert.ok(m.open.some((x) => x.text.includes('键盘')), 'restored: it stays in front of her');
+test('review fixes: an unreadable or unmigratable memory.json is copied aside, never overwritten', async () => {
   // an old file the migration cannot read: kept aside, the rest of memory starts empty
   const { mkdirSync, readdirSync } = await import('node:fs');
   for (const bad of ['{ not json', JSON.stringify({ version: 1, fragments: [{ id: 'f1' }, null], people: 7 })]) {

@@ -126,7 +126,7 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   });
   const { extractPrompt, extractRules, diaryPrompt } = await import('../src/memory/memory.js');
   assert.equal(extractPrompt({ text: '他：在吗', bankless: true }),
-    `${extractRules()}\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已有：还没了的事 ===\n（没有）\n=== 已有：先搁着的 ===\n（没有）\n=== 已认识的人 ===\n（还没有）\n\n=== 这段时间的记录 ===\n他：在吗`);
+    `${extractRules()}\n\n=== 关于他 / 她自己记下的 ===\n（由别的记忆插件负责：owner 和 self 都给 []）\n=== 已有：还没了的事 ===\n（没有）\n=== 已认识的人 ===\n（还没有）\n\n=== 这段时间的记录 ===\n他：在吗`);
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
   assert.match(diaryPrompt({ day: '2026-11-03 周二', text: '他：在吗' }), /^今天是 2026-11-03 周二。[\s\S]*=== 今天的记录 ===\n他：在吗$/);
 });
