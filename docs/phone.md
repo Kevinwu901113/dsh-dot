@@ -11,7 +11,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
 6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批（目前审批框只显示工具名，不显示是哪个 App）；`mobile_type_keys` 的内容像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。幕间的观察轮只放行只读工具（看、滑、点进去、开 App、返回），其余直接拒绝、不审批。
 7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[11-04 04:52 手机通知] QQ · 宽：……`（开头是收到的时间），她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；dot 的 `notifyHours` 可以设一个静音时段（默认不设）。`/phone notifications` 看最近 20 条。
-8. **实时画面**：两种。一是模拟器窗口本身（`window: true`）；二是插件的网页，挂在 **dsh 自己的 web server** 上：`<dsh 地址>/dsh-dot/phone/`——dsh 右侧栏的「手机」标签页就是它：屏幕每秒刷新几次（PNG 流），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。**它不单独监听端口**：页面、画面流和每一次点击都先过 dsh 的 `connection` 服务（dsh 自己的登录态 + Host/Origin 围栏，转发头一概不认），只有登录了这个 dsh 的人能看能点。想在别的设备上看，把 dsh 本身暴露出去（如 `tailscale serve` dsh 的端口，或 dsh 的远程访问），再把那个地址写进 `publicUrl`，审批提醒里的链接就是 `<publicUrl>/dsh-dot/phone/`。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
+8. **实时画面**：默认只有插件的网页（模拟器不弹自己的窗口；要它也弹出来设 `window: true`）。网页，挂在 **dsh 自己的 web server** 上：`<dsh 地址>/dsh-dot/phone/`——dsh 右侧栏的「手机」标签页就是它：屏幕每秒刷新几次（PNG 流），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。**它不单独监听端口**：页面、画面流和每一次点击都先过 dsh 的 `connection` 服务（dsh 自己的登录态 + Host/Origin 围栏，转发头一概不认），只有登录了这个 dsh 的人能看能点。想在别的设备上看，把 dsh 本身暴露出去（如 `tailscale serve` dsh 的端口，或 dsh 的远程访问），再把那个地址写进 `publicUrl`，审批提醒里的链接就是 `<publicUrl>/dsh-dot/phone/`。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
 9. **摄像头**：后置摄像头是模拟器的虚拟场景（`hw.camera.back=virtualscene`，前置没有）——一个有电视和书架的 3D 房间。场景里的 `wall` 海报每次开机前被挪到镜头正前方 1.5 米、1 米见方（插件改写模拟器的 `resources/Toren1BD.posters`，原文件存成 `.orig`，`table` 海报不动），所以往海报上放一张图，她打开相机或扫一扫看到的就是它。`dshPhone.showToCamera(png)` 负责放：先按 HOME 回桌面（有 App 开着摄像头时换图不生效），`adb emu virtualscene-image wall` 清空海报，再设成新写的 `resources/dsh-dot-poster-<毫秒>.png`（同一路径或不先清空，模拟器会一直显示这个进程里放的第一张），旧文件删掉。QQ 扫码登录电脑端就靠它（见 [qq.md](qq.md)）。0.10.8 之前开起来的手机要 `/phone restart` 一次海报才会挪过去；更早建的、没有摄像头的 AVD 会被自动补上 `virtualscene`，同样下次开机生效。
 10. **表情包在相册里**：她电脑 QQ 那边存的表情包（`~/.dsh/stickers/`，见 qq.md）同步到手机 `/sdcard/Pictures/dot-stickers/<id>.<png|jpg|gif|webp>`（扩展名按文件头判断），推完发 `MEDIA_SCANNER_SCAN_FILE` 广播，相册里就有一个 dot-stickers 相册，任何 App 都能从相册选图发。手机就绪时、表情包有增减时各同步一次（按文件名 + 大小比，已经在的不重推；从收藏里挤掉的在手机上也删掉；文件夹里不是 `<id>.<ext>` 的文件不动）。手机提示词最后一段（`phone.stickers`）教她各 App 怎么把相册里的图加进自己的表情：QQ 长按 → 添加到表情、微信长按 → 添加表情、小黑盒评论配图从相册选；做成一次就记到 self。只教不催，用不用随她。`/qq stickers` 看同步了几张，`/qq stickers sync` 立刻推一次。
 
@@ -26,7 +26,8 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `avd` / `device` | `dot` / `pixel_6` | AVD 名和机型 |
 | `ramMb` / `dataGb` | `3072` / `16` | 内存、数据分区（`dataGb` 也可用 `/phone accept <GB>` / `/phone size <GB>` 在建手机前设） |
 | `port` | `5554` | 控制台端口的起点：被别的模拟器占着就往后找（+2，到 5584）；adb 序列号 `emulator-<端口>` |
-| `window` / `DSH_DOT_PHONE_WINDOW=off` | `true` | 显示模拟器窗口 |
+| `window` / `DSH_DOT_PHONE_WINDOW=on` | `false` | 另外弹出模拟器自己的窗口（默认不弹，画面在 dsh 里看） |
+| `power` | `true` | 电源开关：`false` = 关机，重启 dsh 也保持关着；用 dot 页面顶部的开关或 `/phone on`、`/phone off` 改 |
 | `liveView` | `true` | 在 dsh 的 web server 上挂实时画面页（`/dsh-dot/phone/`）；`false` 关闭 |
 | `publicUrl` | 无 | 这个 dsh 对外的地址（你自己的暴露方式）；实时画面链接 = `<publicUrl>/dsh-dot/phone/`，写进审批提醒 |
 | `gpu` | `auto` | 模拟器 `-gpu`（`auto` / `host` / `software` 等）。`auto` 在 API 35 上可能被强制成 CPU 软件渲染：`~/.dsh/phone/emulator.log` 里有 `forcing software rendering for GLES`。软件渲染下每次截屏都是宿主 CPU 重新合成整屏，持续高频截屏会让虚拟机卡过 15 秒、被模拟器的卡死检测杀掉（日志 `detected a hanging thread 'QEMU2 main loop'`）。Mac 上可改 `"host"` 用显卡，改后重启手机，确认日志里不再有 `forcing software rendering` |
@@ -48,7 +49,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 ## 装 App 和登录
 
 - **她自己装。** 手机没有应用商店，和一个人拿到新手机一样：她用手机上的浏览器打开官网，下载安装包，点开安装。插件开机时已允许浏览器和文件管理器安装未知应用（`installers`），所以不用进设置。这是故意的——养一个会自己折腾手机的角色，而不是替她把一切装好。`adb install` 当然也能用，但那是你的事，不是她的。
-- 注册、登录她自己来（见下一节）；你也可以在模拟器窗口里亲手登录。验证码、人脸、短信验证都由你过；她遇到会停下来告诉你。
+- 注册、登录她自己来（见下一节）；你也可以在手机画面（dot 页面的「看画面」）里亲手登录。验证码、人脸、短信验证都由你过；她遇到会停下来告诉你。
 - **用小号**：各平台条款都不允许自动化，模拟器也可能被检测。登录态在 AVD 里，重启不丢；`~/.dsh/phone/avd/` 整个目录就是这部手机，可以备份。
 
 ## 她的手机号和账号
@@ -66,7 +67,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 |---|---|---|
 | macOS Apple silicon | ✅ | arm64 镜像原生速度；第一次启动系统会问是否允许模拟器用虚拟化 |
 | macOS Intel | ✅ | x86_64 镜像，依赖 Hypervisor.framework |
-| Linux x86_64 | ✅ | 需要 KVM（`/dev/kvm` 可写）；无头跑用 `window: false` |
+| Linux x86_64 | ✅ | 需要 KVM（`/dev/kvm` 可写）；默认就是无头 |
 | Linux arm64 | ❌ | Google 不发 Linux arm64 模拟器 |
 | Windows x64 | ✅ | 需要 WHPX 或 Hyper-V；解压用 PowerShell |
 | 另一台 Linux 虚拟机里 | ❌ | 嵌套虚拟化。手机和电脑是两台设备，不是一台装另一台 |

@@ -13,12 +13,15 @@ import { createAudit } from './audit.js';
 import { computerApiKey, keyHeaders, KEY_HEADER } from './key.js';
 import { mountComputerView, LIVE_VIEW_PAGE } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
-import { sectionOf, setValues } from '../settings.js';
+import { sectionOf, setValues, writeSections } from '../settings.js';
 
 export const name = 'dot-computer';
 
 export const defaults = {
   backend: 'auto', // auto | microsandbox | docker
+  // The power switch (the dot page, /computer on|off): false = her computer is shut down and stays
+  // down across dsh restarts until it is switched on. The component stays loaded either way.
+  power: true,
   name: 'dsh-computer',
   // The same image, mirrored by its authors for mainland China (most users); 'ghcr.io/agent-infra/sandbox:latest' is the origin.
   image: 'enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest',
@@ -204,13 +207,13 @@ export async function ensureServices(config, computer, logger) {
   }
 }
 
-export function apply(ctx, config = {}) {
+export function apply(ctx, config = {}, deps = {}) {
   const logger = withFileLog(ctx.logger('dsh-computer'));
   // The gateway port is fixed by the patch (DSH_COMPUTER_PORT): the UI relay and the gate read the same value.
   const { port: _port, ...user } = sectionOf('computer', (m) => logger.warn(m));
   const cfg = { ...defaults, ...readSettingsFile(), ...setValues(config, { dropEmptyArrays: true }), ...user };
   const apiKey = computerApiKey(cfg.apiKey);
-  const backend = pickBackend({ ...cfg, apiKey }, logger);
+  const backend = deps.backend ?? pickBackend({ ...cfg, apiKey }, logger);
   const base = `http://127.0.0.1:${cfg.port}`;
   // Folders actually bound into the VM: what earlier runs recorded, plus the configured defaults.
   const state = readState();
@@ -239,13 +242,14 @@ export function apply(ctx, config = {}) {
     keyHeader: KEY_HEADER,
     isReady: false,
   };
+  let off = cfg.power === false;
   computer.audit = createAudit(auditFile());
 
   // Status for other plugins (dot, IM bridges): one snapshot shape plus change notifications.
   const listeners = new Set();
   computer.status = () => ({
-    stage: !computer.isReady && !computer.error ? computer.stage || 'starting' : undefined, // downloading | installing | starting, while not up
-    state: computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : computer.unsafe ? 'unsafe' : 'shell-only',
+    stage: !off && !computer.isReady && !computer.error ? computer.stage || 'starting' : undefined, // downloading | installing | starting, while not up
+    state: off ? 'off' : computer.error ? 'error' : computer.remounting ? 'remounting' : !computer.isReady ? 'starting' : computer.servicesReady ? 'ready' : computer.unsafe ? 'unsafe' : 'shell-only',
     backend: backend.kind,
     liveViewUrl: computer.liveViewUrl,
     publicLiveViewUrl: computer.publicLiveViewUrl,
@@ -270,8 +274,10 @@ export function apply(ctx, config = {}) {
   };
   computer.notifyStatus = changed;
 
+  // `ready` settles once per boot: switching the computer on again makes a new one.
   let markReady;
-  computer.ready = new Promise((r) => (markReady = r));
+  const newReady = () => { computer.ready = new Promise((r) => (markReady = r)); };
+  newReady();
   try { rmSync(computer.lockFile, { force: true }); } catch {}
 
   /** Covered by an existing shared folder? */
@@ -283,7 +289,7 @@ export function apply(ctx, config = {}) {
    */
   let pending = null;
   computer.ensureShared = (dir) => {
-    if (computer.isShared(dir) || !shareable(dir) || !backend.remount || computer.error) return null;
+    if (off || computer.isShared(dir) || !shareable(dir) || !backend.remount || computer.error) return null;
     const previous = [...computer.mounts];
     const next = [...previous.filter((m) => !inside(dir, m)), dir]; // a parent replaces its children
     computer.mounts = next; // later spawns map paths as shared; they wait on the lock meanwhile
@@ -332,8 +338,12 @@ export function apply(ctx, config = {}) {
   }
   computer.mcpMounted = () => Boolean(mcpFork);
   ctx.effect?.(() => () => { mcpFork?.dispose?.(); mcpFork = null; }, 'dsh-dot/computer: mcp client');
-  ensureShell(cfg, computer, logger).then(
+  // One boot at a time, numbered: a boot that is overtaken by the power switch must not mark the
+  // computer ready (or leave it running) after it was switched off.
+  let bootNo = 0;
+  const boot = () => { const mine = ++bootNo; const stale = () => off || mine !== bootNo; return ensureShell(cfg, computer, logger).then(
     async (result) => {
+      if (stale()) { if (off) await backend.stop?.().catch(() => {}); return; }
       // An existing VM is bound to what it was bound to before, not to this run's defaults:
       // backends that know the real bindings report them; otherwise trust the recorded state.
       if (!result?.fresh && result?.mounts) computer.mounts = result.mounts.filter(allowed);
@@ -353,10 +363,52 @@ export function apply(ctx, config = {}) {
       computer.isReady = true; markReady(true); changed();
       logger.info('computer shell ready');
       return ensureServices(cfg, computer, logger).then(
-        async () => { computer.servicesReady = true; await mountMcp(); logger.info(`computer ready — live view: ${computer.liveViewUrl}`); changed(); },
-        (err) => { computer.servicesError = err; logger.error(err.message); changed(); },
+        async () => { if (stale()) return; computer.servicesReady = true; await mountMcp(); logger.info(`computer ready — live view: ${computer.liveViewUrl}`); changed(); },
+        (err) => { if (stale()) return; computer.servicesError = err; logger.error(err.message); changed(); },
       );
     },
-    (err) => { computer.error = err; markReady(false); logger.error(err.message); changed(); },
-  );
+    (err) => { if (stale()) return; computer.error = err; markReady(false); logger.error(err.message); changed(); },
+  ); };
+
+  /**
+   * The power switch. Off: her computer is shut down (its disk, logins and installed software stay)
+   * and commands are refused with that reason; on: it boots like at startup. The choice is written
+   * to dsh-dot.json, so it holds across dsh restarts.
+   */
+  computer.power = async (on) => {
+    on = Boolean(on);
+    writeSections({ computer: { power: on ? null : false } });
+    if (on === !off) return computer.status();
+    off = !on;
+    computer.audit({ kind: 'power', on });
+    if (on) {
+      computer.error = undefined; computer.servicesError = undefined; computer.stage = undefined;
+      newReady(); changed(); logger.info('computer switched on');
+      void boot();
+      return computer.status();
+    }
+    computer.isReady = false; computer.servicesReady = false; computer.error = undefined; computer.servicesError = undefined;
+    markReady(false);
+    mcpFork?.dispose?.(); mcpFork = null;
+    changed(); logger.info('computer switched off');
+    await (pending ?? Promise.resolve()).catch(() => {}); // a remount in flight finishes first: stopping mid-swap could lose the disk
+    await backend.stop?.().catch((err) => logger.warn(`stopping the computer failed: ${err.message}`));
+    return computer.status();
+  };
+
+  ctx.inject?.(['commands'], (scope) => {
+    scope.effect(() => scope.commands.register({
+      name: 'computer',
+      description: 'her computer: status; "on" / "off" is the power switch (off shuts it down and keeps it down across dsh restarts; nothing on its disk is lost)',
+      input: { hint: '[on | off]' },
+      handler: async ({ rawInput }) => {
+        const arg = String(rawInput ?? '').trim();
+        try { if (arg === 'on' || arg === 'off') await computer.power(arg === 'on'); } catch (err) { return { kind: 'success', text: `computer: ${err.message}` }; }
+        const s = computer.status();
+        return { kind: 'success', text: `computer: ${s.state}${s.stage ? ` (${s.stage})` : ''}${s.error ? ` — ${s.error}` : ''}${s.state === 'off' ? ' — /computer on to switch it on' : ''}` };
+      },
+    }), 'dsh-dot/computer: /computer command');
+  });
+
+  if (off) { logger.info('computer is switched off (/computer on, or the dot page, to switch it on)'); changed(); } else void boot();
 }

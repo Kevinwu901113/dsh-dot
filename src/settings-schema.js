@@ -24,7 +24,7 @@ export const SCHEMA = [
   // phone
   e('phone', 'dataGb', '手机·资源', 'int', 'create', '存储（GB）', { min: 8, max: 256 }),
   e('phone', 'ramMb', '手机·资源', 'int', 'create', '内存（MB）', { min: 1536, max: 16384 }),
-  e('phone', 'window', '手机·显示', 'bool', 'restart-phone', '显示模拟器窗口（关了在后台跑，只能在面板里看）'),
+  e('phone', 'window', '手机·显示', 'bool', 'restart-phone', '另外弹出模拟器自己的窗口（默认不弹：画面在 dot 页面和右侧面板里看）'),
   e('phone', 'gpu', '手机·显示', choice('', 'auto', 'host', 'swiftshader_indirect', 'angle_indirect'), 'restart-phone', '渲染方式（空 = Windows 软件渲染、其他自动；显卡崩溃时选 swiftshader_indirect）'),
   e('phone', 'connectivityCheck', '手机·网络', { type: 'enum-or-text', values: ['cn', 'google'] }, 'restart-phone', '联网检测地址（cn 国内 / google 系统默认 / 自填返回 204 的地址）'),
   e('phone', 'dnsServer', '手机·网络', 'text', 'restart-phone', 'DNS（空 = 用电脑的；校园网等封了外部 DNS 的别填）'),

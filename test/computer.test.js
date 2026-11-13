@@ -217,3 +217,43 @@ test('ticket store: a ticket minted with no peer address (desktop bridge) is not
   assert.equal(store.redeem(store.mint(undefined), '127.0.0.1'), true);
   assert.equal(store.redeem(store.mint('10.0.0.5'), '127.0.0.1'), false);
 });
+
+test('computer power: off shuts the VM down and refuses commands; kept in dsh-dot.json; on boots it again; off at start boots nothing', async () => {
+  const { apply } = await import('../src/computer/vm.js');
+  const { default: Subprocess } = await import('../src/computer/subprocess.js');
+  const gw = await gatewayLike({ keyed: true, relayClosed: true });
+  const old = process.env.DSH_HOME;
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dot-power-'));
+  const settings = () => { try { return JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-dot.json'), 'utf8')); } catch { return {}; } };
+  const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
+  const make = () => {
+    const calls = [];
+    const backend = { kind: 'fake', bin: 'fake', rootShell: async () => '', ensure: async () => { calls.push('ensure'); return { fresh: true }; }, stop: async () => { calls.push('stop'); } };
+    let cmd;
+    const ctx = { logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), provide(n, v) { ctx[n] = v; }, effect() {},
+      inject(deps, fn) { if (deps.join() === 'commands') fn({ effect: (f) => f(), commands: { register: (c) => { cmd = c; return () => {}; } } }); } };
+    apply(ctx, { port: gw.port, apiKey: 'secret', mcp: false, mounts: [tmpdir()] }, { backend });
+    return { computer: ctx.dshComputer, calls, cmd: () => cmd };
+  };
+  try {
+    const a = make();
+    assert.ok(await until(() => a.computer.status().state === 'ready'), 'booted');
+    await a.computer.power(false);
+    assert.equal(a.computer.status().state, 'off');
+    assert.deepEqual(a.calls, ['ensure', 'stop']);
+    assert.equal(settings().computer.power, false);
+    assert.throws(() => Subprocess.prototype.usable.call({ vm: a.computer }), /电脑关着/, 'a command is refused with the reason, at once');
+    assert.equal(a.computer.ensureShared(join(tmpdir(), 'x')), null, 'no folder is shared (no VM re-creation) while off');
+    assert.match((await a.cmd().handler({ rawInput: 'on' })).text, /computer: (starting|shell-only|ready)/);
+    assert.ok(await until(() => a.computer.status().state === 'ready'), 'booted again');
+    assert.deepEqual(a.calls, ['ensure', 'stop', 'ensure']);
+    assert.equal(settings().computer, undefined, 'back to the default (on)');
+    assert.equal(await a.computer.ready, true, 'a fresh ready promise per boot');
+
+    await a.computer.power(false);
+    const b = make(); // dsh restarted with the switch off
+    await new Promise((r) => setTimeout(r, 50));
+    assert.equal(b.computer.status().state, 'off');
+    assert.deepEqual(b.calls, [], 'nothing booted');
+  } finally { shut(gw.server); process.env.DSH_HOME = old; if (old === undefined) delete process.env.DSH_HOME; }
+});

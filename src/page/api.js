@@ -63,6 +63,8 @@ const ACTIONS = {
     return `已导入：${r.name}（${r.title}，作者 @${r.author}，${r.license}）`;
   },
   'phone-accept': async ({ phone }, body) => { need(phone, '手机'); if (body?.gb) phone.setStorage(String(body.gb)); phone.accept(); return '已接受许可，开始安装'; },
+  'phone-power': async ({ phone }, body) => { await need(phone, '手机').power(body?.on === true); return body?.on === true ? '手机开机中' : '手机已关机（重启 dsh 也保持关着）'; },
+  'computer-power': async ({ computer }, body) => { await need(computer, '电脑').power(body?.on === true); return body?.on === true ? '电脑开机中' : '电脑已关机（重启 dsh 也保持关着）'; },
   'phone-restart': async ({ phone }) => { await need(phone, '手机').restart(); return '手机重启中'; },
   'phone-retry': async ({ phone }) => { await need(phone, '手机').restart(); return '重试中'; },
 };
@@ -77,6 +79,7 @@ export function setupSteps(ctx, stored = readSetup()) {
   const dev = (svc, x, okStates) => !svc ? { state: 'skip', detail: '组件没开' }
     : okStates.includes(x?.state) ? { state: 'done', detail: '就绪' }
       : x?.state === 'error' ? { state: 'blocked', detail: x.error ?? '出错' }
+        : x?.state === 'off' ? { state: 'skip', detail: '已关机（页面顶部可以开机）' }
         : x?.state === 'needs-license' ? { state: 'todo', detail: '还没装' }
           : { state: 'working', detail: x?.progress?.text ?? x?.stage ?? x?.state ?? '' };
   const canon = (() => { try { return s.interlude?.canon?.(); } catch { return null; } })();

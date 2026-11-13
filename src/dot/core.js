@@ -269,11 +269,11 @@ export function setupText(phoneStatus, computerStatus) {
   const lines = [];
   const p = phoneStatus;
   if (p && p.state !== 'ready') {
-    lines.push(`手机：${p.state === 'needs-license' ? '还没装（等他在 dsh 里发 /phone accept）' : p.state === 'downloading' ? (p.progress?.text ?? '下载中') : p.state === 'booting' ? '开机中' : p.state === 'error' ? `出错了（${p.error ?? '未知'}），/phone 看详情` : p.state}`);
+    lines.push(`手机：${p.state === 'off' ? '关着（他关的；要用就请他在 dot 页面打开，别自己想办法开）' : p.state === 'needs-license' ? '还没装（等他在 dsh 里发 /phone accept）' : p.state === 'downloading' ? (p.progress?.text ?? '下载中') : p.state === 'booting' ? '开机中' : p.state === 'error' ? `出错了（${p.error ?? '未知'}），/phone 看详情` : p.state}`);
   }
   const c = computerStatus;
-  if (c && (c.state === 'starting' || c.state === 'error')) {
-    lines.push(`电脑：${c.state === 'error' ? `出错了（${c.error ?? '未知'}），/phone doctor 或 dot 页面看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
+  if (c && (c.state === 'starting' || c.state === 'error' || c.state === 'off')) {
+    lines.push(`电脑：${c.state === 'off' ? '关着（他关的；要用就请他在 dot 页面打开，别自己想办法开）' : c.state === 'error' ? `出错了（${c.error ?? '未知'}），/phone doctor 或 dot 页面看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
   }
   return lines.length ? prompt('dot.setup', { devices: lines.join('\n') }) : '';
 }

@@ -2,13 +2,14 @@
 // keeps alive, exposed to the model as mcp__dot-phone__* (mobile-mcp over adb). Nothing to install by
 // hand: on first start the plugin fetches the emulator, platform-tools and one system image from
 // Google's repository (after the SDK license is accepted), writes the AVD itself (no Java, no
-// sdkmanager), boots it, and mounts the MCP server once the phone answers. The phone's window is its
-// live view; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
+// sdkmanager), boots it, and mounts the MCP server once the phone answers. She runs headless and is
+// watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import { pipeline } from 'node:stream/promises';
 import { Readable, Transform } from 'node:stream';
@@ -42,7 +43,8 @@ export const defaults = {
   ramMb: 3072,
   dataGb: 16,               // her storage (/data), fixed when the phone is created: /phone accept <GB> or /phone size <GB> before that
   port: 5554,               // console port; the adb serial is emulator-<port>
-  window: true,             // show the emulator window (the phone's live view); false = headless
+  window: false,            // false = headless: she is watched on the dot page / the live view (like her computer); true also opens the emulator's own window on the desktop
+  power: true,              // the power switch (the dot page, /phone on|off): false = shut down, and stays down across dsh restarts until switched on
   gpu: '',                  // '' = per platform: Windows swiftshader_indirect (host GPU crashed the emulator there: 0xC0000005, 'context was preempted'), else auto
   connectivityCheck: 'cn',  // Android's "is there internet" probe: 'cn' (reachable in mainland China), 'google' (stock), or an http(s) URL answering 204
   dnsServer: '',            // '' = the emulator picks the host's DNS; e.g. '223.5.5.5' (a network that blocks outside DNS, like many campuses, must keep '')
@@ -220,7 +222,9 @@ function withFileLog(logger) {
 }
 
 const run = (file, args, opts = {}) => new Promise((resolve, reject) => {
-  execFile(file, args, { maxBuffer: 64 * 1024 * 1024, ...opts }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve({ stdout, stderr })));
+  // windowsHide: adb, sdkmanager and the emulator's tools are console programs; from the desktop app
+  // (no console of its own) each call would otherwise open a console window on Windows.
+  execFile(file, args, { maxBuffer: 64 * 1024 * 1024, windowsHide: true, ...opts }, (err, stdout, stderr) => (err ? reject(Object.assign(err, { stdout, stderr })) : resolve({ stdout, stderr })));
 });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -505,7 +509,7 @@ export function apply(ctx, config = {}, deps = {}) {
       const open = () => {
         if (stopped) return;
         if (!phone.isReady) { setTimeout(open, 5000).unref?.(); return; } // the phone is restarting: try again once it is up
-        try { proc = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'] }); } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
+        try { proc = spawnImpl(paths.adb, ['-s', serial, 'logcat', '-b', 'events', '-v', 'raw', '-T', '1', 'notification_enqueue:I', '*:S'], { env: env(), stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); } catch (err) { logger.warn(`notification tail: ${err.message}`); return; }
         proc.stdout?.on('data', (d) => { if (String(d).includes('[')) onEvent(); });
         proc.on('exit', () => { proc = null; if (!stopped) setTimeout(open, 5000).unref?.(); });
       };
@@ -617,6 +621,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const adbPortEnv = () => (cfg.adbPort ? { ANDROID_ADB_SERVER_PORT: String(cfg.adbPort) } : {});
   const env = () => ({ ...process.env, ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_AVD_HOME: paths.avdHome, ANDROID_SERIAL: serial, ...adbPortEnv(), PATH: `${join(home, 'platform-tools')}${osTag === 'windows' ? ';' : ':'}${process.env.PATH ?? ''}` });
 
+  let off = cfg.power === false; // the power switch: nothing boots or relaunches her phone while it is off
   let child = null, stopping = false, mcpFork = null, quickExits = 0, lastCrash = 0, crashTimes = [];
   /** The last lines of emulator.log, for the error a failed launch leaves. */
   const logTail = (n = 8) => { try { return readFileSync(join(home, 'emulator.log'), 'utf8').trimEnd().split(/\r?\n/).slice(-n).join('\n'); } catch { return ''; } };
@@ -679,9 +684,10 @@ export function apply(ctx, config = {}, deps = {}) {
       mcpClient = deps.mcpClient ?? await import('@deepseek-ai/dsh-mcp-client');
     } catch (err) { logger.error(`${PHONE_TOOL_PREFIX}* unavailable: ${err.message}`); return; }
     mcpFork = ctx.plugin(mcpClient, {
-      transport: 'stdio', serverName: PHONE_SERVER, command: process.execPath, args: [entry], cwd: home,
+      // Through mcp-entry.cjs, which hides the console windows mobile-mcp's own adb calls would open on Windows.
+      transport: 'stdio', serverName: PHONE_SERVER, command: process.execPath, args: [fileURLToPath(new URL('./mcp-entry.cjs', import.meta.url))], cwd: home,
       // ELECTRON_RUN_AS_NODE: inside the desktop app process.execPath is Electron; this makes it run as plain Node.
-      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ...adbPortEnv(), ELECTRON_RUN_AS_NODE: '1' },
+      env: { ANDROID_HOME: home, ANDROID_SDK_ROOT: home, ANDROID_SERIAL: serial, ...adbPortEnv(), ELECTRON_RUN_AS_NODE: '1', DSH_DOT_MOBILE_MCP_ENTRY: entry },
       toolCallTimeoutMs: cfg.toolCallTimeoutMs, failOnStartupError: false, reconnect: { maxAttempts: 1000 },
     });
     logger.info(`${PHONE_TOOL_PREFIX}* mounted (mobile-mcp over adb)`);
@@ -712,6 +718,7 @@ export function apply(ctx, config = {}, deps = {}) {
   // all ask; a second caller joins the start in flight instead of racing it.
   let starting = null, inFlight = false, again = false, generation = 0;
   function start() {
+    if (off) return Promise.resolve();
     if (inFlight) { again = true; return starting; }
     inFlight = true;
     starting = startOnce();
@@ -832,7 +839,27 @@ export function apply(ctx, config = {}, deps = {}) {
     try { ours?.kill('SIGKILL'); } catch {}
     if (inFlight) await starting.catch(() => {}); // a boot in flight gives up (generation changed) before the new one
   }
+  /**
+   * The power switch. Off: her phone is shut down (apps, logins and files stay) and nothing relaunches
+   * it; on: it boots like at startup. The choice is written to dsh-dot.json, so it holds across dsh restarts.
+   */
+  phone.power = async (on) => {
+    on = Boolean(on);
+    writeSections({ phone: { power: on ? null : false } });
+    if (on === !off) return phone.status();
+    audit({ kind: 'power', on });
+    if (on) { off = false; logger.info('phone switched on'); void start(); return phone.status(); }
+    off = true; logger.info('phone switched off');
+    if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }
+    shade.stop?.();
+    setState('off');
+    await stopEmulator();
+    setState('off'); // a boot that was in flight may have reported its own end
+    return phone.status();
+  };
+  const switchOn = () => { if (off) { off = false; try { writeSections({ phone: { power: null } }); } catch (err) { logger.warn(err.message); } } };
   phone.restart = async () => {
+    switchOn();
     setState('booting');
     await stopEmulator();
     void start();
@@ -843,6 +870,7 @@ export function apply(ctx, config = {}, deps = {}) {
    */
   phone.rebuild = async ({ gb } = {}) => {
     if (gb !== undefined && (!Number.isInteger(Number(gb)) || Number(gb) < 8 || Number(gb) > 256)) throw new Error('storage size: a whole number of GB from 8 to 256');
+    switchOn();
     setState('booting');
     await stopEmulator();
     rmSync(join(paths.avdHome, `${cfg.avd}.avd`), { recursive: true, force: true });
@@ -873,6 +901,7 @@ export function apply(ctx, config = {}, deps = {}) {
 
   // Approval gate for phone tools: installs/uninstalls, and typing that looks like a secret or a payment.
   ctx.on('tools/pre-execute', async (exec_, next) => {
+    if (off && (exec_.name?.startsWith(PHONE_TOOL_PREFIX) || exec_.name === PHONE_ZOOM_TOOL)) return { kind: 'deny', reason: '手机关着（他关的）。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /phone on' };
     const reason = phoneGate(exec_, cfg);
     if (!reason) return next();
     audit({ kind: 'approval-asked', tool: exec_.name, session: exec_.agent?.session?.id, reason });
@@ -992,7 +1021,7 @@ export function apply(ctx, config = {}, deps = {}) {
     scope.effect(() => scope.commands.register({
       name: 'phone',
       description: 'the phone: status; "doctor" checks this machine (virtualization, disk, memory, ports, downloads, the phone network) and "doctor fix <id>" applies a one-click fix; "accept [GB]" accepts the Android SDK license and installs it (with that much storage, default 16); "size <GB>" sets the storage of a phone not yet created; "number <digits>" sets her phone number ("number -" clears it); "restart" reboots the emulator; "screenshot" saves the screen to the phone home',
-      input: { hint: '[doctor [fix <id>] | accept [GB] | size <GB> | number <digits> | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
+      input: { hint: '[doctor [fix <id>] | accept [GB] | size <GB> | number <digits> | on | off | retry | restart | screenshot | notifications | notify [mute|wake <pkg>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let extra = '';
@@ -1022,6 +1051,7 @@ export function apply(ctx, config = {}, deps = {}) {
         }
         else if (arg === 'retry') { if (phone.state === 'error') { void start(); extra = '\nretrying'; } else extra = `\nnothing to retry (state ${phone.state})`; }
         else if (arg === 'restart') { await phone.restart(); extra = '\nrestarting'; }
+        else if (arg === 'on' || arg === 'off') { try { await phone.power(arg === 'on'); extra = arg === 'on' ? '\nswitched on; booting' : '\nswitched off (stays off across dsh restarts; /phone on to switch it on)'; } catch (err) { extra = `\n${err.message}`; } }
         else if (arg === 'screenshot' && phone.isReady) { const file = join(home, 'last.png'); writeFileSync(file, await phone.screenshot()); extra = `\nsaved ${file}`; }
         if (arg === 'notifications') extra = `\n${recent.length ? recent.map((n) => `${n.at.slice(11, 19)} ${n.pkg}: ${n.title} — ${n.text}${n.lagMs !== undefined ? ` (seen ${(n.lagMs / 1000).toFixed(1)}s after the app posted it)` : ''}`).join('\n') : '(none since start)'}`;
         else if (/^notify\b/.test(arg)) {
@@ -1042,7 +1072,7 @@ export function apply(ctx, config = {}, deps = {}) {
     return () => { if (timer) clearInterval(timer); };
   }, 'dsh-dot/phone: keep apps alive');
   ctx.effect(() => {
-    void start();
+    if (off) { setState('off'); logger.info('phone is switched off (/phone on, or the dot page, to switch it on)'); } else void start();
     return () => {
       stopping = true;
       if (aliveTimer) { clearInterval(aliveTimer); aliveTimer = null; }

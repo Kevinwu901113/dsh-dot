@@ -1,6 +1,6 @@
 # dsh-dot: one plugin, seven components. The character lives on her own devices.
 #   phone     — her phone: an Android emulator this plugin installs, boots and keeps alive;
-#               tools mcp__dot-phone__* (mobile-mcp over adb). The emulator window is the live view.
+#               tools mcp__dot-phone__* (mobile-mcp over adb). Headless: watched on dsh's own pages.
 #               DSH_DOT_PHONE=off turns it off.
 #   computer  — optional: a microVM (microsandbox, bundled; Docker as fallback) with shell, browser,
 #               desktop, live view, approval gates, audit log. The VM is the isolation boundary.
@@ -77,7 +77,8 @@
       name: 'dsh-dot-life/phone'
       disabled: !!js "process.env.DSH_DOT_PHONE === 'off'"
       config:
-        window: !!js "process.env.DSH_DOT_PHONE_WINDOW !== 'off'"
+        # Headless by default (she is watched on the dot page / the live view); DSH_DOT_PHONE_WINDOW=on also opens the emulator's own window.
+        window: !!js "process.env.DSH_DOT_PHONE_WINDOW === 'on' ? true : process.env.DSH_DOT_PHONE_WINDOW === 'off' ? false : undefined"
         acceptLicense: !!js "process.env.DSH_DOT_PHONE_ACCEPT_LICENSE === 'yes' ? true : undefined"
         # Live view + controls at <dsh>/dsh-dot/phone/, behind dsh's own login (no port of its own).
         # publicUrl: the public origin of this dsh if you expose it (tailscale serve, remote access).

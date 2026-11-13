@@ -54,6 +54,11 @@ export function createDockerBackend(config, logger) {
       return docker(bin, ['exec', '-u', 'root', name, '/bin/bash', '-c', script]);
     },
 
+    /** Shut the container down (the power switch). Its home volume stays; `ensure` starts it again. */
+    async stop() {
+      await docker(bin, ['stop', name], { timeout: 120_000 }).catch(() => {});
+    },
+
     async ensure({ mounts, port }) {
       if (!(await dockerOk(bin, ['info', '--format', '{{.ServerVersion}}']))) {
         throw new Error(`dsh-computer: Docker is not running or not installed (looked for "${bin}"). Start Docker Desktop / OrbStack and restart dsh.`);

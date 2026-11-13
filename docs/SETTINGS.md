@@ -51,7 +51,8 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 |---|---|---|
 | **手机存储大一点** | 建手机前：`/phone size 32`，或 `/phone accept 32`，或 `phone.dataGb`（8–256） | 🔒 建立时。手机建好后**扩不了**（改 AVD 的 `config.ini` 实测无效）。已经满了：卸 App、清 App 数据；或者删掉 `~/.dsh/phone/avd/dot.avd/` 和 `dot.ini` 重建（手机里的 App 和登录全丢），重建前先 `/phone size <GB>` |
 | 手机内存 / 机型 / 语言 / 时区 | `phone.ramMb`、`phone.device`、`phone.locale`、`phone.timezone` | `ramMb`、`device` 🔒 建立时（同上，删 AVD 重建） |
-| 不显示模拟器窗口 | `phone.window: false` | 画面仍可在 dsh 的手机标签页看 |
+| 也弹出模拟器自己的窗口 | `phone.window: true` | 默认不弹，画面在 dsh 的手机标签页和 dot 页面看 |
+| 关掉手机 / 电脑 | dot 页面顶部的开关，或 `/phone off`、`/computer off` | 立刻关机，重启 dsh 也保持关着；`on` 再开。组件仍然加载着，只是机器不开 |
 | **电脑磁盘大一点** | `computer.rootDisk`，如 `"32G"` | 🔒 建立时。已有虚拟机扩不了，要重建：`msb rm -f dsh-computer` 并删 `~/.microsandbox/snapshots/dsh-computer/`（见 [computer.md](computer.md#六维护)），装过的东西和 QQ 登录会丢。0.11.3 之前建的虚拟机只有约 4 GB |
 | 电脑内存 / CPU | `computer.memory`（如 `"6G"`）、`computer.cpus` | 重启 dsh 生效 |
 | 电脑里 QQ 报 `no space left` / `ENOSPC` | 先 `/qq clean`（清缓存和残留），还不够 `/qq clean napcat`（用 SnowLuma 时删掉 NapCat） | 根治是加大 `computer.rootDisk` 重建 |
@@ -104,7 +105,8 @@ setx DSH_DOT_COMPUTER off
 | `api` / `abi` | `35` / 跟随 CPU | 系统镜像 🔒 建立时 |
 | `locale` / `timezone` | `"zh-CN"` / `"Asia/Shanghai"` | 语言、时区 |
 | `number` | `""` | 她的手机号，注册登录 App 用（也可用 `/phone number`；账号密码另存 `~/.dsh/dsh-dot-accounts.json`，见 [phone.md](phone.md)） |
-| `window` | `true` | 显示模拟器窗口 |
+| `window` | `false` | 另外弹出模拟器自己的窗口 |
+| `power` | `true` | 电源开关（见上） |
 | `gpu` | `""` | 渲染方式。空 = Windows 用 `swiftshader_indirect`（软件渲染：显卡渲染在部分 Windows 上会崩，0xC0000005），其他系统 `auto`；也可填 `auto` / `host` / `angle_indirect` |
 | `connectivityCheck` | `"cn"` | 安卓判断"有没有网"的检测地址：`cn` = `connect.rom.miui.com/generate_204`（国内能访问；默认的 Google 地址国内访问不了，会显示"连接受限"），`google` = 系统默认，或自填返回 204 的地址 |
 | `dnsServer` | `""` | 给模拟器指定 DNS，如 `223.5.5.5`；空 = 用电脑的。校园网等封了外部 DNS 的网络必须留空 |
@@ -128,6 +130,7 @@ setx DSH_DOT_COMPUTER off
 | `memory` / `cpus` | `"4G"` / `2` | 资源上限 |
 | `mounts` | `[]` | 共享文件夹 |
 | `backend` | `"auto"` | `microsandbox` / `docker` |
+| `power` | `true` | 电源开关：`false` = 关机，重启 dsh 也保持关着（dot 页面顶部的开关、`/computer on`、`/computer off`） |
 | `image` | 国内镜像 `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest` | 镜像（作者官方的国内镜像，与 `ghcr.io/agent-infra/sandbox:latest` 同一镜像；海外用户可改回 ghcr）🔒 建立时 |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址 |
 

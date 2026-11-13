@@ -72,6 +72,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
    * not be cancelled and outlived the stop button. A failed computer fails the same way.
    */
   usable() {
+    if (this.vm.status?.().state === 'off') throw new Error('电脑关着（他关的），现在跑不了命令。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /computer on');
     if (this.vm.error) throw new Error(`电脑出错了，现在跑不了命令（${this.vm.error.message}）。不用等，先直接回话；/phone doctor 或左侧栏 dot 页面看详情`);
     if (!this.vm.isReady) throw new Error(notReady(this.vm.status?.()));
   }
@@ -99,7 +100,7 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     const probe = command.startsWith('/') ? 'test -x "$1" && printf %s "$1"' : 'command -v -- "$1"';
     const argv = this.backend.execArgv({ user: this.vm.user, cwd: VM_HOME, env, argv: ['/bin/sh', '-lc', probe, 'sh', command] });
     try {
-      const { stdout } = await run(argv[0], argv.slice(1), { signal });
+      const { stdout } = await run(argv[0], argv.slice(1), { signal, windowsHide: true });
       const found = stdout.trim().split('\n').pop();
       if (found) return found;
     } catch {}

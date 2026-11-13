@@ -1252,6 +1252,7 @@ export function apply(ctx, config = {}, deps = {}) {
       const onState = (snap) => {
         if (gone) return;
         if (snap.state === 'ready' && !booted) { booted = true; void boot(); }
+        else if (snap.state === 'off' && booted) { booted = false; closeWs(); setState('idle', 'her computer is switched off'); }
         else if (snap.state === 'unsafe' && booted) { booted = false; closeWs(); setState('blocked', `the computer's gateway is unprotected (${snap.error ?? ''}); not connecting through it`); }
       };
       const off = c.dshComputer.onStatus?.(onState);

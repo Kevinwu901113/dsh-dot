@@ -31,7 +31,7 @@ export function resolveDockerBin() {
  */
 export async function docker(bin, args, opts = {}) {
   try {
-    const { stdout } = await execFileAsync(bin, args, { maxBuffer: 16 * 1024 * 1024, timeout: opts.timeout ?? 120_000, signal: opts.signal });
+    const { stdout } = await execFileAsync(bin, args, { maxBuffer: 16 * 1024 * 1024, timeout: opts.timeout ?? 120_000, signal: opts.signal, windowsHide: true });
     return stdout.trim();
   } catch (err) {
     const detail = (err.stderr || err.message || '').toString().trim();

@@ -83,6 +83,7 @@ export function createMicrosandboxBackend(config, logger) {
         maxBuffer: 16 * 1024 * 1024,
         timeout: opts.timeout ?? 120_000,
         env: { ...process.env, ...(opts.env || {}) },
+        windowsHide: true, // msb is a console program: without this every call flashes a console window on Windows
       });
       if (!quiet) logger.info(`msb ${args[0]} ok (${Date.now() - started} ms)`);
       return stdout.trim();
@@ -178,6 +179,11 @@ export function createMicrosandboxBackend(config, logger) {
     },
 
     restartServices,
+
+    /** Shut the VM down (the power switch). Its disk stays; `ensure` wakes it again. */
+    async stop() {
+      if ((await names(true)).includes(name)) await msb(['stop', '-q', name], { timeout: 120_000 });
+    },
 
     async ensure({ mounts, port, waitHealthy, onStage = () => {} }) {
       // 1. Host virtualization (Hypervisor.framework / WHP / KVM).

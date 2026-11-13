@@ -40,6 +40,7 @@ textarea{width:100%;box-sizing:border-box;min-height:160px;font:12px/1.5 ui-mono
 </style></head><body><main>
 <div class="row" style="justify-content:space-between"><h1>dot 设置</h1><span class="mute small" id="ver"></span></div>
 <div class="row" id="badges"></div>
+<div class="row" id="power" style="margin-top:8px"></div><div class="msg" id="powerMsg"></div>
 <div class="card banner" id="fileErr" hidden></div>
 <div class="tabs" role="tablist"><button data-tab="setup">开始</button><button data-tab="status">状态</button><button data-tab="settings" class="on">设置</button><button data-tab="doctor">体检</button><button data-tab="diag">诊断</button></div>
 <section id="tab-setup" hidden><div id="steps" class="mute">加载中…</div></section>
@@ -71,21 +72,43 @@ async function api(method, path, body) {
 }
 const NAMES = { phone: '手机', computer: '电脑', gate: '审批', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容' };
 const APPLY = { live: '即时生效', 'restart-phone': '重启手机生效', 'restart-dsh': '重启 dsh 生效', create: '只对新建生效' };
-function level(s) { if (!s) return ''; if (/ready|on/.test(s.state)) return 'ok'; if (s.state === 'error') return 'bad'; return 'warn'; }
+function level(s) { if (!s || s.state === 'off') return ''; if (/ready|on/.test(s.state)) return 'ok'; if (s.state === 'error') return 'bad'; return 'warn'; }
 function stateText(name, s) {
   if (!s) return '关';
   if (s.progress && s.progress.text) return s.progress.text + (s.progress.pct != null ? ' · ' + s.progress.pct + '%' : '');
   if (s.slowBoot) return '开机较慢，还在开';
   if (name === 'qq' && s.connected) return '已登录';
-  return ({ ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪', stopped: '没在运行', idle: '没在运行', installing: '安装中', 'not-installed': '没装', connecting: '连接中', 'needs-account': '没填她的 QQ 号', connected: '已连接', installed: '已安装', reconnecting: '重连中', blocked: '被拦下' })[s.state] || s.state || '';
+  return ({ off: '已关机', ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪', stopped: '没在运行', idle: '没在运行', installing: '安装中', 'not-installed': '没装', connecting: '连接中', 'needs-account': '没填她的 QQ 号', connected: '已连接', installed: '已安装', reconnecting: '重连中', blocked: '被拦下' })[s.state] || s.state || '';
 }
 async function loadStatus() {
   try {
     const j = await api('GET', '/status');
     $('ver').textContent = 'dsh-dot ' + j.version;
     $('badges').innerHTML = Object.entries(j.status).map(([k, s]) => '<span class="badge ' + level(s) + '" title="' + esc(s && s.error || '') + '"><span class="dotc"></span>' + NAMES[k] + '：' + esc(stateText(k, s)) + '</span>').join('');
+    renderPower(j.status);
     showFileErr(j.fileError);
   } catch (e) { $('badges').innerHTML = '<span class="badge bad"><span class="dotc"></span>' + esc(e.message) + '</span>'; }
+}
+// The power switches: her phone and her computer, on or off at once; the choice survives dsh restarts.
+// Both are watched here in dsh (the live views), not in windows of their own.
+let powerBusy = '';
+function renderPower(st) {
+  const one = (k, label) => {
+    const x = st[k];
+    if (!x) return '';
+    const on = x.state !== 'off';
+    return '<span class="badge">' + label + ' <button class="btn" data-power="' + k + '" data-on="' + (on ? '0' : '1') + '"' + (powerBusy === k ? ' disabled' : '') + '>' + (powerBusy === k ? '…' : on ? '关机' : '开机') + '</button>'
+      + (on && x.liveViewUrl ? ' <a href="' + esc(x.liveViewUrl) + '" target="_blank" rel="noopener">看画面</a>' : '') + '</span>';
+  };
+  $('power').innerHTML = one('phone', '手机') + one('computer', '电脑');
+  for (const b of document.querySelectorAll('[data-power]')) b.onclick = async () => {
+    const k = b.dataset.power, on = b.dataset.on === '1';
+    if (!on && k === 'computer' && st.qq && !confirm('关掉电脑，她的 QQ 也会下线（QQ 跑在这台电脑里）。继续？')) return;
+    powerBusy = k; renderPower(st);
+    try { const j = await api('POST', '/action/' + k + '-power', { on }); $('powerMsg').className = 'msg ok'; $('powerMsg').textContent = j.message; }
+    catch (e) { $('powerMsg').className = 'msg err'; $('powerMsg').textContent = e.message; }
+    powerBusy = ''; loadStatus();
+  };
 }
 function showFileErr(err) {
   const b = $('fileErr');

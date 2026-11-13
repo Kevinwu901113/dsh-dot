@@ -175,7 +175,9 @@ test('phone: installed SDK → AVD written, emulator spawned, booted, settled, M
   assert.equal(h.plugins.length, 1);
   assert.equal(h.plugins[0].c.serverName, 'dot-phone');
   assert.equal(h.plugins[0].c.transport, 'stdio');
-  assert.match(h.plugins[0].c.args[0], /mobile-mcp/);
+  assert.match(h.plugins[0].c.args[0], /mcp-entry\.cjs$/, 'started through the wrapper that hides console windows on Windows');
+  assert.match(h.plugins[0].c.env.DSH_DOT_MOBILE_MCP_ENTRY, /mobile-mcp/);
+  assert.ok(h.spawned[0].args.includes('-no-window'), 'headless by default: she is watched on the dot page');
   assert.match(h.sections[0].text(), /设备 dot，/, 'the id mobile-mcp takes (the AVD), not the adb serial');
   const out = await h.cmd().handler({ rawInput: '' });
   assert.match(out.text, /phone: ready/);
@@ -533,4 +535,56 @@ test('phone: the device section — everyone with the phone gets it, her parts (
   assert.doesNotMatch(text('s4'), /表情包|sticker/);
   assert.equal(text('s3'), '', 'a qq-bridge sandbox session does not see the phone');
   h.stop();
+});
+
+test('phone power: off shuts her phone down, refuses her phone tools and nothing relaunches it; the choice is kept; on boots again', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'ready');
+  h.state.running = true; // adb lists the emulator we launched
+  await h.ctx.dshPhone.power(false);
+  assert.equal(h.ctx.dshPhone.status().state, 'off');
+  assert.ok(h.execs.some((e) => e.includes('emu') && e.includes('kill')), 'the emulator was asked to shut down');
+  assert.equal(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-dot.json'), 'utf8')).phone.power, false, 'written to the settings file');
+  const r = await h.gate('mcp__dot-phone__mobile_take_screenshot', {});
+  assert.equal(r.kind, 'deny'); assert.match(r.reason, /手机关着/);
+  const n = h.spawned.length;
+  await new Promise((r2) => setTimeout(r2, 80)); // restartDelayMs 10, aliveEveryMs 20: nothing brings it back
+  assert.equal(h.spawned.length, n, 'not relaunched while off');
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /phone: off/);
+  await h.cmd().handler({ rawInput: 'on' });
+  assert.ok(await until(() => h.spawned.length === n + 1 && h.ctx.dshPhone.isReady), 'booted again');
+  assert.equal(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-dot.json'), 'utf8')).phone, undefined, 'back to the default (on)');
+  h.stop();
+});
+
+test('phone power: switched off in dsh-dot.json → not booted at start; /phone restart switches it on', async () => {
+  const h = harness({ files: { 'dsh-dot.json': { phone: { power: false } } } });
+  await new Promise((r) => setTimeout(r, 60));
+  assert.equal(h.ctx.dshPhone.status().state, 'off');
+  assert.equal(h.spawned.length, 0, 'nothing launched');
+  await h.cmd().handler({ rawInput: 'restart' });
+  assert.ok(await until(() => h.ctx.dshPhone.isReady), 'restart is a way to switch it on');
+  h.stop();
+});
+
+test('mcp-entry: every process starter hides its window by default; a caller\'s own choice stays', async () => {
+  const { hideChildWindows } = (await import('node:module')).createRequire(import.meta.url)('../src/phone/mcp-entry.cjs');
+  const seen = [];
+  const rec = (name) => (...args) => { seen.push([name, ...args]); };
+  const cp = hideChildWindows({ spawn: rec('spawn'), execFileSync: rec('execFileSync'), execFile: rec('execFile'), exec: rec('exec') });
+  const cb = () => {};
+  cp.execFileSync('adb', ['devices']);
+  cp.execFileSync('adb', ['shell'], { timeout: 5 });
+  cp.execFile('adb', ['x'], cb);
+  cp.exec('adb x', cb);
+  cp.spawn('adb');
+  cp.spawn('adb', [], { windowsHide: false });
+  assert.deepEqual(seen, [
+    ['execFileSync', 'adb', ['devices'], { windowsHide: true }],
+    ['execFileSync', 'adb', ['shell'], { windowsHide: true, timeout: 5 }],
+    ['execFile', 'adb', ['x'], { windowsHide: true }, cb],
+    ['exec', 'adb x', { windowsHide: true }, cb],
+    ['spawn', 'adb', { windowsHide: true }],
+    ['spawn', 'adb', [], { windowsHide: false }],
+  ]);
 });

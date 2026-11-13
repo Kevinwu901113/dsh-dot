@@ -124,7 +124,8 @@ flowchart LR
 ## ⌨️ Commands
 
 ```text
-/phone [doctor|accept|restart|screenshot]
+/phone [on|off|doctor|accept|restart|screenshot]
+/computer [on|off]
 /interlude [now|advance|seed|preset <code>|canon]
 /dot [test|check|doctor|prompts [stop]]
 /dot memory [now|diary|handoff|recall …]
