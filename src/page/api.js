@@ -9,6 +9,7 @@ import { homedir } from 'node:os';
 import { rejectUnlessOwner } from '../web-auth.js';
 import { dshHome, fileError, readAll, writeSections } from '../settings.js';
 import { describe, validatePatch } from '../settings-schema.js';
+import { gateFor } from '../llm-gate.js';
 import { doctorFor, FIXES } from '../doctor.js';
 import { bundle, summary, versions } from './diag.js';
 import { PAGE_PATH, pageHtml } from './page.js';
@@ -39,7 +40,9 @@ function services(ctx) {
 export function statusOf(ctx) {
   const s = services(ctx);
   const st = (svc) => { try { return svc?.status?.() ?? (svc ? {} : null); } catch (err) { return { state: 'error', error: err.message }; } };
-  return { phone: st(s.phone), computer: st(s.computer), qq: st(s.qq), dot: s.dot ? { state: 'on' } : null, interlude: s.interlude ? { state: 'on' } : null, compat: s.compat ? { state: 'on', qqBridge: (() => { try { const b = s.compat.bridge(); return b ? { root: b.root, mode: b.mode, bots: b.botUins } : null; } catch { return null; } })() } : null };
+  // The model-request gate (src/llm-gate.js) is listed only when a component installed it.
+  const llm = (() => { try { const g = gateFor(ctx)?.status(); return g ? { state: g.providers.some((p) => p.coolingUntil) ? 'cooling' : 'on', ...g } : undefined; } catch { return undefined; } })();
+  return { phone: st(s.phone), computer: st(s.computer), qq: st(s.qq), dot: s.dot ? { state: 'on' } : null, interlude: s.interlude ? { state: 'on' } : null, compat: s.compat ? { state: 'on', qqBridge: (() => { try { const b = s.compat.bridge(); return b ? { root: b.root, mode: b.mode, bots: b.botUins } : null; } catch { return null; } })() } : null, ...(llm ? { llm } : {}) };
 }
 
 const need = (svc, what) => { if (!svc) throw new Error(`${what}组件没开（在 dsh 的插件页打开）`); return svc; };

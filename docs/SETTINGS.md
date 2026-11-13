@@ -26,7 +26,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 **给 agent 的规则**（dsh、Claude、Codex 等改这个文件时照做）：
 
 1. 先读现有文件；不存在就新建 `{}`。只增改相关的键，**不要删别的段和键**。
-2. 顶层按组件分段：`phone`、`computer`、`gate`、`qq`、`memory`、`interlude`、`dot`、`compat`。键名和类型照下面的表，不要发明新键。
+2. 顶层按组件分段：`phone`、`computer`、`gate`、`qq`、`memory`、`interlude`、`dot`、`compat`，外加不属于哪个组件的 `llm`（模型请求闸门）。键名和类型照下面的表，不要发明新键。
 3. 写合法 JSON（不能有注释、尾逗号）。想留说明就用 `_` 开头的键，如 `"_note": "..."`，会被忽略。
 4. 下文标 **🔒 建立时** 的项只对新建的手机 / 虚拟机生效，改之前先告诉用户要重建、会丢什么，得到同意再动。
 5. 有专门命令的（`/phone size`、`/dot memory recall …`、`/qq owner` 等），优先告诉用户用命令，命令不用重启。
@@ -71,6 +71,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 她逛 / 玩的 App | `interlude.phoneApps`（站点 → 包名）、`interlude.playApps`（名字 → 包名）、`interlude.play: false` 关掉「玩」 | 只对她自己装了的 App 生效 |
 | 省 token | `interlude.maxRoundsPerDay`、`interlude.browseDailyCap`、`memory.handoffTokens`（交班阈值，默认 150000）、`dot.phoneCheckEveryMinutes` 调大 | 每轮用量在 `~/dot/interlude/calls.jsonl`、`~/dot/memory/calls.jsonl` |
 | 和别的记忆插件一起用 | `memory.coexist`：`auto`（默认）/ `people-only` / `full` | |
+| **和她聊天时报 429 / `rate limit reached for RPM`** | `llm.backgroundRpm` 调小（默认 20，她后台的请求每分钟最多几次；你们的对话不受限） | 被限流后闸门自己会减半、冷却，`/dot` 有一行「model requests」看近一分钟的请求数 |
 | 电脑审批多 / 少 | `gate.mode`：`risky`（默认）/ `browser`（每个浏览器动作都问）/ `off` | |
 | 换她的家目录 | `dot.home`、`memory.home`、`interlude.home` **三处写同一个路径** | 默认 `~/dot` |
 | **没有硬件虚拟化 / 不要手机** | `phone.enabled: false` | |
@@ -233,6 +234,20 @@ setx DSH_DOT_COMPUTER off
 | `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
 | `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
+
+### `llm`（模型请求闸门，`src/llm-gate.js`）
+
+她后台的模型请求（幕间、整理记忆和日记、跑腿会话、群聊评分、App 经验整理）和你们的对话共用同一个 provider 的 key。这道闸门在每个请求前面：只压后台的，你们的对话（以及认不出来的请求）照常发。每个 provider 分开算。`/dot` 和 dot 页面「状态」里能看到近一分钟的请求数、后台上限、是否在冷却。
+
+| 键 | 默认 | 作用 |
+|---|---|---|
+| `backgroundRpm` | `20` | 后台请求每分钟最多几次（近 60 秒内所有请求都算进去，但只压后台的；间隔至少 60/上限 秒，一次放一个）。`0` = 不限速（只计数） |
+| `foregroundQuietSeconds` | `15` | 你们的对话有请求在发时后台不发；发完后再等这么多秒（她一轮有好几步） |
+| `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行（比 `dot.turnStallMs` 短，跑腿不会被当成卡住） |
+| `holdRetries` | `true` | 你们的对话被限流（429）后，dsh 自己的快速重试（几秒内连试 5 次，都在同一分钟里）先等到这一分钟有余量（或 provider 给的 retry-after）再发 |
+| `retryHoldMaxSeconds` | `30` | 上一项最多等多久 |
+
+被限流（任何请求收到 `RATE_LIMIT`）时：后台至少停到这一分钟过去，连续被限流就加倍（带随机抖动，最多 10 分钟；provider 给了 retry-after 就按它），后台上限减半（最少 1）；3 分钟没再被限流后每分钟加回 1。冷却开始和结束各记一行日志和审计（`kind: llm-gate`）。
 
 ### `compat`（和 qq-bridge 共处，见 [qq-bridge.md](qq-bridge.md)）
 

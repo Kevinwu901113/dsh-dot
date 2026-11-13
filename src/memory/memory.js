@@ -28,6 +28,7 @@ import { createRecall } from './recall.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
+import { background, installLlmGate } from '../llm-gate.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 
 export const name = 'dot-memory';
@@ -265,6 +266,7 @@ export function apply(ctx, config = {}) {
   const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md'), archive: join(dir, 'memory.v019.json'), migration: join(dir, 'memory-migration.md') };
   mkdirSync(dir, { recursive: true });
   const dot = () => ctx.get('dshDot');
+  installLlmGate(ctx, { name: 'dsh-dot/memory' }); // her consolidation and diary wait behind his requests (complete() below)
   // Checked when used, not once at boot: the other plugin may start after this one.
   let coexistLogged = false;
   const peopleOnly = () => {
@@ -467,7 +469,7 @@ export function apply(ctx, config = {}) {
     let usage = null;
     try {
       let finish = null;
-      for await (const chunk of ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] })) {
+      for await (const chunk of ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] }))) {
         if (chunk.type === 'text-delta') raw += chunk.text;
         if (chunk.type === 'usage') usage = chunk.usage ?? null;
         if (chunk.type === 'finish') finish = chunk.reason;

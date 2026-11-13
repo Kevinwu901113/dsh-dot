@@ -20,6 +20,7 @@ import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { createStickers, isSticker, STICKER_MAX_BYTES } from './stickers.js';
 import { createStickerSync } from './sticker-sync.js';
 import { sectionOf, setValues } from '../settings.js';
+import { background, installLlmGate } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
 
 export const name = 'dot-qq';
@@ -536,6 +537,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const ignored = (uin) => { if (cfg.ignore.includes(String(uin))) return 'ignore'; try { if (ctx.get('dshDotCompat')?.ignoredUins?.().includes(String(uin))) return 'qq-bridge'; } catch {} return ''; };
   if (!cfg.token) { cfg.token = randomBytes(24).toString('hex'); writeSettings({ token: cfg.token }); }
   const audit = createAudit(auditFile());
+  installLlmGate(ctx, { name: 'dsh-dot/qq' }); // group scoring is background (scoreAndDeliver); her QQ chats are her conversation
   // Her stickers also live in her phone's album (dot-stickers): re-synced whenever the saved set changes and when the phone comes up.
   let stickerSync = null;
   const stickers = createStickers(join(dshHome(), 'dsh-qq-stickers.json'), { fetch: deps.fetch ?? globalThis.fetch, onChange: () => stickerSync?.schedule() });
@@ -1106,7 +1108,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const { system, user } = scorePrompt({ who, recent: lines, message: `${msg.who}：${msg.text.slice(0, 300)}`, group: msg.groupId });
     let text = '';
     try {
-      for await (const chunk of llm.stream({ provider, model, system, maxTokens: 8, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }] })) {
+      for await (const chunk of llm.stream(background({ provider, model, system, maxTokens: 8, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }] }))) {
         if (chunk?.type === 'text-delta') text += chunk.text ?? chunk.delta ?? '';
       }
     } catch (err) { logger.debug(`group score failed: ${err.message}`); return; }

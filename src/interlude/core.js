@@ -23,6 +23,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
+import { background, installLlmGate } from '../llm-gate.js';
 import { prompt, table } from '../prompts.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
@@ -800,8 +801,8 @@ export function apply(ctx, config = {}) {
         doings: view, trying: tryOpen(),
         upcoming: intents.filter((i) => i.id !== intent?.id).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text })),
       });
-      const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
-        messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] };
+      const options = background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
+        messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] });
       const r1 = await collectReply(ctx.llm.stream(options));
       const spent = [usageOf(r1.usage)];
       // The `interval` tool call carries the fields; a bare JSON reply is accepted too.
@@ -813,11 +814,11 @@ export function apply(ctx, config = {}) {
       // call over the script just written fills every other field — the post-commit continuity
       // refresh, widened so nothing the round should have produced is lost.
       if (!parsed?.state) {
-        const r2 = await collectReply(ctx.llm.stream({
+        const r2 = await collectReply(ctx.llm.stream(background({
           ...options, maxTokens: 2000,
           system: prompt('interlude.round.refresh'),
           messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
-        })).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
+        }))).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
         spent.push(usageOf(r2.usage));
         const refresh = r2.args || r2.text;
         const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
@@ -1009,7 +1010,7 @@ export function apply(ctx, config = {}) {
       const system = prompt('interlude.growth.system', { name: canon?.storyDefaults?.characterName ?? 'dot', maxChars: cfg.portraitMaxChars, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
       const messages = [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-interlude' } })];
       const call = async (msgs) => {
-        const r = await collectReply(ctx.llm.stream({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs }));
+        const r = await collectReply(ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs })));
         const u = usageOf(r.usage);
         if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; saveMeta(); }
         try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: 'growth', usage: u, reply: clip(r.args || r.text, 3000) })}\n`); } catch (error) { void error; }
@@ -1221,6 +1222,11 @@ export function apply(ctx, config = {}) {
     }
   }
   ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
+  // Model requests (src/llm-gate.js): rounds and the growth review are marked above. With dsh-dot her
+  // looks, plays, tries and free time run in its errand (dot registers that); without it, the session
+  // set aside in vmSession and a look / try / free-time session that is not her conversation.
+  const herConversation = (id) => { const d = dshDot(); return d ? id === d.session?.() : id === lastActSession && id !== cfg.vmSession; };
+  installLlmGate(ctx, { name: 'dot-interlude', backgroundSessions: (id) => ((Boolean(cfg.vmSession) && id === cfg.vmSession) || observing.has(id) || trying.has(id) || free.has(id)) && !herConversation(id) });
 
   // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
   // session so the cached prefix holds); the continuity is a dynamic context after the history.

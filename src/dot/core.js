@@ -28,6 +28,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
+import { background, installLlmGate, statusLine as llmGateLine } from '../llm-gate.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
 import { ago, describeNow, mondayOf, stamp } from '../clock.js';
 
@@ -452,6 +453,8 @@ export function apply(ctx, config = {}) {
   // "latest session" (his QQ message then goes into an archived errand and he never gets an answer).
   const pastErrands = new Set(store.get('pastErrands') ?? []);
   const isErrand = (id) => Boolean(id) && (id === errandId || pastErrands.has(id));
+  // Her model requests share his provider key: errand steps are background and wait behind his (src/llm-gate.js).
+  const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: isErrand });
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at an errand or at a session archived since (11-03: his QQ messages went into an
   // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -741,11 +744,11 @@ export function apply(ctx, config = {}) {
       const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
       const llm = ctx.get('llm');
       if (!sel || !llm?.stream) return;
-      const reply = await collectReply(llm.stream({
+      const reply = await collectReply(llm.stream(background({
         provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}),
         system: prompt('dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
-      }));
+      })));
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
       if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked) });
     } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
@@ -1288,6 +1291,7 @@ export function apply(ctx, config = {}) {
           `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · qq_send to him held ≤${cfg.ownerDenyMax}×/turn while unread${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
           ...statusLiveness(),
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
+          (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];
         return { kind: 'success', text: lines.join('\n') + test };
@@ -1327,6 +1331,8 @@ export function apply(ctx, config = {}) {
     ownerPending: () => ownerBatch.length,
     flushOwner: () => flushOwner(),
     isIm: (id) => imSessions.has(id),
+    /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */
+    llmGate: () => llmGate?.status() ?? null,
     /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */
     freeze() {
       frozen++;

@@ -145,7 +145,7 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 }
 ```
 
-存储、作息、主动联系、群聊规则、省 token、网络镜像……每一项怎么改、哪些只在新建手机 / 虚拟机时生效，都在 **[docs/SETTINGS.md](docs/SETTINGS.md)**。
+存储、作息、主动联系、群聊规则、省 token、网络镜像、后台请求限速（聊天时报 429 就调 `llm.backgroundRpm`）……每一项怎么改、哪些只在新建手机 / 虚拟机时生效，都在 **[docs/SETTINGS.md](docs/SETTINGS.md)**。
 
 > [!TIP]
 > 懒得自己改？直接对 dsh 说「按 docs/SETTINGS.md 把 dsh-dot 的手机存储改成 32 GB」。文档里有写给 agent 的规则，dsh 或其他 agent 照着就能改对。

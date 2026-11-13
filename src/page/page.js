@@ -70,7 +70,7 @@ async function api(method, path, body) {
   if (!r.ok) throw new Error(j.error || ('HTTP ' + r.status));
   return j;
 }
-const NAMES = { phone: '手机', computer: '电脑', gate: '审批', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容' };
+const NAMES = { phone: '手机', computer: '电脑', gate: '审批', qq: 'QQ', dot: 'dot', interlude: '幕间', compat: '兼容', llm: '模型请求' };
 const APPLY = { live: '即时生效', 'restart-phone': '重启手机生效', 'restart-dsh': '重启 dsh 生效', create: '只对新建生效' };
 function level(s) { if (!s || s.state === 'off') return ''; if (/ready|on/.test(s.state)) return 'ok'; if (s.state === 'error') return 'bad'; return 'warn'; }
 function stateText(name, s) {
@@ -78,7 +78,7 @@ function stateText(name, s) {
   if (s.progress && s.progress.text) return s.progress.text + (s.progress.pct != null ? ' · ' + s.progress.pct + '%' : '');
   if (s.slowBoot) return '开机较慢，还在开';
   if (name === 'qq' && s.connected) return '已登录';
-  return ({ off: '已关机', ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪', stopped: '没在运行', idle: '没在运行', installing: '安装中', 'not-installed': '没装', connecting: '连接中', 'needs-account': '没填她的 QQ 号', connected: '已连接', installed: '已安装', reconnecting: '重连中', blocked: '被拦下' })[s.state] || s.state || '';
+  return ({ off: '已关机', ready: '就绪', on: '开着', 'needs-license': '等待安装', downloading: '下载中', booting: '开机中', starting: '准备中', error: '出错', 'shell-only': '部分就绪', stopped: '没在运行', idle: '没在运行', installing: '安装中', 'not-installed': '没装', connecting: '连接中', 'needs-account': '没填她的 QQ 号', connected: '已连接', installed: '已安装', reconnecting: '重连中', blocked: '被拦下', cooling: '被限流，后台在等' })[s.state] || s.state || '';
 }
 async function loadStatus() {
   try {
@@ -264,6 +264,7 @@ function renderStatus(st) {
     phone: (x) => [x.serial && '设备 ' + x.serial, x.api && 'Android API ' + x.api + (x.abi ? ' (' + x.abi + ')' : ''), x.storage && x.storage.gb && '存储 ' + x.storage.gb + ' GB'],
     computer: (x) => [x.backend && '后端 ' + x.backend, x.stage && '阶段 ' + x.stage],
     qq: (x) => [x.connected ? '已连接' : '未连接', x.qq && '她的号 ' + x.qq, x.owner && '你的号 ' + x.owner],
+    llm: (x) => [x.pacing ? '后台每分钟最多 ' + x.backgroundRpm + ' 次' : '后台不限速'].concat((x.providers || []).map((p) => p.provider + '：近一分钟 ' + p.lastMinute + ' 次，后台上限 ' + p.cap + (p.coolingUntil ? '，等到 ' + new Date(p.coolingUntil).toLocaleTimeString() : '') + (p.waiting ? '，' + p.waiting + ' 个在等' : '') + '，压后过 ' + p.delayed + ' 次，429 共 ' + p.rateLimited + ' 次')),
     compat: (x) => [x.qqBridge ? 'qq-bridge：' + x.qqBridge.root + '（模式 ' + x.qqBridge.mode + (x.qqBridge.bots && x.qqBridge.bots.length ? '，机器人 ' + x.qqBridge.bots.join('/') : '') + '）' : '没发现 qq-bridge'],
   };
   $('statusCards').className = '';

@@ -14,8 +14,9 @@ import { defaults as gateDefaults } from './computer/gate.js';
 import { defaults as qqDefaults } from './qq/qq.js';
 import { defaults as dotDefaults } from './dot/core.js';
 import { defaults as compatDefaults } from './compat/qq-bridge.js';
+import { defaults as llmDefaults } from './llm-gate.js';
 
-export const COMPONENT_DEFAULTS = { phone: phoneDefaults, computer: computerDefaults, gate: gateDefaults, qq: qqDefaults, dot: dotDefaults, compat: compatDefaults };
+export const COMPONENT_DEFAULTS = { phone: phoneDefaults, computer: computerDefaults, gate: gateDefaults, qq: qqDefaults, dot: dotDefaults, compat: compatDefaults, llm: llmDefaults };
 
 const choice = (...values) => ({ type: 'enum', values });
 const e = (section, key, group, type, apply, zh, extra = {}) => ({ section, key, group, apply, zh, ...(typeof type === 'string' ? { type } : type), ...extra });
@@ -72,6 +73,11 @@ export const SCHEMA = [
   e('dot', 'manuals', 'dot', 'bool', 'restart-dsh', '手机、电脑说明书在第一次用时才给（省 token）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),
+  // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
+  e('llm', 'backgroundRpm', '模型请求', 'int', 'restart-dsh', '她后台的请求每分钟最多几次（幕间、整理记忆、跑腿、群聊评分；和你的对话不限；0 = 不限速）', { min: 0, max: 600 }),
+  e('llm', 'foregroundQuietSeconds', '模型请求', 'int', 'restart-dsh', '你们的对话发完请求后，后台再等几秒（秒）', { min: 0, max: 600 }),
+  e('llm', 'maxBackgroundWaitSeconds', '模型请求', 'int', 'restart-dsh', '一个后台请求最多被压后多久（秒）', { min: 10, max: 3600 }),
+  e('llm', 'holdRetries', '模型请求', 'bool', 'restart-dsh', '对话被限流（429）后，dsh 的快速重试先等到这一分钟有余量再发（最多等 retryHoldMaxSeconds，默认 30 秒）'),
   // compat (living next to qq-bridge)
   e('compat', 'qqBridge', '兼容·qq-bridge', choice('auto', true, false), 'restart-dsh', '认 qq-bridge（auto = 装了就认）'),
   e('compat', 'qqBridgeRoot', '兼容·qq-bridge', 'text', 'restart-dsh', 'qq-bridge 的目录（自动找不到时填；里面有 config.json）'),
