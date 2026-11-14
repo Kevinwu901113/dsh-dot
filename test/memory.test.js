@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   bankOp, bankUsage, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
-  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN,
+  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN, dueSaid,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel } from '../src/memory/memory.js';
 import { dayMark } from '../src/clock.js';
@@ -52,6 +52,39 @@ test('people: counts by code, one line of impression by the model; no facts on t
   assert.match(renderPerson(s), /只在帖子里打过交道；点赞 1 次[\s\S]*印象：写长帖/);
   assert.match(renderPerson(a), /^满满（qq:42，也叫 阿满）：聊过；私聊 2 次[^\n]*\n  印象：大学室友/);
   assert.equal(renderPerson(a).split('\n').length, 2, 'two lines: who, and the impression');
+});
+
+test('还没了的事: a consolidation replace keeps a dated item\'s due unless the record says the new day; an item without one gets it as before', () => {
+  const T = new Date(2026, 1, 10, 20, 0).getTime(); // 02-10
+  const later = T + 3 * 86400000; // 02-13
+  const fresh = () => { const m = emptyMemory(); openOp(m, { action: 'add', content: '02-10 他说下个月十五号前交房租', due: '02-15' }, { now: T }); openOp(m, { action: 'add', content: '他想换个键盘' }, { now: T }); return m; };
+  // not said in this record: the due stays, the replacing text's stale mark goes (its words stay)
+  let m = fresh();
+  let r = applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '02-10 他说下个月十五号（=03-15）前交房租，今天又提了一句（到 02-15）', due: '03-15' }] }, { now: later, segment: '[02-13 21:00] 他：房租的事别忘了' });
+  assert.equal(r.open, 1, 'the replace still applies');
+  assert.equal(m.open[0].due, '2026-02-15');
+  assert.equal(m.open[0].text, '02-10 他说下个月十五号前交房租，今天又提了一句（到 02-15）');
+  assert.equal(m.open[0].saidAt, later);
+  // a due cleared by a replace (no date in the record) is kept too
+  m = fresh(); applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '他要交房租', due: '' }] }, { now: later, segment: '[02-13 21:00] 他：房租' });
+  assert.equal(m.open[0].due, '2026-02-15');
+  // the line stamp is not the day said: a replace re-dated to the consolidation's own day stays put
+  m = fresh(); applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '今天（=02-13）交房租', due: '02-13' }] }, { now: later, segment: '[02-13 21:00] 他：房租' });
+  assert.equal(m.open[0].due, '2026-02-15');
+  // said in this record (annotated, or written out): the new day goes in, the text as written
+  for (const said of ['[02-13 21:00] 他：房租改到下个月五号（=03-05）交了', '[02-13 21:00] 他：房租房东说3月5号再交', '[02-13 21:00] 他：房东说三月五号交']) {
+    m = fresh(); applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '02-13 他说房租改到下个月五号（=03-05）交', due: '03-05' }] }, { now: later, segment: said });
+    assert.equal(m.open[0].due, '2026-03-05', said);
+    assert.equal(m.open[0].text, '02-13 他说房租改到下个月五号（=03-05）交');
+  }
+  // an item without a due gets one on a replace, as before
+  m = fresh(); applyExtraction(m, { open: [{ action: 'replace', oldText: '键盘', content: '他周六（=02-14）去买键盘', due: '02-14' }] }, { now: later, segment: '[02-13 21:00] 他：键盘' });
+  assert.equal(m.open[1].due, '2026-02-14');
+  // her own tool in a conversation (no record): the replace sets the due as given
+  m = fresh(); openOp(m, { action: 'replace', oldText: '房租', content: '他三月五号交房租', due: '03-05' }, { now: later });
+  assert.equal(m.open[0].due, '2026-03-05');
+  assert.equal(dueSaid('2026-03-25', '[03-25 08:00] 他：三月廿五见'), true);
+  assert.equal(dueSaid('2026-03-15', '[03-15 08:00] 他：13月15'), false);
 });
 
 test('还没了的事: add / replace / done; owed is ignored, shelve / restore are gone; storage is never cut', () => {

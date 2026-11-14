@@ -380,6 +380,23 @@ export function cleanDue(due, now = Date.now()) {
   if (t.getMonth() !== mo - 1 || t.getDate() !== d) return '';
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
+const CN_NUM = (n) => (n < 10 ? '〇一二三四五六七八九'[n] : `${n >= 20 ? '〇一二三四五六七八九'[Math.floor(n / 10)] : ''}十${n % 10 ? '〇一二三四五六七八九'[n % 10] : ''}`);
+/**
+ * Whether the record (annotated transcript lines) says the day `due` (YYYY-MM-DD): its "（=MM-DD）",
+ * or the date written out (3月15号 / 三月十五 / 03-15 / 3.15). Line stamps "[03-15 10:20]" do not count.
+ */
+export function dueSaid(due, segment) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(due ?? ''));
+  if (!m) return false;
+  const mo = Number(m[2]), d = Number(m[3]);
+  const text = String(segment ?? '').replace(/^\[[^\]\n]*\]/gm, '');
+  if (new RegExp(`[（(]=(?:\\d{4}-)?${m[2]}-${m[3]}[）)]`).test(text)) return true;
+  const cn = CN_NUM(d), cnd = d > 20 && d < 30 ? `(?:${cn}|廿${CN_NUM(d % 10)})` : cn;
+  return new RegExp(`(?<![\\d.])0?${mo}\\s*(?:月\\s*0?${d}\\s*[号日]?|[-/.]0?${d})(?![\\d])|(?<![一二三四五六七八九十])${CN_NUM(mo)}月${cnd}(?![一二三四五六七八九十])`).test(text);
+}
+/** `content` without the "（=MM-DD）" marks that disagree with the day `due` (YYYY-MM-DD) it keeps. */
+const dropStaleMarks = (content, due) => content.replace(/[（(]=\s*(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*[）)]/g, (all, y, mo, d) =>
+  (`${due.slice(5, 7)}-${due.slice(8)}` === `${mo.padStart(2, '0')}-${d.padStart(2, '0')}` && (!y || y === due.slice(0, 4)) ? all : ''));
 /** The item in `list` whose text contains `old` uniquely: { index } or { error }. */
 function findItem(list, old) {
   const o = String(old ?? '').trim();
@@ -410,7 +427,8 @@ export function expireOpen(memory, opts = {}) {
  * done { oldText } (finished, called off, no longer wanted: it goes). `owed` is ignored; shelve /
  * restore (the shelf is gone) are a no-op with a note. With `segment` (the record a consolidation
  * read), a done on an item it does not touch (touchShare) is refused: the item stays and goes by
- * itself. Returns { ok, error?, note? }.
+ * itself; and a replace of a dated item keeps its due (and drops the replacing text's stale "（=MM-DD）")
+ * unless the record says the new day (dueSaid). Returns { ok, error?, note?, dueKept? }.
  */
 export function openOp(memory, op, { now = Date.now(), segment } = {}) {
   const action = String(op?.action ?? '');
@@ -433,10 +451,13 @@ export function openOp(memory, op, { now = Date.now(), segment } = {}) {
     if (!content) return { ok: false, error: 'content is required (use done when it is over)' };
     if (rejectReason(content)) return { ok: false, error: `not kept (${rejectReason(content)})` };
     const x = memory.open[f.index];
-    x.text = content;
-    if (due !== undefined) x.due = due;
+    // A dated item keeps its day unless the record read says the new one: a replace written days later
+    // re-reads "下个月十五号" from that day, and the date moves by accident (02-15 → 03-15).
+    const keep = segment != null && x.due && due !== undefined && due !== x.due && !(due && dueSaid(due, segment));
+    x.text = keep ? dropStaleMarks(content, x.due) : content;
+    if (due !== undefined && !keep) x.due = due;
     x.saidAt = now;
-    return { ok: true };
+    return keep ? { ok: true, dueKept: true } : { ok: true };
   }
   if (action === 'done' || action === 'remove') {
     const f = findItem(memory.open, op?.oldText);
