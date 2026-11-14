@@ -469,6 +469,18 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
   for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
 });
 
+test('annotate: 三天后 / 7天以后 / 一周后 / 两个礼拜之后 from the line\'s day; not 过两天, 几天后, 三天后悔, a duration or a day counted from another', () => {
+  const at = new Date(2026, 11, 8, 18, 24).getTime(); // 12-08
+  assert.equal(annotate('三天后取，7天以后复查，十天之后交图', at), '三天后（=12-11）取，7天以后（=12-15）复查，十天之后（=12-18）交图');
+  assert.equal(annotate('一周后出意见，两周后复查，一个礼拜后再说，两个星期后见，十四天后看', at),
+    '一周后（=12-15）出意见，两周后（=12-22）复查，一个礼拜后（=12-15）再说，两个星期后（=12-22）见，十四天后（=12-22）看');
+  assert.equal(annotate('三周后', new Date(2026, 11, 20, 9, 0).getTime()), '三周后（=2027-01-10）', 'the year when it rolls over');
+  assert.equal(annotate('她说三天后取', at), '她说三天后（=12-11）取', 'said today');
+  for (const t of ['过两天再说', '过几天吧', '几天后', '三天后悔了', '观察一周', '三天前', '前三天后', '第三天后', '三四天后', '那三天后的稿', '过了三天后',
+    '两周后来', '如果三天后不退', '七天后要是不退', '上次她说三天后取', '“三天后见”', '果然三天后和好了', '三天后她自己打过来了', '十天后这个坎算是迈过去了']) assert.equal(annotate(t, at), t, t);
+  assert.equal(annotate('下周三天后', at), '下周三（=12-16）天后', 'the longer, earlier match wins');
+});
+
 test('annotate: 月底, X号, lunar dates and festivals by the built-in Chinese calendar, the year written when it rolls over', () => {
   const at = (y, m, d) => new Date(y, m - 1, d, 20, 0).getTime();
   // 2025-12-20: 腊月 2025 starts 2026-01-19 (29 days), 正月初一 is 2026-02-17.

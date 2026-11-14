@@ -7,6 +7,7 @@
 //   今天 明天 后天 大后天 昨天 前天 大前天; 这周X / 下周X / 上周X (weeks start on Monday);
 //   月底 / 下个月底 / 上个月底 (the month's last day); X号 / X日 (this month if not yet passed, else
 //   next, left as said when it passed a week ago or less; 这个月 / 下个月 / 上个月 X号 as said);
+//   三天后 / 7天以后 / 一周后 / 两个礼拜之后 (not 过两天 / 几天后: no exact day);
 //   lunar dates: 正月 / 冬月 / 腊月 + a day, 一…十二月 + 初N / 廿N, any month after 农历 / 阴历,
 //   闰X月 for a leap month; 大年初N; 除夕 / 大年三十; 春节 / 过年 / 元旦 / 除夕 前N天 · 后N天;
 //   a bare 初N only within 40 days before to 15 days after the Spring Festival (正月初N).
@@ -117,6 +118,13 @@ const RULES = [
       const t = new Date(d.getFullYear(), d.getMonth() + k, n);
       return t.getDate() === n ? t.getTime() : null;
     } },
+  // 三天后 / 7天以后 / 一周后 / 两个礼拜之后: that many days (weeks) from the line's day. Not 几天后 / 过两天
+  // (no number), 前三天后 / 第三天后 / 这三天后 / 过了三天后 / 三四天后, 三天后悔 / 三天后来; and not when
+  // the clause counts from a day gone by (果然三天后就好了, 上次三天后才到, 三天后她自己打过来了, 十天后这个坎
+  // 算是迈过去了): that day is not this line's.
+  { re: new RegExp(`(?<![\\d一二三四五六七八九十两几第前头每这那最多了个])(${N})(天|个?(?:周|星期|礼拜))(?:以|之)?后(?![悔台果勤面者续遗来劲辈生排路门手])`, 'g'),
+    before: /(果然|结果|后来|当时|那次|那回|那会|没想到|上次|上回|去年|以前|之前)/, after: /(已经|算是|过去了|过来了)/,
+    day: (m, at) => { const n = num(m[1]); return n >= 1 && n <= 99 ? addDays(at, m[2] === '天' ? n : 7 * n) : null; } },
   // 春节前十天 / 元旦前两天 / 除夕后三天 (not 春节后第三天: whether 初一 counts is not said).
   { re: new RegExp(`(春节|过年|元旦|除夕|大年三十)(前|后)(${N})天(?![内里左])`, 'g'),
     day: (m, at) => { const n = num(m[3]); return Number.isFinite(n) ? festival(at, m[1], m[2] === '前' ? -n : n) : null; } },
@@ -185,6 +193,7 @@ export function annotate(text, at, now = at) {
     if ((SAID.test(before) || SAID.test(after)) && SAID_BEFORE.test(before)) continue;
     // Already written out by whoever said it ("明天（06-23）", "明天 6 月 23 号"): leave it.
     if (/^\s*[（(]?\s*(\d{1,4}[-/月.])/.test(s.slice(end, end + 8))) continue;
+    if (rule.before?.test(before) || rule.after?.test(after)) continue;
     const day = rule.day(m, at);
     if (day == null) continue;
     out += s.slice(last, end) + `（=${dayMark(day, now)}）`;
