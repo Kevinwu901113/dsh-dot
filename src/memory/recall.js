@@ -12,7 +12,7 @@
 //   rerank     a cross-encoder reads every candidate against the message and decides: at most
 //              recallTopK, fewer when fewer are relevant (recallRerankMin), never padded. Without a
 //              reranker (none configured, or still downloading): each list keeps only the hits that
-//              stand out from the whole index (contrast), interleaved.
+//              stand out from the whole index (contrast), fused by reciprocal rank (k 60).
 //   shown      grouped by day, each day headed "06-22 周一 · 15 天前", and 明天 / 下周三 in the
 //              words given their exact date by code (when.js). A message with fewer than
 //              recallMinQueryLength distinct content tokens (好的 / 哈哈哈哈 / ok thanks) recalls nothing.
@@ -453,8 +453,16 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     const cut = Math.max(contrastCut(scores, Number(cfg.recallContrast) || 0), 1e-9);
     return scores.map((s, j) => ({ j, s })).filter((x) => x.s >= cut).sort((a, b) => b.s - a.s);
   };
-  /** Two lists, alternately, without repeats. */
-  const interleave = (a, b) => { const out = [], seen = new Set(); for (let i = 0; i < Math.max(a.length, b.length); i++) for (const x of [a[i], b[i]]) if (x && !seen.has(x.j)) { seen.add(x.j); out.push(x); } return out; };
+  /**
+   * Reciprocal-rank fusion (k 60) of ranked lists, best first: a turn in both lists gets both
+   * contributions. `o` is the fused order key; `s` keeps the turn's own score (shown, not compared:
+   * cosine and BM25 are on different scales).
+   */
+  const fuse = (...lists) => {
+    const m = new Map();
+    for (const l of lists) l.forEach((x, r) => { const e = m.get(x.j) ?? { j: x.j, s: x.s, o: 0 }; e.o += 1 / (60 + r + 1); m.set(x.j, e); });
+    return [...m.values()].sort((a, b) => b.o - a.o);
+  };
 
   /**
    * The turns for `query` outside `session`: { text, hits, candidates, mode, ms } (text '' when
@@ -509,10 +517,10 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
             picked = ranked.filter((x) => x.score >= min).slice(0, topK).map((x) => ({ c: pool[keys[x.index]], s: x.score }));
             res.mode = `${b}+rerank`;
           } else {
-            // No reranker (none set, or not ready yet): each channel keeps what stands out.
+            // No reranker (none set, or not ready yet): each channel keeps what stands out, fused by rank.
             const floor = Number(cfg.recallMinScore) || -Infinity;
             const vec = standOut(cos).filter((x) => x.s >= floor);
-            picked = interleave(vec, lexical ? standOut(bm) : []).slice(0, topK).map((x) => ({ c: pool[x.j], s: x.s }));
+            picked = fuse(vec, lexical ? standOut(bm) : []).slice(0, topK).map((x) => ({ c: pool[x.j], s: x.s, o: x.o }));
           }
         }
       } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; }
@@ -525,9 +533,9 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
       const words = standOut(bm.score(q));
       picked = words.length ? words.slice(0, topK).map((x) => ({ c: all[x.j], s: x.s })) : search(all, q, topK).map((c, i) => ({ c, s: 1 - i / 100 }));
     }
-    // Fit the budget by dropping the weakest, then show by day.
+    // Fit the budget by dropping the weakest (by the fused order without a reranker), then show by day.
     const budget = Number(cfg.recallMaxTokens) || Infinity;
-    picked.sort((x, y) => y.s - x.s);
+    picked.sort((x, y) => (y.o ?? y.s) - (x.o ?? x.s));
     let used = 0;
     picked = picked.filter((x) => { const n = estimateTokens(x.c.text); if (used + n > budget) return false; used += n; return true; });
     res.hits = picked.map((x) => ({ at: x.c.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.c.text })).sort((x, y) => x.at - y.at);

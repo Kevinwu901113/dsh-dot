@@ -450,6 +450,29 @@ test('candidates from both channels, then the reranker decides: a turn the vecto
   assert.deepEqual([q.hits.length, q.text], [0, ''], 'nothing relevant, nothing shown');
 });
 
+test('no reranker, tight budget: the two lists are fused by rank, not raw scores — the cosine top hit and a turn both lists found survive BM25-only hits', async () => {
+  // Vectors by content: 团子 turns point near the query, the rest away (cosines < 1); BM25 scores are > 1.
+  const vecs = { async embed(texts, role) { return texts.map((t) => (role === 'query' ? Float32Array.from([1, 0]) : /团子是橘猫/.test(t) ? Float32Array.from([0.95, 0.31]) : /团子/.test(t) ? Float32Array.from([0.9, 0.44]) : Float32Array.from([0.2, 0.98]))); } };
+  const dir = mkdtempSync(join(tmpdir(), 'mem-'));
+  let at = new Date(2026, 4, 1, 10, 0).getTime();
+  const lines = [];
+  const say = (who, text) => lines.push({ at: (at += 60000), who, text, session: 'old' });
+  for (let i = 0; i < 25; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', '嗯嗯'); }
+  say('owner', '团子是橘猫'); say('her', '记住了'); // cosine top, no word of the query
+  say('owner', '阿兰说团子胖了'); say('her', '哈哈'); // in both lists
+  for (let i = 0; i < 4; i++) { say('owner', `阿兰阿兰又来借伞${i}`); say('her', '好'); } // BM25 only
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const cfg = { recallTopK: 10, recallMaxTokens: 50, recallContrast: 0.35, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 20, recallWindowTurns: 0, recallBackend: 'local', recallRerankModel: 'none' };
+  const r = createRecall({ cfg, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger: { info() {}, warn() {} }, embedder: () => vecs });
+  r.turnEnded(); await r.warm();
+  const q = await r.query('阿兰的猫', { session: 'now' });
+  assert.equal(q.mode, 'local');
+  const said = q.hits.map((h) => h.text);
+  assert.ok(said.length >= 2 && said.length < 6, `the budget cuts: ${said.length}`);
+  assert.ok(said.some((t) => /团子是橘猫/.test(t)), 'the cosine top hit stays');
+  assert.ok(said.some((t) => /阿兰说团子胖了/.test(t)), 'the turn both lists found stays');
+});
+
 test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes, imagined or said another day', () => {
   const mon = new Date(2026, 6, 6, 20, 15).getTime(); // a Monday
   const now = mon + 15 * 86400000;
