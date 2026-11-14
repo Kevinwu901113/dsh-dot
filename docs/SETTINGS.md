@@ -60,7 +60,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 国内网络下载慢 | QQ 安装：`qq.githubProxy`；召回模型：`/dot memory recall mirror <url>`（默认已走 hf-mirror）；虚拟机镜像：`computer.image` 换镜像源 | |
 | 召回换云端 / 关掉 | `/dot memory recall backend siliconflow`，再 `/dot memory recall key siliconflow <key>` | 命令即时生效，不用重启，也不用改这个文件 |
 | **她的作息** | `interlude.activeHours`（如 `"09:00-01:00"`，可跨午夜）、`interlude.advanceEveryMinutes`（自己过日子的间隔，0 关）、`interlude.maxRoundsPerDay` | 活跃时段外不跑幕间、不主动找你 |
-| 日记时间 | `memory.dailyAt`（默认 `"23:30"`） | |
+| 日记时间 | `memory.dailyAt`（默认 `"23:30"`；每天的整理也在那时） | |
 | **让她主动找你** | `interlude.speak: true`，`interlude.maxContactsPerDay`、`interlude.willingnessThreshold`（0–1，越低越爱找你） | 默认关 |
 | 拿手机看的频率 | `dot.phoneCheckEveryMinutes`（默认 30，0 关） | |
 | 夜里通知不叫醒她 | `dot.notifyHours: "08:00-23:00"`（只有这个时段内通知才叫醒） | 默认空 = 任何时候都叫醒 |
@@ -172,8 +172,9 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
 | `handoffTokens` | `150000` | 对话多长换新会话 |
-| `consolidateEveryLines` | `40` | 新记录攒满多少行整理一次（交班前也整理一次） |
-| `dailyAt` | `"23:30"` | 每天写日记、整理关于他 / 她自己的时间（当天有记录才调用） |
+| `dailyAt` | `"23:30"` | 每天整理一次的时间：还没了的事、人物、关于他 / 她自己，再写日记（有没读过的记录才调用；交班前也整理一次，不写日记） |
+| `inputChars` | `40000` | 一次整理最多读多少字记录，积压更多就分几次读 |
+| ~~`consolidateEveryLines`~~、~~`chunkLines`~~、~~`minChunkLines`~~ | — | 已去掉：不再按攒了多少行整理。文件里还有也不报错，直接忽略 |
 | `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：硬上限，放不下的加不进去，满了要记新的就换掉一条；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
 | `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
 | `openKeepDaysIdle` | `14` | 没日子的还没了的事多少天没被碰过就拿掉 |

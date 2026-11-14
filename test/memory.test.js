@@ -7,7 +7,7 @@ import {
   bankOp, bankUsage, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN, dueSaid,
 } from '../src/memory/store.js';
-import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel } from '../src/memory/memory.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, updatePrompt, mentionedPeople, dayLabel } from '../src/memory/memory.js';
 import { dayMark } from '../src/clock.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -214,7 +214,7 @@ test('the consolidation sees 还没了的事 as she is shown them (today first, 
     { id: 'o0032', text: '他说过几天搬家', at: now - 5 * 864e5, due: due(5) },
   ];
   writeFileSync(join(dir, 'memory.json'), JSON.stringify({ ...emptyMemory(), open, oseq: 32 }));
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { open: 100 } });
+  apply(h.ctx, { home: h.home, limits: { open: 100 } });
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
   const r = await h.services.dotMemory.consolidate({ reason: 'manual' });
   assert.ok(r.ok);
@@ -282,9 +282,9 @@ test('extraction: 还没了的事, people (new seen ones from apps); loose JSON'
   assert.match(renderHandoff([{ at: 0, who: 'owner', text: '在吗' }, { at: 0, who: 'her', to: 'owner', text: '在' }], 2), /第 2 段[\s\S]*最后几句[\s\S]*他：在吗[\s\S]*我：在/);
   assert.match(transcriptLine({ at: 0, who: 'her', to: 'user:9', text: 'hi' }), /我（发给 user:9）：hi/);
   // the rules come first (the same prefix every call), the new records last
-  const ask = extractPrompt({ text: '[06-22 20:00] 他：在吗', open: '- 06-20 他说想换键盘' });
+  const ask = updatePrompt({ day: '2026-06-22 周一', text: '[06-22 20:00] 他：在吗', open: '- 06-20 他说想换键盘' });
   assert.ok(ask.startsWith('你在帮她整理记忆'));
-  assert.ok(ask.indexOf('他说想换键盘') < ask.indexOf('=== 这段时间的记录 ==='));
+  assert.ok(ask.indexOf('他说想换键盘') < ask.indexOf('=== 上次整理之后的记录（'));
   assert.ok(ask.trimEnd().endsWith('他：在吗'));
 });
 
@@ -306,7 +306,7 @@ test('consolidation: a done counts only when the record it read mentions the ite
   assert.equal(m.open.length, 0);
 });
 
-test('consolidation: no owner / self — the prompt carries no bank (schema, rules or entries); owner / self in a reply are ignored without error', () => {
+test('applyExtraction leaves owner / self to the caller (bankOp); the prompt: rules, banks, the people, 还没了的事, then the day and the records', () => {
   const m = emptyMemory();
   m.owner = ['他住光谷，养了一只猫'];
   m.self = ['每天晚上逛小黑盒'];
@@ -317,10 +317,8 @@ test('consolidation: no owner / self — the prompt carries no bank (schema, rul
   assert.deepEqual(r.errors, []);
   assert.deepEqual([m.owner, m.self], [['他住光谷，养了一只猫'], ['每天晚上逛小黑盒']]);
   assert.equal('owner' in r || 'self' in r, false);
-  const ask = extractPrompt({ text: '[06-22 20:00] 他：在吗', known: 'u0002 · 阿满 · qq:42 · talked', open: '- 06-20 他说想换键盘' });
-  assert.doesNotMatch(ask, /"owner"|"self"|- owner：|- self：|已有：关于他|她自己记下的|别的记忆插件/);
-  assert.match(ask, /每天晚上另有一次整理，这里不用写。\n/);
-  assert.match(ask, /\n\n=== 已认识的人 ===\nu0002[^\n]*\n=== 已有：还没了的事 ===\n- 06-20 他说想换键盘\n\n=== 这段时间的记录 ===/, 'the people (more stable) before 还没了的事 (changes nearly every call)');
+  const ask = updatePrompt({ day: '2026-06-22 周一', text: '[06-22 20:00] 他：在吗', banks: { owner: m.owner, self: m.self }, people: 'u0002 · 阿满 · qq:42 · talked', open: '- 06-20 他说想换键盘' });
+  assert.match(ask, /\n\n=== 关于他（现在 11 字，上限 1375）===\n- 他住光谷，养了一只猫\n=== 她自己记下的（现在 9 字，上限 2200）===\n- 每天晚上逛小黑盒\n=== 已认识的人（这段记录里提到的）===\nu0002[^\n]*\n=== 已有：还没了的事 ===\n- 06-20 他说想换键盘\n=== 上次整理之后的记录（今天是 2026-06-22 周一；最后写今天的日记）===\n\[06-22 20:00\] 他：在吗$/, 'banks, people (more stable) before 还没了的事 (changes nearly every call), the day and the records last');
 });
 
 // A stand-in embedder for the harness: character counts, so overlapping words are near.
@@ -366,7 +364,7 @@ const say = (h, text) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/me
 
 test('transcript: what he said, what she really sent over QQ, phone and errand notes; the errand is not her conversation', async () => {
   const h = harness({ recall: true });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
+  apply(h.ctx, { home: h.home, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'tool/call', { callId: 'c1', name: 'qq_send', arguments: JSON.stringify({ to: 'owner', text: '搬去哪<sep/>要帮忙吗' }) });
@@ -389,7 +387,7 @@ test('transcript: what he said, what she really sent over QQ, phone and errand n
 test('consolidation and handoff: notes written first, old session archived before the new one, its last lines carried over, deliveries frozen', async () => {
   const reply = JSON.stringify({ open: [{ action: 'add', content: '他问她搬家那天能不能帮忙，还没定时间', owed: false }] });
   const h = harness({ llmReply: reply });
-  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'assistant/message', msg('搬去哪'));
@@ -402,8 +400,12 @@ test('consolidation and handoff: notes written first, old session archived befor
   assert.equal(h.injected.length, 1);
   assert.equal(h.injected[0].id, 's2');
   assert.match(h.injected[0].m.content[0].text, /第 2 段[\s\S]*最后几句[\s\S]*他：下周六（=\d\d-\d\d）我搬家\n  \[[^\]]+\] 我：搬去哪$/);
-  assert.equal(h.calls.length, 1, 'one consolidation call, no handoff text to write');
-  assert.match(h.calls[0].messages[0].content[0].text, /=== 这段时间的记录 ===\n[^\n]*他：下周六（=\d\d-\d\d）我搬家/);
+  assert.equal(h.calls.length, 1, 'one memory call, no handoff text to write');
+  assert.match(h.calls[0].messages[0].content[0].text, /=== 上次整理之后的记录（今天是 [^；]+；这次不写日记，不要 diary）===\n[^\n]*他：下周六（=\d\d-\d\d）我搬家/, 'the handoff run: no diary asked');
+  assert.equal(existsSync(join(h.home, 'memory', 'diary.md')), false, 'and none written');
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8')).lastDiary, undefined, 'the day is not closed: the daily run still comes');
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'memory', 'calls.jsonl'), 'utf8').split('\n')[0]).reason, 'handoff');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
   const ctxText = h.contexts[0].text({ agent: { session: { id: 's2', header: { cwd: h.home } } } });
   assert.match(ctxText, /还没了的事[^\n]*\n- 他问她搬家那天/);
   assert.equal(h.contexts[0].text({ agent: { session: { id: 'errand', header: { cwd: h.home } } } }), '', 'errands do not get her notes');
@@ -411,17 +413,19 @@ test('consolidation and handoff: notes written first, old session archived befor
   assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
 });
 
-test('consolidation waits for a batch: nothing at 39 new lines, one call at 40', async () => {
+test('no line-count trigger: lines pile up until the daily run or a handoff; consolidateEveryLines in an older settings file is ignored without a word', async () => {
   const h = harness({ llmReply: '{}' });
-  apply(h.ctx, { home: h.home });
-  const turn = (i) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${i} 句话` }] }, { surfaceOp: 'append' }); h.emit('s1', 'assistant/message', msg(`回第 ${i} 句`)); h.emit('s1', 'turn/end', {}); };
-  for (let i = 0; i < 19; i++) turn(i);
-  h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '再一句' }] }, { surfaceOp: 'append' }); h.emit('s1', 'turn/end', {});
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-dot.json'), JSON.stringify({ memory: { consolidateEveryLines: 5, chunkLines: 4, minChunkLines: 2 } }));
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 3 });
+  for (let i = 0; i < 30; i++) say(h, `第 ${i} 句话`);
   await wait(30);
-  assert.equal(h.calls.length, 0, '39 lines: not yet');
-  turn(99);
-  await wait(30);
-  assert.equal(h.calls.length, 1);
+  assert.equal(h.calls.length, 0, '60 lines: no call');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 60);
+  assert.deepEqual(h.warns, []);
+  assert.doesNotMatch(await h.services.dotMemory.command('memory'), /every \d|undefined/);
+  assert.equal('consolidateEvery' in await h.services.dotMemory.panel(), false);
+  await h.services.dotMemory.consolidate();
+  assert.equal(h.calls.length, 1, 'read in one call: chunkLines is gone too');
   assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
 
@@ -521,10 +525,10 @@ test('a backlog is consolidated oldest-first in chunks; the cursor never jumps p
   assert.equal(takeChunk(fresh, 1e9).length, 50);
 });
 
-test('daily diary: its own call about today, only when anything happened; headed by the day; herLife is the self bank', async () => {
+test('daily run: the memory call with the diary, only when anything is unread; headed by the day; herLife is the self bank', async () => {
   const h = harness({ llmReply: JSON.stringify({ diary: '今天没什么事。晚上在小黑盒看了几个角色卡帖，有一个写记忆的挺细，记下了。他没来。' }) });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, dailyAt: '23:30' });
-  assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing happened today/);
+  apply(h.ctx, { home: h.home, dailyAt: '23:30' });
+  assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing new/);
   assert.equal(h.calls.length, 0, 'no call for an empty day');
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
@@ -533,8 +537,8 @@ test('daily diary: its own call about today, only when anything happened; headed
   await wait(20);
   const r = await h.services.dotMemory.command('memory diary');
   assert.match(r, /diary →[\s\S]*今天没什么事/);
-  assert.match(h.calls[0].messages[0].content[0].text, /^这是她每天一次的收拾[\s\S]*=== 今天的记录（\d{4}-\d{2}-\d{2} 周.）===\n[^\n]*他：在吗/);
-  assert.equal(h.services.dotMemory.status().sinceCursor, 2, 'the diary is not a consolidation');
+  assert.match(h.calls[0].messages[0].content[0].text, /^你在帮她整理记忆[\s\S]*=== 上次整理之后的记录（今天是 \d{4}-\d{2}-\d{2} 周.；最后写今天的日记）===\n[^\n]*他：在吗/);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0, 'one call reads it for everything');
   const diary = readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8');
   assert.match(diary, /^## \d{4}-\d{2}-\d{2} 周.\n今天没什么事。/);
   h.services.dotMemory.consolidate = undefined;
@@ -548,7 +552,7 @@ test('coexist auto: another memory service present → owner/self notes not in t
   const reply = JSON.stringify({ owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }], open: [{ action: 'add', content: '他问她要不要帮忙搬家' }] });
   const h = harness({ llmReply: reply });
   h.services.hermesMemory = {};
-  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下周六我搬家' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'assistant/message', msg('搬去哪'));
@@ -569,7 +573,7 @@ test('coexist auto: another memory service present → owner/self notes not in t
 test('coexist full: banks on even next to another memory service', async () => {
   const h = harness({ llmReply: JSON.stringify({ diary: '他说下周六搬家，我问他搬去哪。', owner: [{ action: 'add', content: '他下周六搬家，搬去光谷' }] }) });
   h.services.hermesMemory = {};
-  apply(h.ctx, { home: h.home, coexist: 'full', consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home, coexist: 'full' });
   say(h, '下周六我搬家');
   await wait(20);
   await h.services.dotMemory.diary();
@@ -592,7 +596,7 @@ test('dates: MM-DD within the current year, YYYY-MM-DD from another; 明天 / �
 
 test('stamps: wake messages are stamped, the transcript is not stamped twice; lastSaidAt is the last line before a moment', async () => {
   const h = harness();
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '[11-04 04:51] 在吗\n睡了没' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[2025-11-04 04:52 手机通知] 小黑盒 · 阿满：回复了你\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' });
@@ -613,7 +617,7 @@ test('pictures in what woke her: memory records the words for them only, never t
   const img = { type: 'image', attachment: { attachmentId: 'sha256:1', mediaType: 'image/gif', bytes: 6, width: 1, height: 1 } };
   const content = [{ type: 'text', text: '[11-04 10:00] 你看[表情包 sticker:aa11bb22cc]' }, img, { type: 'text', text: '\n[图片 https://x.qq.com/a]' }, img, { type: 'text', text: '哈哈' }];
   const h = harness();
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content }, { surfaceOp: 'append' });
   h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[11-04 10:01 手机通知] QQ · 路人（30003）：[图片 https://x.qq.com/b]' }, img, { type: 'text', text: '\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' });
@@ -664,7 +668,7 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
   assert.deepEqual(said.map((l) => [l.at, l.who, l.text]), [[3, 'her', '那家店我去过'], [5, 'owner', '等下'], [7, 'her', '那家店我去过 / 还挺好吃的 / 下次带你去']]);
   // live: recorded at the result, placed at the call's time; the handoff tail and recall read the same lines
   const h = harness({ recall: true });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
+  apply(h.ctx, { home: h.home, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'tool/call', { callId: 'a', name: 'qq_send', arguments: JSON.stringify(args) });
   h.emit('s1', 'tool/result', denied.message ? { ...denied, message: { ...denied.message, toolCallId: 'a' } } : denied);
@@ -686,7 +690,7 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
 });
 
 test('persona lives only in the Canon: the daily call keeps persona and 「照着某某学」 out of self', () => {
-  const text = dailyPrompt({ day: '2026-11-03 周二', text: '我：照着星野那版学', banks: { owner: [], self: ['拼出来的人设：蓝发'] } });
+  const text = updatePrompt({ day: '2026-11-03 周二', text: '我：照着星野那版学', banks: { owner: [], self: ['拼出来的人设：蓝发'] } });
   assert.match(text, /她自己那一栏记她学会了什么、习惯、看法（人设、说话风格、「照着某某学」不算）/);
   assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
 });
@@ -750,28 +754,42 @@ test('review fixes: an unreadable or unmigratable memory.json is copied aside, n
   assert.equal(readdirSync(dir).filter((f) => /^memory\.v019-\d+\.json$/.test(f)).length, 1);
 });
 
-test('a failed consolidation (empty reply) is not retried every turn: the next waits for another batch and reads half as many lines', async () => {
-  let fail = true;
-  const h = harness({ llmReply: () => (fail ? '' : '{}') });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 10, chunkLines: 40, minChunkLines: 5 });
-  const turn = (i) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${i} 句话` }] }, { surfaceOp: 'append' }); h.emit('s1', 'assistant/message', msg(`回第 ${i} 句`)); h.emit('s1', 'turn/end', {}); };
-  const records = (c) => c.messages[0].content[0].text.split('=== 这段时间的记录 ===')[1].trim().split('\n').length;
-  for (let i = 0; i < 5; i++) turn(i);
-  await wait(30);
-  assert.equal(h.calls.length, 1, '10 lines: one call, it fails');
-  assert.equal(records(h.calls[0]), 10);
-  for (let i = 5; i < 9; i++) turn(i);
-  await wait(30);
-  assert.equal(h.calls.length, 1, 'not retried on every turn');
-  turn(9); await wait(30);
-  assert.equal(h.calls.length, 2, 'another batch pending: tried again');
-  assert.equal(records(h.calls[1]), 20, 'half of chunkLines');
-  fail = false;
-  for (let i = 10; i < 15; i++) turn(i);
-  await wait(30);
-  assert.equal(records(h.calls[2]), 10, 'halved again after the second failure');
-  assert.equal(records(h.calls[3]), 20, 'success: the rest of the backlog follows at full size');
-  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
+test('a failed or non-JSON reply does not move the read position; the next try reads half as many characters; a daily run is tried at most 3 times a day', async () => {
+  let reply = '';
+  const h = harness({ llmReply: () => reply });
+  apply(h.ctx, { home: h.home, inputChars: 2000 });
+  for (let i = 0; i < 40; i++) say(h, `第 ${i} 句话，${'他说了很多很多的话'.repeat(2)}`);
+  await wait(20);
+  const records = (c) => c.messages[0].content[0].text.split(/=== 上次整理之后的记录（[^\n]*）===\n/)[1];
+  const mem = h.services.dotMemory;
+  const all = readJsonl(join(h.home, 'memory', 'transcript.jsonl')).map((l) => transcriptLine(l)).join('\n');
+  assert.ok(all.length > 2000);
+  let r = await mem.update({ reason: 'daily' });
+  assert.match(r.error, /empty reply/);
+  assert.equal(mem.status().sinceCursor, 80, 'nothing read');
+  assert.equal((await mem.panel()).lastDiary, null, 'the day is not done: tried again next minute');
+  assert.ok(records(h.calls[0]).length <= 2000 && records(h.calls[0]).length > 1000);
+  reply = '今天他说了很多话。';
+  r = await mem.update({ reason: 'daily' });
+  assert.equal(r.error, 'reply was not JSON');
+  assert.ok(records(h.calls[1]).length <= 1000, 'half as many characters');
+  assert.ok(all.startsWith(records(h.calls[1])), 'from the same place');
+  r = await mem.update({ reason: 'daily' });
+  assert.ok(records(h.calls[2]).length <= 500);
+  assert.equal(mem.status().sinceCursor, 80);
+  assert.equal((await mem.panel()).lastDiary, dayLabel(new Date()).slice(0, 10), 'third failed try: the day is closed without a diary');
+  assert.equal(existsSync(join(h.home, 'memory', 'diary.md')), false);
+  assert.ok(h.warns.some((w) => /3 failed tries today/.test(w)));
+  // a handoff later reads it all, from where it was, full size again after a success
+  reply = '{}';
+  r = await mem.update({ reason: 'handoff', diary: false });
+  assert.ok(r.ok);
+  const parts = h.calls.slice(3).map(records);
+  assert.ok(parts[0].length <= 250 && parts.length >= 2);
+  assert.ok(parts[1].length > 250, 'full size again after a success');
+  assert.equal(parts.join('\n'), all, 'every line read once, in order');
+  assert.equal(mem.status().sinceCursor, 0);
+  assert.equal(existsSync(join(h.home, 'memory', 'diary.md')), false, 'a handoff writes no diary');
 });
 
 // ── the daily call: the diary and the banks ──
@@ -781,7 +799,7 @@ const readJsonl = (f) => readFileSync(f, 'utf8').trim().split('\n').map((l) => J
 
 test('her memory tool: a full bank refuses an add and tells her to replace an entry that matters less; a replace still goes in', async () => {
   const h = harness();
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 30 } });
+  apply(h.ctx, { home: h.home, limits: { owner: 30 } });
   await fill(h, 'owner', OWNER.slice(0, 1));
   const r = await h.tools.memory.execute({ target: 'owner', action: 'add', content: OWNER[1] });
   assert.equal(r.ok, true);
@@ -808,9 +826,9 @@ const banksOf = (h) => { const m = JSON.parse(readFileSync(join(h.home, 'memory'
 test('daily run, nothing lasting: both banks shown, no ops in the reply → byte-identical, the diary written; nothing that day → no call', async () => {
   for (const reply of [{}, { owner: [], self: [] }]) {
     const h = harness({ llmReply: JSON.stringify({ diary: '今天他问了一句在吗，我说在。别的没什么。', ...reply }) });
-    apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 1000 } });
+    apply(h.ctx, { home: h.home, limits: { owner: 1000 } });
     await fill(h, 'owner', OWNER);
-    assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing happened today/);
+    assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing new/);
     assert.equal(h.calls.length, 0);
     say(h, '在吗');
     await wait(20);
@@ -819,10 +837,10 @@ test('daily run, nothing lasting: both banks shown, no ops in the reply → byte
     assert.equal(h.calls.length, 1);
     const lines = readJsonl(join(h.home, 'memory', 'transcript.jsonl'));
     const ask = h.calls[0].messages[0].content[0].text;
-    assert.ok(ask.startsWith('这是她每天一次的收拾'));
-    assert.match(ask, /多数日子今天没有要一直记着的新东西，两栏都是 \[\]/);
+    assert.ok(ask.startsWith('你在帮她整理记忆'));
+    assert.match(ask, /多数时候没有要一直记着的新东西，两栏都是 \[\]/);
     assert.doesNotMatch(ask, /一字不改|一整栏|"rewrite"/);
-    assert.ok(ask.endsWith(`=== 关于他（现在 44 字，上限 1000）===\n${OWNER.map((e) => `- ${e}`).join('\n')}\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 今天的记录（${dayLabel(new Date())}）===\n${lines.map((l) => transcriptLine(l)).join('\n')}`), ask.slice(-600));
+    assert.ok(ask.endsWith(`=== 关于他（现在 44 字，上限 1000）===\n${OWNER.map((e) => `- ${e}`).join('\n')}\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 已认识的人（这段记录里提到的）===\n（没有）\n=== 已有：还没了的事 ===\n（没有）\n=== 上次整理之后的记录（今天是 ${dayLabel(new Date())}；最后写今天的日记）===\n${lines.map((l) => transcriptLine(l)).join('\n')}`), ask.slice(-600));
     assert.equal(banksOf(h), before, 'banks byte-identical');
     assert.match(readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8'), /\n今天他问了一句在吗，我说在。别的没什么。\n/);
     assert.doesNotMatch(out, /owner:|self:/);
@@ -838,7 +856,7 @@ test('daily run: the reply carries ops — adds and replaces applied in order; o
     '他叫宽，在广州做 agent 开发', // a bare line (the old full-bank shape): not an op
     { action: 'remove', oldText: '快递' }, // not the daily call's
   ] }) });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 70 } });
+  apply(h.ctx, { home: h.home, limits: { owner: 70 } });
   await fill(h, 'owner', OWNER);
   await fill(h, 'self', ['每天晚上逛小黑盒']);
   say(h, '我搬去武昌了');
@@ -867,7 +885,7 @@ test('daily run, a full bank: an add that does not fit is skipped with a warning
     { action: 'add', content: '他换到了深圳的一家公司' },
     { action: 'replace', oldText: '快递', content: '他在深圳上班' },
   ], self: [{ action: 'add', content: '我学会了看天气预报' }] }) });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 44 } });
+  apply(h.ctx, { home: h.home, limits: { owner: 44 } });
   await fill(h, 'owner', OWNER);
   say(h, '我换工作了');
   await wait(20);
@@ -880,47 +898,59 @@ test('daily run, a full bank: an add that does not fit is skipped with a warning
   assert.deepEqual(h.services.dotMemory.forInterlude(), ['他叫宽，在广州做 agent 开发', '他在深圳上班', '他不喜欢被叫全名', '他喜欢猫'].map((e) => `关于他：${e}`));
 });
 
-test('daily run: a reply that is not JSON leaves the banks as they are and writes no diary; the day is done', async () => {
-  const h = harness({ llmReply: '今天他来问了一句在吗，就这些。' });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 44 } });
+test('daily run: a reply that is not JSON leaves the banks as they are, writes no diary and reads nothing; the next try reads it', async () => {
+  let reply = '今天他来问了一句在吗，就这些。';
+  const h = harness({ llmReply: () => reply });
+  apply(h.ctx, { home: h.home, limits: { owner: 44 } });
   await fill(h, 'owner', OWNER);
   say(h, '在吗');
   await wait(20);
   const r = await h.services.dotMemory.diary();
-  assert.deepEqual(r.banks, {});
-  assert.equal(r.diary, '', 'no JSON, no diary to take from it');
+  assert.equal(r.error, 'reply was not JSON');
   assert.equal(h.services.dotMemory.forInterlude().length, 4);
-  assert.match(await h.services.dotMemory.command('memory'), /diary \d{4}-\d{2}-\d{2}/);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 2);
+  assert.match(await h.services.dotMemory.command('memory'), /diary never/);
+  reply = JSON.stringify({ diary: '他来问了一句在吗。' });
+  assert.equal((await h.services.dotMemory.diary()).diary, '他来问了一句在吗。');
+  assert.equal(h.calls[1].messages[0].content[0].text, h.calls[0].messages[0].content[0].text, 'the same lines, the same prompt');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
 
-test('daily run, a day longer than inputChars: one call per part, oldest first, each seeing the banks as the last left them; nothing skipped; the diary from the last', async () => {
+test('a backlog longer than inputChars: one call per part, oldest first, each seeing the memory as the last left it; nothing skipped or read twice; the diary asked of the last only', async () => {
   let n = 0;
-  const h = harness({ llmReply: () => { n++; return JSON.stringify({ diary: `第 ${n} 段的日记，他说了不少话。`, owner: [{ action: 'add', content: `他第 ${n} 段里说了一件长久的事` }] }); } });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, inputChars: 200 });
+  const h = harness({ llmReply: () => { n++; return JSON.stringify({ diary: `第 ${n} 段的日记，他说了不少话。`, owner: [{ action: 'add', content: `他第 ${n} 段里说了一件长久的事` }], open: [{ action: 'add', content: `第 ${n} 段里他答应了一件事` }] }); } });
+  apply(h.ctx, { home: h.home, inputChars: 200 });
   for (let i = 0; i < 8; i++) say(h, `第 ${i} 句话，${'他说了很多很多的话'.repeat(2)}`);
   await wait(20);
-  const r = await h.services.dotMemory.diary();
+  const r = await h.services.dotMemory.diary({ reason: 'daily' });
   const lines = readJsonl(join(h.home, 'memory', 'transcript.jsonl'));
   assert.ok(h.calls.length >= 3, `${h.calls.length} calls`);
-  const parts = h.calls.map((c) => c.messages[0].content[0].text.split(/=== 今天的记录（[^\n]*）===\n/)[1]);
+  const asks = h.calls.map((c) => c.messages[0].content[0].text);
+  const parts = asks.map((a) => a.split(/=== 上次整理之后的记录（[^\n]*）===\n/)[1]);
   for (const p of parts) assert.ok(p.length <= 200, 'each part within inputChars');
   assert.equal(parts.join('\n'), lines.map((l) => transcriptLine(l)).join('\n'), 'every line read once, in order');
-  for (let k = 1; k < h.calls.length; k++) assert.match(h.calls[k].messages[0].content[0].text, new RegExp(`- 他第 ${k} 段里说了一件长久的事\n=== 她自己记下的`), 'the banks as the call before left them');
+  asks.forEach((a, k) => assert.match(a, k === asks.length - 1 ? /；最后写今天的日记）===\n/ : /；这次不写日记，不要 diary）===\n/));
+  for (let k = 1; k < h.calls.length; k++) {
+    assert.match(asks[k], new RegExp(`- 他第 ${k} 段里说了一件长久的事\n=== 她自己记下的`), 'the banks as the call before left them');
+    assert.match(asks[k], new RegExp(`=== 已有：还没了的事 ===\n[\\s\\S]*第 ${k} 段里他答应了一件事`), 'and 还没了的事');
+  }
   assert.equal(h.services.dotMemory.forInterlude().length, h.calls.length);
   assert.equal(r.diary, `第 ${h.calls.length} 段的日记，他说了不少话。`);
   assert.equal((readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8').match(/^## /gm) ?? []).length, 1, 'one diary for the day');
   assert.match(r.banks.owner, new RegExp(`^(\\+1 added, 0 replaced → \\d+/1375 chars; ){${h.calls.length - 1}}\\+1 added`));
+  assert.deepEqual(readJsonl(join(h.home, 'memory', 'calls.jsonl')).map((c) => [c.reason, c.diary]), asks.map((_, k) => [k ? `daily+${k}` : 'daily', k === asks.length - 1]));
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
 
-test('daily run, people-only (another memory plugin owns the banks): diary only — no banks shown, owner / self in the reply ignored', async () => {
+test('people-only (another memory plugin owns the banks): no banks shown, owner / self in the reply ignored; the diary and 还没了的事 as usual', async () => {
   const h = harness({ llmReply: JSON.stringify({ diary: '他说下周六搬家。', owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }] }) });
   h.services.hermesMemory = {};
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  apply(h.ctx, { home: h.home });
   say(h, '下周六我搬家');
   await wait(20);
   const r = await h.services.dotMemory.diary();
   const ask = h.calls[0].messages[0].content[0].text;
-  assert.match(ask, /\n=== 关于他 \/ 她自己记下的：由别的记忆插件负责，这次只写 diary，owner 和 self 都给 \[\] ===\n=== 今天的记录（[^\n]*）===\n[^\n]*他：下周六/);
+  assert.match(ask, /\n=== 关于他 \/ 她自己记下的：由别的记忆插件负责，这次 owner 和 self 都给 \[\] ===\n=== 已认识的人（这段记录里提到的）===\n/);
   assert.doesNotMatch(ask, /（现在 \d+ 字/);
   assert.equal(r.diary, '他说下周六搬家。');
   assert.deepEqual(r.banks, {});
@@ -935,8 +965,8 @@ test('daily run: a bank over its limit and nothing that day → no call, nothing
   writeFileSync(join(h.home, 'memory', 'tidy.jsonl'), stale);
   writeFileSync(join(h.home, 'prompts', 'memory.daily.rewrite.txt'), '整栏重写到 {target} 字');
   writeFileSync(join(h.home, 'memory', 'memory.json'), JSON.stringify({ ...emptyMemory(), owner: OWNER }));
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 40 } });
-  assert.deepEqual(await h.services.dotMemory.diary({ reason: 'daily' }), { skipped: 'nothing happened today' });
+  apply(h.ctx, { home: h.home, limits: { owner: 40 } });
+  assert.deepEqual(await h.services.dotMemory.diary({ reason: 'daily' }), { skipped: 'nothing new' });
   assert.equal(h.calls.length, 0);
   say(h, '在吗');
   await wait(20);
@@ -954,7 +984,7 @@ test('a home whose bank an earlier build left over its limit: shown in full, not
   const old = Array.from({ length: 6 }, (_, i) => `他第 ${i} 件一直为真的事，写得比较长一些`);
   mkdirSync(join(h.home, 'memory'), { recursive: true });
   writeFileSync(join(h.home, 'memory', 'memory.json'), JSON.stringify({ ...emptyMemory(), owner: old }));
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 50 } });
+  apply(h.ctx, { home: h.home, limits: { owner: 50 } });
   const at = { agent: { session: { id: 's1', header: { cwd: h.home } } } };
   assert.match(h.contexts[0].text(at), new RegExp(`关于他\n${old.map((e) => `- ${e}`).join('\n')}\n`), 'all of it in front of her');
   assert.doesNotMatch(h.warns.join('\n'), /limit/);
@@ -965,4 +995,91 @@ test('a home whose bank an earlier build left over its limit: shown in full, not
   for (const i of [1, 2, 3, 4]) assert.equal((await h.tools.memory.execute({ target: 'owner', action: 'remove', oldText: `第 ${i} 件` })).ok, true);
   assert.equal(h.services.dotMemory.forInterlude().length, 2);
   assert.equal((await h.tools.memory.execute({ target: 'owner', action: 'add', content: '他不喜欢被叫全名' })).ok, true, 'under the limit again: adds go in');
+});
+
+// ── the read position ──
+const seed = (h, memory, lines) => {
+  mkdirSync(join(h.home, 'memory'), { recursive: true });
+  writeFileSync(join(h.home, 'memory', 'memory.json'), JSON.stringify({ ...emptyMemory(), ...memory }));
+  writeFileSync(join(h.home, 'memory', 'transcript.jsonl'), lines.map((l) => JSON.stringify(l)).join('\n') + '\n');
+};
+const recordsOf = (c) => c.messages[0].content[0].text.split(/=== 上次整理之后的记录（[^\n]*）===\n/)[1];
+
+test('read position: lines after yesterday\'s run (23:30–24:00) are read by today\'s, nothing is read twice, and a run with nothing new makes no call', async () => {
+  const h = harness({ llmReply: JSON.stringify({ diary: '昨晚他说了晚安，今天又来问了一句在吗。' }) });
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  const at = (d, hh, mm) => { const t = new Date(d); t.setHours(hh, mm, 0, 0); return t.getTime(); };
+  const lines = [
+    { at: at(y, 22, 0), session: 's1', who: 'owner', text: '昨天十点的话' },
+    { at: at(y, 23, 45), session: 's1', who: 'owner', text: '十一点四十五：晚安' },
+    { at: at(y, 23, 59), session: 's1', who: 'her', text: '晚安' },
+  ];
+  // yesterday's 23:30 run read up to 22:00 and closed the day
+  seed(h, { cursor: lines[0].at, lastDiary: dayLabel(y).slice(0, 10), consolidations: 3 }, lines);
+  apply(h.ctx, { home: h.home });
+  say(h, '在吗');
+  await wait(20);
+  const r = await h.services.dotMemory.update({ reason: 'daily' });
+  assert.ok(r.ok);
+  const read = recordsOf(h.calls[0]);
+  assert.doesNotMatch(read, /昨天十点的话/, 'read by yesterday\'s run: not again');
+  assert.match(read, /^\[\d\d-\d\d 23:45\] 他：十一点四十五：晚安\n\[\d\d-\d\d 23:59\] 我：晚安\n[^\n]*他：在吗\n[^\n]*我：嗯$/, 'yesterday\'s last half hour first, then today');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8')).lastDiary, dayLabel(new Date()).slice(0, 10));
+  assert.deepEqual(await h.services.dotMemory.update({ reason: 'handoff', diary: false }), { skipped: 'nothing new' });
+  assert.equal(h.calls.length, 1, 'nothing new: no call');
+});
+
+test('an older home with a consolidation cursor goes on from it: the lines after it are read once (diary and all), none before it', async () => {
+  const h = harness({ llmReply: JSON.stringify({ open: [{ action: 'add', content: '他说周末去看展' }], owner: [{ action: 'add', content: '他喜欢看展' }], diary: '他说周末去看展。' }) });
+  const base = Date.now() - 3 * 3600000;
+  const lines = Array.from({ length: 6 }, (_, i) => ({ at: base + i * 60000, session: 's1', who: i % 2 ? 'her' : 'owner', text: `第 ${i} 行，周末去看展` }));
+  // 0.25's memory.json: cursor = the consolidation's last line; lastDiary = the old daily call's day
+  const y = new Date(); y.setDate(y.getDate() - 1);
+  seed(h, { cursor: lines[3].at, consolidations: 12, lastDiary: dayLabel(y).slice(0, 10) }, lines);
+  apply(h.ctx, { home: h.home });
+  assert.equal(h.services.dotMemory.status().sinceCursor, 2);
+  const r = await h.services.dotMemory.update({ reason: 'daily' });
+  assert.ok(r.ok);
+  assert.deepEqual(recordsOf(h.calls[0]).split('\n').map((l) => l.replace(/^\[[^\]]+\] /, '')), ['他：第 4 行，周末去看展', '我：第 5 行，周末去看展']);
+  const m = JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8'));
+  assert.deepEqual([m.cursor, m.consolidations, m.open.length, m.owner], [lines[5].at, 13, 1, ['他喜欢看展']]);
+  assert.match(readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8'), /他说周末去看展。/);
+});
+
+test('people: only those named in the text read are shown; an add of a known name on the same app lands on the existing card', async () => {
+  const m = emptyMemory();
+  const aman = touchPerson(m, { handles: ['qq:42424'], platform: 'qq', name: '阿满', tier: 'talked' });
+  touchPerson(m, { handles: ['qq:name:满满'], platform: 'qq', name: '满满', tier: 'talked' });
+  setImpression(m, aman.id, '大学室友');
+  touchPerson(m, { handles: ['xiaoheihe:name:暮看云'], platform: 'xiaoheihe', name: '暮看云', tier: 'seen' });
+  touchPerson(m, { handles: ['qq:77777'], platform: 'qq', name: '老贺', tier: 'contact', kind: null });
+  const ids = (text) => mentionedPeople(m.people, text).map((p) => p.names[0]);
+  assert.deepEqual(ids('[06-22 20:00] 他：阿满今晚打瓦'), ['阿满']);
+  assert.deepEqual(ids('[06-22 20:00] 我（发给 user:42424）：好'), ['阿满'], 'by number');
+  assert.deepEqual(ids('[06-22 20:00] 他：满满和暮看云'), ['满满', '暮看云']);
+  assert.deepEqual(ids('[06-22 20:00] 他：老贺寄画册'), [], 'a friend never talked to is not shown');
+  assert.deepEqual(ids('[06-22 20:00] 他：在吗'), []);
+  // the call that read "阿满" was not shown 满满's card; the model adds 满满 as new: same app, same name → that card
+  const before = Object.keys(m.people).length;
+  applyExtraction(m, { people: [{ platform: 'qq', name: '满满', tier: 'talked', impression: '阿满的女朋友' }, { platform: 'qq', name: '阿满', impression: '大学室友，爱打瓦' }] });
+  assert.equal(Object.keys(m.people).length, before, 'no duplicate card');
+  assert.equal(findPerson(m.people, '满满').impression, '阿满的女朋友');
+  assert.equal(aman.impression, '大学室友，爱打瓦');
+  // in the running plugin: the prompt shows the mentioned one only, and says the list is partial
+  const h = harness({ llmReply: '{}' });
+  seed(h, { people: m.people, useq: m.useq }, []);
+  apply(h.ctx, { home: h.home });
+  say(h, '阿满今晚打瓦');
+  await wait(20);
+  await h.services.dotMemory.consolidate();
+  const ask = h.calls[0].messages[0].content[0].text;
+  assert.match(ask, /=== 已认识的人（这段记录里提到的）===\nu0001 · 阿满 · qq:42424 · talked · 大学室友，爱打瓦\n=== 已有：还没了的事 ===/);
+  assert.match(ask, /"已认识的人"只列出这段记录里提到了的；没列出来的也可能早就认识/);
+});
+
+test('the memory tool says she notes what is due before the night herself', () => {
+  const h = harness();
+  apply(h.ctx, { home: h.home });
+  assert.match(h.tools.memory.description, /还没了的事每天晚上才统一记一次：当天就要办、等不到晚上的（早上说、下午就到时候的），你自己当场用 open 记下。/);
 });
