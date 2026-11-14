@@ -46,7 +46,7 @@ let M = null; // modules
 let cfg = null; // init options
 let fatal = null; // a gateway refusal that must stop the run (ceiling, cap, upstream gone)
 const acct = { run: '', system: '', phase: 'ingest' };
-const usage = { chat: { calls: 0, errors: 0, in: 0, out: 0 }, embed: { calls: 0, skipped: 0, tokens: 0 }, rerank: { calls: 0, skipped: 0, tokens: 0 } };
+const usage = { chat: { calls: 0, errors: 0, in: 0, cached: 0, out: 0 }, embed: { calls: 0, skipped: 0, tokens: 0 }, rerank: { calls: 0, skipped: 0, tokens: 0 } };
 let inflight = 0;
 
 async function gateway(route, body, tag = '') {
@@ -80,8 +80,12 @@ async function chat(text, maxTokens) {
   if (cfg.fake) { const out = fakeReply(text); usage.chat.in += Math.ceil(text.length / 1.5); usage.chat.out += Math.ceil(out.length / 1.5); return { text: out, finish: 'stop', in: Math.ceil(text.length / 1.5), out: Math.ceil(out.length / 1.5) }; }
   const j = await gateway('/chat/completions', { model: cfg.chatModel, messages: [{ role: 'user', content: text }], max_tokens: maxTokens, thinking: { type: 'disabled' } }, 'memory');
   const u = j.usage ?? {};
-  usage.chat.in += Number(u.prompt_tokens ?? 0); usage.chat.out += Number(u.completion_tokens ?? 0);
-  return { text: String(j.choices?.[0]?.message?.content ?? ''), finish: j.choices?.[0]?.finish_reason ?? '', in: Number(u.prompt_tokens ?? 0), out: Number(u.completion_tokens ?? 0) };
+  // The gateway hands back the provider's response as is: DeepSeek's prompt_tokens includes the
+  // prefix-cache hits (prompt_cache_hit_tokens). A response the gateway replays from its own cache
+  // carries the hits of the call that was first made.
+  const hit = Number(u.prompt_cache_hit_tokens ?? u.prompt_tokens_details?.cached_tokens ?? 0);
+  usage.chat.in += Number(u.prompt_tokens ?? 0); usage.chat.cached += hit; usage.chat.out += Number(u.completion_tokens ?? 0);
+  return { text: String(j.choices?.[0]?.message?.content ?? ''), finish: j.choices?.[0]?.finish_reason ?? '', in: Number(u.prompt_tokens ?? 0), cached: hit, out: Number(u.completion_tokens ?? 0) };
 }
 const llm = {
   stream(opts) {
@@ -95,7 +99,8 @@ const llm = {
           return;
         }
         yield { type: 'text-delta', text: r.text };
-        yield { type: 'usage', usage: { inputTokens: r.in, cacheReadTokens: 0, outputTokens: r.out } };
+        // dsh-llm's convention: inputTokens is the part not read from the cache (memory.js: in = inputTokens + cacheReadTokens)
+        yield { type: 'usage', usage: { inputTokens: r.in - (r.cached ?? 0), cacheReadTokens: r.cached ?? 0, outputTokens: r.out } };
         yield { type: 'finish', reason: { kind: r.finish === 'length' ? 'length' : 'stop' } };
       } finally { inflight--; }
     })();
