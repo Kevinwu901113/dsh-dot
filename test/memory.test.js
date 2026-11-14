@@ -1,10 +1,10 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
-  bankOp, bankUsage, checkRewrite, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
+  bankOp, bankUsage, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel } from '../src/memory/memory.js';
@@ -18,7 +18,7 @@ test('banks: Hermes add / replace / remove; an add over the character budget is 
   assert.equal(bankOp(bank, { action: 'add', content: '他在广州上班，做后端' }, 40).note, 'already there');
   const big = bankOp(bank, { action: 'add', content: '一'.repeat(40) }, 40);
   assert.ok(big.ok, 'an add never fails for size'); assert.equal(big.over, true); assert.equal(big.entries.length, 2);
-  assert.equal(bankUsage(big.entries, 40), '52/40 chars (over: tidied at the daily run)');
+  assert.equal(bankUsage(big.entries, 40), '52/40 chars (over the limit)');
   assert.equal(bankUsage(bank, 40), '11/40 chars');
   r = bankOp(bank, { action: 'replace', oldText: '广州', content: '他在深圳上班，做后端' }, 40); assert.ok(r.ok); bank = r.entries;
   assert.deepEqual(bank, ['他在深圳上班，做后端']);
@@ -465,7 +465,6 @@ test('passwords and keys never enter memory; phone numbers and verification code
   const m = emptyMemory();
   const r = applyExtraction(m, { open: [{ action: 'add', content: 'QQ 密码是 abc123，等他说登录成功没' }, { action: 'add', content: '他给了验证码 4321，等他说登录成功没' }] });
   assert.equal(m.open.length, 1);
-  assert.equal(checkRewrite(['他的 QQ 密码是 abc123']).ok, false, 'nor in a daily rewrite of a bank');
   assert.match(bankOp(['他的 QQ 是 12345'], { action: 'replace', oldText: 'QQ', content: '他的 QQ 密码是 abc123' }, 100).error, /secret/, 'nor in a replace');
   assert.match(r.errors[0], /secret/);
 });
@@ -738,7 +737,7 @@ const fill = async (h, bank, lines) => { for (const content of lines) assert.ok(
 const OWNER = ['他叫宽，在广州做 agent 开发', '快递后天到，记得提醒他', '他不喜欢被叫全名', '他喜欢猫'];
 const readJsonl = (f) => readFileSync(f, 'utf8').trim().split('\n').map((l) => JSON.parse(l));
 
-test('her memory tool: an add over the limit is kept, and she is told it is over and will be tidied tonight', async () => {
+test('her memory tool: an add over the limit is kept, and she is told it is over and nothing is dropped', async () => {
   const h = harness();
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 30 } });
   await fill(h, 'owner', OWNER.slice(0, 1));
@@ -748,8 +747,9 @@ test('her memory tool: an add over the limit is kept, and she is told it is over
   const o = await h.tools.memory.execute({ target: 'owner', action: 'add', content: OWNER[2] });
   assert.equal(o.ok, true);
   assert.match(o.usage, /^39\/30 chars \(over/);
-  assert.equal(o.note, '这一栏超过上限了（39/30 字），今晚会自己整理，不用管。');
-  assert.match(h.tools.memory.description, /超了也照样记下，每天晚上会自己整理/);
+  assert.equal(o.note, '这一栏超过上限了（39/30 字），照样记下了，不会自动删。');
+  assert.match(h.tools.memory.description, /超了也照样记下。/);
+  assert.doesNotMatch(h.tools.memory.description, /整理/);
   const ctxText = h.contexts[0].text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
   assert.match(ctxText, /关于他\n- 他叫宽[^\n]*\n- 快递后天到[^\n]*\n- 他不喜欢被叫全名/, 'over the limit, still all in front of her');
   assert.match(readFileSync(join(h.home, 'memory', 'memory.md'), 'utf8'), /## 关于你（39\/30 chars \(over/);
@@ -780,7 +780,6 @@ test('daily run, nothing lasting: both banks shown, no ops in the reply → byte
     assert.ok(ask.endsWith(`=== 关于他（现在 44 字，上限 1000）===\n${OWNER.map((e) => `- ${e}`).join('\n')}\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 今天的记录（${dayLabel(new Date())}）===\n${lines.map((l) => transcriptLine(l)).join('\n')}`), ask.slice(-600));
     assert.equal(banksOf(h), before, 'banks byte-identical');
     assert.match(readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8'), /\n今天他问了一句在吗，我说在。别的没什么。\n/);
-    assert.equal(existsSync(join(h.home, 'memory', 'tidy.jsonl')), false);
     assert.doesNotMatch(out, /owner:|self:/);
   }
 });
@@ -803,96 +802,32 @@ test('daily run: the reply carries ops — adds and replaces applied in order; o
   const r = await h.services.dotMemory.diary();
   assert.deepEqual(h.services.dotMemory.forInterlude(), ['他叫宽，在广州做 agent 开发', '快递后天到，记得提醒他', '他不喜欢被叫全名', '他喜欢猫，最近还想养一只', '他搬去了武昌，离公司近'].map((e) => `关于他：${e}`));
   assert.equal(JSON.stringify(JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8')).self), self, 'self untouched');
-  assert.equal(r.banks.owner, '+1 added, 1 replaced, 3 skipped → 64/50 chars (over: tidied at the daily run)');
+  assert.equal(r.banks.owner, '+1 added, 1 replaced, 3 skipped → 64/50 chars (over the limit)');
   assert.equal(r.banks.self, undefined);
   assert.equal(h.warns.filter((w) => /daily: owner op skipped/.test(w)).length, 3);
   assert.ok(h.warns.some((w) => /op skipped \(no entry contains "北京"\)/.test(w)));
   assert.ok(h.audit.some((e) => e.event === 'daily-op-skipped' && e.bank === 'owner' && e.errors.length === 3));
-  assert.ok(!h.audit.some((e) => e.event === 'tidy-rejected'), 'nothing refused for size');
-  assert.equal(existsSync(join(h.home, 'memory', 'tidy.jsonl')), false, 'ops leave no undo record');
-  // the next day it is over: marked, and the rewrite asked for
-  await h.services.dotMemory.diary();
-  assert.match(h.calls[1].messages[0].content[0].text, /=== 关于他（现在 64 字，上限 50，超了上限，这次要整栏重写到约 40 字）===/);
-});
-
-test('daily run, a bank over its limit: marked so, rewritten whole in the same call as the diary (the day\'s ops applied after); the old one goes to tidy.jsonl', async () => {
-  const rewritten = ['他叫宽，在广州做 agent 开发', '他不喜欢被叫全名'];
-  const reply = JSON.stringify({ diary: '今天他问了一句在吗。我在小黑盒看了一会儿帖子，没别的事。', rewrite: { owner: rewritten, self: ['我会画画了'] }, owner: [{ action: 'add', content: '他养了一只猫叫汤团' }] });
-  const h = harness({ llmReply: reply });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 40 } });
-  await fill(h, 'owner', OWNER);
-  await fill(h, 'self', ['每天晚上逛小黑盒']);
+  // the next day it is still over: shown as it is (size and limit), nothing asked of it, nothing dropped
   say(h, '在吗');
   await wait(20);
-  const out = await h.services.dotMemory.command('memory diary');
-  assert.equal(h.calls.length, 1, 'one call for both');
-  const ask = h.calls[0].messages[0].content[0].text;
-  assert.match(ask, /=== 关于他（现在 44 字，上限 40，超了上限，这次要整栏重写到约 32 字）===\n- 他叫宽，在广州做 agent 开发\n- 快递后天到，记得提醒他\n- 他不喜欢被叫全名\n- 他喜欢猫\n=== 她自己记下的（现在 9 字，上限 2200）===\n- 每天晚上逛小黑盒\n标着"超了上限"的那一栏这次要整栏重写[\s\S]*\n=== 今天的记录（[^\n]*）===\n[^\n]*他：在吗/, 'oldest → newest, size, limit; the over one marked with its target');
-  const mem = h.services.dotMemory;
-  assert.deepEqual(mem.forInterlude(), [...rewritten, '他养了一只猫叫汤团'].map((e) => `关于他：${e}`), 'the rewrite, then the day\'s add');
-  assert.deepEqual(mem.herLife(), ['每天晚上逛小黑盒'], 'a rewrite of a bank within its limit is not asked for and ignored');
-  const undo = readJsonl(join(h.home, 'memory', 'tidy.jsonl'));
-  assert.equal(undo.length, 1);
-  assert.deepEqual([undo[0].bank, undo[0].before, undo[0].after], ['owner', OWNER, rewritten]);
-  assert.ok(undo[0].at);
-  assert.match(readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8'), /^## \d{4}-\d{2}-\d{2} 周.\n今天他问了一句在吗。/);
-  assert.match(out, /diary →[\s\S]*今天他问了一句在吗[\s\S]*owner: 44 → 27\/40 chars, 4 → 2 entries; \+1 added, 0 replaced → 37\/40 chars/);
-  assert.equal(readJsonl(join(h.home, 'memory', 'calls.jsonl')).at(-1).reason, 'manual');
-  assert.ok(h.audit.some((e) => e.event === 'tidied' && e.bank === 'owner' && e.before === 44 && e.after === 27));
-  assert.match(await mem.command('memory diary'), /^diary →/);
-  assert.equal(h.calls.length, 2);
-  assert.doesNotMatch(h.calls[1].messages[0].content[0].text, /超了上限|"rewrite"/, 'once under, no longer marked');
-  assert.equal(readJsonl(join(h.home, 'memory', 'tidy.jsonl')).length, 1, 'a rewrite given for a bank within its limit changes nothing');
-  assert.equal(mem.forInterlude().length, 3, 'the same add again: already there');
-  // still over but smaller: taken, and asked again the next day
-  const o = harness({ llmReply: JSON.stringify({ rewrite: { owner: OWNER.slice(0, 3) } }) });
-  apply(o.ctx, { home: o.home, consolidateEveryLines: 1000, limits: { owner: 30 } });
-  await fill(o, 'owner', OWNER);
-  assert.equal((await o.services.dotMemory.diary()).banks.owner, '44 → 39/30 chars, 4 → 3 entries (still over: again tomorrow)');
-  await o.services.dotMemory.diary();
-  assert.match(o.calls[1].messages[0].content[0].text, /=== 关于他（现在 39 字，上限 30，超了上限/);
+  await h.services.dotMemory.diary();
+  const next = h.calls[1].messages[0].content[0].text;
+  assert.match(next, /=== 关于他（现在 64 字，上限 50）===\n- 他叫宽/);
+  assert.doesNotMatch(next, /超了上限|重写|"rewrite"/);
+  assert.equal(h.services.dotMemory.forInterlude().length, 5);
 });
 
-test('daily run: a rewrite that is not smaller, under half the limit, empty, holds a secret or is not JSON leaves its bank as it is; the other bank and the diary go on', async () => {
-  const cases = [
-    [{ owner: [...OWNER.slice(0, 3), '他喜欢猫和狗'] }, /not smaller \(44 → 46 chars\)/],
-    [{ owner: ['他叫宽，在广州'] }, /under half the limit \(8\/40 chars\)/],
-    [{ owner: [] }, /empty/],
-    [{ owner: ['他叫宽，在广州', ''] }, /empty or non-string/],
-    [{ owner: ['他的 GitHub 密码是 hunter2abc'] }, /secret/],
-    [{ owner: '他叫宽' }, /not an array/],
-    [{}, /not rewritten/],
-  ];
-  for (const [rewrite, why] of cases) {
-    const h = harness({ llmReply: JSON.stringify({ diary: '今天他来问了一句在吗，就这些。', rewrite: { ...rewrite, self: ['我每天晚上逛小黑盒'] } }) });
-    apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 40, self: 10 } });
-    await fill(h, 'owner', OWNER);
-    await fill(h, 'self', ['每天晚上逛小黑盒', '学会了发弹幕']);
-    say(h, '在吗');
-    await wait(20);
-    const r = await h.services.dotMemory.diary({ reason: 'daily' });
-    assert.equal(r.ok, true);
-    assert.equal(h.services.dotMemory.forInterlude().length, 4, `owner kept as it was (${why})`);
-    assert.match(r.banks.owner, why);
-    assert.match(r.banks.owner, /^kept at 44\/40 chars .*tried again tomorrow$/);
-    assert.deepEqual(h.services.dotMemory.herLife(), ['我每天晚上逛小黑盒'], 'self was fine: replaced');
-    assert.equal(r.diary, '今天他来问了一句在吗，就这些。');
-    assert.ok(h.audit.some((e) => e.event === 'tidy-rejected' && e.bank === 'owner'));
-    assert.ok(h.warns.some((w) => /daily: owner kept/.test(w)));
-    assert.deepEqual(readJsonl(join(h.home, 'memory', 'tidy.jsonl')).map((x) => x.bank), ['self']);
-  }
+test('daily run: a reply that is not JSON leaves the banks as they are and writes no diary; the day is done', async () => {
   const h = harness({ llmReply: '今天他来问了一句在吗，就这些。' });
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 40 } });
   await fill(h, 'owner', OWNER);
   say(h, '在吗');
   await wait(20);
   const r = await h.services.dotMemory.diary();
-  assert.match(r.banks.owner, /reply was not JSON/);
-  assert.equal(r.banks.self, undefined, 'a bank within its limit is not reported');
+  assert.deepEqual(r.banks, {});
   assert.equal(r.diary, '', 'no JSON, no diary to take from it');
   assert.equal(h.services.dotMemory.forInterlude().length, 4);
-  assert.equal(existsSync(join(h.home, 'memory', 'tidy.jsonl')), false);
-  assert.match(await h.services.dotMemory.command('memory'), /diary \d{4}-\d{2}-\d{2}/, 'the day is done; the bank is tried again tomorrow');
+  assert.match(await h.services.dotMemory.command('memory'), /diary \d{4}-\d{2}-\d{2}/);
 });
 
 test('daily run, a day longer than inputChars: one call per part, oldest first, each seeing the banks as the last left them; nothing skipped; the diary from the last', async () => {
@@ -911,12 +846,11 @@ test('daily run, a day longer than inputChars: one call per part, oldest first, 
   assert.equal(h.services.dotMemory.forInterlude().length, h.calls.length);
   assert.equal(r.diary, `第 ${h.calls.length} 段的日记，他说了不少话。`);
   assert.equal((readFileSync(join(h.home, 'memory', 'diary.md'), 'utf8').match(/^## /gm) ?? []).length, 1, 'one diary for the day');
-  assert.match(r.banks.owner, new RegExp(`^(\\+1 added, 0 replaced → \\d+/1375 chars; ){${h.calls.length - 1}}\\+1 added`));
-  assert.equal(existsSync(join(h.home, 'memory', 'tidy.jsonl')), false);
+  assert.match(r.banks.owner, new RegExp(`^(\\+1 added, 0 replaced → \\d+/3000 chars; ){${h.calls.length - 1}}\\+1 added`));
 });
 
-test('daily run, people-only (another memory plugin owns the banks): diary only — no banks shown, owner / self / rewrite in the reply ignored', async () => {
-  const h = harness({ llmReply: JSON.stringify({ diary: '他说下周六搬家。', owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }], rewrite: { owner: ['他下周六搬家'] } }) });
+test('daily run, people-only (another memory plugin owns the banks): diary only — no banks shown, owner / self in the reply ignored', async () => {
+  const h = harness({ llmReply: JSON.stringify({ diary: '他说下周六搬家。', owner: [{ action: 'add', content: '他下周六搬家' }], self: [{ action: 'add', content: '我喜欢猫' }] }) });
   h.services.hermesMemory = {};
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
   say(h, '下周六我搬家');
@@ -928,24 +862,28 @@ test('daily run, people-only (another memory plugin owns the banks): diary only 
   assert.equal(r.diary, '他说下周六搬家。');
   assert.deepEqual(r.banks, {});
   assert.deepEqual([h.services.dotMemory.forInterlude(), h.services.dotMemory.herLife()], [[], []]);
-  assert.equal(existsSync(join(h.home, 'memory', 'tidy.jsonl')), false);
 });
 
-test('daily run: a bank over its limit is tidied even when nothing happened that day; tidy.jsonl keeps the last 30', async () => {
-  const h = harness({ llmReply: () => JSON.stringify({ rewrite: { owner: ['他叫宽，在广州做 agent 开发', '他不喜欢被叫全名'] } }) });
+test('daily run: a bank over its limit and nothing that day → no call, nothing dropped; a tidy.jsonl and an override of the old rewrite prompt left from before change nothing', async () => {
+  const h = harness({ llmReply: () => JSON.stringify({ diary: '今天他问了一句在吗。', rewrite: { owner: ['他叫宽'] } }) });
+  const stale = `${JSON.stringify({ at: '0', bank: 'owner', before: [], after: [] })}\n`;
+  mkdirSync(join(h.home, 'memory'), { recursive: true });
+  mkdirSync(join(h.home, 'prompts'), { recursive: true });
+  writeFileSync(join(h.home, 'memory', 'tidy.jsonl'), stale);
+  writeFileSync(join(h.home, 'prompts', 'memory.daily.rewrite.txt'), '整栏重写到 {target} 字');
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, limits: { owner: 40 } });
-  writeFileSync(join(h.home, 'memory', 'tidy.jsonl'), `${Array.from({ length: 30 }, (_, i) => JSON.stringify({ at: String(i), bank: 'self', before: [], after: [] })).join('\n')}\n`);
   await fill(h, 'owner', OWNER);
-  const r = await h.services.dotMemory.diary({ reason: 'daily' });
+  assert.deepEqual(await h.services.dotMemory.diary({ reason: 'daily' }), { skipped: 'nothing happened today' });
+  assert.equal(h.calls.length, 0);
+  say(h, '在吗');
+  await wait(20);
+  const r = await h.services.dotMemory.diary();
   assert.equal(h.calls.length, 1);
-  assert.match(h.calls[0].messages[0].content[0].text, /=== 今天的记录（[^\n]*）===\n（今天没有记录）$/);
-  assert.equal(r.diary, '');
-  assert.deepEqual(h.services.dotMemory.forInterlude(), ['关于他：他叫宽，在广州做 agent 开发', '关于他：他不喜欢被叫全名']);
-  assert.equal(existsSync(join(h.home, 'memory', 'diary.md')), false, 'no diary for an empty day');
-  const undo = readJsonl(join(h.home, 'memory', 'tidy.jsonl'));
-  assert.equal(undo.length, 30);
-  assert.equal(undo[0].at, '1');
-  assert.deepEqual(undo.at(-1).before, OWNER);
+  assert.doesNotMatch(h.calls[0].messages[0].content[0].text, /整栏重写|\{target\}/);
+  assert.equal(r.diary, '今天他问了一句在吗。');
+  assert.deepEqual(h.services.dotMemory.forInterlude(), OWNER.map((e) => `关于他：${e}`), 'a "rewrite" in the reply is ignored');
+  assert.equal(readFileSync(join(h.home, 'memory', 'tidy.jsonl'), 'utf8'), stale, 'the old undo trail is neither read nor written');
+  assert.doesNotMatch(await h.services.dotMemory.command('memory'), /tidy/);
 });
 
 test('the prompt ceiling: a bank past twice its limit shows only its newest entries that fit in twice the limit (storage untouched), warned once', async () => {
@@ -963,5 +901,4 @@ test('the prompt ceiling: a bank past twice its limit shows only its newest entr
   h.contexts[0].text(at);
   assert.equal(h.warns.filter((w) => /owner is past twice its limit/.test(w)).length, 1);
   assert.equal(h.services.dotMemory.forInterlude().length, 4, 'stored as it is');
-  assert.equal(checkRewrite(['一一一一']).ok, true);
 });

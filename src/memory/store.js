@@ -4,7 +4,7 @@
 // what stays true, small enough to be in front of her every turn:
 //   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): lists of short
 //                entries edited by add / replace / remove, with a character budget that an add may pass
-//                and the daily tidy brings them back under (memory.js).
+//                (a bank over it stays over until it is edited down; nothing is dropped).
 //                `owner` (what she knows about you) and `self` (her own notes).
 //   open       — 还没了的事: things planned, promised or put off that have no outcome yet. One item
 //                each (what, when it was said, a due date). Done or called off → removed; code lets
@@ -24,7 +24,7 @@ import { daysBetween } from './when.js';
 export const MEMORY_VERSION = 2;
 
 // Characters per bank; `open` is 还没了的事 as shown (a display budget, not storage), `impression` one person's line.
-export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80 });
+export const DEFAULT_LIMITS = Object.freeze({ owner: 3000, self: 2200, open: 800, impression: 80 });
 
 // ── text ─────────────────────────────────────────────────────────────────────
 
@@ -102,8 +102,8 @@ export const bankSize = (entries) => (entries ?? []).reduce((n, e) => n + e.leng
 /**
  * One Hermes-style operation on a bank. Returns { ok, entries, over } or { ok: false, error }.
  * replace/remove match by a short unique substring (oldText).
- * Nothing is refused for size: a bank may go over its limit (`over`), and the daily tidy brings it
- * back under (the transcript is the store; a bank is a view of it, so an add is never lost).
+ * Nothing is refused for size: a bank may go over its limit (`over`) and stays over until it is edited
+ * down (the transcript is the store; a bank is a view of it, so an add is never lost).
  */
 export function bankOp(entries, op, limit) {
   const list = [...(entries ?? [])];
@@ -135,27 +135,9 @@ export function bankOp(entries, op, limit) {
   return { ok: true, entries: list, over: bankSize(list) > limit };
 }
 
-export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars${bankSize(entries) > limit ? ' (over: tidied at the daily run)' : ''}`;
+export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars${bankSize(entries) > limit ? ' (over the limit)' : ''}`;
 
-/**
- * The daily call's rewrite of a bank over its limit, checked line by line: an array of one-line
- * strings, each fit to keep (rejectReason), not empty. Its size is judged by the caller.
- * Returns { ok, entries } or { ok: false, error }.
- */
-export function checkRewrite(lines) {
-  if (!Array.isArray(lines)) return { ok: false, error: 'not an array' };
-  const out = [];
-  for (const x of lines) {
-    if (typeof x !== 'string' || !x.trim()) return { ok: false, error: 'an empty or non-string line' };
-    const why = rejectReason(x);
-    if (why) return { ok: false, error: `a line not kept (${why}): ${x.trim().slice(0, 40)}` };
-    out.push(x.trim());
-  }
-  if (!out.length) return { ok: false, error: 'empty' };
-  return { ok: true, entries: out };
-}
-
-/** A bank as the standing prompt shows it: all of it, unless it is past twice its limit (tidy failing): then its newest entries that fit in that. */
+/** A bank as the standing prompt shows it: all of it, unless it is past twice its limit: then its newest entries that fit in that. */
 export function shownBank(entries, limit) {
   if (bankSize(entries) <= 2 * limit) return entries;
   const out = [];

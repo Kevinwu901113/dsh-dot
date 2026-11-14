@@ -173,8 +173,8 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
 | `handoffTokens` | `150000` | 对话多长换新会话 |
 | `consolidateEveryLines` | `40` | 新记录攒满多少行整理一次（交班前也整理一次） |
-| `dailyAt` | `"23:30"` | 每天写日记、整理关于他 / 她自己的时间（当天有记录，或有栏超了上限才调用） |
-| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：加的时候可以超，每天 `dailyAt` 收拾回八成左右；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
+| `dailyAt` | `"23:30"` | 每天写日记、整理关于他 / 她自己的时间（当天有记录才调用） |
+| `limits` | `{ owner: 3000, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：加的时候可以超，超了就超着，不自动删，面板上会标出来；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
 | `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
 | `openKeepDaysIdle` | `14` | 没日子的还没了的事多少天没被碰过就拿掉 |
 | `coexist` | `"auto"` | `auto` / `people-only` / `full` |

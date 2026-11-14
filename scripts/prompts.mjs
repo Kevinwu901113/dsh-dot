@@ -124,12 +124,11 @@ export const entries = [
       const m = sampleMemory();
       return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
     } },
-  { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录（或有栏超了上限）时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——当天值得一直记着的，只给加、换的改动（多数日子没有），代码照着改；调用时已经超了上限的栏另外整栏重写到上限的八成左右（.rewrite，只在有栏超了时出现），换下来的存进 tidy.jsonl。固定的说明在前，两栏在中间，日子和当天记录在最后。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank', 'memory.daily.rewrite'],
+  { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——当天值得一直记着的，只给加、换的改动（多数日子没有），代码照着改；栏超了上限也只是超着，不删不重写。固定的说明在前，两栏在中间，日子和当天记录在最后。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank'],
     render: () => {
       const m = sampleMemory();
       const text = LINES.slice(0, 2).map(M.transcriptLine).join('\n');
       return variant([['日记和笔记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self } })],
-        ['关于他超了上限（样例把上限设成 20 字）', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self }, limits: { ...S.DEFAULT_LIMITS, owner: 20 } })],
         ['和别的记忆插件共存（people-only）：只写日记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: null })]]);
     } },
   { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活：interlude.round 是整段系统提示词，后面是按情况填进去的小段', files: ['interlude.round', 'interlude.round.canon', 'interlude.round.length', 'interlude.round.phase.advance', 'interlude.round.phase.follow-up', 'interlude.round.phase.intent', 'interlude.round.her-life', 'interlude.round.free', 'interlude.round.doings', 'interlude.round.returned', 'interlude.round.contact-rule', 'interlude.round.contact-rule.off', 'interlude.round.browsing.deferred', 'interlude.round.browsing.disabled', 'interlude.round.agency', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.style.none', 'interlude.round.seed', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.tries', 'interlude.round.tries.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh'],

@@ -108,7 +108,7 @@ const ago=(ms)=>{if(!ms)return '';const d=Date.now()-ms;const m=Math.round(d/600
 const at=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
 const badge=(cls,label,text)=>'<span class="badge '+cls+'"><i class="dotc"></i>'+esc(label)+(text?' <span class="mute">'+esc(text)+'</span>':'')+'</span>';
 const tile=(n,label)=>'<div class="tile"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>';
-const over=(b,t)=>b.chars>b.limit?' <span class="st warn">超了，每天 '+esc(t)+' 整理</span>':'';
+const over=b=>b.chars>b.limit?' <span class="st warn">超了上限，可以手动删改</span>':'';
 const bar=(v,max)=>'<div class="bar"><i style="width:'+Math.min(100,Math.round(100*(v||0)/(max||1)))+'%"></i></div>';
 const ZH=true; // the rest of this page is Chinese; Electron's navigator.language said en on a Chinese Mac
 const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',stalled:(m)=>'卡住 '+m+' 分钟',approval:(m)=>'等审批 '+m+' 分钟',timedOut:'已超时',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
@@ -180,8 +180,8 @@ function render(s){
   $('today').innerHTML=t;
   if(m){
     let h='<div class="kv">';
-    h+='<span>关于你</span><span>'+m.owner.entries.length+' 条 · '+m.owner.chars+'/'+m.owner.limit+' 字'+over(m.owner,m.dailyAt)+bar(m.owner.chars,m.owner.limit)+'</span>';
-    h+='<span>她自己</span><span>'+m.self.entries.length+' 条 · '+m.self.chars+'/'+m.self.limit+' 字'+over(m.self,m.dailyAt)+bar(m.self.chars,m.self.limit)+'</span>';
+    h+='<span>关于你</span><span>'+m.owner.entries.length+' 条 · '+m.owner.chars+'/'+m.owner.limit+' 字'+over(m.owner)+bar(m.owner.chars,m.owner.limit)+'</span>';
+    h+='<span>她自己</span><span>'+m.self.entries.length+' 条 · '+m.self.chars+'/'+m.self.limit+' 字'+over(m.self)+bar(m.self.chars,m.self.limit)+'</span>';
     if(m.open){h+='<span>还没了的事</span><span>'+m.open.entries.length+' 件 · '+m.open.chars+'/'+m.open.limit+' 字'+bar(m.open.chars,m.open.limit)+'</span>';}
     h+='<span>认识的人</span><span>'+m.people+(m.contacts?' <span class="mute">(+'+m.contacts+' 好友没说过话)</span>':'')+(m.merges?' · 待确认合并 '+m.merges:'')+'</span>';
     h+='<span>整理</span><span>攒了 '+m.sinceCursor+(m.consolidateEvery?'/'+m.consolidateEvery:'')+' 条 · 整理过 '+m.consolidations+' 次</span>';

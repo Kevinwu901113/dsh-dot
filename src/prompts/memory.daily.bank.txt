@@ -1,4 +1,3 @@
-owner==== 关于他（现在 {size} 字，上限 {limit}{over}）===
-self==== 她自己记下的（现在 {size} 字，上限 {limit}{over}）===
-over=，超了上限，这次要整栏重写到约 {target} 字
+owner==== 关于他（现在 {size} 字，上限 {limit}）===
+self==== 她自己记下的（现在 {size} 字，上限 {limit}）===
 off==== 关于他 / 她自己记下的：由别的记忆插件负责，这次只写 diary，owner 和 self 都给 [] ===
