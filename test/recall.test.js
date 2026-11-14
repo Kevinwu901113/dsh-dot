@@ -483,6 +483,9 @@ test('annotate: 月底, X号, lunar dates and festivals by the built-in Chinese 
   assert.equal(annotate('冬月十七，三月初八', at(2026, 12, 8)), '冬月十七（=12-25），三月初八（=2027-04-14）');
   assert.equal(annotate('腊月十二', at(2026, 1, 25)), '腊月十二（=01-30）', 'not yet: this one');
   assert.equal(annotate('腊月十二', at(2026, 2, 8)), '腊月十二（=01-30）', 'nine days ago: the one just gone');
+  // Where ICU is a day off (2027 正月 starts 02-06, 2030 正月 02-03): the true dates.
+  assert.equal(annotate('除夕到家，大年初二走，初四开门，春节前十天还书', at(2027, 1, 20)), '除夕（=02-05）到家，大年初二（=02-07）走，初四（=02-09）开门，春节前十天（=01-27）还书');
+  assert.equal(annotate('腊月三十，正月初一，大年初二，二月初一', at(2030, 1, 10)), '腊月三十（=02-02），正月初一（=02-03），大年初二（=02-04），二月初一（=03-04）');
   // A bare 初N only near the Spring Festival.
   assert.equal(annotate('初四开门', at(2026, 2, 1)), '初四（=02-20）开门');
   assert.equal(annotate('初四开门', at(2026, 5, 1)), '初四开门');

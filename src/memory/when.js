@@ -11,7 +11,8 @@
 //   闰X月 for a leap month; 大年初N; 除夕 / 大年三十; 春节 / 过年 / 元旦 / 除夕 前N天 · 后N天;
 //   a bare 初N only within 40 days before to 15 days after the Spring Festival (正月初N).
 // A lunar date or festival is the one at most 15 days back, else the next one. The lunar calendar is
-// Node's own (Intl, -u-ca-chinese), searched day by day. "周末", a bare "周三", "八月十五", "春节后第三天"
+// Node's own (Intl, -u-ca-chinese), searched day by day, with the few days it gets wrong set right
+// (LUNAR_TRUE). "周末", a bare "周三", "八月十五", "春节后第三天"
 // are left as said: they need context the code does not have. So is anything in quotes, imagined
 // (如果 / 要是 …) or heard (听说 / 写着 …) in its clause, and what someone 说 when the clause says it
 // was said another day (昨天他说明天来) — a wrong exact date misleads more than the words do.
@@ -36,6 +37,10 @@ export function dayHeading(ms, now = Date.now()) {
 // ── the lunar calendar ──
 let LUNAR = null;
 const lunarCache = new Map();
+// Where ICU's Chinese calendar is a day off (Node 22 / ICU 78; checked day by day against a
+// table-based reference for 2015–2045): the true lunar month there, as [its first day, the last day
+// to set, month]. Set, not shifted, so it stays right if a later ICU gets these right.
+const LUNAR_TRUE = [['2027-02-06', '2027-03-07', '1'], ['2030-01-04', '2030-02-02', '12'], ['2030-02-03', '2030-03-03', '1']];
 /** The lunar month ("12", or "6bis" for a leap month) and day of a local day. */
 function lunarOf(ms) {
   const key = startOfDay(ms);
@@ -44,6 +49,9 @@ function lunarOf(ms) {
     LUNAR ??= new Intl.DateTimeFormat('en-u-ca-chinese', { month: 'numeric', day: 'numeric' });
     const p = LUNAR.formatToParts(key + 12 * 3600000);
     v = { m: p.find((x) => x.type === 'month').value, d: Number(p.find((x) => x.type === 'day').value) };
+    const dt = new Date(key), ymd = `${dt.getFullYear()}-${String(dt.getMonth() + 1).padStart(2, '0')}-${String(dt.getDate()).padStart(2, '0')}`;
+    const fix = LUNAR_TRUE.find(([a, b]) => ymd >= a && ymd <= b);
+    if (fix) v = { m: fix[2], d: daysBetween(new Date(`${fix[0]}T00:00:00`).getTime(), key) + 1 };
     if (lunarCache.size > 5000) lunarCache.clear();
     lunarCache.set(key, v);
   }
