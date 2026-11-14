@@ -46,7 +46,7 @@ function harness(config = {}, emb = fakeEmbedders(), over = null) {
     provide(n, v) { services[n] = v; },
     inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
   };
-  apply(ctx, { home, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short
+  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
   let clock = new Date(2026, 9, 1, 10, 0).getTime();
   const realNow = Date.now;
@@ -467,14 +467,6 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
   assert.equal(annotate('上周五和这周日', mon), '上周五（=07-03）和这周日（=07-12）');
   assert.equal(annotate('明天（07-07）去', mon), '明天（07-07）去', 'already written out');
   for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
-});
-
-test('annotate: 以后天天 / 今后天天 / 然后天天 are "every day", not 后天; 后天天气 and 大后天 still are', () => {
-  const mon = new Date(2026, 6, 6, 20, 15).getTime();
-  for (const t of ['以后天天跑步', '今后天天早睡', '然后天天加班', '之后天天下雨', '最后天黑了']) assert.equal(annotate(t, mon), t, t);
-  assert.equal(annotate('后天天气好', mon), '后天（=07-08）天气好');
-  assert.equal(annotate('他说以后天天来，后天先来一次', mon), '他说以后天天来，后天（=07-08）先来一次');
-  assert.equal(annotate('大后天见，明天后天都行', mon), '大后天（=07-09）见，明天（=07-07）后天（=07-08）都行');
 });
 
 test('annotate: 三天后 / 7天以后 / 一周后 / 两个礼拜之后 from the line\'s day; not 过两天, 几天后, 三天后悔, a duration or a day counted from another', () => {

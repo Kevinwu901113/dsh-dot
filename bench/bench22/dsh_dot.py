@@ -15,7 +15,7 @@ A thin Python System that drives bench/bench22/worker.mjs, which hosts the plugi
     mark()/rewind()  snapshot / restore of the persona's dot home and the worker's state.
 
 Env: DSH_BENCH22_WORK (work dir, default ~/bench22-work), DSH_BENCH22_FAKE=1 (no chat calls: canned
-memory-call JSON, for plumbing tests), DSH_BENCH22_MEMORY (JSON merged into the memory settings;
+consolidation JSON, for plumbing tests), DSH_BENCH22_MEMORY (JSON merged into the memory settings;
 default {} = the plugin's defaults), DSH_BENCH22_WINDOW (6).
 """
 import atexit

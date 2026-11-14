@@ -3,17 +3,17 @@
 //
 //   transcript  <home>/memory/transcript.jsonl — what really happened in her conversation: what you
 //               said, what she actually sent (qq_send), what her phone showed her, what her errands
-//               found. The evidence: recall finds in it, the memory call reads it.
+//               found. The evidence: recall finds in it, consolidation reads it.
 //   recall      before each turn, the old turns that bear on the message that woke her (recall.js):
 //               vector + BM25 candidates, reranked, shown by day with exact dates.
 //   memory      <home>/memory/memory.json (+ memory.md for reading) — three notes (about him, her own,
 //               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
-//   update      one model call over the lines not read yet (from `memory.cursor`, the read position):
-//               还没了的事, people, and the owner / self banks (adds and replaces code applies; besides
-//               her own tool it is their only writer; a full bank takes something new only by a replace).
-//               Once a day at `dailyAt`, when anything is unread, it also writes the diary; and before a
-//               handoff, without the diary. Her own `memory` tool records what cannot wait for the night.
-//   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, update,
+//   consolidate one model call over the transcript since the last one: 还没了的事 and people. When
+//               `consolidateEveryLines` new lines have piled up, and before a handoff.
+//   daily       once a day at `dailyAt`, when there was anything that day: one call writes the diary
+//               and is the only writer of the owner / self banks besides her own tool — what of the
+//               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
+//   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
 // She edits her notes herself too (`memory`), and looks things up (`recall`).
@@ -40,9 +40,12 @@ export const defaults = {
   home: '',
   handoffTokens: 150000,        // her conversation is handed over to a fresh session past this
   minTokensBetweenHandoffs: 40000,
+  consolidateEveryLines: 40,    // transcript lines since the last consolidation that trigger one (and every handoff)
+  chunkLines: 80,               // at most this many lines per consolidation call; a backlog is read in several
+  minChunkLines: 10,            // after failed calls the chunk is halved, down to this
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
-  inputChars: 40000,            // transcript characters one memory call reads; a larger backlog is read in chunks
-  dailyAt: '23:30',             // once a day, after her active hours: the memory call with her diary, when anything is unread
+  inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
+  dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
   maxTokens: 16384,
   limits: DEFAULT_LIMITS,        // limits.open is how much of 还没了的事 is shown each turn, not how much is kept
   openKeepDaysAfterDue: 3,      // an item with a due date goes this many days after it
@@ -80,9 +83,6 @@ export const defaults = {
   recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
 };
 
-/** Settings that no longer exist: ignored when an older dsh-dot.json still has them (docs/SETTINGS.md). */
-export const REMOVED = Object.freeze(['consolidateEveryLines', 'chunkLines', 'minChunkLines']);
-
 // Messages that wake her and are worth remembering against: his, QQ / phone notifications, schedules.
 const RECALL_WAKES = (src) => src.kind === 'user' || src.kind === 'schedule' || (src.kind === 'dsh-dot' && src.form === 'phone-notification');
 
@@ -97,7 +97,7 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${'周日周一周二周三周四周五周六'.slice(d.getDay() * 2, d.getDay() * 2 + 2)}`; };
 
 /**
- * One transcript line as the memory call reads it: [MM-DD HH:MM] (or [YYYY-MM-DD HH:MM] from
+ * One transcript line as the consolidation reads it: [MM-DD HH:MM] (or [YYYY-MM-DD HH:MM] from
  * another year), with 明天 / 下周三 given their date by code (when.js).
  */
 export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
@@ -108,7 +108,7 @@ export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map
 
 /**
  * The oldest transcript lines whose rendered text fits in `maxChars` (always at least one), so a
- * backlog is read in order and the read position never jumps past unread lines.
+ * backlog is consolidated in order and the cursor never jumps past unread lines.
  */
 export function takeChunk(fresh, maxChars) {
   const out = [];
@@ -121,35 +121,34 @@ export function takeChunk(fresh, maxChars) {
   return out;
 }
 
-const BANKS = ['owner', 'self'];
-/** A person as the memory call is shown them: "u0002 · 阿满/满满 · qq:42 · talked · 大学室友". */
-export const personLine = (p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`;
-/**
- * The people the memory call is shown: only those whose name, alias (a name handle) or number (a uid
- * of 5+ characters) occurs in the text it reads; friends never talked to are not shown. Someone not
- * shown may still be known: an add of the same name on the same app lands on their card (resolvePerson).
- */
-export function mentionedPeople(people, text) {
-  const s = String(text ?? '');
-  return Object.values(people ?? {}).filter((p) => p.tier !== 'contact' && [
-    ...p.names, ...p.handles.map((h) => { const r = String(h).split(':').slice(1).join(':'); return r.startsWith('name:') ? r.slice(5) : (r.length >= 5 ? r : ''); }),
-  ].some((n) => n && s.includes(n)));
-}
+/** What the consolidation call is asked to do (the JSON it returns, field by field). */
+export const extractRules = () => prompt('memory.extract');
 
 /**
- * The whole memory call, from what changes least to what changes most, so calls share the longest
- * prefix (the provider's cache): the rules (never change), the banks (oldest → newest, size, limit; a
- * full bank's header says so and asks for a replace; null when they are another plugin's: then it is
- * told to leave them), the people mentioned, 还没了的事, then the day — with or without the diary,
- * the only difference between a daily run and a handoff — and the records.
+ * The whole consolidation prompt, from what changes least to what changes most, so calls share the
+ * longest prefix (the provider's cache): the rules (never change), the people (new ones are added at
+ * the end, an impression now and then), 还没了的事 (different nearly every call), the new records.
  */
-export function updatePrompt({ day, text = '', banks = null, people = '', open = '', diary = true, limits = DEFAULT_LIMITS }) {
-  const show = (bank) => `${table('memory.update.bank', { size: bankSize(banks[bank]), limit: limits[bank] })[bankFull(banks[bank], limits[bank]) ? `${bank}.full` : bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
-  return prompt('memory.update', {
-    banks: banks ? BANKS.map(show).join('\n') : table('memory.update.bank', { size: 0, limit: 0 }).off,
-    people: people || '（没有）', open: open || '（没有）',
-    read: table('memory.update.read', { day })[diary ? 'daily' : 'handoff'],
-    records: text || '（这段时间没有新记录）',
+export function extractPrompt({ text = '', known = '', open = '' }) {
+  return [
+    extractRules(),
+    '',
+    prompt('memory.extract.input', { records: text || '（这段时间没有新记录）', people: known || '（还没有）', open: open || '（没有）' }),
+  ].join('\n');
+}
+
+const BANKS = ['owner', 'self'];
+/**
+ * The daily call: the fixed instructions, then both banks (oldest → newest, size, limit; a full bank's
+ * header says so and asks for a replace), then the day and its records — what is the same from call
+ * to call first. banks: { owner, self }, or null
+ * when they are another plugin's (people-only): then it is told to write the diary only.
+ */
+export function dailyPrompt({ day, text, banks, limits = DEFAULT_LIMITS }) {
+  const show = (bank) => `${table('memory.daily.bank', { size: bankSize(banks[bank]), limit: limits[bank] })[bankFull(banks[bank], limits[bank]) ? `${bank}.full` : bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
+  return prompt('memory.daily', {
+    banks: banks ? BANKS.map(show).join('\n') : table('memory.daily.bank', { size: 0, limit: 0 }).off,
+    day, records: text || '（今天没有记录）',
   });
 }
 
@@ -166,12 +165,12 @@ export function parseLooseJson(raw) {
 }
 
 /**
- * Apply one memory call's 还没了的事 / people / same to the memory. Returns what changed (for the audit and /dot memory).
+ * Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory).
  * Items that have run out go afterwards (keepAfterDue / keepIdle: days, see isLive). `segment` is the
  * record the call read: a done on an item it does not mention is skipped (openOp).
  */
 export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle, segment } = {}) {
-  // owner / self are applied by the caller (bankOp, with its own report): here they are ignored.
+  // owner / self are not the consolidation's (the daily call writes them): in a reply they are ignored.
   const report = { open: 0, done: 0, expired: 0, people: 0, errors: [] };
   for (const op of [].concat(out?.open ?? [])) {
     if (!op || typeof op !== 'object') continue;
@@ -271,8 +270,6 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot/memory');
   const user = sectionOf('memory', (m) => logger.warn(m));
   const cfg = { ...defaults, ...setValues(config), ...user };
-  // Removed settings, still in older files: ignored (one memory call at dailyAt and before a handoff).
-  for (const k of REMOVED) delete cfg[k];
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
   const keep = { keepAfterDue: Number(cfg.openKeepDaysAfterDue), keepIdle: Number(cfg.openKeepDaysIdle) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
@@ -282,7 +279,7 @@ export function apply(ctx, config = {}) {
   const files = { memory: join(dir, 'memory.json'), md: join(dir, 'memory.md'), transcript: join(dir, 'transcript.jsonl'), handoffs: join(dir, 'handoffs.jsonl'), calls: join(dir, 'calls.jsonl'), diary: join(dir, 'diary.md'), archive: join(dir, 'memory.v019.json'), migration: join(dir, 'memory-migration.md') };
   mkdirSync(dir, { recursive: true });
   const dot = () => ctx.get('dshDot');
-  installLlmGate(ctx, { name: 'dsh-dot/memory' }); // her memory call waits behind his requests (complete() below)
+  installLlmGate(ctx, { name: 'dsh-dot/memory' }); // her consolidation and diary wait behind his requests (complete() below)
   // Checked when used, not once at boot: the other plugin may start after this one.
   let coexistLogged = false;
   const peopleOnly = () => {
@@ -370,15 +367,13 @@ export function apply(ctx, config = {}) {
     if (lines.length > 5000) lines = lines.slice(-4000);
     try { appendFileSync(files.transcript, `${JSON.stringify(line)}\n`); } catch (err) { logger.warn(`transcript write failed: ${err.message}`); }
   };
-  // memory.cursor is the read position: the time of the last line the memory call has read (the
-  // consolidation's cursor of earlier versions, same field and meaning: an upgraded home goes on from it).
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
   const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
   // Catch the index up with what happened while dsh was down (the local backend installs on first use).
   ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
   // First run: memory starts after a conversation may already be long. Read that conversation's log
-  // once so the first memory call (and the first handoff) has it.
+  // once so the first consolidation (and the first handoff) has it.
   let backfilling = null;
   function backfill() {
     if (backfilling) return backfilling;
@@ -411,6 +406,7 @@ export function apply(ctx, config = {}) {
     const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
     return hhmm >= cfg.dailyAt && memory.lastDiary !== today;
   };
+  const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
   // ── her conversation, as it happens ──
   const isConversation = (id, cwd) => {
@@ -500,87 +496,97 @@ export function apply(ctx, config = {}) {
     return { raw, spent };
   }
 
-  // ── the memory call: 还没了的事, people, the owner / self banks, and once a day the diary ──
-  // One call over the lines not read yet (from memory.cursor), at dailyAt (with the diary) and before a
-  // handoff (without). A backlog longer than inputChars is read in several calls, oldest first, each
-  // seeing the memory as the one before left it; the read position moves past a part only once its
-  // reply is applied, so nothing is skipped or read twice; the diary is the last part's. A call that
-  // fails (an error, or no JSON back — e.g. a reasoning model that spent its whole output budget
-  // thinking) leaves the read position where it was; the next try reads half as many characters (down
-  // to an eighth of inputChars). The daily run is tried again the next minute, at most DAILY_TRIES times
-  // a day; after that the day is closed without a diary, and what is unread waits for the next run.
-  const DAILY_TRIES = 3;
-  let running = null;
+  // ── consolidation ──
+  // A backlog larger than one call reads (consolidations that failed, a long backfill) is consolidated
+  // oldest-first in chunks: the cursor only ever moves past lines the model has actually read, so
+  // nothing is skipped.
+  // A call that fails (no JSON back — e.g. a reasoning model that spent its whole output budget
+  // thinking) must not be retried on every turn with an ever larger backlog: each failure halves the
+  // next chunk (down to minChunkLines), and the `lines` trigger waits for another batch of new lines.
+  let consolidating = null;
   let failStreak = 0;
-  let dailyFails = { day: '', n: 0 };
-  const chunkChars = () => Math.max(Math.floor(cfg.inputChars / 8), Math.floor(cfg.inputChars / 2 ** failStreak));
-  async function update(opts = {}) {
-    while (running) { try { await running; } catch (error) { void error; } }
-    running = updateOnce(opts);
-    try { return await running; } finally { running = null; }
-  }
-  async function updateOnce({ reason = 'daily', diary: withDiary = reason === 'daily' }) {
-    await backfill();
-    const day = dayLabel(new Date());
-    const closeDay = () => { if (withDiary) memory.lastDiary = day.slice(0, 10); };
-    let left = sinceCursor();
-    if (!left.length) { if (withDiary) { closeDay(); save(); } return { skipped: 'nothing new' }; }
-    const banks = !peopleOnly(); // people-only: the banks are the other plugin's
-    const notes = {};
-    const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
-    const total = { open: 0, done: 0, expired: 0, people: 0, errors: [] };
-    let out = null, read = 0;
-    for (let round = 0; left.length; round++) {
-      const part = takeChunk(left, chunkChars());
-      const last = part.length === left.length;
-      const text = part.map(transcriptLine).join('\n');
-      // The items she is shown, in her order (not every stored one: those are many and go by themselves).
-      const view = openView(memory, { limits: cfg.limits, ...keep });
-      const ask = updatePrompt({
-        day, text, diary: withDiary && last, limits: cfg.limits,
-        banks: banks ? { owner: memory.owner, self: memory.self } : null,
-        people: mentionedPeople(memory.people, text).map(personLine).join('\n'),
-        open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n'),
-      });
-      const tag = round ? `${reason}+${round}` : reason;
-      const r = await complete(ask, tag);
-      if (r.raw !== undefined) { try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason: tag, lines: part.length, diary: withDiary && last, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; } }
-      out = r.raw === undefined ? null : parseLooseJson(r.raw);
-      if (!out) {
-        if (r.skipped) return r; // no model: nothing was tried
-        if (r.raw !== undefined) audit('consolidate-unparsed', { reason: tag, chars: r.raw.length, out: r.spent?.out ?? 0 });
-        failStreak = Math.min(failStreak + 1, 3);
-        const error = r.error ?? (r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)`);
-        if (withDiary && reason === 'daily') {
-          dailyFails = dailyFails.day === day ? { day, n: dailyFails.n + 1 } : { day, n: 1 };
-          if (dailyFails.n >= DAILY_TRIES) { closeDay(); save(); logger.warn(`daily: ${DAILY_TRIES} failed tries today; no diary, the unread lines wait for the next run`); }
+  let holdUntil = 0; // the `lines` trigger waits until this many lines are pending
+  const chunkLines = () => Math.max(cfg.minChunkLines, Math.floor(cfg.chunkLines / 2 ** failStreak));
+  async function consolidate({ reason = 'lines' } = {}) {
+    if (consolidating) return consolidating;
+    consolidating = (async () => {
+      await backfill();
+      let result = { skipped: 'nothing new' };
+      for (let round = 0; round < 20; round++) {
+        const all = sinceCursor();
+        if (!all.length) return result;
+        const fresh = takeChunk(all.slice(0, chunkLines()), cfg.inputChars);
+        result = await consolidateOnce(fresh, { reason: round ? `${reason}+${round}` : reason });
+        if (!result.ok) {
+          failStreak = Math.min(failStreak + 1, 6);
+          holdUntil = sinceCursor().length + cfg.consolidateEveryLines;
+          logger.warn(`consolidation failed (${result.error ?? result.skipped}); next try on ${chunkLines()} line(s), after ${cfg.consolidateEveryLines} more`);
+          return result;
         }
-        logger.warn(`memory call (${tag}) failed (${error}); read position kept, the next try reads up to ${chunkChars()} characters`);
-        return { error, read };
+        failStreak = 0; holdUntil = 0;
+        if (fresh.length === all.length) return result;
       }
-      failStreak = 0;
-      const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });
-      for (const e of report.errors) if (e.startsWith('open: done skipped')) logger.warn(e);
-      for (const k of ['open', 'done', 'expired', 'people']) total[k] += report[k];
-      total.errors.push(...report.errors);
-      if (report.merges) total.merges = (total.merges ?? 0) + report.merges;
-      if (banks) for (const bank of BANKS) note(bank, applyOps(bank, out));
-      memory.cursor = part.at(-1).at;
-      memory.consolidations++;
-      read += part.length;
-      left = left.slice(part.length);
-      save();
-    }
-    let entry = '';
-    if (withDiary) {
-      closeDay();
-      entry = typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
+      return result;
+    })();
+    try { return await consolidating; } finally { consolidating = null; }
+  }
+  async function consolidateOnce(fresh, { reason }) {
+    const text = fresh.map(transcriptLine).join('\n');
+    const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
+    // The items she is shown, in her order (not every stored one: those are many and go by themselves).
+    const view = openView(memory, { limits: cfg.limits, ...keep });
+    const ask = extractPrompt({ text, known, open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n') });
+    const r = await complete(ask, 'consolidation');
+    if (!r.raw && r.raw !== '') return r;
+    try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+    const out = parseLooseJson(r.raw);
+    if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
+    const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });
+    for (const e of report.errors) if (e.startsWith('open: done skipped')) logger.warn(e);
+    memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
+    memory.consolidations++;
+    save();
+    audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
+    logger.info(`consolidated ${fresh.length} line(s): open +${report.open} / done ${report.done} / expired ${report.expired}, people ${report.people}`);
+    return { ok: true, report };
+  }
+
+  // ── the daily call: the diary, and the owner / self banks ──
+  // Once a day, when anything happened: one call returns the diary and, per bank, only what of the day
+  // is lasting — adds and replaces, applied with bankOp (one that does not fit or does not apply is
+  // skipped, the rest still go in; a full bank's header asks for a replace). A day longer than
+  // inputChars is read in several calls, oldest first, each seeing the banks as the one before left
+  // them, so no lasting fact is skipped; the diary is the last call's, so on such a day it is written
+  // from the day's last part only.
+  let writingDiary = null;
+  async function diary({ reason = 'daily' } = {}) {
+    if (writingDiary) return writingDiary;
+    writingDiary = (async () => {
+      const day = dayLabel(new Date());
+      const today = lines.filter((l) => l.at >= startOfToday() && rejectReason(l.text) !== 'secret');
+      const banks = !peopleOnly(); // people-only: the banks are the other plugin's; the diary alone
+      if (!today.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      const notes = {};
+      const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
+      let left = today, out = null;
+      do {
+        const part = takeChunk(left, cfg.inputChars);
+        left = left.slice(part.length);
+        const r = await complete(dailyPrompt({ day, text: part.map(transcriptLine).join('\n'), banks: banks ? { owner: memory.owner, self: memory.self } : null, limits: cfg.limits }), 'daily');
+        if (r.raw === undefined) return r;
+        try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: part.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+        out = parseLooseJson(r.raw);
+        if (banks) for (const bank of BANKS) note(bank, applyOps(bank, out));
+      } while (left.length);
+      memory.lastDiary = day.slice(0, 10);
+      const entry = typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
       if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${day}\n${entry}\n\n`); } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
       save();
-    }
-    audit('consolidated', { reason, lines: read, open: total.open, done: total.done, expired: total.expired, people: total.people, errors: total.errors.length, diary: withDiary ? Boolean(entry) : undefined, banks: Object.keys(notes) });
-    logger.info(`memory (${reason}): ${read} line(s): open +${total.open} / done ${total.done} / expired ${total.expired}, people ${total.people}${withDiary ? `; diary ${entry ? 'written' : 'not written'}` : ''}${Object.entries(notes).map(([b, n]) => `; ${b} ${n}`).join('')}`);
-    return { ok: true, report: total, diary: entry, banks: notes };
+      audit('diary', { reason, lines: today.length, written: Boolean(entry), banks: Object.keys(notes) });
+      logger.info(`daily (${reason}): diary ${entry ? 'written' : 'not written'}${Object.entries(notes).map(([b, n]) => `; ${b} ${n}`).join('')}`);
+      return { ok: true, diary: entry, banks: notes };
+    })();
+    try { return await writingDiary; } finally { writingDiary = null; }
   }
   /**
    * The day's ops on one bank (`<bank>: [{action: add|replace, …}]`), applied in order with bankOp: an
@@ -622,8 +628,9 @@ export function apply(ctx, config = {}) {
     const release = d.freeze?.() ?? (() => {});
     const t0 = Date.now();
     try {
-      // Whatever is unread is read first (no diary): her notes must be up to date before the old session goes.
-      const c = await update({ reason: 'handoff', diary: false });
+      // Whatever is new is consolidated first: her notes must be up to date before the old session goes.
+      if (consolidating) { try { await consolidating; } catch (error) { void error; } }
+      const c = await consolidate({ reason: 'handoff' });
       memory.gen++;
       save();
       // Archive first: a wake that reaches an archived session is dropped without a word.
@@ -654,11 +661,14 @@ export function apply(ctx, config = {}) {
       if (goal) { audit('handoff-deferred', { session: id, why: 'goal active' }); return; }
       const r = await handoff(id, tokens);
       if (r.sessionId) handoffBase.set(r.sessionId, 0);
+      return;
     }
+    const pending = sinceCursor().length;
+    if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
-  // Once a minute: the daily run, from dailyAt on, once a day (a failed one is tried again next minute).
+  // Once a minute: the diary, from dailyAt on, once a day (a failed one is tried again next minute).
   ctx.effect(() => {
-    const timer = setInterval(() => { if (!running && dailyDue()) void update({ reason: 'daily' }); }, 60000);
+    const timer = setInterval(() => { if (dailyDue()) void diary({ reason: 'daily' }); }, 60000);
     timer.unref?.();
     return () => clearInterval(timer);
   }, 'dsh-dot/memory: daily diary');
@@ -703,7 +713,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。还没了的事每天晚上才统一记一次：当天就要办、等不到晚上的（早上说、下午就到时候的），你自己当场用 open 记下。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
       parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
@@ -772,11 +782,7 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    /** The memory call now: { reason, diary } (diary defaults to reason === 'daily'). */
-    update,
-    consolidate: (o = {}) => update({ reason: 'manual', ...o, diary: false }),
-    diary: (o = {}) => update({ reason: 'manual', ...o, diary: true }),
-    handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();
@@ -789,7 +795,7 @@ export function apply(ctx, config = {}) {
         self: { entries: memory.self, chars: memory.self.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.self },
         open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open },
         people: Object.values(memory.people).filter((p) => p.tier !== 'contact').length, contacts: Object.values(memory.people).filter((p) => p.tier === 'contact').length,
-        merges: memory.merges.length, sinceCursor: sinceCursor().length,
+        merges: memory.merges.length, sinceCursor: sinceCursor().length, consolidateEvery: cfg.consolidateEveryLines,
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
         conversation: { session: id || '', tokens: id ? await measure(id) : 0, handoffAt: cfg.handoffTokens },
         diary: entries, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
@@ -808,15 +814,15 @@ export function apply(ctx, config = {}) {
         return [`people: ${people.length} (+${all.length - people.length} friends never talked to) · merges to confirm: ${memory.merges.length}`, ...people.slice(0, 30).map((p) => renderPerson(p)), ...(memory.merges.length ? ['merges to confirm (/dot people approve <m…>):', ...memory.merges.map((m) => `  ${m.id} · ${renderPerson(memory.people[m.a]).split('\n')[0]}  +  ${renderPerson(memory.people[m.b]).split('\n')[0]}：${m.why}`)] : [])].join('\n');
       }
       if (sub === 'recall') return recall.command(rest);
-      if (sub === 'now') { const r = await update({ reason: 'manual', diary: false }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}${Object.entries(r.banks ?? {}).map(([b, t]) => `\n${b}: ${t}`).join('')}` : `not run: ${r.skipped ?? r.error}`; }
-      if (sub === 'diary') { const r = await update({ reason: 'manual', diary: true }); return r.ok ? `diary → ${files.diary}\n${r.diary}${Object.entries(r.banks ?? {}).map(([b, t]) => `\n${b}: ${t}`).join('')}` : `not run: ${r.skipped ?? r.error}`; }
+      if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
+      if (sub === 'diary') { const r = await diary({ reason: 'manual' }); return r.ok ? `diary → ${files.diary}\n${r.diary}${Object.entries(r.banks ?? {}).map(([b, t]) => `\n${b}: ${t}`).join('')}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
       const s = api.status();
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
       return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
-        `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) not read yet (read at ${cfg.dailyAt} and before a handoff)`,
+        `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
         `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');
     },

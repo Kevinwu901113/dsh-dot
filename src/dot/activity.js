@@ -6,7 +6,7 @@
 //   $DSH_HOME/dsh-computer-audit.jsonl, dsh-phone-audit.jsonl   kind dot / interlude / memory / tool / approval-asked
 //   $DSH_HOME/dsh-qq-audit.jsonl                               message / sent / sticker-kept / approval-asked
 //   <home>/memory/transcript.jsonl                             his words, scheduled tasks, notes her errands left, her replies
-//   <home>/memory/calls.jsonl + diary.md                       the daily memory call and the diary it wrote
+//   <home>/memory/calls.jsonl + diary.md                       the daily call and the diary it wrote
 //   <home>/interlude/calls.jsonl + script.md                   each 幕间 round: tokens, and the passage it wrote
 // Only the tail of each file is read (the last few days, a bounded number of bytes), and a file is
 // parsed again only when its size or mtime changed, so the panel's 3-second poll stays cheap.
@@ -78,8 +78,7 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
   for (const e of src.qq ?? []) push(timeOf(e.ts), `qq:${e.kind}`, e);
   for (const e of src.transcript ?? []) push(timeOf(e.at), `tr:${e.who}`, e);
   for (const e of src.interludeCalls ?? []) push(timeOf(e.ts), String(e.phase ?? '').endsWith(':refresh') ? 'ic:refresh' : 'ic:round', e);
-  // A call that wrote the diary (`diary: true`; records from before it carried no flag: by reason).
-  for (const e of src.memoryCalls ?? []) if (e.diary === true || (e.diary === undefined && /daily|diary/.test(String(e.reason ?? '')))) push(timeOf(e.at), 'mc:diary', e);
+  for (const e of src.memoryCalls ?? []) if (/daily|diary/.test(String(e.reason ?? ''))) push(timeOf(e.at), 'mc:diary', e);
   ev.sort((a, b) => a.t - b.t);
   const qqAudited = (src.qq ?? []).length > 0;
   // qq.js audits a message as { kind: 'message', ...msg }: msg.kind wins, so the line's kind is private / group.

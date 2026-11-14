@@ -183,7 +183,7 @@ function render(s){
     h+='<span>她自己</span><span>'+m.self.entries.length+' 条 · '+m.self.chars+'/'+m.self.limit+' 字'+bar(m.self.chars,m.self.limit)+'</span>';
     if(m.open){h+='<span>还没了的事</span><span>'+m.open.entries.length+' 件 · '+m.open.chars+'/'+m.open.limit+' 字'+bar(m.open.chars,m.open.limit)+'</span>';}
     h+='<span>认识的人</span><span>'+m.people+(m.contacts?' <span class="mute">(+'+m.contacts+' 好友没说过话)</span>':'')+(m.merges?' · 待确认合并 '+m.merges:'')+'</span>';
-    h+='<span>整理</span><span>攒了 '+m.sinceCursor+' 条'+(m.dailyAt?' <span class="mute">('+esc(m.dailyAt)+' 和交班前读)</span>':'')+' · 整理过 '+m.consolidations+' 次</span>';
+    h+='<span>整理</span><span>攒了 '+m.sinceCursor+(m.consolidateEvery?'/'+m.consolidateEvery:'')+' 条 · 整理过 '+m.consolidations+' 次</span>';
     if(m.recall){const r=m.recall;h+='<span>自动召回</span><span>'+esc(r.backend)+(r.model?' · '+esc(r.model):'')+(r.rerank&&r.rerank!=='none'?' + '+esc(r.rerank)+(r.rerankState&&r.rerankState!=='ready'?' ('+esc(r.rerankState)+')':''):' · 不重排')+' · <span class="'+(r.ready||r.backend==='off'?'':'mute')+'">'+esc(r.state)+'</span> · 索引 '+fmt(r.turns)+' 轮'+(r.lastQuery?' · 上次 '+r.lastQuery.ms+' ms / '+r.lastQuery.hits+' 条':'')+'</span>';}
     h+='</div>';
     if(m.open&&m.open.entries.length) h+='<details><summary>还没了的事</summary><ul>'+m.open.entries.map(e=>'<li>'+esc(e)+'</li>').join('')+'</ul></details>';

@@ -119,14 +119,17 @@ export const entries = [
   { id: 'try', group: 'wake', name: '幕间：试点新的', note: '她想做一件没做过的事：交给跑腿真去做，只有几条硬边界；做了什么、花了多少 token、他怎么说，都记在她的账上（doings 工具让对话里的她记下他的反应）', files: ['interlude.try', 'interlude.try.on', 'interlude.try.refused', 'interlude.doings-tool', 'interlude.doings-tool.elsewhere'],
     render: () => variant([['在电脑上', I.tryPrompt({ what: '用画图软件给自己画个新头像', on: 'computer', why: '看腻了现在这个' })], ['手机或电脑都行', I.tryPrompt({ what: '找个记账 App 试试', on: 'either' })], ['doings 工具的说明', P.prompt('interlude.doings-tool')], ['试的那一趟里想发 QQ', P.prompt('interlude.try.refused', { tool: 'qq_send' })], ['别处用 doings', P.prompt('interlude.doings-tool.elsewhere')]]) },
 
-  { id: 'update', group: 'call', name: '整理记忆', note: '每天 dailyAt（23:30）和交班前，各一次调用读上次之后还没读过的记录（读到哪儿记在 memory.cursor；没有新记录就不调用）：还没了的事、人物卡、关于他 / 她自己两栏（只给加、换的改动，代码照着改），每天那一次还写日记，交班那次不写（只有记录前那一行不一样）。从最少变的到最常变的排，好命中前缀缓存：规则、两栏、这段记录里提到的人、还没了的事、日子、记录。超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.update', 'memory.update.bank', 'memory.update.read'],
+  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进还没了的事和人物卡（关于他 / 她自己不在这里写，归每天那一次）：从最少变的到最常变的排，好命中前缀缓存——规则、认识的人、还没了的事、新记录', files: ['memory.extract', 'memory.extract.input'],
     render: () => {
       const m = sampleMemory();
-      const text = LINES.map(M.transcriptLine).join('\n');
-      const args = { day: M.dayLabel(new Date(T0)), text, people: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') };
-      return variant([['每天那一次（写日记）', M.updatePrompt({ ...args, banks: { owner: m.owner, self: m.self } })],
-        ['交班前（不写日记）', M.updatePrompt({ ...args, banks: { owner: m.owner, self: m.self }, diary: false })],
-        ['和别的记忆插件共存（people-only）：两栏不给', M.updatePrompt({ ...args, banks: null })]]);
+      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
+    } },
+  { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——当天值得一直记着的，只给加、换的改动（多数日子没有），代码照着改；栏超了上限也只是超着，不删不重写。固定的说明在前，两栏在中间，日子和当天记录在最后。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank'],
+    render: () => {
+      const m = sampleMemory();
+      const text = LINES.slice(0, 2).map(M.transcriptLine).join('\n');
+      return variant([['日记和笔记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self } })],
+        ['和别的记忆插件共存（people-only）：只写日记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: null })]]);
     } },
   { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活：interlude.round 是整段系统提示词，后面是按情况填进去的小段', files: ['interlude.round', 'interlude.round.canon', 'interlude.round.length', 'interlude.round.phase.advance', 'interlude.round.phase.follow-up', 'interlude.round.phase.intent', 'interlude.round.her-life', 'interlude.round.free', 'interlude.round.doings', 'interlude.round.returned', 'interlude.round.contact-rule', 'interlude.round.contact-rule.off', 'interlude.round.browsing.deferred', 'interlude.round.browsing.disabled', 'interlude.round.agency', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.style.none', 'interlude.round.seed', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.tries', 'interlude.round.tries.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh'],
     render: () => {

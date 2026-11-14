@@ -10,7 +10,7 @@
 - `{名字}` 是占位符，代码填；没填到的原样留着，并在日志里提醒一次。别删，删了那部分内容就不出现了。
 - 某一行只有一个 `{名字}` 且它是空的（比如没开电脑时的 `{computerRule}`），这一行整行省掉。
 - 带条件的片段是单独的文件（`qq.channel.owner.txt` 只在设了主人时拼进 `{owner}`；`phone.device.number.txt` 只在设了手机号时拼进 `phone.device` 的 `{number}` 那一行，里面的 `{number}` 是号码本身；`phone.stickers.txt` 是 `phone.device` 的 `{stickers}`，各 App 怎么加表情包，整段手机提示词只在手机开着时出现）。
-- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`interlude.play.verbs`、`interlude.try.on`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`、`memory.update.bank`、`memory.update.read`）：只改等号右边。
+- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`interlude.play.verbs`、`interlude.try.on`、`interlude.play.parts`、`interlude.observation.where`、`memory.standing`、`memory.handoff`、`memory.daily.bank`）：只改等号右边。
 - **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
 - `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
@@ -40,7 +40,8 @@
 | | 幕间：玩一会儿 | `interlude.play` `interlude.play.collect` `interlude.play.post` `.verbs` `.parts` `interlude.play-rules` |
 | | 幕间：自己的时间 | `interlude.free` `.tidy` `.budget` `.over` `.refused` `.typing`；`interlude.tell-him` `.elsewhere` |
 | | 幕间：试点新的 | `interlude.try` `interlude.try.on` `interlude.try.refused`（那一趟里发 QQ 被拦下的理由）；她对话里记他反应的工具说明 `interlude.doings-tool` `interlude.doings-tool.elsewhere` |
-| 独立模型调用 | 整理记忆（每天 `dailyAt` 和交班前各一次：还没了的事、人物、关于他 / 她自己，每天那次还写日记） | `memory.update`（规则在最前面，然后两栏、这段记录里提到的人、还没了的事、记录前一行、记录）`memory.update.bank`（每栏的标题；`owner.full` / `self.full` 是这一栏满了（剩下不到 60 字）时的标题；`off` 是和别的记忆插件共存时那一行）`memory.update.read`（记录前那一行：`daily` 要日记，`handoff` 不要；两次调用只差这一行）。以前的 `memory.extract` `memory.extract.input` `memory.daily` 合进了 `memory.update`，`memory.daily.bank` 改名 `memory.update.bank`：`<home>/prompts/` 里这几个旧名字的覆盖文件不再被读 |
+| 独立模型调用 | 整理记忆（还没了的事、人物） | `memory.extract`（规则，放在最前面）`memory.extract.input`（认识的人在还没了的事前面：前者少变，后者几乎每次都变） |
+| | 每天一次：日记和关于他 / 她自己 | `memory.daily`（固定的说明在前，日子和记录在最后）`memory.daily.bank`（每栏的标题；`owner.full` / `self.full` 是这一栏满了（剩下不到 60 字）时的标题；`off` 是和别的记忆插件共存时那一行） |
 | | 成长：每周回顾 | `interlude.growth.system` `.too-much` `.too-long`；放进系统提示词的那段 `interlude.growth.section` |
 | | 幕间一轮 | `interlude.round`（整段系统提示词）；按情况填进去的：`.canon` `.length` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
