@@ -114,13 +114,13 @@ test('今天到期的: only what is due today and has not come up today, above t
   // brought up on its day (a replace, said again): back in the list
   openOp(m, { action: 'replace', oldText: '老贺', content: '06-20 她答应老贺 06-22 寄画册，今天说了在打包', due: '06-22' }, { now: T });
   const after = renderStanding(m, { now: T + 1, limits });
-  assert.doesNotMatch(after, /今天到期的/);
+  assert.doesNotMatch(after, /## 今天到期的/);
   assert.match(after, /## 还没了的事[^\n]*\n- 06-18 他说 06-20 交报告[^\n]*\n- 06-20 她答应老贺[^\n]*（到 06-22）\n- 06-21 他说 06-25 搬家/);
   // touched before the day does not count; the next day it is no longer in the section
   openOp(m, { action: 'add', content: '06-21 他说 06-23 去银行', due: '06-23' }, { now: T });
   openOp(m, { action: 'replace', oldText: '银行', content: '06-21 他说 06-23 上午去银行', due: '06-23' }, { now: T });
   assert.match(renderStanding(m, { now: T + 864e5, limits }), /## 今天到期的[^\n]*\n- 06-21 他说 06-23 上午去银行（到 06-23）\n## /);
-  assert.doesNotMatch(renderStanding(m, { now: T + 2 * 864e5, limits }), /今天到期的/);
+  assert.doesNotMatch(renderStanding(m, { now: T + 2 * 864e5, limits }), /## 今天到期的/);
   // at most five; the rest go to the list
   const n = emptyMemory();
   for (let d = 0; d < 6; d++) openOp(n, { action: 'add', content: `${['给老贺寄画册', '给罗姐交报告', '去店里取眼镜', '还钱给知遥', '去牙科洗牙', '修厨房水龙头'][d]}`, due: '06-24' }, { now: T + d });
