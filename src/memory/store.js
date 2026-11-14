@@ -105,6 +105,8 @@ export function bankOp(entries, op, limit) {
   } else if (op?.action === 'replace') {
     const f = find(); if (f.error) return { ok: false, error: f.error };
     if (!content) return { ok: false, error: 'content is required (use remove to delete)' };
+    const why = rejectReason(content);
+    if (why) return { ok: false, error: `not kept (${why})` };
     list[f.index] = content;
   } else if (op?.action === 'remove') {
     const f = find(); if (f.error) return { ok: false, error: f.error };
@@ -116,10 +118,11 @@ export function bankOp(entries, op, limit) {
 export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars${bankSize(entries) > limit ? ' (over: tidied at the daily run)' : ''}`;
 
 /**
- * The daily tidy's rewrite of one bank, checked: an array of one-line strings, each fit to keep
- * (rejectReason), not empty, the whole within the limit. Returns { ok, entries } or { ok: false, error }.
+ * The daily call's rewrite of a bank over its limit, checked line by line: an array of one-line
+ * strings, each fit to keep (rejectReason), not empty. Its size is judged by the caller.
+ * Returns { ok, entries } or { ok: false, error }.
  */
-export function checkRewrite(lines, limit) {
+export function checkRewrite(lines) {
   if (!Array.isArray(lines)) return { ok: false, error: 'not an array' };
   const out = [];
   for (const x of lines) {
@@ -129,7 +132,6 @@ export function checkRewrite(lines, limit) {
     out.push(x.trim());
   }
   if (!out.length) return { ok: false, error: 'empty' };
-  if (bankSize(out) > limit) return { ok: false, error: `still over the limit (${bankSize(out)}/${limit} chars)` };
   return { ok: true, entries: out };
 }
 

@@ -126,10 +126,17 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   });
   const { extractPrompt, extractRules, dailyPrompt } = await import('../src/memory/memory.js');
   assert.equal(extractPrompt({ text: '他：在吗' }),
-    `${extractRules()}\n\n=== 已有：还没了的事 ===\n（没有）\n=== 已认识的人 ===\n（还没有）\n\n=== 这段时间的记录 ===\n他：在吗`);
+    `${extractRules()}\n\n=== 已认识的人 ===\n（还没有）\n=== 已有：还没了的事 ===\n（没有）\n\n=== 这段时间的记录 ===\n他：在吗`);
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
-  assert.match(dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] } }), /^今天是 2026-11-03 周二。[\s\S]*\n=== 关于他（现在 5 字，上限 1375，目标约 1100 字）===\n- 他住光谷\n=== 她自己记下的（现在 0 字，上限 2200，目标约 1760 字）===\n（空）\n=== 今天的记录 ===\n他：在吗$/);
-  assert.match(dailyPrompt({ day: '2026-11-03 周二', text: '', banks: null }), /\n=== 关于他 \/ 她自己记下的：由别的记忆插件负责[^\n]*===\n=== 今天的记录 ===\n（今天没有记录）$/);
+  // fixed instructions first (no day in them), the banks, then the day and its records
+  const daily = dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] } });
+  assert.match(daily, /^这是她每天一次的收拾：[\s\S]*\n\{\n {2}"diary": "今天的日记正文",\n {2}"owner": \[\],\n {2}"self": \[\]\n\}\n[\s\S]*\n=== 关于他（现在 5 字，上限 1375）===\n- 他住光谷\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 今天的记录（2026-11-03 周二）===\n他：在吗$/);
+  assert.equal(daily.indexOf('2026-11-03'), daily.indexOf('=== 今天的记录（') + '=== 今天的记录（'.length, 'the day only in the last block');
+  assert.doesNotMatch(daily, /"rewrite"|一字不改|一整栏/, 'nothing about rewriting when no bank is over');
+  const over = dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] }, limits: { owner: 4, self: 2200 } });
+  assert.match(over, /\n=== 关于他（现在 5 字，上限 4，超了上限，这次要整栏重写到约 3 字）===\n- 他住光谷\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n标着"超了上限"的那一栏这次要整栏重写：在 JSON 里另给 "rewrite"[\s\S]*\n=== 今天的记录（2026-11-03 周二）===\n他：在吗$/);
+  assert.equal(over.slice(0, over.indexOf('=== 关于他')), daily.slice(0, daily.indexOf('=== 关于他')), 'the same fixed prefix either way');
+  assert.match(dailyPrompt({ day: '2026-11-03 周二', text: '', banks: null }), /\n=== 关于他 \/ 她自己记下的：由别的记忆插件负责[^\n]*===\n=== 今天的记录（2026-11-03 周二）===\n（今天没有记录）$/);
 });
 
 test('prompts render: the interlude round is one file; an override of it replaces the whole system prompt', async () => {

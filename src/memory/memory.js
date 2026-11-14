@@ -12,8 +12,8 @@
 //               `consolidateEveryLines` new lines have piled up, and before a handoff.
 //   daily       once a day at `dailyAt`, when there was anything that day (or a bank is over its limit):
 //               one call writes the diary and is the only writer of the owner / self banks besides her
-//               own tool — what of the day is lasting, and a bank over its limit rewritten under it
-//               (tidy.jsonl keeps what it replaced).
+//               own tool — what of the day is lasting, as adds and replaces code applies, and a bank
+//               over its limit rewritten whole (tidy.jsonl keeps what it replaced).
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
@@ -126,8 +126,9 @@ export function takeChunk(fresh, maxChars) {
 export const extractRules = () => prompt('memory.extract');
 
 /**
- * The whole consolidation prompt. The rules come first and never change, so every call shares that
- * prefix (the provider's cache); what she already has comes next; the new records last.
+ * The whole consolidation prompt, from what changes least to what changes most, so calls share the
+ * longest prefix (the provider's cache): the rules (never change), the people (new ones are added at
+ * the end, an impression now and then), 还没了的事 (different nearly every call), the new records.
  */
 export function extractPrompt({ text = '', known = '', open = '' }) {
   return [
@@ -140,18 +141,27 @@ export function extractPrompt({ text = '', known = '', open = '' }) {
 /** What the daily call aims for when it rewrites a bank over its limit: this share of the limit, so new lines have room. */
 export const TIDY_TARGET = 0.8;
 const TIDY_UNDO_KEEP = 30; // records kept in tidy.jsonl
+const BANKS = ['owner', 'self'];
+/** The banks (of { owner, self }) over their limit: the daily call rewrites those whole. */
+export const overBanks = (banks, limits = DEFAULT_LIMITS) => BANKS.filter((b) => bankSize(banks[b]) > limits[b]);
 /**
- * The daily call: the diary, and both banks — oldest → newest, size, limit, target, marked when over —
- * for the model to work in what of the day is lasting. banks: { owner, self }, or null when they are
- * another plugin's (people-only): then it is told to write the diary only.
+ * The daily call: the fixed instructions, then both banks (oldest → newest, size, limit; a bank over
+ * its limit marked, with the rewrite asked for), then the day and its records — what is the same from
+ * call to call first. banks: { owner, self }, or null when they are another plugin's (people-only):
+ * then it is told to write the diary only.
  */
 export function dailyPrompt({ day, text, banks, limits = DEFAULT_LIMITS }) {
+  const over = banks ? overBanks(banks, limits) : [];
   const show = (bank) => {
     const v = { size: bankSize(banks[bank]), limit: limits[bank], target: Math.round(limits[bank] * TIDY_TARGET), over: '' };
-    if (v.size > v.limit) v.over = table('memory.daily.bank', v).over;
+    if (over.includes(bank)) v.over = table('memory.daily.bank', v).over;
     return `${table('memory.daily.bank', v)[bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
   };
-  return prompt('memory.daily', { day, banks: banks ? `${show('owner')}\n${show('self')}` : table('memory.daily.bank', { size: 0, limit: 0, target: 0, over: '' }).off, records: text || '（今天没有记录）' });
+  return prompt('memory.daily', {
+    banks: banks ? BANKS.map(show).join('\n') : table('memory.daily.bank', { size: 0, limit: 0, target: 0, over: '' }).off,
+    rewrite: over.length ? prompt('memory.daily.rewrite') : '',
+    day, records: text || '（今天没有记录）',
+  });
 }
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
@@ -553,11 +563,13 @@ export function apply(ctx, config = {}) {
 
   // ── the daily call: the diary, and the owner / self banks ──
   // Once a day, when anything happened (or a bank is over its limit): one call returns the diary and,
-  // only for a bank that should change, the whole new bank. A rewrite that fails a check leaves its
-  // bank as it is, to be tried again the next day; it does not hold up the other or the diary.
-  // A day longer than inputChars is read in several calls, oldest first, each seeing the banks as the
-  // one before left them, so no lasting fact is skipped; the diary is the last call's, so on such a
-  // day it is written from the day's last part only.
+  // per bank, only what of the day is lasting — adds and replaces, applied with bankOp (never refused
+  // for size; one that does not apply is skipped, the rest still go in). A bank over its limit when
+  // the call is made is also given back whole, rewritten down (`rewrite`): taken when it is smaller and
+  // not under half the limit, else the bank stays and it is asked again the next day; the day's ops
+  // for it are applied after. A day longer than inputChars is read in several calls, oldest first,
+  // each seeing the banks as the one before left them, so no lasting fact is skipped; the diary is the
+  // last call's, so on such a day it is written from the day's last part only.
   let writingDiary = null;
   async function diary({ reason = 'daily' } = {}) {
     if (writingDiary) return writingDiary;
@@ -565,18 +577,19 @@ export function apply(ctx, config = {}) {
       const day = dayLabel(new Date());
       const today = lines.filter((l) => l.at >= startOfToday() && rejectReason(l.text) !== 'secret');
       const banks = !peopleOnly(); // people-only: the banks are the other plugin's; the diary alone
-      const over = banks ? ['owner', 'self'].filter((b) => bankSize(memory[b]) > cfg.limits[b]) : [];
-      if (!today.length && !over.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      if (!today.length && !(banks && overBanks(memory, cfg.limits).length)) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
       const notes = {};
+      const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
       let left = today, out = null;
       do {
         const part = takeChunk(left, cfg.inputChars);
         left = left.slice(part.length);
+        const over = banks ? overBanks(memory, cfg.limits) : [];
         const r = await complete(dailyPrompt({ day, text: part.map(transcriptLine).join('\n'), banks: banks ? { owner: memory.owner, self: memory.self } : null, limits: cfg.limits }), 'daily');
         if (r.raw === undefined) return r;
         try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: part.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
         out = parseLooseJson(r.raw);
-        if (banks) for (const bank of ['owner', 'self']) { const n = rewrite(bank, out); if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; }
+        if (banks) for (const bank of BANKS) { if (over.includes(bank)) note(bank, rewrite(bank, out)); note(bank, applyOps(bank, out)); }
       } while (left.length);
       memory.lastDiary = day.slice(0, 10);
       const entry = today.length && typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
@@ -589,17 +602,17 @@ export function apply(ctx, config = {}) {
     try { return await writingDiary; } finally { writingDiary = null; }
   }
   /**
-   * One bank from a daily reply. Omitted: left as it is (a failure only when it is over its limit).
-   * Else checkRewrite, and a bank within its limit may not lose more than half of it. Returns what
-   * happened, or '' when nothing did.
+   * A bank over its limit, rewritten whole by the daily reply (`rewrite: { <bank>: [...] }`): taken when
+   * every line passes checkRewrite and it is smaller than the bank and not under half the limit (still
+   * over but smaller: taken, and asked again tomorrow); else the bank stays. Returns what happened.
    */
   function rewrite(bank, out) {
     const before = memory[bank], limit = cfg.limits[bank], size = bankSize(before);
-    const omitted = !out || out[bank] === undefined || (Array.isArray(out[bank]) && !out[bank].length && !before.length);
-    if (omitted && size <= limit) return '';
-    let v = !out ? { ok: false, error: 'reply was not JSON' } : omitted ? { ok: false, error: 'not rewritten' } : checkRewrite(out[bank], limit);
-    if (v.ok && size <= limit && bankSize(v.entries) < size / 2) v = { ok: false, error: `would drop most of a bank within its limit (${size} → ${bankSize(v.entries)} chars)` };
-    if (v.ok && JSON.stringify(v.entries) === JSON.stringify(before)) return '';
+    const given = out?.rewrite?.[bank];
+    let v = !out ? { ok: false, error: 'reply was not JSON' } : given === undefined ? { ok: false, error: 'not rewritten' } : checkRewrite(given);
+    const after = v.ok ? bankSize(v.entries) : 0;
+    if (v.ok && after >= size) v = { ok: false, error: `not smaller (${size} → ${after} chars)` };
+    else if (v.ok && after < limit / 2) v = { ok: false, error: `under half the limit (${after}/${limit} chars)` };
     if (v.ok && !keepUndo({ at: new Date().toISOString(), bank, before, after: v.entries })) v = { ok: false, error: 'undo trail not written' };
     if (!v.ok) {
       const note = `kept at ${size}/${limit} chars (${v.error}); tried again tomorrow`;
@@ -608,8 +621,29 @@ export function apply(ctx, config = {}) {
       return note;
     }
     memory[bank] = v.entries;
-    audit('tidied', { bank, before: size, after: bankSize(v.entries), entries: v.entries.length });
-    return `${size} → ${bankSize(v.entries)}/${limit} chars, ${before.length} → ${v.entries.length} entries`;
+    audit('tidied', { bank, before: size, after, entries: v.entries.length });
+    return `${size} → ${after}/${limit} chars, ${before.length} → ${v.entries.length} entries${after > limit ? ' (still over: again tomorrow)' : ''}`;
+  }
+  /**
+   * The day's ops on one bank (`<bank>: [{action: add|replace, …}]`), applied in order with bankOp: an
+   * op that does not apply (no or several entries match its oldText, a line not kept, not an add or a
+   * replace) is skipped with a warning, the rest still go in. Returns what happened, or ''.
+   */
+  function applyOps(bank, out) {
+    if (out?.[bank] == null) return '';
+    let added = 0, replaced = 0;
+    const skipped = [];
+    for (const op of [].concat(out[bank])) {
+      const r = op && typeof op === 'object' && ['add', 'replace'].includes(op.action) ? bankOp(memory[bank], op, cfg.limits[bank]) : { ok: false, error: `not an add or replace: ${clip(JSON.stringify(op) ?? '', 60)}` };
+      if (!r.ok) { skipped.push(r.error); continue; }
+      if (r.note) continue; // already there
+      memory[bank] = r.entries;
+      if (op.action === 'add') added++; else replaced++;
+    }
+    for (const e of skipped) logger.warn(`daily: ${bank} op skipped (${e})`);
+    if (skipped.length) audit('daily-op-skipped', { bank, errors: skipped.map((e) => clip(e, 200)) });
+    if (!added && !replaced && !skipped.length) return '';
+    return `+${added} added, ${replaced} replaced${skipped.length ? `, ${skipped.length} skipped` : ''} → ${bankUsage(memory[bank], cfg.limits[bank])}`;
   }
   /** The undo trail: what a rewrite replaced, the last TIDY_UNDO_KEEP records. false when it could not be written. */
   function keepUndo(rec) {
