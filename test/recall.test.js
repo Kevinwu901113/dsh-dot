@@ -450,7 +450,7 @@ test('candidates from both channels, then the reranker decides: a turn the vecto
   assert.deepEqual([q.hits.length, q.text], [0, ''], 'nothing relevant, nothing shown');
 });
 
-test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes or reported speech', () => {
+test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes, imagined or said another day', () => {
   const mon = new Date(2026, 6, 6, 20, 15).getTime(); // a Monday
   const now = mon + 15 * 86400000;
   const out = renderTurns([
@@ -458,11 +458,37 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
     { at: mon, text: '[2026-07-06 20:15] 他：明天去，他说后天也行' },
     { at: mon - 86400000, text: '[2026-07-05 09:00] 他：“明天见”她写的' },
   ], now);
-  assert.equal(out, ['— 07-05 周日 · 16 天前', '09:00 他：“明天见”她写的', '— 07-06 周一 · 15 天前', '20:15 他：明天（=07-07）去，他说后天也行', '21:15 他：下周三（=07-15）（我记得是）之前寄', '我：好'].join('\n'));
+  assert.equal(out, ['— 07-05 周日 · 16 天前', '09:00 他：“明天见”她写的', '— 07-06 周一 · 15 天前', '20:15 他：明天（=07-07）去，他说后天（=07-08）也行', '21:15 他：下周三（=07-15）（我记得是）之前寄', '我：好'].join('\n'));
   assert.equal(dayHeading(now, now), '07-21 周二 · 今天');
   assert.equal(annotate('如果明天下雨就算了', mon), '如果明天下雨就算了', 'hypothetical');
-  assert.equal(annotate('月底交，周三开会', mon), '月底交，周三开会', 'ambiguous: left as said');
+  assert.equal(annotate('周末交，周三开会', mon), '周末交，周三开会', 'ambiguous: left as said');
+  assert.equal(annotate('说这周六还她就行', mon), '说这周六（=07-11）还她就行', 'someone said it today');
+  for (const t of ['昨天他说明天来', '上次她说下周三还', '第二天她问我昨晚是不是起来了']) assert.equal(annotate(t, mon).replace(/^昨天（=07-05）/, '昨天'), t, `said another day: ${t}`);
   assert.equal(annotate('上周五和这周日', mon), '上周五（=07-03）和这周日（=07-12）');
   assert.equal(annotate('明天（07-07）去', mon), '明天（07-07）去', 'already written out');
   for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
+});
+
+test('annotate: 月底, X号, lunar dates and festivals by the built-in Chinese calendar, the year written when it rolls over', () => {
+  const at = (y, m, d) => new Date(y, m - 1, d, 20, 0).getTime();
+  // 2025-12-20: 腊月 2025 starts 2026-01-19 (29 days), 正月初一 is 2026-02-17.
+  assert.equal(annotate('我爸生日腊月十二，春节前十天回去，除夕到家，大年初二走，元旦前两天先请假', at(2025, 12, 20)),
+    '我爸生日腊月十二（=2026-01-30），春节前十天（=2026-02-07）回去，除夕（=2026-02-16）到家，大年初二（=2026-02-18）走，元旦前两天（=12-30）先请假');
+  assert.equal(annotate('元旦后两天，大年三十', at(2025, 12, 20)), '元旦后两天（=2026-01-03），大年三十（=2026-02-16）');
+  assert.equal(annotate('腊月三十', at(2025, 12, 20)), '腊月三十', 'that 腊月 has 29 days');
+  // 2025 has a leap sixth month (闰六月初一 = 07-25): 七月 comes after it, 六月 is next year's.
+  assert.equal(annotate('农历七月初一', at(2025, 7, 20)), '农历七月初一（=08-23）');
+  assert.equal(annotate('闰六月初一', at(2025, 7, 20)), '闰六月初一（=07-25）');
+  assert.equal(annotate('农历六月初一', at(2025, 7, 20)), '农历六月初一（=2026-07-14）');
+  assert.equal(annotate('冬月十七，三月初八', at(2026, 12, 8)), '冬月十七（=12-25），三月初八（=2027-04-14）');
+  assert.equal(annotate('腊月十二', at(2026, 1, 25)), '腊月十二（=01-30）', 'not yet: this one');
+  assert.equal(annotate('腊月十二', at(2026, 2, 8)), '腊月十二（=01-30）', 'nine days ago: the one just gone');
+  // A bare 初N only near the Spring Festival.
+  assert.equal(annotate('初四开门', at(2026, 2, 1)), '初四（=02-20）开门');
+  assert.equal(annotate('初四开门', at(2026, 5, 1)), '初四开门');
+  // 月底 / X号: the month in question; a day passed a week ago or less is left as said.
+  assert.equal(annotate('下个月1号、月底、下月底、28号、15号、10号、3号楼', at(2026, 12, 14)),
+    '下个月1号（=2027-01-01）、月底（=12-31）、下月底（=2027-01-31）、28号（=12-28）、15号（=12-15）、10号、3号楼');
+  assert.equal(annotate('二十七号交，5号复查', at(2026, 11, 24)), '二十七号（=11-27）交，5号（=12-05）复查');
+  for (const t of ['八月十五回家', '春节后第三天开门', '反正月初三', '他上初三了', '三号窗口', '大一号的', '31号', '每月底', '十二月底']) assert.equal(annotate(t, at(2026, 2, 1)), t, t);
 });

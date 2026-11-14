@@ -527,8 +527,8 @@ test('dates: MM-DD within the current year, YYYY-MM-DD from another; 明天 / �
   assert.equal(transcriptLine({ at: lastYear, who: 'owner', text: '在吗' }, { now }), '[2025-05-08 09:05] 他：在吗');
   // as a .map callback the index must not be taken for `now`
   assert.deepEqual([{ at: Date.now(), who: 'owner', text: 'x' }].map(transcriptLine)[0].match(/^\[(\d\d-\d\d) /)?.length, 2);
-  // 05-08 2026 is a Friday: 明天 05-09, 下周三 05-13; what he says she said is left as said
-  assert.equal(transcriptLine({ at: thisYear, who: 'owner', text: '明天去，下周三回，她说后天也行' }, { now }), '[05-08 09:05] 他：明天（=05-09）去，下周三（=05-13）回，她说后天也行');
+  // 05-08 2026 is a Friday: 明天 05-09, 下周三 05-13; what she said today is dated too, what she said yesterday is not
+  assert.equal(transcriptLine({ at: thisYear, who: 'owner', text: '明天去，下周三回，她说后天也行，昨天她说下周五' }, { now }), '[05-08 09:05] 他：明天（=05-09）去，下周三（=05-13）回，她说后天（=05-10）也行，昨天（=05-07）她说下周五');
 });
 
 test('stamps: wake messages are stamped, the transcript is not stamped twice; lastSaidAt is the last line before a moment', async () => {
