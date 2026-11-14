@@ -2,9 +2,9 @@
 //
 // The words she said and heard are the evidence (transcript + recall.js); what is kept here is only
 // what stays true, small enough to be in front of her every turn:
-//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): lists of short
-//                entries edited by add / replace / remove, with a character budget that an add may pass
-//                (a bank over it stays over until it is edited down; nothing is dropped).
+//   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): bounded lists
+//                of short entries edited by add / replace / remove under a character budget; when a
+//                bank is full, something new goes in by replacing the entry that matters least.
 //                `owner` (what she knows about you) and `self` (her own notes).
 //   open       — 还没了的事: things planned, promised or put off that have no outcome yet. One item
 //                each (what, when it was said, a due date). Done or called off → removed; code lets
@@ -24,7 +24,7 @@ import { daysBetween } from './when.js';
 export const MEMORY_VERSION = 2;
 
 // Characters per bank; `open` is 还没了的事 as shown (a display budget, not storage), `impression` one person's line.
-export const DEFAULT_LIMITS = Object.freeze({ owner: 3000, self: 2200, open: 800, impression: 80 });
+export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80 });
 
 // ── text ─────────────────────────────────────────────────────────────────────
 
@@ -100,10 +100,11 @@ export function rejectReason(text) {
 export const bankSize = (entries) => (entries ?? []).reduce((n, e) => n + e.length + 1, 0);
 
 /**
- * One Hermes-style operation on a bank. Returns { ok, entries, over } or { ok: false, error }.
+ * One Hermes-style operation on a bank. Returns { ok, entries } or { ok: false, error, full? }.
  * replace/remove match by a short unique substring (oldText).
- * Nothing is refused for size: a bank may go over its limit (`over`) and stays over until it is edited
- * down (the transcript is the store; a bank is a view of it, so an add is never lost).
+ * An op whose result would be over the limit and larger than the bank was is refused (`full`): an
+ * add, or a replace with a longer entry. One that does not grow it always applies, so a bank already
+ * over its limit (written by an earlier build) is edited down by replaces and removes.
  */
 export function bankOp(entries, op, limit) {
   const list = [...(entries ?? [])];
@@ -120,7 +121,7 @@ export function bankOp(entries, op, limit) {
     if (!content) return { ok: false, error: 'content is required' };
     const why = rejectReason(content);
     if (why) return { ok: false, error: `not kept (${why})` };
-    if (list.some((e) => normText(e) === normText(content) || jaccard(e, content) >= 0.82)) return { ok: true, entries: list, note: 'already there', over: bankSize(list) > limit };
+    if (list.some((e) => normText(e) === normText(content) || jaccard(e, content) >= 0.82)) return { ok: true, entries: list, note: 'already there' };
     list.push(content);
   } else if (op?.action === 'replace') {
     const f = find(); if (f.error) return { ok: false, error: f.error };
@@ -132,19 +133,15 @@ export function bankOp(entries, op, limit) {
     const f = find(); if (f.error) return { ok: false, error: f.error };
     list.splice(f.index, 1);
   } else return { ok: false, error: `unknown action ${op?.action}` };
-  return { ok: true, entries: list, over: bankSize(list) > limit };
+  if (bankSize(list) > limit && bankSize(list) > bankSize(entries)) return { ok: false, full: true, error: `over the limit (${bankSize(list)}/${limit} chars): replace an entry that matters less now, or remove a stale one, then retry` };
+  return { ok: true, entries: list };
 }
 
-export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars${bankSize(entries) > limit ? ' (over the limit)' : ''}`;
+export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars`;
 
-/** A bank as the standing prompt shows it: all of it, unless it is past twice its limit: then its newest entries that fit in that. */
-export function shownBank(entries, limit) {
-  if (bankSize(entries) <= 2 * limit) return entries;
-  const out = [];
-  let used = 0;
-  for (let i = entries.length - 1; i >= 0 && used + entries[i].length + 1 <= 2 * limit; i--) { out.unshift(entries[i]); used += entries[i].length + 1; }
-  return out;
-}
+/** Room under which a bank counts as full: an average new entry would no longer fit. */
+export const BANK_FULL_ROOM = 60;
+export const bankFull = (entries, limit) => limit - bankSize(entries) < BANK_FULL_ROOM;
 
 // ── people: one registry for everyone she meets, in any app ────────────────────
 //
@@ -547,9 +544,8 @@ export function renderStanding(memory, { banks = true, now = Date.now(), limits 
   const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
-  // Between daily tidies a bank may be over its limit; only past twice that is it cut, for the prompt only.
-  if (banks && memory.owner.length) parts.push(`${t.owner}\n${shownBank(memory.owner, limits.owner).map((e) => `- ${e}`).join('\n')}`);
-  if (banks && memory.self.length) parts.push(`${t.self}\n${shownBank(memory.self, limits.self).map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
+  if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
   if (today.length) parts.push(`${t.today}\n${today.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
   if (list.length) parts.push(`${t.open}\n${list.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
   if (!parts.length) return '';

@@ -12,7 +12,7 @@
 //               `consolidateEveryLines` new lines have piled up, and before a handoff.
 //   daily       once a day at `dailyAt`, when there was anything that day: one call writes the diary
 //               and is the only writer of the owner / self banks besides her own tool — what of the
-//               day is lasting, as adds and replaces code applies. A bank over its limit stays over.
+//               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
@@ -22,7 +22,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, bankOp, bankSize, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
+  DEFAULT_LIMITS, bankOp, bankSize, bankUsage, bankFull, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
@@ -139,12 +139,13 @@ export function extractPrompt({ text = '', known = '', open = '' }) {
 
 const BANKS = ['owner', 'self'];
 /**
- * The daily call: the fixed instructions, then both banks (oldest → newest, size, limit), then the
- * day and its records — what is the same from call to call first. banks: { owner, self }, or null
+ * The daily call: the fixed instructions, then both banks (oldest → newest, size, limit; a full bank's
+ * header says so and asks for a replace), then the day and its records — what is the same from call
+ * to call first. banks: { owner, self }, or null
  * when they are another plugin's (people-only): then it is told to write the diary only.
  */
 export function dailyPrompt({ day, text, banks, limits = DEFAULT_LIMITS }) {
-  const show = (bank) => `${table('memory.daily.bank', { size: bankSize(banks[bank]), limit: limits[bank] })[bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
+  const show = (bank) => `${table('memory.daily.bank', { size: bankSize(banks[bank]), limit: limits[bank] })[bankFull(banks[bank], limits[bank]) ? `${bank}.full` : bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
   return prompt('memory.daily', {
     banks: banks ? BANKS.map(show).join('\n') : table('memory.daily.bank', { size: 0, limit: 0 }).off,
     day, records: text || '（今天没有记录）',
@@ -552,8 +553,8 @@ export function apply(ctx, config = {}) {
 
   // ── the daily call: the diary, and the owner / self banks ──
   // Once a day, when anything happened: one call returns the diary and, per bank, only what of the day
-  // is lasting — adds and replaces, applied with bankOp (never refused for size, so a bank may stay
-  // over its limit; one that does not apply is skipped, the rest still go in). A day longer than
+  // is lasting — adds and replaces, applied with bankOp (one that does not fit or does not apply is
+  // skipped, the rest still go in; a full bank's header asks for a replace). A day longer than
   // inputChars is read in several calls, oldest first, each seeing the banks as the one before left
   // them, so no lasting fact is skipped; the diary is the last call's, so on such a day it is written
   // from the day's last part only.
@@ -589,8 +590,8 @@ export function apply(ctx, config = {}) {
   }
   /**
    * The day's ops on one bank (`<bank>: [{action: add|replace, …}]`), applied in order with bankOp: an
-   * op that does not apply (no or several entries match its oldText, a line not kept, not an add or a
-   * replace) is skipped with a warning, the rest still go in. Returns what happened, or ''.
+   * op that does not apply (no or several entries match its oldText, a line not kept, an add or a longer
+   * replace that does not fit, not an add or a replace) is skipped with a warning, the rest still go in. Returns what happened, or ''.
    */
   function applyOps(bank, out) {
     if (out?.[bank] == null) return '';
@@ -673,7 +674,6 @@ export function apply(ctx, config = {}) {
   }, 'dsh-dot/memory: daily diary');
 
   // ── what every turn of hers sees ──
-  const ceilingWarned = new Set(); // banks past twice their limit, warned about once per load
   ctx.inject(['systemPrompt'], (scope) => {
     // Her notes: her conversation only — errands do a job and report, they are not her remembering.
     scope.systemPrompt.context({
@@ -682,11 +682,6 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         const s = c.agent?.session;
         if (!s || dot()?.isErrand?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
-        for (const b of ['owner', 'self']) {
-          if (ceilingWarned.has(b) || bankSize(memory[b]) <= 2 * cfg.limits[b]) continue;
-          ceilingWarned.add(b);
-          logger.warn(`${b} is past twice its limit (${bankUsage(memory[b], cfg.limits[b])}): her prompt shows only its newest entries`);
-        }
         return renderStanding(memory, { banks: !peopleOnly(), limits: cfg.limits, ...keep });
       },
     });
@@ -718,7 +713,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，超了也照样记下。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
       parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
@@ -740,11 +735,11 @@ export function apply(ctx, config = {}) {
         const bank = args.target === 'owner' ? 'owner' : 'self';
         if (!['add', 'replace', 'remove'].includes(args.action)) return { ok: false, error: `${args.action} is for target=open` };
         const r = bankOp(memory[bank], args, cfg.limits[bank]);
+        if (r.full) return { ok: false, error: `这一栏满了（${bankSize(memory[bank])}/${cfg.limits[bank]} 字），没记上：要记这条，用 replace 换掉一条现在不那么要紧的（过去了的一次性的事，或同一件事的旧说法）。`, entries: memory[bank] };
         if (!r.ok) return { ok: false, error: r.error, entries: memory[bank] };
         memory[bank] = r.entries; save();
-        audit('memory-tool', { target: bank, action: args.action, over: r.over });
-        const over = r.over ? `这一栏超过上限了（${bankSize(memory[bank])}/${cfg.limits[bank]} 字），照样记下了，不会自动删。` : '';
-        return { ok: true, usage: bankUsage(memory[bank], cfg.limits[bank]), note: [r.note, over].filter(Boolean).join(' ') || undefined };
+        audit('memory-tool', { target: bank, action: args.action });
+        return { ok: true, usage: bankUsage(memory[bank], cfg.limits[bank]), note: r.note };
       },
     }), 'dsh-dot/memory: memory tool');
     scope.effect(() => scope.tools.register({

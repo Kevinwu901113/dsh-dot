@@ -41,7 +41,7 @@
 | | 幕间：自己的时间 | `interlude.free` `.tidy` `.budget` `.over` `.refused` `.typing`；`interlude.tell-him` `.elsewhere` |
 | | 幕间：试点新的 | `interlude.try` `interlude.try.on` `interlude.try.refused`（那一趟里发 QQ 被拦下的理由）；她对话里记他反应的工具说明 `interlude.doings-tool` `interlude.doings-tool.elsewhere` |
 | 独立模型调用 | 整理记忆（还没了的事、人物） | `memory.extract`（规则，放在最前面）`memory.extract.input`（认识的人在还没了的事前面：前者少变，后者几乎每次都变） |
-| | 每天一次：日记和关于他 / 她自己 | `memory.daily`（固定的说明在前，日子和记录在最后）`memory.daily.bank`（每栏的标题；`off` 是和别的记忆插件共存时那一行） |
+| | 每天一次：日记和关于他 / 她自己 | `memory.daily`（固定的说明在前，日子和记录在最后）`memory.daily.bank`（每栏的标题；`owner.full` / `self.full` 是这一栏满了（剩下不到 60 字）时的标题；`off` 是和别的记忆插件共存时那一行） |
 | | 成长：每周回顾 | `interlude.growth.system` `.too-much` `.too-long`；放进系统提示词的那段 `interlude.growth.section` |
 | | 幕间一轮 | `interlude.round`（整段系统提示词）；按情况填进去的：`.canon` `.length` `.phase.advance` `.phase.follow-up` `.phase.intent` `.her-life` `.free` `.doings` `.contact-rule` `.contact-rule.off` `.browsing.deferred` `.browsing.disabled` `.agency` `.play` `.play.collect` `.style.none` `.seed` `.play-intents` `.play-intents.off` `.tries` `.tries.off` `.contact` `.contact.off`；补全那一次：`.refresh` |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |

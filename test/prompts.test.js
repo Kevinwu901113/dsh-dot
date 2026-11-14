@@ -130,14 +130,20 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   assert.match(extractRules(), /^你在帮她整理记忆。[\s\S]*账号本身、手机号这些可以记。$/);
   // fixed instructions first (no day in them), the banks, then the day and its records
   const daily = dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] } });
-  assert.match(daily, /^这是她每天一次的收拾：[\s\S]*\n\{\n {2}"diary": "今天的日记正文",\n {2}"owner": \[\],\n {2}"self": \[\]\n\}\n[\s\S]*\n=== 关于他（现在 5 字，上限 3000）===\n- 他住光谷\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 今天的记录（2026-11-03 周二）===\n他：在吗$/);
+  assert.match(daily, /^这是她每天一次的收拾：[\s\S]*\n\{\n {2}"diary": "今天的日记正文",\n {2}"owner": \[\],\n {2}"self": \[\]\n\}\n[\s\S]*\n=== 关于他（现在 5 字，上限 1375）===\n- 他住光谷\n=== 她自己记下的（现在 0 字，上限 2200）===\n（空）\n=== 今天的记录（2026-11-03 周二）===\n他：在吗$/);
   assert.equal(daily.indexOf('2026-11-03'), daily.indexOf('=== 今天的记录（') + '=== 今天的记录（'.length, 'the day only in the last block');
   assert.doesNotMatch(daily, /"rewrite"|一字不改|一整栏/);
   // one-off dated things stay out of the bank; dates that come round every year go in
   assert.match(daily, /只在某一天发生的事（约了人、到快递、上门、截止日）不记在这里：没了结的事另有地方记。每年都会再来的日子（生日、纪念日）要记，日期照他说的写。/);
   assert.match(daily, /一次性的事、单次的答应和建议不记/);
-  const over = dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] }, limits: { owner: 4, self: 2200 } });
-  assert.equal(over, daily.replace('上限 3000）', '上限 4）'), 'a bank over its limit: only its numbers differ');
+  // a full bank (under 60 characters of room left, or over the limit): only its header line differs, and asks for a replace
+  const fixed = (p) => p.slice(0, p.indexOf('=== 关于他（'));
+  for (const limit of [64, 4]) {
+    const full = dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] }, limits: { owner: limit, self: 2200 } });
+    assert.equal(fixed(full), fixed(daily), 'the fixed part byte-identical');
+    assert.equal(full, daily.replace('=== 关于他（现在 5 字，上限 1375）===', `=== 关于他（现在 5 字，上限 ${limit}，满了）：这一栏满了，要记新的，就用 replace 换掉现在最不要紧的那一条（已经过去了的一次性的事，或同一件事的旧说法）；不然就别动它 ===`));
+  }
+  assert.doesNotMatch(dailyPrompt({ day: '2026-11-03 周二', text: '他：在吗', banks: { owner: ['他住光谷'], self: [] }, limits: { owner: 65, self: 2200 } }), /满了/, '60 characters of room: not full');
   assert.match(dailyPrompt({ day: '2026-11-03 周二', text: '', banks: null }), /\n=== 关于他 \/ 她自己记下的：由别的记忆插件负责[^\n]*===\n=== 今天的记录（2026-11-03 周二）===\n（今天没有记录）$/);
 });
 
