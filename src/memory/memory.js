@@ -178,14 +178,15 @@ export function parseLooseJson(raw) {
 
 /**
  * Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory).
- * Items that have run out go afterwards (keepAfterDue / keepIdle: days, see isLive).
+ * Items that have run out go afterwards (keepAfterDue / keepIdle: days, see isLive). `segment` is the
+ * record the call read: a done on an item it does not mention is skipped (openOp).
  */
-export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle } = {}) {
+export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle, segment } = {}) {
   // owner / self are not the consolidation's (the daily call writes them): in a reply they are ignored.
   const report = { open: 0, done: 0, expired: 0, people: 0, errors: [] };
   for (const op of [].concat(out?.open ?? [])) {
     if (!op || typeof op !== 'object') continue;
-    const r = openOp(memory, { ...op, due: op.due ?? undefined }, { now });
+    const r = openOp(memory, { ...op, due: op.due ?? undefined }, { now, segment });
     if (!r.ok) { report.errors.push(`open: ${r.error}`); continue; }
     if (r.note) continue;
     if (op.action === 'done' || op.action === 'remove') report.done++; else report.open++;
@@ -552,7 +553,8 @@ export function apply(ctx, config = {}) {
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
     const out = parseLooseJson(r.raw);
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
-    const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep });
+    const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });
+    for (const e of report.errors) if (e.startsWith('open: done skipped')) logger.warn(e);
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();

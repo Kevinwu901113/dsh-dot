@@ -49,6 +49,26 @@ export function jaccard(a, b) {
   return inter / (A.size + B.size - inter);
 }
 
+// Whether a stretch of the record touches an item: the share of the item's two-character pieces
+// (dates, numbers and pieces with a common function character left out) found in it. Calibrated on
+// three benchmark runs' consolidation calls: a done given at under 0.25 was, in a hand-checked
+// sample, mostly about something the segment never mentioned (all of the dones that removed an item
+// before its day); at 0.25 and over, mostly about something it did.
+const COMMON = new Set('他她我你们的了是在和跟说要会就也都还把被给到去来这那个不没有很太好吗呢吧啊着过得地上下里么呀哦嗯又再才先让对当一二三四五六七八九十百千万零两'.split(''));
+const DATED = /（=[^）]*）|\d+|大?[今明后昨前]天|[这下上](个)?(周|星期|礼拜).|周[一二三四五六日天]|月底|号/g;
+export const TOUCH_MIN = 0.25;
+export function touchShare(item, text) {
+  const pieces = new Set();
+  for (const run of String(item ?? '').replace(DATED, ' ').match(/[\u4e00-\u9fff]+/g) ?? []) {
+    for (let i = 0; i + 2 <= run.length; i++) if (!COMMON.has(run[i]) && !COMMON.has(run[i + 1])) pieces.add(run.slice(i, i + 2));
+  }
+  if (!pieces.size) return 1;
+  const t = String(text ?? '');
+  let n = 0;
+  for (const g of pieces) if (t.includes(g)) n++;
+  return n / pieces.size;
+}
+
 /** Chinese runs ~1.4–1.6 characters per token; estimate conservatively. */
 export const estimateTokens = (text) => Math.ceil(String(text ?? '').length / 1.5);
 
@@ -409,9 +429,11 @@ export function expireOpen(memory, opts = {}) {
 /**
  * One operation on 还没了的事: add { content, due } · replace { oldText, content, due } ·
  * done { oldText } (finished, called off, no longer wanted: it goes). `owed` is ignored; shelve /
- * restore (the shelf is gone) are a no-op with a note. Returns { ok, error?, note? }.
+ * restore (the shelf is gone) are a no-op with a note. With `segment` (the record a consolidation
+ * read), a done on an item it does not touch (touchShare) is refused: the item stays and goes by
+ * itself. Returns { ok, error?, note? }.
  */
-export function openOp(memory, op, { now = Date.now() } = {}) {
+export function openOp(memory, op, { now = Date.now(), segment } = {}) {
   const action = String(op?.action ?? '');
   const content = String(op?.content ?? '').trim();
   const due = op?.due === undefined ? undefined : cleanDue(op.due, now);
@@ -440,6 +462,7 @@ export function openOp(memory, op, { now = Date.now() } = {}) {
   if (action === 'done' || action === 'remove') {
     const f = findItem(memory.open, op?.oldText);
     if (f.error) return { ok: false, error: f.error };
+    if (segment != null && touchShare(memory.open[f.index].text, segment) < TOUCH_MIN) return { ok: false, error: `done skipped, the record read does not mention it: ${memory.open[f.index].text.slice(0, 60)}` };
     memory.open.splice(f.index, 1);
     return { ok: true };
   }

@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   bankOp, bankUsage, checkRewrite, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
-  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue,
+  resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN,
 } from '../src/memory/store.js';
 import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel } from '../src/memory/memory.js';
 import { dayMark } from '../src/clock.js';
@@ -244,6 +244,24 @@ test('extraction: 还没了的事, people (new seen ones from apps); loose JSON'
   assert.ok(ask.startsWith('你在帮她整理记忆'));
   assert.ok(ask.indexOf('他说想换键盘') < ask.indexOf('=== 这段时间的记录 ==='));
   assert.ok(ask.trimEnd().endsWith('他：在吗'));
+});
+
+test('consolidation: a done counts only when the record it read mentions the item; otherwise it stays and goes by itself', () => {
+  const m = emptyMemory();
+  const now = new Date(2026, 8, 7, 13, 0).getTime();
+  for (const content of ['09-05 他给汤团下单了猫饮水机，快递（=09-07）到驿站，她说先让机器空转两天', '09-06 他答应霜霜周三（=09-09）一起去吃老幺面馆的热米皮'])
+    applyExtraction(m, { open: [{ action: 'add', content, due: null }] }, { now });
+  const segment = '[09-07 12:40] 他：霜霜说周三有事，老幺面馆那顿米皮改下周了\n[09-07 12:41] 我：行，那就下周';
+  const r = applyExtraction(m, { open: [{ action: 'done', oldText: '猫饮水机' }, { action: 'done', oldText: '热米皮' }] }, { now, segment });
+  assert.equal(r.done, 1);
+  assert.match(r.errors[0], /^open: done skipped, the record read does not mention it: 09-05 他给汤团下单了猫饮水机/);
+  assert.deepEqual(m.open.map((x) => x.text.slice(0, 5)), ['09-05'], 'the one never mentioned is kept');
+  // dates, numbers and common words do not count as mentioning it
+  assert.ok(touchShare('09-05 他给汤团下单了猫饮水机', '今天 09-05，他下单了') < TOUCH_MIN);
+  assert.ok(touchShare('09-05 他给汤团下单了猫饮水机', '饮水机到了，汤团闻了闻') >= TOUCH_MIN);
+  // without a segment (her own memory tool, mid-conversation) a done is taken as given
+  assert.equal(openOp(m, { action: 'done', oldText: '猫饮水机' }).ok, true);
+  assert.equal(m.open.length, 0);
 });
 
 test('consolidation: no owner / self — the prompt carries no bank (schema, rules or entries); owner / self in a reply are ignored without error', () => {
