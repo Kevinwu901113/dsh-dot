@@ -319,7 +319,8 @@ test('consolidation: no owner / self — the prompt carries no bank (schema, rul
   assert.equal('owner' in r || 'self' in r, false);
   const ask = extractPrompt({ text: '[06-22 20:00] 他：在吗', known: 'u0002 · 阿满 · qq:42 · talked', open: '- 06-20 他说想换键盘' });
   assert.doesNotMatch(ask, /"owner"|"self"|- owner：|- self：|已有：关于他|她自己记下的|别的记忆插件/);
-  assert.match(ask, /每天晚上另有一次整理，这里不用写。\n/);
+  assert.match(ask, /每天晚上另有一次整理：那一次不再看这段记录，只看你在 day 里写的摘记。\n/);
+  assert.match(ask, /"day": "这段记录的摘记"/);
   assert.match(ask, /\n\n=== 已认识的人 ===\nu0002[^\n]*\n=== 已有：还没了的事 ===\n- 06-20 他说想换键盘\n\n=== 这段时间的记录 ===/, 'the people (more stable) before 还没了的事 (changes nearly every call)');
 });
 
@@ -878,6 +879,36 @@ test('daily run, a full bank: an add that does not fit is skipped with a warning
   assert.ok(h.warns.some((w) => /daily: owner op skipped \(over the limit \(56\/44 chars\)/.test(w)));
   assert.ok(h.audit.some((e) => e.event === 'daily-op-skipped' && e.bank === 'owner' && e.errors.length === 1 && /^over the limit/.test(e.errors[0])));
   assert.deepEqual(h.services.dotMemory.forInterlude(), ['他叫宽，在广州做 agent 开发', '他在深圳上班', '他不喜欢被叫全名', '他喜欢猫'].map((e) => `关于他：${e}`));
+});
+
+test('daily run after a consolidation: it reads that call\'s note instead of the lines it read, and the lines no consolidation has read; notes go once the day is written', async () => {
+  const h = harness({ llmReply: (req) => (/这是她每天一次的收拾/.test(req.messages[0].content[0].text)
+    ? JSON.stringify({ diary: '他说搬去武昌了，晚上又说想养猫。', owner: [{ action: 'add', content: '他搬去武昌了' }] })
+    : JSON.stringify({ open: [], people: [], day: '他说上周搬去武昌了，离公司近。' })) });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  say(h, '我上周搬去武昌了，离公司近');
+  await wait(20);
+  assert.match(await h.services.dotMemory.command('memory now'), /^consolidated/);
+  assert.deepEqual(JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8')).dayNotes.map((n) => n.text), ['他说上周搬去武昌了，离公司近。']);
+  say(h, '想养只猫');
+  await wait(20);
+  const r = await h.services.dotMemory.diary();
+  assert.equal(r.ok, true);
+  const ask = h.calls.at(-1).messages[0].content[0].text;
+  const records = ask.slice(ask.indexOf('=== 今天的记录'));
+  assert.match(records, /\n\[[^\]]+ 到 [^\]]+ 的摘记\] 他说上周搬去武昌了，离公司近。\n\[[^\]]+\] 他：想养只猫/, 'the note, then the unread lines');
+  assert.doesNotMatch(records, /我上周搬去武昌了/, 'the lines the consolidation read are not read again');
+  const m = JSON.parse(readFileSync(join(h.home, 'memory', 'memory.json'), 'utf8'));
+  assert.deepEqual(m.dayNotes, []);
+  assert.ok(m.owner.includes('他搬去武昌了'));
+  // Everything consolidated and nothing noted: no call.
+  const q = harness({ llmReply: JSON.stringify({ open: [], people: [], day: '' }) });
+  apply(q.ctx, { home: q.home, consolidateEveryLines: 1000 });
+  say(q, '在吗');
+  await wait(20);
+  await q.services.dotMemory.command('memory now');
+  assert.match(await q.services.dotMemory.command('memory diary'), /not run: nothing happened today/);
+  assert.equal(q.calls.length, 1);
 });
 
 test('daily run: a reply that is not JSON leaves the banks as they are and writes no diary; the day is done', async () => {

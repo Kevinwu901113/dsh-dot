@@ -545,6 +545,10 @@ export function apply(ctx, config = {}) {
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
     const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });
     for (const e of report.errors) if (e.startsWith('open: done skipped')) logger.warn(e);
+    // What the daily call reads instead of these lines (it only reads what no consolidation has).
+    const note = typeof out.day === 'string' ? clip(out.day.trim(), 400) : '';
+    memory.dayNotes = (memory.dayNotes ?? []).filter((n) => n.at >= startOfToday() - 86400000);
+    if (note && !rejectReason(note) && fresh.length) memory.dayNotes.push({ from: fresh[0].at, at: fresh.at(-1).at, text: note });
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();
@@ -556,35 +560,40 @@ export function apply(ctx, config = {}) {
   // ── the daily call: the diary, and the owner / self banks ──
   // Once a day, when anything happened: one call returns the diary and, per bank, only what of the day
   // is lasting — adds and replaces, applied with bankOp (one that does not fit or does not apply is
-  // skipped, the rest still go in; a full bank's header asks for a replace). A day longer than
-  // inputChars is read in several calls, oldest first, each seeing the banks as the one before left
-  // them, so no lasting fact is skipped; the diary is the last call's, so on such a day it is written
-  // from the day's last part only.
+  // skipped, the rest still go in; a full bank's header asks for a replace). It reads the day's
+  // lines no consolidation has read yet; of the lines one has, it reads that call's note (`day`)
+  // instead, so no line is paid for twice. What is still unread and longer than inputChars is read
+  // in several calls, oldest first, each seeing the banks as the one before left them (the notes go
+  // with the first); the diary is the last call's.
   let writingDiary = null;
   async function diary({ reason = 'daily' } = {}) {
     if (writingDiary) return writingDiary;
     writingDiary = (async () => {
       const day = dayLabel(new Date());
-      const today = lines.filter((l) => l.at >= startOfToday() && rejectReason(l.text) !== 'secret');
+      const today = lines.filter((l) => l.at >= startOfToday() && l.at > memory.cursor && rejectReason(l.text) !== 'secret');
+      const earlier = (memory.dayNotes ?? []).filter((n) => n.at >= startOfToday()).map((n) => `[${stamp(n.from)} 到 ${stamp(n.at)} 的摘记] ${n.text}`);
       const banks = !peopleOnly(); // people-only: the banks are the other plugin's; the diary alone
-      if (!today.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      if (!today.length && !earlier.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
       const notes = {};
       const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
-      let left = today, out = null;
+      let left = today, out = null, first = true;
       do {
-        const part = takeChunk(left, cfg.inputChars);
+        const part = left.length ? takeChunk(left, cfg.inputChars) : [];
         left = left.slice(part.length);
-        const r = await complete(dailyPrompt({ day, text: part.map(transcriptLine).join('\n'), banks: banks ? { owner: memory.owner, self: memory.self } : null, limits: cfg.limits }), 'daily');
+        const text = [...(first ? earlier : []), ...part.map(transcriptLine)].join('\n');
+        first = false;
+        const r = await complete(dailyPrompt({ day, text, banks: banks ? { owner: memory.owner, self: memory.self } : null, limits: cfg.limits }), 'daily');
         if (r.raw === undefined) return r;
         try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: part.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
         out = parseLooseJson(r.raw);
         if (banks) for (const bank of BANKS) note(bank, applyOps(bank, out));
       } while (left.length);
       memory.lastDiary = day.slice(0, 10);
+      memory.dayNotes = [];
       const entry = typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
       if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${day}\n${entry}\n\n`); } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
       save();
-      audit('diary', { reason, lines: today.length, written: Boolean(entry), banks: Object.keys(notes) });
+      audit('diary', { reason, lines: today.length, notes: earlier.length, written: Boolean(entry), banks: Object.keys(notes) });
       logger.info(`daily (${reason}): diary ${entry ? 'written' : 'not written'}${Object.entries(notes).map(([b, n]) => `; ${b} ${n}`).join('')}`);
       return { ok: true, diary: entry, banks: notes };
     })();
