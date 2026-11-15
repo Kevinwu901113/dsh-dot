@@ -5,9 +5,10 @@
 //
 // Same approach as bench/chat-memory-benchmark.mjs (the 1.0 adapter): a fake clock at each turn's
 // logical time; every turn replayed as the session events memory.js listens to; the plugin's own
-// 60-second maintenance timer fired at every minute where it can act (the diary at dailyAt);
-// consolidation every consolidateEveryLines lines and handoff past handoffTokens happen inside the
-// plugin. Differences for 2.2:
+// 60-second maintenance timer fired at every minute where it can act (the daily memory call, with the
+// diary, at dailyAt); a handoff past handoffTokens (with its memory call, no diary) happens inside the
+// plugin. calls.jsonl `reason`: daily | handoff | manual, `+N` for the later parts of a long backlog.
+// Differences for 2.2:
 //   - every model call goes to the Bench 2.2 gateway (OPENAI_BASE_URL) with its accounting headers:
 //     the plugin's own calls (ctx.llm.stream) as chat completions on the gateway's flash model, the
 //     recall models as local:<name> on /embeddings and /rerank (the plugin's recallEmbedder hook,
@@ -72,8 +73,8 @@ async function gateway(route, body, tag = '') {
 // ── ctx.llm for memory.js: the gateway's flash, non-thinking ──
 function fakeReply(text) {
   const said = [...text.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
-  if (/写今天的日记/.test(text.slice(0, 400))) return JSON.stringify({ diary: '今天和他聊了几句。' }); // the daily call: banks left as they are
-  return JSON.stringify({ people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })) });
+  // the memory call: an open item from his last line; a diary when the read line asks for one (banks left as they are)
+  return JSON.stringify({ people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })), ...(/；最后写今天的日记）===\n/.test(text) ? { diary: '今天和他聊了几句。' } : {}) });
 }
 async function chat(text, maxTokens) {
   usage.chat.calls++;
@@ -183,8 +184,9 @@ async function quiesce() {
   if (fatal) throw new Error(fatal);
 }
 
-// The plugin's 60-second timer, fired at every minute before `until` where it can act (the diary from
-// dailyAt on; a failed one is tried again a minute later, at most 4 times per day here).
+// The plugin's 60-second timer, fired at every minute before `until` where it can act (the daily memory
+// call from dailyAt on; a failed one is tried again a minute later — the plugin closes the day after 3
+// failed tries, and at most 4 are fired per day here).
 const minute = (ms) => Math.ceil(ms / 60000) * 60000;
 async function maintain(until, inclusive) {
   const [dailyH, dailyM] = String(cfg.dailyAt ?? '').split(':').map(Number);
@@ -274,8 +276,8 @@ function rewind(token) {
 }
 
 function consolidations() {
-  const c = { lines: 0, daily: 0, handoff: 0, chunks: 0 };
-  try { for (const r of rows(join(cfg.home, 'memory', 'calls.jsonl'))) { const [base, more] = String(r.reason).split('+'); if (more) c.chunks++; else c[base] = (c[base] ?? 0) + 1; } } catch { /* none yet */ }
+  const c = { daily: 0, handoff: 0, manual: 0, chunks: 0, diaries: 0 };
+  try { for (const r of rows(join(cfg.home, 'memory', 'calls.jsonl'))) { const [base, more] = String(r.reason).split('+'); if (more) c.chunks++; else c[base] = (c[base] ?? 0) + 1; if (r.diary) c.diaries++; } } catch { /* none yet */ }
   let handoffs = 0; try { handoffs = rows(join(cfg.home, 'memory', 'handoffs.jsonl')).length; } catch { /* none */ }
   return { ...c, handoffs };
 }
@@ -303,7 +305,7 @@ async function init(o) {
   state.sessionTokens.s1 = cfg.sessionBaseTokens;
   host = hostFor(state);
   const ok = await host.api.recall.warm();
-  return { ok, recall: host.api.recall.status(), defaults: { consolidateEveryLines: M.defaults.consolidateEveryLines, dailyAt: M.defaults.dailyAt, handoffTokens: M.defaults.handoffTokens, recallTopK: M.defaults.recallTopK, recallMaxTokens: M.defaults.recallMaxTokens, recallCandidates: M.defaults.recallCandidates }, memorySettings: memory };
+  return { ok, recall: host.api.recall.status(), defaults: { inputChars: M.defaults.inputChars, dailyAt: M.defaults.dailyAt, handoffTokens: M.defaults.handoffTokens, recallTopK: M.defaults.recallTopK, recallMaxTokens: M.defaults.recallMaxTokens, recallCandidates: M.defaults.recallCandidates }, memorySettings: memory };
 }
 
 const handlers = {

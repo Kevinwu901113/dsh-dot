@@ -5,8 +5,8 @@
 //   ingest   each persona gets its own dot home; every history turn is replayed in logical-time order
 //            as the session events dot's memory listens to (turn/start, his user/message, her
 //            assistant/message, turn/end) with a fake clock at the turn's time. What follows from that
-//            is the plugin's own code: transcript lines, consolidation every consolidateEveryLines
-//            lines, handoff past handoffTokens, the recall index. Between turns the plugin's own
+//            is the plugin's own code: transcript lines, the memory call at dailyAt and before a
+//            handoff past handoffTokens, the recall index. Between turns the plugin's own
 //            60-second timer is fired at every minute where it can act (the diary at dailyAt).
 //   exam     at each question's exam time (after the maintenance due by then) a fresh, independent
 //            session is assembled: the dot:now line, the dot:memory context the plugin injects, the
@@ -94,11 +94,8 @@ export function createModel({ fake = false, baseUrl, apiKey, model, extraBody = 
       return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
     }
     const said = [...all.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
-    if (/写今天的日记/.test(all)) { // the daily call: a diary, banks left as they are
-      const text = JSON.stringify({ diary: '今天和他聊了几句。' });
-      return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
-    }
-    const out = { people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })) };
+    // the memory call: an open item from his last line; a diary when the read line asks for one (banks left as they are)
+    const out = { people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })), ...(/；最后写今天的日记）===\n/.test(all) ? { diary: '今天和他聊了几句。' } : {}) };
     const text = JSON.stringify(out);
     return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
   }
@@ -264,7 +261,7 @@ async function main() {
     usedFor: 'consolidation (memory.js via ctx.llm.stream) and answering, same model',
     window: { turns: WINDOW, why: 'the last 6 complete turns as chat messages, as Soul/ROFM/Qwen/OpenViking/Hindsight/Suzu were tested (docs/tested-configurations.md)' },
     recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'Xenova/bge-reranker-base') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
-    memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, limits: defaults.limits, sessionBaseTokens: SESSION_BASE, tz: o.tz },
+    memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, limits: defaults.limits, sessionBaseTokens: SESSION_BASE, tz: o.tz },
     pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-flash (assumption; override DSH_BENCH_PRICE_RMB)' },
     personas: oldMeta?.personas ?? {},
     usage: null, costRmb: null, startedAt: oldMeta?.startedAt ?? new RealDate().toISOString(), updatedAt: null,

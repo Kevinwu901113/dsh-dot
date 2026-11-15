@@ -95,11 +95,14 @@ const lday = (s) => num(s.replace(/^初/, ''));
 // Each rule: a pattern, and the day a match means (null: left as said). Matched longest-first where
 // they overlap (大年初二 is not read as 初二, 下个月底 not as 月底).
 const DAYWORD = { 大前天: -3, 前天: -2, 昨天: -1, 昨晚: -1, 昨儿: -1, 明天: 1, 明早: 1, 明晚: 1, 明儿: 1, 后天: 2, 大后天: 3 };
+// A character that makes a word with 后 (以后 今后 然后 之后 此后 往后 随后 日后 最后 落后 背后): its 后天 is not the day.
+const AFTER_WORD = '(?<![以今然之此往随日最落背])';
 const WD = { 一: 1, 二: 2, 三: 3, 四: 4, 五: 5, 六: 6, 日: 7, 天: 7 };
 const RULES = [
   // 明天 / 下周三: plain relative days. Not 上上周 / 下下周 (two weeks off), and not the words that only
   // start like a day: 下周天气, 这周一直, 下周一起, 后天性.
-  { re: new RegExp(`(${Object.keys(DAYWORD).sort((a, b) => b.length - a.length).join('|')})(?!性)`, 'g'), day: (m, at) => addDays(at, DAYWORD[m[1]]) },
+  // 后天 not as the tail of 以后 / 今后 / 然后 / 之后 …: 以后天天 is "every day from now on".
+  { re: new RegExp(`(${Object.keys(DAYWORD).sort((a, b) => b.length - a.length).map((k) => (k === '后天' ? `${AFTER_WORD}后天` : k)).join('|')})(?!性)`, 'g'), day: (m, at) => addDays(at, DAYWORD[m[1]]) },
   { re: /(?<![上下])(这个?|本|下个?|上个?)(?:周|星期|礼拜)(天(?![气空])|一(?![直起下样些共点])|[二三四五六日])/g,
     day: (m, at) => addDays(mondayMs(at), (m[1][0] === '下' ? 7 : m[1][0] === '上' ? -7 : 0) + WD[m[2]] - 1) },
   // 月底 / 下个月底 (not 每月底, not 十二月底: which year it is needs context).
