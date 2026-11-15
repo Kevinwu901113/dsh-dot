@@ -62,13 +62,15 @@ export const defaults = {
   // /dot memory recall … (saved to $DSH_HOME/dsh-memory.json, which wins over this config).
   recallBackend: 'local',       // local (on this machine, no key) | siliconflow | dashscope | off
   recallModel: '',              // embedding model; '' = the backend's own (local Xenova/multilingual-e5-small · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding); BAAI/bge-small-zh-v1.5 is the lighter Chinese-only local one
-  recallRerankModel: '',        // '' = the backend's own (local Xenova/bge-reranker-base · siliconflow BAAI/bge-reranker-v2-m3 · dashscope qwen3.7-text-rerank); 'none' = no reranker
+  recallRerankModel: '',        // '' or 'none' = no reranker (the default); a name turns one on: local Xenova/bge-reranker-base · siliconflow BAAI/bge-reranker-v2-m3 · dashscope qwen3.7-text-rerank
   recallMirror: '',             // where local models download from; '' = $HF_ENDPOINT, else https://hf-mirror.com
   recallInstall: true,          // install @huggingface/transformers into $DSH_HOME/dsh-dot-recall on first use (300–480 MB; not a package dependency)
   recallTransformersVersion: '4.3.2',
-  recallCandidates: 20,         // turns each channel (vector, BM25) hands to the reranker
-  recallTopK: 10,               // at most this many turns injected per wake — fewer when fewer are relevant
+  recallCandidates: 20,         // turns each channel (vector, BM25) hands to the reranker, when one is set
+  recallTopK: 30,               // at most this many turns found per wake — fewer when fewer stand out; shown without her replies
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
+  recallRecentTurns: 20,        // the last turns before her window are a ranked list of their own (newest first), without a reranker; 0 = off
+  recallNeighbors: 1,           // budget left over goes to the turns this close before and after each hit; 0 = off
   recallRerankMin: 0,           // a reranked turn needs at least this score (0–1); 0 = the reranker's order alone decides
   recallMinQueryLength: 4,      // a waking message with fewer distinct content tokens (CJK characters, other words) recalls nothing: 好的 / 哈哈哈哈 / ok thanks. 0 = off
   // Without a reranker (none set, or still downloading): a hit must stand out from the whole index —

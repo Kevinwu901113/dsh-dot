@@ -184,7 +184,7 @@ flowchart LR
 | **`phone`** 📱 | Android 模拟器，以 `mcp__dot-phone__*` 暴露（[mobile-mcp](https://github.com/mobile-next/mobile-mcp) 走 adb）；任何 App 的通知都能叫醒她 · [文档](docs/phone.md) | 硬件虚拟化 | `DSH_DOT_PHONE=off` |
 | **`interlude`** 🌙 | 幕间：Canon 人设、剧本、连续性、打算、只读的「去看」、可选的主动联系 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
 | **`qq`** 💬 | 她电脑 VM 里的 QQ，和手机同号；`qq_send` 回复、表情包 · [文档](docs/qq.md) | computer | `DSH_DOT_QQ=off` |
-| **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small + bge-reranker-base，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
+| **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
 | **`dot`** ◎ | 定时结果 → IM、审批与设备提醒、工作规则、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 | **`computer`** 🖥️ | 自带 microVM：shell、浏览器、桌面、实时画面、审批、审计 · [文档](docs/computer.md) | [microsandbox](https://github.com/zerocore-ai/microsandbox)（自带）或 Docker | `DSH_DOT_COMPUTER=off` |
 | **`compat`** 🤝 | 和别的插件共处：每个会话归谁、看得见哪些工具、命令在哪跑；今天认 [qq-bridge](https://github.com/Derpyu520/qq-bridge) · [文档](docs/qq-bridge.md) | — | `DSH_DOT_COMPAT=off` |

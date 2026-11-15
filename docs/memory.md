@@ -33,9 +33,10 @@
 她每次被叫醒（你的消息、QQ 消息、手机通知、定时任务），在模型看到之前：
 
 1. **话太少不查**（`recallMinQueryLength` 4）：去掉标点后不同的汉字 / 假名 / 谚文个数 + 其他文字里不同的词数，少于 4 就不召回。`好的`、`哈哈哈哈`、`在吗？` 不查。
-2. **两路候选**：按余弦取前 `recallCandidates`（20）轮，再按 BM25 取前 20 轮（汉字和相邻两字、其他文字按词，不用分词器；一个少见的名字、数字在 BM25 里分量很重，一句话的向量里却会被冲淡）。她当前会话里的轮次本来就在上下文里，不取。
-3. **重排决定**：重排模型把每条候选和那句话一起读一遍打分，按分数取，最多 `recallTopK`（10）条、`recallMaxTokens`（1500）token。**可以少于 10 条，不凑数**；`recallRerankMin`（0–1，默认 0）是可选的门槛。没有重排模型（设成 `none`，或还在下载）时，两路各自只留「比大多数高出一截」的（对比度 `recallContrast` 0.35：分数 ≥ 中位数 + 0.35 ×（最高 − 中位数）），按名次融合（RRF，k = 60：两路都有的一条两份都算；余弦和 BM25 的分数不在一个尺度上，不直接比），`recallTopK` 和 `recallMaxTokens` 按融合后的顺序截。
-4. **按日期给她看**：每天一个标题 `— 06-22 周一 · 15 天前`，下面是那天的原话；开头写明今天是哪天。原话里的日子由**代码**按那句话说的日子换算，附在后面：`下周三（=07-15）`（`src/memory/when.js`）。换算的有：明天、后天、昨天、前天、这周X、下周X、上周X；月底、下个月底；X号 / X日（这个月还没到就是这个月，过了就是下个月，刚过去一周以内的不换；说了「下个月」「这个月」就照说的；单个「一号」「三号」多半是编号，不换）；农历日子（正月 / 冬月 / 腊月 + 日子，一…十二月 + 初N / 廿N，前面有「农历」「阴历」的，「闰六月」这种闰月），除夕、大年三十、大年初N，春节 / 过年 / 元旦 / 除夕 前N天、后N天；单说「初四」只在春节前 40 天到后 15 天之间按正月算；N天后 / N天以后 / N天之后、一周后 / 两周后、N个星期 / 礼拜后，从这句话的日子往后数（「过两天」「过几天」「几天后」没有确切的日子，不换；「三天后悔」「前三天后」「第三天后」「观察一周」这种不是日子的不换；这一小句写明是从过去的某天数的——果然三天后…、上次…、…已经 / 算是 / 过去了——也不换）。农历日子和节日取 15 天以内刚过的那个，否则取下一个；农历用 Node 自带的日历（`Intl` 的 `-u-ca-chinese`），逐日往后找，不带农历表（它偶尔差一天：和查表的农历逐日对过 2015–2045 年，Node 22 / ICU 78 只在三个月上不对——2018 年十月、2027 年正月（实际 02-06 开始）、2030 年正月（实际 02-03 开始，02-02 是腊月三十）；后两个在 `when.js` 的 `LUNAR_TRUE` 里按真实日子写死，ICU 以后改对了也不受影响，2018 年已过去不管）。不换算的：「周末」、单说「周三」、「八月十五」（阴历阳历说不准）、「春节后第三天」；在引号里的、听说 / 写着的、假设的（如果…、要是…）；某人「说」的一般照换（说的日子就是这句话的日子），但这一小句写明是别的日子说的（昨天他说明天来、上次她说…）就不换——算错的确定日期比原话更误导。
+2. **三路名单**：余弦一路、BM25 一路（汉字和相邻两字、其他文字按词，不用分词器；一个少见的名字、数字在 BM25 里分量很重，一句话的向量里却会被冲淡），每路只留「比大多数高出一截」的（对比度 `recallContrast` 0.35：分数 ≥ 中位数 + 0.35 ×（最高 − 中位数）），最多 60 条；第三路是窗口之前最近的 `recallRecentTurns`（20）轮，越近越靠前。她当前会话里的轮次本来就在上下文里，不取。
+3. **按名次融合**（RRF，k = 60：几路都有的一条几份都算；余弦和 BM25 的分数不在一个尺度上，不直接比），取前 `recallTopK`（30）条。默认不用重排模型。设了重排模型（`/dot memory recall rerank <名字>`）时改成：余弦、BM25 各取前 `recallCandidates`（20）条交给它读一遍打分，按它的分数取，`recallRerankMin`（0–1，默认 0）是可选的门槛，这时没有「最近 20 轮」那一路。
+4. **只给他那边的话**：每一轮只给进来的那部分（他说的、手机通知、定时任务），不带她当时回的——她的回复通常比他的话长得多，去掉以后同样的 `recallMaxTokens`（1500）能放下大约三倍的轮次。按融合后的顺序放，放不下的跳过；还有余量时，按命中的名次把每条命中前后各 `recallNeighbors`（1）轮也放进来（同样只给他那边的话）。她自己用 `recall` 工具查的时候给整轮（带她的回复），不补前后轮。
+5. **按日期给她看**：每天一个标题 `— 06-22 周一 · 15 天前`，下面是那天的原话；开头写明今天是哪天。原话里的日子由**代码**按那句话说的日子换算，附在后面：`下周三（=07-15）`（`src/memory/when.js`）。换算的有：明天、后天、昨天、前天、这周X、下周X、上周X；月底、下个月底；X号 / X日（这个月还没到就是这个月，过了就是下个月，刚过去一周以内的不换；说了「下个月」「这个月」就照说的；单个「一号」「三号」多半是编号，不换）；农历日子（正月 / 冬月 / 腊月 + 日子，一…十二月 + 初N / 廿N，前面有「农历」「阴历」的，「闰六月」这种闰月），除夕、大年三十、大年初N，春节 / 过年 / 元旦 / 除夕 前N天、后N天；单说「初四」只在春节前 40 天到后 15 天之间按正月算；N天后 / N天以后 / N天之后、一周后 / 两周后、N个星期 / 礼拜后，从这句话的日子往后数（「过两天」「过几天」「几天后」没有确切的日子，不换；「三天后悔」「前三天后」「第三天后」「观察一周」这种不是日子的不换；这一小句写明是从过去的某天数的——果然三天后…、上次…、…已经 / 算是 / 过去了——也不换）。农历日子和节日取 15 天以内刚过的那个，否则取下一个；农历用 Node 自带的日历（`Intl` 的 `-u-ca-chinese`），逐日往后找，不带农历表（它偶尔差一天：和查表的农历逐日对过 2015–2045 年，Node 22 / ICU 78 只在三个月上不对——2018 年十月、2027 年正月（实际 02-06 开始）、2030 年正月（实际 02-03 开始，02-02 是腊月三十）；后两个在 `when.js` 的 `LUNAR_TRUE` 里按真实日子写死，ICU 以后改对了也不受影响，2018 年已过去不管）。不换算的：「周末」、单说「周三」、「八月十五」（阴历阳历说不准）、「春节后第三天」；在引号里的、听说 / 写着的、假设的（如果…、要是…）；某人「说」的一般照换（说的日子就是这句话的日子），但这一小句写明是别的日子说的（昨天他说明天来、上次她说…）就不换——算错的确定日期比原话更误导。
 
 只给她的对话（动态 context，dsh 放在历史之后，不破坏前缀缓存）；跑腿会话看不到。密码 / key 那行不入索引、不发云端、不注入。
 
@@ -43,15 +44,15 @@
 
 | 后端 | 模型 | 要什么 | 说明 |
 |---|---|---|---|
-| `local`（默认） | 向量 `Xenova/multilingual-e5-small`（129 MB）+ 重排 `Xenova/bge-reranker-base`（279 MB），ONNX q8 | 不要 key | transformers.js 在 CPU 上跑。推理库 300–480 MB 不打进插件包，第一次用时装到 `$DSH_HOME/dsh-dot-recall/`；模型从 `https://hf-mirror.com` 下（`recallMirror`，也认 `HF_ENDPOINT`）。重排模型在向量模型之后下载，下好之前不重排 |
-| `local` + 别的模型 | `recall model BAAI/bge-small-zh-v1.5`（只用中文、更轻）；`recall rerank BAAI/bge-reranker-v2-m3`（571 MB，更强也更慢）或 `none` | 不要 key | BAAI 的名字自动换成它的 ONNX 版 |
-| `siliconflow` | `BAAI/bge-m3` + `BAAI/bge-reranker-v2-m3` | key（免费档够用） | `SILICONFLOW_API_KEY` 或 `/dot memory recall key siliconflow <key>` |
-| `dashscope` | `qwen3.7-text-embedding` + `qwen3.7-text-rerank` | key | `DASHSCOPE_API_KEY` 或 `/dot memory recall key dashscope <key>` |
+| `local`（默认） | 向量 `Xenova/multilingual-e5-small`（129 MB），ONNX q8 | 不要 key | transformers.js 在 CPU 上跑。推理库 300–480 MB 不打进插件包，第一次用时装到 `$DSH_HOME/dsh-dot-recall/`；模型从 `https://hf-mirror.com` 下（`recallMirror`，也认 `HF_ENDPOINT`） |
+| `local` + 别的模型 | `recall model BAAI/bge-small-zh-v1.5`（只用中文、更轻）；`recall rerank BAAI/bge-reranker-base`（279 MB）或 `BAAI/bge-reranker-v2-m3`（571 MB，更强也更慢）打开重排 | 不要 key | BAAI 的名字自动换成它的 ONNX 版。重排模型在向量模型之后下载，下好之前不重排 |
+| `siliconflow` | `BAAI/bge-m3`（重排可选 `BAAI/bge-reranker-v2-m3`） | key（免费档够用） | `SILICONFLOW_API_KEY` 或 `/dot memory recall key siliconflow <key>` |
+| `dashscope` | `qwen3.7-text-embedding`（重排可选 `qwen3.7-text-rerank`） | key | `DASHSCOPE_API_KEY` 或 `/dot memory recall key dashscope <key>` |
 | `off` | — | — | 不自动召回 |
 
 每个后端 + 向量模型各存一份索引（`~/dot/memory/recall/<后端>-<模型>/`），来回切换不重算；换重排模型不动索引。
 
-**命令**（写进 `$DSH_HOME/dsh-memory.json`，0600，优先于插件配置，不用重启）：`/dot memory recall`（状态）· `backend <local|siliconflow|dashscope|off>` · `key <后端> <key>`（`-` 删掉）· `model <名字|default>` · `rerank <名字|none|default>` · `mirror <url|default>` · `rebuild` · `test <一句话>`（看会翻出什么、从几条候选里挑的）。
+**命令**（写进 `$DSH_HOME/dsh-memory.json`，0600，优先于插件配置，不用重启）：`/dot memory recall`（状态）· `backend <local|siliconflow|dashscope|off>` · `key <后端> <key>`（`-` 删掉）· `model <名字|default>` · `rerank <名字|none|default>`（默认不重排） · `mirror <url|default>` · `rebuild` · `test <一句话>`（看会翻出什么、从几条候选里挑的）。
 
 ## 三栏笔记
 
@@ -133,7 +134,7 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 `handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `chunkLines` 80 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
-自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（后端默认；`none` 不重排）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路）· `recallTopK` 10 · `recallMaxTokens` 1500 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35（不重排时）· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
+自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（不重排；填名字打开）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路，重排时）· `recallTopK` 30 · `recallMaxTokens` 1500 · `recallRecentTurns` 20 · `recallNeighbors` 1 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 

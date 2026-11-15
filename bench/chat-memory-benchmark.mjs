@@ -19,7 +19,7 @@
 // node bench/chat-memory-benchmark.mjs --dataset <…/datasets/natural-timegrid-20261101-v2> --out <dir>
 //   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--only ids.txt] [--save-prompts]
 // env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-flash),
-//      DSH_BENCH_EMBED / DSH_BENCH_RERANK (local recall models; 'none' = no reranker), DSH_BENCH_MEMORY
+//      DSH_BENCH_EMBED / DSH_BENCH_RERANK (local recall models; no reranker unless DSH_BENCH_RERANK names one), DSH_BENCH_MEMORY
 //      (JSON for the memory section of the bench's own dsh-dot.json, e.g. '{"recallLexical":false}'),
 //      DSH_BENCH_EXTRA_BODY (JSON merged into every request), DSH_BENCH_MAX_TOKENS_CAP (8192),
 //      DSH_BENCH_PRICE_RMB ("0.2,2,3": per 1M tokens, input cache hit, input cache miss, output)
@@ -232,7 +232,7 @@ async function main() {
   if (!existsSync(link) && !(() => { try { return lstatSync(link).isSymbolicLink(); } catch { return false; } })()) symlinkSync(realLib, link, process.platform === 'win32' ? 'junction' : 'dir');
   let savedRecall = {};
   try { savedRecall = JSON.parse(readFileSync(join(realDsh, 'dsh-memory.json'), 'utf8')).recall ?? {}; } catch { /* none */ }
-  // DSH_BENCH_EMBED / DSH_BENCH_RERANK pick the local models (a model name, or 'none' for no reranker).
+  // DSH_BENCH_EMBED / DSH_BENCH_RERANK pick the local models (no reranker unless DSH_BENCH_RERANK names one).
   writeFileSync(join(benchDsh, 'dsh-memory.json'), JSON.stringify({ recall: { backend: o.recall, ...(savedRecall.mirror ? { mirror: savedRecall.mirror } : {}), ...(process.env.DSH_BENCH_EMBED ? { model: { local: process.env.DSH_BENCH_EMBED } } : {}), ...(process.env.DSH_BENCH_RERANK ? { rerank: { local: process.env.DSH_BENCH_RERANK } } : {}) } }, null, 2));
   // DSH_BENCH_MEMORY: JSON merged into the memory section of the bench's own dsh-dot.json (a variant to measure).
   writeFileSync(join(benchDsh, 'dsh-dot.json'), JSON.stringify({ memory: process.env.DSH_BENCH_MEMORY ? JSON.parse(process.env.DSH_BENCH_MEMORY) : {} }, null, 2));
@@ -263,7 +263,7 @@ async function main() {
     model: o['fake-llm'] ? 'fake-llm' : modelName, baseUrl: o['fake-llm'] ? null : baseUrl, extraBody, thinking: extraBody.thinking ? JSON.stringify(extraBody.thinking) : 'the model\'s default (deepseek-flash reasons by default, billed as output); DSH_BENCH_EXTRA_BODY=\'{"thinking":{"type":"disabled"}}\' turns it off',
     usedFor: 'consolidation (memory.js via ctx.llm.stream) and answering, same model',
     window: { turns: WINDOW, why: 'the last 6 complete turns as chat messages, as Soul/ROFM/Qwen/OpenViking/Hindsight/Suzu were tested (docs/tested-configurations.md)' },
-    recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'Xenova/bge-reranker-base') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
+    recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'none') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
     memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, limits: defaults.limits, sessionBaseTokens: SESSION_BASE, tz: o.tz },
     pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-flash (assumption; override DSH_BENCH_PRICE_RMB)' },
     personas: oldMeta?.personas ?? {},
