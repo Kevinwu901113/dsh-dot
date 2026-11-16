@@ -10,7 +10,8 @@
 //            60-second timer is fired at every minute where it can act (the diary at dailyAt).
 //   exam     at each question's exam time (after the maintenance due by then) a fresh, independent
 //            session is assembled: the dot:now line, the dot:memory context the plugin injects, the
-//            auto-recall hits for the question (recall.prepare → dot:recall, default settings), and the
+//            auto-recall hits for the question (recall.prepare → dot:recall, default settings), the facts picked
+//            for it (facts.prepare → dot:facts), and the
 //            last WINDOW turns as chat messages. One completion, no tools. The question and the answer
 //            never reach the transcript, the memory or the recall index.
 //   output   answers.jsonl ({"id","answer"} for grading/grade.py), run.jsonl, meta.json; a checkpoint
@@ -31,7 +32,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-export const ADAPTER_VERSION = '2.0.0'; // 0.20 memory: no idle consolidation, the diary is its own call
+export const ADAPTER_VERSION = '2.1.0'; // facts: written at consolidation, picked for the exam question
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ── fake clock: Date.now() and new Date() are the logical time; everything else is the real one ──
@@ -311,6 +312,7 @@ async function main() {
     setClock(state.clock);
     const host = hostFor({ apply, home, model, modelName, state, sessionBaseTokens: SESSION_BASE, estimateTokens });
     const { api, contexts, emit } = host;
+    api.facts.hold(true); // replayed messages of his pick no facts; an exam question does
 
     // Let whatever the plugin started (consolidation, handoff, indexing) finish before time moves on.
     async function quiesce() {
@@ -318,6 +320,7 @@ async function main() {
         let idle = 0;
         while (idle < 5) { await new Promise((r) => { setImmediate(r); }); if (model.inflight === 0) idle++; else { idle = 0; await sleep(25); } }
         await api.recall.sync();
+        await api.facts.sync();
       }
     }
 
@@ -418,15 +421,19 @@ async function main() {
       const r = await api.recall.prepare(examId, q.question);
       const recallText = contexts.get('dot:recall')?.text(c) ?? '';
       api.recall.clear(examId);
+      // The facts for this message: ranked and picked as on a real wake (one more model call).
+      await api.facts.prepare(examId, q.question, { force: true, now: clockMs });
+      const factsText = contexts.get('dot:facts')?.text(c) ?? '';
+      api.facts.clear(examId);
       const nowLine = nowText(now, api.lastSaidAt(clockMs + 1));
       const win = history.slice(Math.max(0, state.turnsDone - WINDOW), state.turnsDone);
       const messages = [
-        { role: 'system', content: [SYSTEM, nowLine, memoryText, recallText].filter(Boolean).join('\n\n') },
+        { role: 'system', content: [SYSTEM, nowLine, memoryText, recallText, factsText].filter(Boolean).join('\n\n') },
         ...win.flatMap((h) => [{ role: 'user', content: prompt('dot.owner-words', { stamp: stamp(h.at, now), text: h.user, busy: '' }) }, { role: 'assistant', content: h.assistant }]),
         { role: 'user', content: prompt('dot.owner-words', { stamp: stamp(now, now), text: q.question, busy: '' }) },
       ];
       if (o['save-prompts']) appendFileSync(files.prompts, `${JSON.stringify({ id: q.id, messages, recall: { hits: (r?.hits ?? []).map((h) => h.at), candidates: r?.candidates ?? [], mode: r?.mode ?? '' } })}\n`);
-      const row = { id: q.id, persona, cutoff_turn: q.cutoff_turn, now: q.now, recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', memory_chars: memoryText.length, window: win.length, sessions: state.sessions };
+      const row = { id: q.id, persona, cutoff_turn: q.cutoff_turn, now: q.now, recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', memory_chars: memoryText.length, facts_chars: factsText.length, facts: api.facts.size, window: win.length, sessions: state.sessions };
       try {
         const a = await model.complete(messages, { maxTokens: 2048, purpose: 'answer' });
         const answer = a.text.trim();
