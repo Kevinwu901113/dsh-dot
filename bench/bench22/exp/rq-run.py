@@ -29,7 +29,7 @@ def call(o):
     return r['result']
 print(call({'cmd': 'init', 'home': home + '/dot', 'dshHome': home + '/dsh-home', 'gateway': os.environ.get('RQ_GATEWAY', 'http://127.0.0.1:18890'), 'fake': True, 'memory': mem}).get('recall'), flush=True)
 done, t0 = 0, time.time()
-f = open(out, 'w', encoding='utf-8')
+f = open(out, 'w', encoding='utf-8'); fp = open(out.replace('.jsonl', '.prompts.jsonl'), 'w', encoding='utf-8')  # every prompt, for rq-strips-answer.py
 for n, it in enumerate(items, 1):
     c = it['cutoff_turn']
     if c > done:
@@ -40,6 +40,7 @@ for n, it in enumerate(items, 1):
         more = []
         if isinstance(q, dict): q, more = q.get('q') or it['question'], q.get('more', [])
         r = call({'cmd': 'retrieve', 'question': q, 'now': it['now'], 'cutoff': c, 'more': more})
+        fp.write(json.dumps({'id': it['id'], 'v': name, 'prompt': r['prompt']}, ensure_ascii=False) + '\n')
         row['v'][name] = {'recall': r['meta']['recall_turns'], 'used': r['used_turns'], 'chars': r['meta']['recall_chars'], 'cand': r['meta']['recall_candidates'], 'mode': r['meta']['recall_mode']}
     f.write(json.dumps(row, ensure_ascii=False) + '\n'); f.flush()
     if n % 40 == 0: print(persona, n, len(items), 'turn', done, round(time.time() - t0), 's', flush=True)
