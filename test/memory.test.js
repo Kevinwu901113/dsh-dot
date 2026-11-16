@@ -412,16 +412,16 @@ test('consolidation and handoff: notes written first, old session archived befor
   assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
 });
 
-test('consolidation waits for a batch: nothing at 39 new lines, one call at 40', async () => {
+test('consolidation waits for a batch: nothing at 119 new lines, one call at 120', async () => {
   const h = harness({ llmReply: '{}' });
   apply(h.ctx, { home: h.home });
   const turn = (i) => { h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: `第 ${i} 句话` }] }, { surfaceOp: 'append' }); h.emit('s1', 'assistant/message', msg(`回第 ${i} 句`)); h.emit('s1', 'turn/end', {}); };
-  for (let i = 0; i < 19; i++) turn(i);
+  for (let i = 0; i < 59; i++) turn(i);
   h.emit('s1', 'turn/start', {}); h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '再一句' }] }, { surfaceOp: 'append' }); h.emit('s1', 'turn/end', {});
-  await wait(30);
-  assert.equal(h.calls.length, 0, '39 lines: not yet');
+  await wait(400);
+  assert.equal(h.calls.length, 0, '119 lines: not yet');
   turn(99);
-  await wait(30);
+  await wait(400);
   assert.equal(h.calls.length, 1);
   assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
@@ -543,6 +543,26 @@ test('daily diary: its own call about today, only when anything happened; headed
   const status = await h.services.dotMemory.command('memory');
   assert.match(status, /diary \d{4}-\d{2}-\d{2} \(daily at 23:30\)/);
   assert.deepEqual(h.services.dotMemory.forInterlude(), [], 'the interlude gets what she knows about him; nothing yet');
+});
+
+test('day end: the unread lines are consolidated first, then the diary reads that call\'s note instead of the lines', async () => {
+  const h = harness({ llmReply: JSON.stringify({ open: [{ action: 'add', content: '他说明早九点半去洗牙', due: null }], day: '他说明早九点半去洗牙。', diary: '他明天要去洗牙。' }) });
+  apply(h.ctx, { home: h.home, dailyAt: '23:30' });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '明早九点半我去洗牙' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('好，记着了'));
+  h.emit('s1', 'turn/end', {});
+  await wait(20);
+  assert.equal(h.calls.length, 0, 'two lines are far from a batch');
+  const r = await h.services.dotMemory.dayEnd();
+  assert.equal(r.ok, true);
+  assert.equal(h.calls.length, 2);
+  assert.match(h.calls[0].messages[0].content[0].text, /^你在帮她整理记忆[\s\S]*他：明早[^\n]*九点半我去洗牙/);
+  const daily = h.calls[1].messages[0].content[0].text;
+  assert.match(daily, /^这是她每天一次的收拾[\s\S]*的摘记\] 他说明早九点半去洗牙。/);
+  assert.doesNotMatch(daily, /他：明早[^\n]*九点半我去洗牙/, 'the lines the consolidation read are not read again');
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
+  assert.equal(h.services.dotMemory.status().open, 1, 'tomorrow\'s item is in before the day ends');
 });
 
 test('coexist auto: another memory service present → owner/self notes not in the prompt; people and 还没了的事 kept', async () => {

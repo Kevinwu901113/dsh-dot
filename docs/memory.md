@@ -7,7 +7,7 @@
                │
                ├─ 每轮建索引 ─► 向量 + BM25 ─(每次叫醒)─► 合并候选 → 重排 → ≤10 条原话（按日期分组）
                │
-               ├─ 攒满 40 行 / 交班 ─► 一次整理 ─► 还没了的事 + 人物卡 ─┐
+               ├─ 攒满 120 行 / 每天结束 / 交班 ─► 一次整理 ─► 还没了的事 + 人物卡 ─┐
                │                                                       ├─(她对话的每一轮)─► <memory>
                └─ 每天 dailyAt ─► 一次调用 ─► 关于他 / 她自己 + 日记 ───┘
 ```
@@ -70,7 +70,7 @@
 
 **关于他 / 她自己：每天写一次，只有那一次写。** 原话库才是存档（全都留着、有索引、提到时召回），这两栏只是它的一份摘要：
 
-- **只有一个写的人**：攒满 40 行的整理不碰这两栏（提示词里没有它们，回复里给了 owner / self 也忽略）。回放基准时量过：每 40 行一次的整理往这两栏加的远多于放得下（关于他一天 +190 到 +538 字，当时上限 1375），每天再删掉大半没有意义，还让每次整理都带着两栏全文。现在由每天那一次决定这一天里什么值得一直记着——它本来就读完一整天写日记。
+- **只有一个写的人**：攒满 120 行的整理不碰这两栏（提示词里没有它们，回复里给了 owner / self 也忽略）。回放基准时量过：每 40 行一次的整理往这两栏加的远多于放得下（关于他一天 +190 到 +538 字，当时上限 1375），每天再删掉大半没有意义，还让每次整理都带着两栏全文。现在由每天那一次决定这一天里什么值得一直记着——它本来就读完一整天写日记。
 - **每天一次，只回改动**：`dailyAt` 那次（当天有记录）只调用一次 `memory.daily`：两栏都给（从旧到新的全部条目、现在的字数、上限；满了的那一栏标题上写明满了，见下），加上当天的记录。**当天的记录不读两遍**：已经被整理读过的那些行，这里只读那次整理留下的摘记（`day`，三五句，见「整理」）；整理还没读过的行才读原话。回复 `{"diary", "owner": [...], "self": [...]}`，owner / self 只是今天对这一栏的改动，一个改动一项：`{"action":"add","content"}` 加一条，`{"action":"replace","oldText","content"}` 换掉一条（`oldText` 是原条目里独一无二的一小段，和 `memory` 工具的 replace 一样认）。默认是 `[]`：多数日子没有要一直记着的新东西，两栏都不动；栏里已有的不抄回来。规则：从当天记录里只记一直为真、他不用再提她也该照着做的（他是谁、在做什么、喜好、雷点、称呼、说定了的安排、长期计划；她学会了什么、习惯、看法，人设不算）；今天变了的用 replace 换掉旧的那条（以今天说的为准）；只在某一天发生的事（约了人、到快递、上门、截止日）不记在这里，没了结的事归还没了的事；每年都会再来的日子（生日、纪念日）记，日期照他说的写；不新编，名字和说法照原字。
 - **改动由代码照做**：按顺序用 `bankOp`（和她的工具同一个）一条条改；放不下的（加一条、或换成更长的一条后超过上限）、对不上的（`oldText` 一条都不中或中了好几条、不是 add / replace、不是对象——比如照旧整栏抄回来的一句句话）、不收的（重复、密码 / key、太短）跳过，记一条警告（日志、审计 `daily-op-skipped`），其余的照样改上。
 - **很长的一天**：当天还没整理过的原话超过 `inputChars`（40000 字）就从早到晚分几次调用（摘记跟第一次），每次看到的是上一次改完的两栏，一行都不跳过。日记只取最后一次的回复，所以那样的一天，日记只写到了一天的最后一段。
@@ -89,7 +89,7 @@
 
 ## 整理
 
-一次模型调用，读上次整理之后的记录（一次最多 `chunkLines` 80 行、`inputChars` 40000 字；积压更多就从最旧的分几次读，游标只走到真正读过的位置），输出还没了的事的改动（加、改、办完）、人物的印象和合并，外加这段记录的摘记 `day`（三五句、150 字以内：发生了什么，和记录里说到的一直为真的事，名字和说法照原字）。摘记存在 `memory.json` 的 `dayNotes` 里，只给当天晚上那次调用读，写完日记就清掉；关于他 / 她自己不归整理写（见上，每天一次）。只在两种时候发生：**新记录攒满 `consolidateEveryLines`（40）行**，或**交班**之前。`/dot memory now` 立刻整理。
+一次模型调用，读上次整理之后的记录（一次最多 `chunkLines` 160 行、`inputChars` 40000 字；积压更多就从最旧的分几次读，游标只走到真正读过的位置），输出还没了的事的改动（加、改、办完）、人物的印象和合并，外加这段记录的摘记 `day`（三五句、150 字以内：发生了什么，和记录里说到的一直为真的事，名字和说法照原字）。摘记存在 `memory.json` 的 `dayNotes` 里，只给当天晚上那次调用读，写完日记就清掉；关于他 / 她自己不归整理写（见上，每天一次）。只在两种时候发生：**新记录攒满 `consolidateEveryLines`（40）行**，或**交班**之前。`/dot memory now` 立刻整理。
 
 **失败了不连环重试**：一次整理没拿到 JSON（例如推理模型把输出额度全用在思考上，正文是空的），游标不动，下一次的批量减半（最少 `minChunkLines` 10 行），而且要再攒满一批新记录才重试，不会每一轮都带着越积越多的记录再试一遍。成功一次就恢复原来的批量。
 
@@ -132,7 +132,7 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 40 · `chunkLines` 80 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 120 · `chunkLines` 160 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
 自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（不重排；填名字打开）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路，重排时）· `recallTopK` 30 · `recallMaxTokens` 1500 · `recallRecentTurns` 20 · `recallNeighbors` 1 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 

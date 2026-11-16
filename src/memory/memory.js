@@ -9,7 +9,7 @@
 //   memory      <home>/memory/memory.json (+ memory.md for reading) — three notes (about him, her own,
 //               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
 //   consolidate one model call over the transcript since the last one: 还没了的事 and people. When
-//               `consolidateEveryLines` new lines have piled up, and before a handoff.
+//               `consolidateEveryLines` new lines have piled up, before the diary, and before a handoff.
 //   daily       once a day at `dailyAt`, when there was anything that day: one call writes the diary
 //               and is the only writer of the owner / self banks besides her own tool — what of the
 //               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
@@ -40,8 +40,8 @@ export const defaults = {
   home: '',
   handoffTokens: 150000,        // her conversation is handed over to a fresh session past this
   minTokensBetweenHandoffs: 40000,
-  consolidateEveryLines: 40,    // transcript lines since the last consolidation that trigger one (and every handoff)
-  chunkLines: 80,               // at most this many lines per consolidation call; a backlog is read in several
+  consolidateEveryLines: 120,   // transcript lines since the last consolidation that trigger one (also: before the diary, and every handoff)
+  chunkLines: 160,              // at most this many lines per consolidation call (above the trigger, so one batch is one call); a backlog is read in several
   minChunkLines: 10,            // after failed calls the chunk is halved, down to this
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
@@ -677,9 +677,20 @@ export function apply(ctx, config = {}) {
     const pending = sinceCursor().length;
     if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
-  // Once a minute: the diary, from dailyAt on, once a day (a failed one is tried again next minute).
+  // Once a minute: the day's end, from dailyAt on, once a day (a failed diary is tried again next minute).
+  // The day's unread lines are consolidated first: what he said tonight about tomorrow is in 还没了的事
+  // before the day ends, and the diary call reads that call's note, not the lines again. A failed
+  // consolidation leaves them unread, and the diary reads them as before.
+  let endingDay = null;
+  function dayEnd() {
+    endingDay ??= (async () => {
+      if (sinceCursor().length) { try { await consolidate({ reason: 'day-end' }); } catch (error) { void error; } }
+      return diary({ reason: 'daily' });
+    })().finally(() => { endingDay = null; });
+    return endingDay;
+  }
   ctx.effect(() => {
-    const timer = setInterval(() => { if (dailyDue()) void diary({ reason: 'daily' }); }, 60000);
+    const timer = setInterval(() => { if (dailyDue()) void dayEnd(); }, 60000);
     timer.unref?.();
     return () => clearInterval(timer);
   }, 'dsh-dot/memory: daily diary');
@@ -793,7 +804,7 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    consolidate, diary, dayEnd, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();
