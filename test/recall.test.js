@@ -1,3 +1,4 @@
+process.env.DSH_DOT_FACTS = 'off'; // facts have their own tests (facts.test.js): here every model call counted is the notes'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync, writeFileSync } from 'node:fs';

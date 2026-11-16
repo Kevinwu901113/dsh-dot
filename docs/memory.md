@@ -83,6 +83,16 @@
 
 **为什么不再整栏给回（0.23 之后）**：回放基准时，旧的做法（回复里给改好的一整栏）93–97% 的日子都把整栏抄回来，输出 token 翻了三倍；栏快满时模型只加不删，结果超了上限、整栏被拒，当天新记的几百条就此丢了；栏从没真的超过上限，所以「超了就重写」那条路一次没走过；被接受的整栏重写有时删了核心事实（家里人），或把两种矛盾的说法揉成一句。
 
+## 事实条
+
+原话是存档，事实条是找到它、用上它的另一把钥匙：一件以后用得上的事写成一句话，再写上"什么时候该想起它"。他后来那句话和当时的原话常常一个字都对不上（"想劝高姐一起拼单"和"别在别人面前提高姐房贷的事"），和"想劝高姐一起花钱"这样的情境却对得上。
+
+- **写**：每次整理一批记录之后另有一次调用（`memory.facts.write`），只读这一批里他说的话，回的是一行一条：`时间｜一句话｜情境；情境`。存进 `~/dot/memory/facts.jsonl`，只追加、不改写。句子里的"明天""27号"由 `when.js` 换算成日子存在条目上。这次调用失败只是这一批没有事实条，便签不受影响。
+- **索引**：每条的那句话和每个情境各有一个向量（用召回的向量模型，存在 `~/dot/memory/facts/<后端>-<模型>/`），另有两张 BM25 表。向量模型还没就绪时只用 BM25 和日子。
+- **给她看**：他叫醒她时，代码排三份名单——条目里的日子离现在多近（三天前到十四天后，近的在前）、他的话和那句话相近（余弦 + BM25）、他的话和情境相近（余弦 + BM25）——按名次融合，前 `factsShown`（60）条交给一次模型调用（`memory.facts.pick`）挑出接这句话用得上的，最多 `factsPicked`（6）条列进她的提示词，放在翻出来的原话后面（`dot:facts`）。这次调用不排在他的对话后面等（它就是回他这句话的一部分）；提示词拼装最多等它 `factsWaitMs`（8 秒），等不到这一轮就不带。
+- **关掉**：`facts: false`，或环境变量 `DSH_DOT_FACTS=off`。关掉后不写、不挑，别的都照旧。
+- 为什么是这个样子（多少条、要不要先想、挑中的怎么用、哪些打分器没用）：`docs/MEMORY-ROOT-CAUSES.md` 2026-11-16 / 17 的几节，都是在 chat-memory-benchmark 2.2 的开发集上量的；真实使用下还没有数据。
+
 ## 认识的人
 
 一张身份表：每个人一张卡，卡上有多个「把手」——`qq:919231551`（有号码时）、`qq:name:宽`（手机通知只显示名字时）、`xiaoheihe:name:暮看云`……不管从哪个 App 来，都先在这张表里认人。档位：你 / 聊过 / 只在帖子里打过交道 / 好友列表里没说过话。卡上只有：名字、把手、档位、各类互动次数、上次出现、**一句印象**（80 字以内：她怎么认识的、对方是什么样的人）。对方说过什么、做过什么不抄在卡上——原话里有，提到时召回。
@@ -136,7 +146,9 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 `handoffTokens` 150000 · `minTokensBetweenHandoffs` 40000 · `consolidateEveryLines` 120 · `chunkLines` 160 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `dailyAt` 23:30 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
-自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（不重排；填名字打开）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路，重排时）· `recallTopK` 30 · `recallMaxTokens` 1500 · `recallRecentTurns` 20 · `recallNeighbors` 1 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
+事实条：`facts` true · `factsShown` 60 · `factsPicked` 6 · `factsWaitMs` 8000。
+
+自动召回：`recallBackend` local · `recallModel` ''（后端默认）· `recallRerankModel` ''（不重排；填名字打开）· `recallMirror` '' · `recallInstall` true · `recallTransformersVersion` 4.3.2 · `recallCandidates` 20（每路，重排时）· `recallTopK` 30 · `recallMaxTokens` 1500 · `recallRecentTurns` 20 · `recallNeighbors` 1 · `recallRerankMin` 0 · `recallMinQueryLength` 4 · `recallContrast` 0.35· `recallMinScore` 0（不重排时的余弦下限）· `recallLexical` true（BM25 那一路）· `recallWindowTurns` 0 · `recallChunkChars` 1200 · `recallWaitMs` 3000 · `facts` true · `factsShown` 60 · `factsPicked` 6 · `factsWaitMs` 8000 · `recallSiliconflowUrl` · `recallDashscopeUrl`。命令改的值存在 `$DSH_HOME/dsh-memory.json`，优先于这里。0.19 的 `consolidateIdleMinutes`、`fragmentBudgetTokens`、`openBudgetTokens`、`agingEveryGens`、`maxFragments`、`recallNames`、`recallRrfK` 不再使用，写着也没关系。
 
 `DSH_DOT_MEMORY=off` 整个组件不加载。
 

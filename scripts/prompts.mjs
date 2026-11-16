@@ -124,6 +124,8 @@ export const entries = [
       const m = sampleMemory();
       return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
     } },
+  { id: 'facts', group: 'call', name: '事实条', note: '整理一批记录时另有一次调用，把他说的话里以后用得上的事各写成一行（时间｜一句话｜该想起它的情境）；他叫醒她时，代码按日子、和他的话相近、和情境相近排出前 60 条，再一次调用挑出用得上的，最多 6 条列进她的提示词（memory.facts.header 是那几行的标题）', files: ['memory.facts.write', 'memory.facts.pick', 'memory.facts.header'],
+    render: () => variant([['写（整理时）', P.prompt('memory.facts.write', { records: '[06-22 19:40] 老周下周三（=07-01）过来吃饭，他花生过敏你记着点' })], ['挑（他叫醒她时）', P.prompt('memory.facts.pick', { facts: '1. [06-22] 老周对花生过敏\n2. [06-22] 老周 07-01 过来吃饭', recent: '他：晚上吃啥\n你：看你想吃啥', now: '06-30 18:02', said: '明天老周来，我想做个宫保鸡丁' })], ['她看到的', `${P.prompt('memory.facts.header')}\n- [06-22] 老周对花生过敏`]]) },
   { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——当天值得一直记着的，只给加、换的改动（多数日子没有），代码照着改；栏超了上限也只是超着，不删不重写。固定的说明在前，两栏在中间，日子和当天记录在最后。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank'],
     render: () => {
       const m = sampleMemory();

@@ -656,6 +656,10 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
 
   return {
     sync, query, prepare, status, command,
+    /** Vectors (normalised) for `texts` from the current embedder, or null while there is none (facts.js). */
+    async embed(texts, role = 'passage', use = '') { if (!texts.length) return []; const impl = await ready(backend(), 50); return impl ? (await impl.embed(texts, role, use)).map(norm) : null; },
+    /** `<backend>-<model>`: what an index built with the current embedder is filed under. */
+    indexId: () => `${backend()}-${slug(model())}`,
     /** Wait until the backend is usable (install / download / key check) and the index caught up. */
     async warm() { const impl = await ready(); if (impl?.rerankReady) await impl.rerankReady; await sync(); return Boolean(impl); },
     /** A turn of hers ended: every transcript line so far belongs to a finished turn. */

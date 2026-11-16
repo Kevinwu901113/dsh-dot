@@ -116,8 +116,9 @@ let dim = 384;
 function makeEmbedder(_backend, spec) {
   const s = M.SPECS[spec.model] ?? { query: '', passage: '' };
   return {
-    async embed(texts, role = 'passage') {
-      if (role === 'query' && acct.phase === 'ingest') { usage.embed.skipped++; const v = new Float32Array(dim); v[0] = 1; return texts.map(() => v); }
+    async embed(texts, role = 'passage', use = '') {
+      // (`use` 'index': the situations of a fact are stored as queries are — real work at any time)
+      if (role === 'query' && use !== 'index' && acct.phase === 'ingest') { usage.embed.skipped++; const v = new Float32Array(dim); v[0] = 1; return texts.map(() => v); }
       usage.embed.calls++;
       const j = await gateway('/embeddings', { model: `local:${spec.model}`, input: texts.map((t) => (s[role] ?? '') + t) }, role);
       usage.embed.tokens += Number(j.usage?.prompt_tokens ?? 0);
@@ -179,6 +180,7 @@ async function quiesce() {
     let idle = 0;
     while (idle < 5) { await new Promise((r) => { setImmediate(r); }); if (inflight === 0) idle++; else { idle = 0; await sleep(25); } }
     await host.api.recall.sync();
+    await host.api.facts.sync();
   }
   if (fatal) throw new Error(fatal);
 }
@@ -246,15 +248,19 @@ async function retrieve({ question, now: nowIso, cutoff, more = [] }) {
   const r = await host.api.recall.prepare(examId, question, more);
   const recallText = host.contexts.get('dot:recall')?.text(c) ?? '';
   host.api.recall.clear(examId);
+  // The facts for this message: ranked and picked as on a real wake (the pick is a model call, counted as retrieve).
+  await host.api.facts.prepare(examId, question, { force: true, now: clockMs });
+  const factsText = host.contexts.get('dot:facts')?.text(c) ?? '';
+  host.api.facts.clear(examId);
   acct.phase = 'ingest';
   if (fatal) throw new Error(fatal);
   const nowLine = M.nowText(clockMs, host.api.lastSaidAt(clockMs + 1));
   const win = state.window.map((h) => `${M.prompt('dot.owner-words', { stamp: M.stamp(h.at, clockMs), text: h.user, busy: '' }).trim()}\n我：${h.assistant}`);
-  const prompt = [SYSTEM, nowLine, memoryText, recallText, win.length ? `【最近的聊天】（[时间] 后面是他说的，"我："后面是你回的）\n${win.join('\n')}` : ''].filter(Boolean).join('\n\n');
+  const prompt = [SYSTEM, nowLine, memoryText, recallText, factsText, win.length ? `【最近的聊天】（[时间] 后面是他说的，"我："后面是你回的）\n${win.join('\n')}` : ''].filter(Boolean).join('\n\n');
   const hitTurns = (r?.hits ?? []).flatMap((x) => state.times[x.at] ?? []);
   const used = [...new Set([...hitTurns, ...state.window.map((h) => h.turn)])].sort((a, b) => a - b);
   setClock(furthest);
-  return { prompt, used_turns: used, meta: { recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', recall_turns: [...new Set(hitTurns)].sort((a, b) => a - b), recall_candidates: r?.candidates?.length ?? 0, memory_chars: memoryText.length, recall_chars: recallText.length, window: win.length, sessions: state.sessions } };
+  return { prompt, used_turns: used, meta: { recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', recall_turns: [...new Set(hitTurns)].sort((a, b) => a - b), recall_candidates: r?.candidates?.length ?? 0, memory_chars: memoryText.length, recall_chars: recallText.length, facts_chars: factsText.length, facts: host.api.facts.size, window: win.length, sessions: state.sessions } };
 }
 
 // ── natural board: mark / rewind by snapshot of the dot home + the worker's state ──
@@ -276,6 +282,7 @@ function rewind(token) {
   rmSync(join(cfg.home, 'bench-state.json'), { force: true });
   setClock(state.clock);
   host = hostFor(state); // a fresh plugin instance reads memory.json, transcript and recall index from disk
+  host.api.facts.hold(true);
   return state.turnsDone;
 }
 
@@ -308,6 +315,7 @@ async function init(o) {
   state = freshState();
   state.sessionTokens.s1 = cfg.sessionBaseTokens;
   host = hostFor(state);
+  host.api.facts.hold(true); // replayed messages of his pick no facts; an exam question does (retrieve)
   const ok = await host.api.recall.warm();
   return { ok, recall: host.api.recall.status(), defaults: { consolidateEveryLines: M.defaults.consolidateEveryLines, dailyAt: M.defaults.dailyAt, handoffTokens: M.defaults.handoffTokens, recallTopK: M.defaults.recallTopK, recallMaxTokens: M.defaults.recallMaxTokens, recallCandidates: M.defaults.recallCandidates }, memorySettings: memory };
 }

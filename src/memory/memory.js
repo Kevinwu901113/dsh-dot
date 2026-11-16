@@ -27,6 +27,7 @@ import {
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 import { createRecall } from './recall.js';
+import { createFacts } from './facts.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
@@ -81,6 +82,12 @@ export const defaults = {
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
   recallWaitMs: 3000,           // prompt assembly waits this long for a query still running, then goes on without it
+  // Facts (facts.js): a sentence per thing worth keeping, written when records are consolidated, and
+  // the ones that bear on what he just said put in her prompt (one model call per wake picks them).
+  facts: true,
+  factsShown: 60,               // the pick call reads this many, the best by the fused lists
+  factsPicked: 6,               // at most this many lines reach her prompt
+  factsWaitMs: 8000,            // prompt assembly waits this long for the pick, then goes on without it
   recallSiliconflowUrl: 'https://api.siliconflow.cn/v1',
   recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
 };
@@ -272,6 +279,7 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot/memory');
   const user = sectionOf('memory', (m) => logger.warn(m));
   const cfg = { ...defaults, ...setValues(config), ...user };
+  if (process.env.DSH_DOT_FACTS === 'off') cfg.facts = false; // the switch without a config file (and for tests of the rest)
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
   const keep = { keepAfterDue: Number(cfg.openKeepDaysAfterDue), keepIdle: Number(cfg.openKeepDaysIdle) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
@@ -371,6 +379,7 @@ export function apply(ctx, config = {}) {
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
   const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
+  const facts = createFacts({ cfg, dir, recall, complete: (text, reason, o) => complete(text, reason, o), lines: () => lines, logger, audit: (event, data) => audit(event, data) });
   // Catch the index up with what happened while dsh was down (the local backend installs on first use).
   ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
@@ -435,7 +444,7 @@ export function apply(ctx, config = {}) {
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
         // What woke her is the query; the result is in front of her before the model is called.
-        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) void recall.prepare(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
+        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
         return;
       }
       case 'tool/call': {
@@ -466,7 +475,7 @@ export function apply(ctx, config = {}) {
         turns.delete(id);
         // Her final words count as said only when they were not a QQ turn (desktop / IM bot replies).
         if (!t.sentViaQq && t.last && !isSilent(t.last)) record({ who: 'her', session: id, text: t.last });
-        recall.clear(id); recall.turnEnded();
+        recall.clear(id); facts.clear(id); recall.turnEnded();
         void afterTurn(id);
         return;
       }
@@ -476,14 +485,16 @@ export function apply(ctx, config = {}) {
 
   // ── model calls ──
   /** One completion with her default model: { raw, spent } or { error }. Every call is counted in the day's ledger. */
-  async function complete(text, reason) {
+  async function complete(text, reason, { foreground = false } = {}) {
     const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
     if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
     let raw = '';
     let usage = null;
     try {
       let finish = null;
-      for await (const chunk of ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] }))) {
+      const options = { provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] };
+      // The pick of facts is part of answering him: it must not wait behind his own turn (llm-gate).
+      for await (const chunk of ctx.llm.stream(foreground ? options : background(options))) {
         if (chunk.type === 'text-delta') raw += chunk.text;
         if (chunk.type === 'usage') usage = chunk.usage ?? null;
         if (chunk.type === 'finish') finish = chunk.reason;
@@ -552,6 +563,8 @@ export function apply(ctx, config = {}) {
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();
+    // The facts of the same batch: their own call, after the notes are safe (a failure costs these lines' facts only).
+    { const f = await facts.write(fresh); if (f?.error) logger.warn(`facts not written for ${fresh.length} line(s): ${f.error}`); }
     audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
     logger.info(`consolidated ${fresh.length} line(s): open +${report.open} / done ${report.done} / expired ${report.expired}, people ${report.people}`);
     return { ok: true, report };
@@ -714,6 +727,12 @@ export function apply(ctx, config = {}) {
       order: 905,
       text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
     });
+    // The facts picked for this wake, after the turns recall found.
+    scope.systemPrompt.context({
+      name: 'dot:facts',
+      order: 906,
+      text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? facts.textFor(s.id) : ''; },
+    });
     // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited
     // for here, bounded by recallWaitMs, and its text put into the assembly. Registered on the
     // systemPrompt scope like the interlude's prompt trim (proven on a real dsh); without it the
@@ -726,6 +745,13 @@ export function apply(ctx, config = {}) {
         const entry = assembly.contexts.find((x) => x.name === 'dot:recall');
         const text = recall.textFor(id);
         if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:recall', text });
+      }
+      const f = id && facts.pending(id);
+      if (f && Array.isArray(assembly?.contexts)) {
+        await Promise.race([f, new Promise((r) => { setTimeout(r, cfg.factsWaitMs).unref?.(); })]);
+        const entry = assembly.contexts.find((x) => x.name === 'dot:facts');
+        const text = facts.textFor(id);
+        if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:facts', text });
       }
       return next();
     }), 'dsh-dot/memory: recall waits for its query');
@@ -804,6 +830,7 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
+    facts,
     consolidate, diary, dayEnd, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {

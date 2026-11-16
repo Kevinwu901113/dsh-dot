@@ -188,6 +188,8 @@ setx DSH_DOT_COMPUTER off
 | `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；每一路的命中要比整个索引的中位数高出一截；可选的余弦下限（都只在不重排时用）。见 [memory.md](memory.md) |
 | `recallLexical` | `true` | BM25 那一路候选（汉字 + 两字）；`false` 只用向量 |
 | `recallMirror` | `""` | 本机模型下载镜像，默认 hf-mirror |
+| `facts` | `true` | 事实条（memory.md）：整理时把以后用得上的事各写成一句话，他叫醒她时挑出用得上的几条给她看；`false` 或环境变量 `DSH_DOT_FACTS=off` 关掉 |
+| `factsShown` / `factsPicked` / `factsWaitMs` | `60` / `6` / `8000` | 挑的那次调用读多少条；最多几条进她的提示词；提示词拼装最多等它多久 |
 
 ### `interlude`
 
