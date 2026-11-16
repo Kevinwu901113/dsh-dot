@@ -229,7 +229,7 @@ async function ingestOne(t) {
   state.window.push(h); if (state.window.length > cfg.window) state.window.shift();
 }
 
-async function retrieve({ question, now: nowIso, cutoff }) {
+async function retrieve({ question, now: nowIso, cutoff, more = [] }) {
   if (cutoff != null && cutoff !== state.turnsDone) throw new Error(`adapter holds ${state.turnsDone} turns but the visible cutoff is ${cutoff}`);
   const now = RealDate.parse(nowIso);
   acct.phase = 'ingest'; // time-driven maintenance due by now (the diary) is write-side work
@@ -243,7 +243,7 @@ async function retrieve({ question, now: nowIso, cutoff }) {
   const examId = `exam:${RealDate.now()}:${Math.random()}`;
   const c = { agent: { session: { id: examId, header: { cwd: cfg.home } } } };
   const memoryText = host.contexts.get('dot:memory')?.text(c) ?? '';
-  const r = await host.api.recall.prepare(examId, question);
+  const r = await host.api.recall.prepare(examId, question, more);
   const recallText = host.contexts.get('dot:recall')?.text(c) ?? '';
   host.api.recall.clear(examId);
   acct.phase = 'ingest';

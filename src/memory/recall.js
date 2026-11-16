@@ -480,7 +480,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
    * `whole`: turns with what she said back and no neighbours (her own lookup).
    */
   let last = null;
-  async function query(q, { session = '', record = true, whole = false } = {}) {
+  async function query(q, { session = '', record = true, whole = false, more = [] } = {}) {
     const t0 = performance.now();
     const b = backend();
     const res = { text: '', hits: [], candidates: [], mode: b, ms: 0 };
@@ -509,7 +509,10 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
         const pool = outside(ix.meta().map((m, i) => ({ ...m, i })));
         picked = []; from = pool;
         if (pool.length) {
-          const [qv] = (await impl.embed([q], 'query')).map(norm);
+          // `more`: other wordings of the same wake (a rewrite of what he may have said back then). Each
+          // gets its own cosine and BM25 list; all of them are fused by rank with the lists of his words.
+          const also = more.map((x) => clip(String(x ?? '').trim(), 500)).filter((x) => x && x !== q && rejectReason(x) !== 'secret').slice(0, 3);
+          const [qv, ...mv] = (await impl.embed([q, ...also], 'query')).map(norm);
           const vecs = ix.vecs();
           const cos = pool.map((c) => dot(qv, vecs[c.i]));
           const bm = lexical ? bm25For(ix).score(q, pool.map((c) => c.i)) : [];
@@ -533,7 +536,8 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
             const floor = Number(cfg.recallMinScore) || -Infinity;
             const vec = standOut(cos).filter((x) => x.s >= floor).slice(0, 60);
             const recent = Array.from({ length: Math.min(Number(cfg.recallRecentTurns) || 0, pool.length) }, (_, r) => ({ j: pool.length - 1 - r, s: 0 }));
-            picked = fuse(vec, lexical ? standOut(bm).slice(0, 60) : [], recent).slice(0, topK);
+            const extra = also.flatMap((x, n) => [standOut(pool.map((c) => dot(mv[n], vecs[c.i]))).filter((y) => y.s >= floor).slice(0, 60), lexical ? standOut(bm25For(ix).score(x, pool.map((c) => c.i))).slice(0, 60) : []]);
+            picked = fuse(vec, lexical ? standOut(bm).slice(0, 60) : [], ...extra, recent).slice(0, topK);
           }
         }
       } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; }
@@ -574,9 +578,9 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
 
   // ── per-session result for the prompt: computed when the waking message arrives ──
   const results = new Map(); // session → { promise, text }
-  function prepare(session, text) {
+  function prepare(session, text, more = []) {
     const r = { text: '', done: false };
-    r.promise = query(text, { session }).then((x) => { r.text = x.text; return x; }, (err) => { logger.warn(`recall query failed: ${err.message}`); return { text: '' }; }).finally(() => { r.done = true; });
+    r.promise = query(text, { session, more }).then((x) => { r.text = x.text; return x; }, (err) => { logger.warn(`recall query failed: ${err.message}`); return { text: '' }; }).finally(() => { r.done = true; });
     results.set(session, r);
     return r.promise;
   }

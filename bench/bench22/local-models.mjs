@@ -12,7 +12,10 @@
 // of what the model actually read (after truncation, without padding).
 //
 // node bench/bench22/local-models.mjs --port 18890 --lib <dir holding node_modules/@huggingface/transformers>
-//   [--mirror https://hf-mirror.com] [--cache <model cache dir>]
+//   [--mirror https://hf-mirror.com] [--cache <model cache dir>] [--embed-cache <file.jsonl>]
+// --embed-cache keeps every embedding by model + text, so replaying the same history again costs no
+// model time (exp/rq-run.py). A model name may come as local:<name>, the way the adapter sends it.
+import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { createRequire } from 'node:module';
 import { join } from 'node:path';
@@ -20,7 +23,7 @@ import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { SPECS } from '../../src/memory/recall.js';
 
-const { values: o } = parseArgs({ options: { port: { type: 'string', default: '18890' }, lib: { type: 'string' }, mirror: { type: 'string', default: process.env.HF_ENDPOINT || 'https://hf-mirror.com' }, cache: { type: 'string' }, warm: { type: 'string', multiple: true } } });
+const { values: o } = parseArgs({ options: { port: { type: 'string', default: '18890' }, lib: { type: 'string' }, mirror: { type: 'string', default: process.env.HF_ENDPOINT || 'https://hf-mirror.com' }, cache: { type: 'string' }, 'embed-cache': { type: 'string' }, warm: { type: 'string', multiple: true } } });
 if (!o.lib) { console.error('--lib <dir> is required'); process.exit(2); }
 const entry = createRequire(pathToFileURL(join(o.lib, 'package.json')).href).resolve('@huggingface/transformers');
 const tf = await import(pathToFileURL(entry).href);
@@ -37,6 +40,9 @@ function reranker(model) {
   if (!rerankers.has(model)) rerankers.set(model, (async () => ({ tok: await tf.AutoTokenizer.from_pretrained(model), net: await tf.AutoModelForSequenceClassification.from_pretrained(model, { dtype: 'q8', device: 'cpu' }) }))());
   return rerankers.get(model);
 }
+const kept = new Map();
+if (o['embed-cache'] && existsSync(o['embed-cache'])) for (const l of readFileSync(o['embed-cache'], 'utf8').split('\n')) { try { const r = JSON.parse(l); kept.set(r.k, r); } catch { /* a cut-off last line */ } }
+const bare = (m) => String(m).replace(/^local:/, '');
 const sum = (t) => { let s = 0; for (const x of t.data) s += Number(x); return s; };
 
 // one request at a time: two CPUs, and the ONNX session is not re-entrant-friendly
@@ -44,22 +50,29 @@ let chain = Promise.resolve();
 const serial = (fn) => { const p = chain.then(fn, fn); chain = p.catch(() => {}); return p; };
 
 async function embeddings(body) {
-  const model = String(body.model);
+  const model = bare(body.model);
   const spec = SPECS[model] ?? { pooling: 'mean' };
   const ex = await embedder(model);
   const input = [].concat(body.input ?? []);
   const data = []; let tokens = 0;
   for (let i = 0; i < input.length; i++) {
     const text = String(input[i]);
-    tokens += ex.tokenizer(text, { truncation: true }).input_ids.dims.at(-1);
-    const v = await ex(text, { pooling: spec.pooling, normalize: true, truncation: true });
-    data.push({ object: 'embedding', index: i, embedding: Array.from(v.data) });
+    const k = `${model}\u0000${text}`;
+    let c = kept.get(k);
+    if (!c) {
+      const v = await ex(text, { pooling: spec.pooling, normalize: true, truncation: true });
+      c = { k, n: ex.tokenizer(text, { truncation: true }).input_ids.dims.at(-1), b: Buffer.from(new Float32Array(v.data).buffer).toString('base64') };
+      if (o['embed-cache']) { kept.set(k, c); appendFileSync(o['embed-cache'], `${JSON.stringify(c)}\n`); }
+    }
+    tokens += c.n;
+    const raw = Buffer.from(c.b, 'base64');
+    data.push({ object: 'embedding', index: i, embedding: Array.from(new Float32Array(raw.buffer, raw.byteOffset, raw.length / 4)) });
   }
   return { object: 'list', model, data, usage: { prompt_tokens: tokens, total_tokens: tokens } };
 }
 
 async function rerank(body) {
-  const model = String(body.model);
+  const model = bare(body.model);
   const { tok, net } = await reranker(model);
   const docs = [].concat(body.documents ?? []).map(String);
   const query = String(body.query ?? '');
