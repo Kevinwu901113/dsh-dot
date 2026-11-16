@@ -1,22 +1,17 @@
 #!/usr/bin/env python3
-"""Answer-only rerun: the stored prompts of a finished run (optionally with one piece of text changed,
-see transforms.py) -> answer -> judge.  No ingest, no retrieval, so one condition costs a fraction of a
-full run and two conditions differ only in the changed text.  The answering model is not deterministic
-at temperature 0: the same prompts asked again flipped 15% of 269 verdicts (x0), so read differences
-against a `--t base` rerun, not against the original answers alone.
-Env: BENCH22_HARNESS (benchmark-2.2/harness), BENCH22_DATASET (benchmark-2.2/dataset), BENCH22_RUNS (.../runs/bench22).
+"""Answer-only rerun: stored prompts (optionally transformed) -> answer -> judge.  No ingest, no retrieval.
   rerun.py main --src varE-short,varE-long --name X --t nosup --ids ids.json --gateway URL
   rerun.py nat  --src varE-nat --name X --t nosup [--ids ids.json] --gateway URL
 """
 import argparse, concurrent.futures as cf, hashlib, json, os, sys, time
-H = os.environ.get('BENCH22_HARNESS', os.path.expanduser('~/chat-memory-benchmark/benchmark-2.2/harness'))
+H = '/home/claude/chat-memory-benchmark/benchmark-2.2/harness'
 sys.path.insert(0, H); sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from bench22 import runner, natural, scoring
 from bench22.release import jl, load_histories, load_items
 from bench22.systems import Gateway
 import transforms
-D = os.environ.get('BENCH22_DATASET', os.path.expanduser('~/chat-memory-benchmark/benchmark-2.2/dataset'))
-RUNS = os.environ.get('BENCH22_RUNS', os.path.join(H, 'runs', 'bench22'))
+D = '/home/claude/chat-memory-benchmark/benchmark-2.2/dataset'
+RUNS = '/home/claude/bench22-runs/runs/bench22'
 def app(path, row):
     with open(path, 'a', encoding='utf-8') as f: f.write(json.dumps(row, ensure_ascii=False) + '\n')
 def chat(gw, model, prompt, phase, tag, mx):
@@ -74,7 +69,7 @@ def nat_(a):
         gw = Gateway(a.gateway, a.name, f"dsh-dot:{p['persona']}:natural-dev")
         gj = Gateway(a.gateway, a.name, "dsh-dot:judge:natural-dev")
         for n, r0 in enumerate(by[i]):
-            row = dict(r0); row['prompt'] = transforms.apply(a.t, r0['prompt'])
+            row = dict(r0); row['prompt'] = transforms.apply(a.t, transforms.notes(r0['prompt'], NOTES.get(f"{i}#{r0['k']}")) if NOTES else r0['prompt'])
             if (i, row['k']) in done: rows.append(row); continue
             r = chat(gw, natural.ANSWER_MODEL, natural.answer_prompt(row['prompt'], row['time'], row['user']), 'answer', f"{i}#{row['k']}", 500)
             row['answer'] = r["choices"][0]["message"].get("content") or ""
@@ -89,5 +84,5 @@ def nat_(a):
     else: print(a.name, 'done', flush=True)
 
 ap = argparse.ArgumentParser(); ap.add_argument('mode'); ap.add_argument('--src'); ap.add_argument('--name'); ap.add_argument('--t', default='base')
-ap.add_argument('--ids'); ap.add_argument('--gateway', default='http://127.0.0.1:18885/v1'); ap.add_argument('--workers', type=int, default=6)
-a = ap.parse_args(); (main_ if a.mode == 'main' else nat_)(a)
+ap.add_argument('--ids'); ap.add_argument('--notes'); ap.add_argument('--gateway', default='http://127.0.0.1:18885/v1'); ap.add_argument('--workers', type=int, default=6)
+a = ap.parse_args(); NOTES = json.load(open(a.notes)) if a.notes else None; (main_ if a.mode == 'main' else nat_)(a)

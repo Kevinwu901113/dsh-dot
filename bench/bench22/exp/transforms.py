@@ -7,6 +7,16 @@ def _sub(p, a, b, must=True):
         return p
     return p.replace(a, b)
 
+def notes(p, n):  # swap the two open-item sections for the ones another set of notes gives this turn
+    if n is None or '</memory>' not in p: return p
+    p = re.sub(r'\n## 今天到期的[^\n]*\n(?:- .*\n?)*', '\n', p)
+    p = re.sub(r'\n## 还没了的事[^\n]*\n(?:- .*\n?)*', '\n', p)
+    add = ''
+    if n['today']: add += n['headToday'] + '\n' + '\n'.join(n['today']) + '\n'
+    if n['list']: add += n['headOpen'] + '\n' + '\n'.join(n['list']) + '\n'
+    i = p.index('</memory>')
+    return p[:i].rstrip('\n') + '\n' + add + p[i:]
+
 def base(p): return p
 
 def nosup(p):  # drop the three "hold back" phrases

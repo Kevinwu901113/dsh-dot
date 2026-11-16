@@ -63,7 +63,7 @@ test('还没了的事: a consolidation replace keeps a dated item\'s due unless 
   let r = applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '02-10 他说下个月十五号（=03-15）前交房租，今天又提了一句（到 02-15）', due: '03-15' }] }, { now: later, segment: '[02-13 21:00] 他：房租的事别忘了' });
   assert.equal(r.open, 1, 'the replace still applies');
   assert.equal(m.open[0].due, '2026-02-15');
-  assert.equal(m.open[0].text, '02-10 他说下个月十五号前交房租，今天又提了一句（到 02-15）');
+  assert.equal(m.open[0].text, '02-10 他说下个月十五号前交房租，今天又提了一句', 'and the "（到 …）" she is shown, copied back, is not stored twice');
   assert.equal(m.open[0].saidAt, later);
   // a due cleared by a replace (no date in the record) is kept too
   m = fresh(); applyExtraction(m, { open: [{ action: 'replace', oldText: '房租', content: '他要交房租', due: '' }] }, { now: later, segment: '[02-13 21:00] 他：房租' });

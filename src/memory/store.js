@@ -432,7 +432,8 @@ export function expireOpen(memory, opts = {}) {
  */
 export function openOp(memory, op, { now = Date.now(), segment } = {}) {
   const action = String(op?.action ?? '');
-  const content = String(op?.content ?? '').trim();
+  // The "（到 MM-DD）" she is shown after an item is added when it is rendered: copied back, it would double.
+  const content = String(op?.content ?? '').trim().replace(/(?:\s*[（(]到 [^（）()]{1,12}[）)])+$/, '');
   const due = op?.due === undefined ? undefined : cleanDue(op.due, now);
   if (action === 'add') {
     if (!content) return { ok: false, error: 'content is required' };
