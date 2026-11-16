@@ -48,6 +48,14 @@ The phone and the computer each have a power switch (`/phone off`, `/computer of
 
 ## 🚀 Quick start
 
+**Easiest: install from [DSH Market](https://dsh.market/).** With the market installed, open Settings → Plugin Market in dsh, search `dsh-dot` and click install:
+
+```bash
+dsh plugin --profile web add dshmarket
+```
+
+Without the market, use the command line below.
+
 Requires dsh ≥ 0.2.1 and hardware virtualization (Apple silicon / Intel Mac, Linux with KVM, Windows with WHPX). Quit the dsh desktop app first:
 
 ```bash

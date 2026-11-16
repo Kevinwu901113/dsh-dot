@@ -93,6 +93,14 @@ NapCat / SnowLuma（OneBot 11）跑在她的电脑里，和手机上是同一个
 
 ## 🚀 快速开始
 
+**最省事：从 [DSH Market](https://dsh.market/) 装。** 装好插件市场后，在 dsh 的「设置 → 插件市场」里搜 `dsh-dot`，点一下安装：
+
+```bash
+dsh plugin --profile web add dshmarket
+```
+
+不用插件市场就走下面的命令行。
+
 需要 dsh ≥ 0.2.1，以及硬件虚拟化（Apple silicon / Intel Mac；Linux 需 KVM；Windows 需 WHPX）。先退出 dsh 桌面版：
 
 <details open>
