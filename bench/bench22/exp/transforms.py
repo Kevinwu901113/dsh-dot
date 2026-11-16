@@ -66,7 +66,23 @@ def premise2(p):
     return _sub(p, '和他现在明确说的冲突时以现在为准，重要又拿不准时自然确认一下',
                 '和他现在说的冲突时：他讲明是变了的，以现在为准；他只是把数目、日子、人说得和你记得的不一样、没说变了，就点出你记得的是哪个、问一句，别顺着往下说')
 
-T = {f.__name__: f for f in (base, nosup, assoc, premise, details, norefl, nostale, dueall, premise2)}
+def quote(p):
+    return _sub(p, '只提这里列着的，别的日子的事别说成今天的', '只提这里列着的，别的日子的事别说成今天的；带的时候照他当时的说法说，是哪天说的、原话里的人和事别换词', must=False)
+
+def stmt(p):
+    return _sub(p, '先接他的话，末了顺口带一句，哪怕他在聊别的', '先接他的话，末了顺口提醒一句，哪怕他在聊别的；只说今天有这件事，别问办了没、结果怎么样（你不知道）', must=False)
+
+def twover(p):
+    return _sub(p, '具体说过什么，以翻出来的原话为准。', '具体说过什么，以翻出来的原话为准；原话里同一件事有两种说法、没说哪个作数的，两种都提、说自己拿不准，别挑一个当定下来的。')
+
+_NEW = '列着几件就都点到、一件一句，不展开，他说了已经办了的不用提。只提这里列着的，别的日子的事别说成今天的；带的时候照他当时的说法说，是哪天说的、原话里的人和事别换词'
+def oldtoday(p):  # back to the wording before 0bb8bb5
+    return _sub(p, _NEW, '只带一句、不展开，他说了已经办了的不用提。只提这里列着的，别的日子的事别说成今天的', must=False)
+
+def midtoday(p):  # all + his words, but hold it when he is upset or wants one thing done
+    return _sub(p, '先接他的话，末了顺口带一句，哪怕他在聊别的；列着几件', '先接他的话，末了顺口带一句，哪怕他在聊别的（他正难受、或正让你专心帮一件事时先不带）；列着几件', must=False)
+
+T = {f.__name__: f for f in (oldtoday, midtoday, base, nosup, assoc, premise, details, norefl, nostale, dueall, premise2, quote, stmt, twover)}
 def apply(names, p):
     for n in names.split('+'): p = T[n](p)
     return p
