@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """One flash call per dev question: other wordings to look the wake up by (what he may have said back
-then), from the last few turns and his message.  Not run yet (2026-11-16): no key in the session that
-wrote it.  Output rows {"id", "more": [...], "usage"}; turn them into rq-run.py variants with
+then), from the last few turns and his message.  Run on 2026-11-16 with three rule texts (this one, rq-rules-statements.txt,
+rq-rules-keywords.txt): +1 to +3 points of evidence in the prompt, see docs/MEMORY-ROOT-CAUSES.md.  Output rows {"id", "more": [...], "usage"}; turn them into rq-run.py variants with
   python3 -c "import json,sys; [print(json.dumps({'id':r['id'],'variants':{'q+rw':{'more':r['more']}}},ensure_ascii=False)) for r in map(json.loads,open(sys.argv[1]))]" rw.jsonl > v_rw.jsonl
-  DEEPSEEK_API_KEY=... rq-rewrite.py rw.jsonl [--window 6] [--limit N]   (resumable; usage kept per row)
+  DEEPSEEK_API_KEY=... rq-rewrite.py rw.jsonl [--window 6] [--limit N] [--rules file]   (resumable; usage kept per row)
 Env: BENCH22_DATASET, DEEPSEEK_MODEL (deepseek-flash)."""
 import concurrent.futures as cf, json, os, sys, urllib.request
 D = os.environ.get('BENCH22_DATASET', '/home/claude/chat-memory-benchmark/benchmark-2.2/dataset')
@@ -19,6 +19,7 @@ RULES = """你在帮她翻以前的聊天记录。下面是最近几轮聊天和
 不知道的具体数目、日子不要编，只写是哪件事。
 如果他这句话只是寒暄、和以前的事无关，只输出：无
 只输出这几行，不要编号，不要解释。"""
+if '--rules' in sys.argv: RULES = open(sys.argv[sys.argv.index('--rules')+1], encoding='utf-8').read().strip()
 def prompt(it):
     h = hist[it['persona']][max(0, it['cutoff_turn'] - W):it['cutoff_turn']]
     win = '\n'.join(f"[{x['逻辑时间'][5:16].replace('T', ' ')}] 他：{x['用户消息']}\n她：{x['助手回复']}" for x in h)
