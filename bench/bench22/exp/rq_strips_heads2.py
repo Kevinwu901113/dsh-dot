@@ -4,9 +4,12 @@ BM25 fused), spread (two steps over the strip-key graph from the names in his me
 divided by how many strips it hangs on), and one strip per thing."""
 import json, math, collections, numpy as np
 import rq_strips_heads as H
-F = H.F; T = json.load(open('trig_M01.json')); TH = {int(i): g for i, g in json.load(open('things_M01.json')).items()}
+import os
+F = H.F
+T = [f['trig'] for f in F] if F and 'trig' in F[0] else json.load(open('trig_M01.json'))
+TH = {int(i): g for i, g in json.load(open('things_M01.json')).items()} if H.TAG == '' else {f['i']: f['i'] for f in F}
 flat = [(i, t) for i, ts in enumerate(T) for t in ts]
-TV = H.emb([t for _, t in flat], 'query', 'trig'); QQ = H.emb([it['question'] for it in H.items], 'query', 'q')
+TV = H.emb([t for _, t in flat], 'query', 'trig' + H.TAG); QQ = H.emb([it['question'] for it in H.items], 'query', 'q' + ('' if H.P == 'M01' else '_' + H.P))
 own = np.array([i for i, _ in flat])
 ttext = [' '.join(ts) for ts in T]
 TT = [collections.Counter(H.tok(s)) for s in ttext]; TL = np.array([max(1, sum(c.values())) for c in TT])

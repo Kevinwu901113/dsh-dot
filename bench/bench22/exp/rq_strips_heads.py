@@ -2,13 +2,14 @@
 """Several weak scorers ("heads") over the strips, fused by rank: names in his message, the day a strip
 speaks of against now, closeness to his words (BM25 + e5), guarded kinds, newest. lib for the pick scripts."""
 import json, math, os, collections, urllib.request, numpy as np
-D = os.environ.get('BENCH22_DATASET', '/home/claude/chat-memory-benchmark/benchmark-2.2/dataset')
+D = __import__('os').environ.get('BENCH22_DATASET', '/home/claude/chat-memory-benchmark/benchmark-2.2/dataset')
+P = os.environ.get('RQ_P', 'M01'); SFX = os.environ.get('RQ_SFX', ''); TAG = '' if (P, SFX) == ('M01', '') else f'{SFX}_{P}'
 jl = lambda p: [json.loads(l) for l in open(p, encoding='utf-8') if l.strip()]
 key = {r['id']: r for r in jl(f'{D}/review-only/answer-key.jsonl')}
-items = [r for r in jl(f'{D}/exam-inputs.jsonl') if r['persona'] == 'M01']
-base = {r['id']: r for r in jl('base_M01.jsonl')}
-F = json.load(open('strips_M01.json'))
-for i, f in enumerate(F): f['i'] = i; f['keys'] = [k for k in f['keys'] if isinstance(k, str) and len(k) >= 2]
+items = [r for r in jl(f'{D}/exam-inputs.jsonl') if r['persona'] == P]
+base = {r['id']: r for r in jl(f'r3_{P}.jsonl')}
+F = json.load(open(f'strips{SFX}_{P}.json'))
+for i, f in enumerate(F): f['i'] = i; f['keys'] = [k for k in f.get('keys', []) if isinstance(k, str) and len(k) >= 2]; f.setdefault('kind', '')
 DAY = 86400000
 def emb(texts, role, tag):
     p = f'emb_{tag}.npy'
@@ -19,7 +20,7 @@ def emb(texts, role, tag):
         out += [d['embedding'] for d in sorted(r['data'], key=lambda d: d['index'])]
     a = np.array(out, dtype=np.float32); np.save(p, a); return a
 stext = [' '.join(f['keys']) + ' ' + f['text'] for f in F]
-SV = emb(stext, 'passage', 'strips'); QV = emb([it['question'] for it in items], 'query', 'q')
+SV = emb(stext, 'passage', 'strips' + TAG); QV = emb([it['question'] for it in items], 'query', 'q' + ('' if P == 'M01' else '_' + P))
 QI = {it['id']: n for n, it in enumerate(items)}
 tok = lambda s: [c for c in s if c.strip() and c not in '，。！？、：；（）()…~"“”'] + [s[i:i+2] for i in range(len(s) - 1) if s[i:i+2].strip() == s[i:i+2]]
 ST = [collections.Counter(tok(s)) for s in stext]; SL = np.array([sum(c.values()) for c in ST])
