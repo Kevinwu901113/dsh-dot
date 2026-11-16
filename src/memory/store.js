@@ -533,12 +533,21 @@ export function normalizeMemory(m, { limits = DEFAULT_LIMITS, now = Date.now() }
 }
 
 const TODAY_MAX = 5;
-/** Shown order of 还没了的事: dated items first, nearest date first; then the rest, newest first. */
-const openOrder = (a, b) => (a.due && b.due ? a.due.localeCompare(b.due) : (b.due ? 1 : 0) - (a.due ? 1 : 0)) || (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id);
+/**
+ * Shown order of 还没了的事: what is still to come first (nearest date first), then the items without
+ * a date (newest first), then the ones whose date has passed (latest first). The list is cut at
+ * `limits.open` characters, so the overdue ones are what falls off, not tomorrow's.
+ */
+const openOrder = (now) => {
+  const rank = (x) => (!x.due ? 1 : daysBetween(dueMs(x), now) > 0 ? 2 : 0);
+  return (a, b) => rank(a) - rank(b)
+    || (a.due && b.due ? (rank(a) === 2 ? b.due.localeCompare(a.due) : a.due.localeCompare(b.due)) : 0)
+    || (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id);
+};
 
 /**
  * 还没了的事 as she is shown it, from all live items: `today` — due today and not brought up yet today
- * (at most TODAY_MAX; overdue ones are in the list, where dated items come first); `list` — the rest in
+ * (at most TODAY_MAX; overdue ones are at the end of the list); `list` — the rest in
  * openOrder, as many as fit in `limits.open` characters (what does not fit is still stored).
  */
 export function openView(memory, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle } = {}) {
@@ -547,7 +556,7 @@ export function openView(memory, { limits = DEFAULT_LIMITS, now = Date.now(), ke
     .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id)).slice(0, TODAY_MAX);
   const list = [];
   let used = 0;
-  for (const x of live.filter((y) => !today.includes(y)).sort(openOrder)) {
+  for (const x of live.filter((y) => !today.includes(y)).sort(openOrder(now))) {
     const n = x.text.length + 1;
     if (list.length && used + n > limits.open) continue;
     list.push(x); used += n;

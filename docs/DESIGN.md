@@ -262,7 +262,7 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - `interlude.round.phase.follow-up`：给用户的追发消息写 `<contact/>`、原话进 contact 字段（原来让她在 script 里写原话，和 `interlude.round` 的约定矛盾）；`interlude.round.refresh` 说清 `<contact/>` 只是标记。
 - `interlude.round`：区分消息到达和她注意到消息。
 - `phone.device.number`：注册用这个号，已有账号按 `account get` 的记录登录。
-- `memory.standing`：记忆可能过时，和他现在说的冲突时以现在为准。
+- `memory.standing`：记忆可能过时；他讲明变了的以现在为准，只是把数目、日子、人说得和记得的不一样的，点出记得的是哪个、问一句。
 - `dot.rules`：问的是现在就能查的未来信息（天气、安排）就现在查，不建定时任务。
 
 ## 0.20.0：记忆大整理
