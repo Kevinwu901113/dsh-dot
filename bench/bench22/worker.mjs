@@ -219,6 +219,7 @@ async function ingestOne(t) {
   await host.api.recall.pending(id); // the replayed wake's own recall (no model; see makeEmbedder)
   host.emit(id, 'assistant/message', { message: { role: 'assistant', content: [{ type: 'text', text: h.assistant }] } });
   setClock(h.at + 1);
+  state.lastAt = h.at + 1;
   state.sessionTokens[id] = (state.sessionTokens[id] ?? cfg.sessionBaseTokens) + SESSION_GROWTH(h);
   state.maxSessionTokens = Math.max(state.maxSessionTokens, state.sessionTokens[state.session]);
   host.emit(id, 'turn/end', {});
@@ -233,7 +234,11 @@ async function retrieve({ question, now: nowIso, cutoff }) {
   const now = RealDate.parse(nowIso);
   acct.phase = 'ingest'; // time-driven maintenance due by now (the diary) is write-side work
   await maintain(now, true);
-  setClock(Math.max(now, clockMs));
+  // The prompt is built at the question's own time.  Questions at one cutoff come in id order, not
+  // time order, so the clock may already stand past this one (an earlier call asked from a later
+  // day): it goes back to this question's time for the prompt and returns to the furthest point after.
+  const furthest = Math.max(now, clockMs);
+  setClock(Math.max(now, state.lastAt ?? 0));
   acct.phase = 'retrieve';
   const examId = `exam:${RealDate.now()}:${Math.random()}`;
   const c = { agent: { session: { id: examId, header: { cwd: cfg.home } } } };
@@ -248,6 +253,7 @@ async function retrieve({ question, now: nowIso, cutoff }) {
   const prompt = [SYSTEM, nowLine, memoryText, recallText, win.length ? `【最近的聊天】（[时间] 后面是他说的，"我："后面是你回的）\n${win.join('\n')}` : ''].filter(Boolean).join('\n\n');
   const hitTurns = (r?.hits ?? []).flatMap((x) => state.times[x.at] ?? []);
   const used = [...new Set([...hitTurns, ...state.window.map((h) => h.turn)])].sort((a, b) => a - b);
+  setClock(furthest);
   return { prompt, used_turns: used, meta: { recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', recall_turns: [...new Set(hitTurns)].sort((a, b) => a - b), recall_candidates: r?.candidates?.length ?? 0, memory_chars: memoryText.length, recall_chars: recallText.length, window: win.length, sessions: state.sessions } };
 }
 
