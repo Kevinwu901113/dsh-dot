@@ -2,9 +2,13 @@
 // mind in. The turns stay the record; a fact is a key to them that is written in the words of the
 // moment it will be needed, which his later message can match when the turn itself would not.
 //
-//   written   when a batch of records is consolidated: one call reads his lines of that batch and
-//             returns lines `MM-DD HH:MM｜the fact｜situation；situation`. Appended to facts.jsonl,
-//             never rewritten. The days a fact speaks of (明天, 27号 …) are worked out by when.js.
+//   written   when a batch of records is consolidated: one call reads that batch — what he said and
+//             what she said back, each line with its time and with 明天 / 下周三 dated by when.js, as
+//             the consolidation reads it — and returns lines `MM-DD HH:MM｜the fact｜situation；
+//             situation`. A fact stands by itself: who (他 / 她 / a name), what, and the day written
+//             out, so a half sentence of his ("柠檬的") is kept with what it answered, and something
+//             she promised or said of herself is kept too. Appended to facts.jsonl, never rewritten.
+//             The days a fact speaks of are read from it by code.
 //   indexed   each fact's sentence and each of its situations get a vector from the recall embedder
 //             (kept beside the recall index, per backend + model) and go into two BM25 tables.
 //   shown     when he wakes her: three ranked lists — how near a fact's day is to now, his words
@@ -27,12 +31,19 @@ const dotp = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]
 /** The days (local midnight, ms) a sentence said at `at` speaks of, by when.js's own reading. */
 export function daysOf(text, at) {
   const said = new Date(at);
-  return [...annotate(String(text), at).matchAll(/（=(?:(\d{4})-)?(\d{2})-(\d{2})）/g)].map((m) => {
-    if (m[1]) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
-    let d = new Date(said.getFullYear(), Number(m[2]) - 1, Number(m[3])).getTime();
-    if (d < at - 200 * DAY) d = new Date(said.getFullYear() + 1, Number(m[2]) - 1, Number(m[3])).getTime();
-    return d;
-  });
+  const day = (y, mo, d) => {
+    if (y) return new Date(Number(y), Number(mo) - 1, Number(d)).getTime();
+    let t = new Date(said.getFullYear(), Number(mo) - 1, Number(d)).getTime();
+    if (t < at - 200 * DAY) t = new Date(said.getFullYear() + 1, Number(mo) - 1, Number(d)).getTime();
+    return t;
+  };
+  const t = String(text);
+  const out = [...annotate(t, at).matchAll(/（=(?:(\d{4})-)?(\d{2})-(\d{2})）/g)].map((m) => day(m[1], m[2], m[3]));
+  // A day the fact writes out itself ("09-07 快递到驿站", "2027-01-19 他爸生日").
+  for (const m of t.matchAll(/(?<![\d-])(?:(\d{4})-)?(\d{2})-(\d{2})(?![\d-])/g)) {
+    if (Number(m[2]) >= 1 && Number(m[2]) <= 12 && Number(m[3]) >= 1 && Number(m[3]) <= 31) out.push(day(m[1], m[2], m[3]));
+  }
+  return [...new Set(out)];
 }
 
 /** The write call's reply → [{ at, text, when }]: lines `MM-DD HH:MM｜fact｜situation；situation`. */
@@ -112,11 +123,18 @@ export function createFacts({ cfg, dir, recall, complete, lines, logger, audit =
   /** One call over his lines of a consolidated batch; the facts it returns are appended. */
   async function write(batch) {
     if (!on()) return { skipped: 'off' };
-    const his = batch.filter((l) => l.who === 'owner' && l.text);
+    // The exchange, both sides: a line of his is often only readable with what it answers, and what
+    // she promised or said of herself is hers to remember. A batch with nothing of his has no facts.
+    const said = batch.filter((l) => (l.who === 'owner' || (l.who === 'her' && (!l.to || l.to === 'owner'))) && l.text);
+    const his = said.filter((l) => l.who === 'owner');
     if (!his.length) return { skipped: 'nothing of his' };
     const now = batch.at(-1).at;
     const stamps = new Map();
-    const records = his.map((l) => { const s = stamp(l.at, now); if (!stamps.has(s)) stamps.set(s, l.at); return `[${s}] ${l.text}`; }).join('\n');
+    const records = said.map((l) => {
+      const s = stamp(l.at, now);
+      if (!stamps.has(s)) stamps.set(s, l.at);
+      return `[${s}] ${l.who === 'owner' ? '他' : '她'}：${annotate(l.text, l.at, now)}`;
+    }).join('\n');
     const r = await complete(prompt('memory.facts.write', { records }), 'facts');
     if (typeof r?.raw !== 'string') return r ?? { error: 'no reply' };
     const fresh = parseFacts(r.raw, stamps, his.at(-1).at).map((f) => ({ ...f, days: daysOf(f.text, f.at) }));
