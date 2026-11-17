@@ -63,6 +63,8 @@ export const SCHEMA = [
   e('qq', 'typingMsPerChar', 'QQ', 'int', 'live', '分条发送的打字停顿（毫秒/字，0 = 一次发完）', { min: 0, max: 500 }),
   e('qq', 'tidy', 'QQ', 'bool', 'live', '去掉句号、引号、破折号等书面符号'),
   e('qq', 'dropLatinLeaks', 'QQ', 'bool', 'live', '不发整条都是英文的气泡'),
+  e('qq', 'dropEchoOpeners', 'QQ', 'bool', 'live', '私聊：不发只是重复对方上一句的开头气泡'),
+  e('qq', 'dropChainedQuestions', 'QQ', 'bool', 'live', '私聊：上一轮刚问过对方时，不发这一轮里的问句（办事时要问的话也可能被拦）'),
   e('qq', 'ignore', 'QQ', 'text', 'live', '不回复的 QQ 号（别的机器人；逗号分开。qq-bridge 的机器人号会自动认出，不用填）'),
   e('qq', 'loopMax', 'QQ', 'int', 'live', '防互刷（只管群聊）：和同一个号在一个群里一来一回几轮、中间没别人说话就停（0 = 不管）', { min: 0, max: 50 }),
   e('qq', 'loopCooldownMinutes', 'QQ', 'int', 'live', '防互刷：停多少分钟', { min: 1, max: 1440 }),
@@ -74,6 +76,7 @@ export const SCHEMA = [
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
+  e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（幕间、整理记忆、成长回顾、跑腿）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
   e('llm', 'backgroundRpm', '模型请求', 'int', 'restart-dsh', '她后台的请求每分钟最多几次（幕间、整理记忆、跑腿、群聊评分；和你的对话不限；0 = 不限速）', { min: 0, max: 600 }),
   e('llm', 'foregroundQuietSeconds', '模型请求', 'int', 'restart-dsh', '你们的对话发完请求后，后台再等几秒（秒）', { min: 0, max: 600 }),
   e('llm', 'maxBackgroundWaitSeconds', '模型请求', 'int', 'restart-dsh', '一个后台请求最多被压后多久（秒；最多 270：再长她的跑腿会被当成卡住，dot.turnStallMs 是 300 秒）', { min: 10, max: 270 }),

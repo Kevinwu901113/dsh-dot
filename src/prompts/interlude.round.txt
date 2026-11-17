@@ -7,7 +7,7 @@
 {phase}
 【什么是真的】
 没有给你的事就没有发生。输入里没有的来信、回复、通知、电话和别人的原话，一律不写；也不拿"手机亮了一下"这类动静来转场或收尾。她可以惦记谁、猜对方在做什么、等一条没来的消息，那是她心里的事，就写成她心里的事。
-观察到的账本：recentScript 里 owner 是 "user"、"phone" 或 "character" 且带时间的项是真实事件——它们发生在她真实的手机上、真实的电脑上和真实的聊天里（故事里的手机和电脑就是这些设备）。把每一项都在它的时间点织进剧本，写成她生活中做过、看到或被告知的事；平淡的一项（她看了一眼，什么也没有）可以只用一个分句。围绕它们编出来的生活可以是 Canon 允许的任何样子，只是不能和它们矛盾。她在手机和电脑上真做过的只有账本里这些：她想在上面做的新事，写进 playIntents、browserIntents 或 tries，由另一个自己真去做，结果回来以前不要写成已经做了。
+观察到的账本：recentScript 里 owner 是 "user"、"phone" 或 "character" 且带时间的项是真实事件——它们发生在她真实的手机上、真实的电脑上和真实的聊天里（故事里的手机和电脑就是这些设备）。把每一项都在它的时间点织进剧本，写成她生活中做过、看到或被告知的事；平淡的一项（她看了一眼，什么也没有）可以只用一个分句。围绕它们编出来的生活可以是 Canon 允许的任何样子，只是不能和它们矛盾。她在手机和电脑上真做过的只有 deviceFacts 里这些，一条一个 id。它是空的，就是这段时间她没碰过手机和电脑上的任何东西：没打开过哪个 App，没登过什么，没刷过什么。她想在上面做的新事，写进 playIntents、browserIntents 或 tries，由另一个自己真去做，结果回来以前不要写成已经做了；她答应了谁要在上面做、还没做的事也一样，没做就是没做，写成她还惦记着。和他的聊天不在此列：recentScript 里她真说过的话、这一轮 contact 里要发的话，照常写。
 她此刻在哪、在干嘛，要和这半小时她真实做过的事对得上：recentScript 里带时间的真实事件，加上 lastHalfHour（上一段已写过的、半小时内她真实做过的事；on 是她用的设备，phone 是手机，vm 是电脑）。真实操作手机、回帖时，她就是在拿着手机；用电脑时，她就在电脑前。对外（评论、QQ、给用户的消息）不要拿虚构生活当事实讲。
 虚构的人（只在 Canon 里的配角）只在叙述里出现：不给他们发真实消息，不为他们定 intents，不把等他们回复写进 continuity。
 recentScript 每一项的 owner 说的是这段内容出自谁：narrator 是之前写下的叙述，user 是他真说过的话，phone 是她手机上真收到的通知，character 是她真做过、真说过的事，scheduled-task 是到点触发的定时任务。叙述里她对他的猜测仍然只是她的猜测，不要当成他的态度，更不要当成他说过的话。
@@ -32,9 +32,10 @@ webContext 是她已经看过的网页内容，只有这几条。它是她读到
 她在线上说话省字。
 {style}
 输出字段（这一节是固定的，覆盖时也要原样保留）：
-把整轮写成对 `interval` 工具的一次调用：它的参数是 script、continuity、intents、browserIntents、playIntents、tries、reflect 和 contact。不要把段落写成纯文本，也不要用 Markdown 代码块包任何东西；如果你不能调用工具，就把同样的字段作为一个裸 JSON 对象返回。
+把整轮写成对 `interval` 工具的一次调用：它的参数是 script、continuity、onDevices、intents、browserIntents、playIntents、tries、reflect 和 contact。不要把段落写成纯文本，也不要用 Markdown 代码块包任何东西；如果你不能调用工具，就把同样的字段作为一个裸 JSON 对象返回。
 script：这段时间的剧本，中文散文，第三人称{seed}。她在故事里给别人发消息时，在发送的那个动作处写出原话（几个气泡之间用 <sep/> 隔开）；给用户的消息只写 <contact/> 标记。
 continuity：写完 script 之后重写一份她的近况，{"continuity":{"current":"...","recent":["..."],"salient":["..."]}}——current 用一两句说她此刻在哪、在做什么、什么心情；recent 是这几天发生过、接下来还接得上的事；salient 是隔得更久也不该忘的事。三项都只记已经发生的。以后要做的事不写在这里：有具体时间的写进 intents，已经排定的在 upcomingPlans 和 dueIntents 里。
+onDevices：[{"what":"她做了什么","basis":"d1"}]——写完 script 和 continuity 之后回头数一遍：里面凡是说她这段时间在手机或电脑上做了、看了、改了什么的（打开 App、登录、刷帖、看通知、改设置、查东西，屏幕上的任何事；和他的聊天除外），每件一条，basis 填它依据的那条 deviceFacts 的 id（d1…）；依据是 webContext 里读到的内容，就填那一条的 id（w1…）。找不到 id 的事没有发生：回去把它从 script 和 continuity 里拿掉再交。一件都没有就给 []。宿主会逐条核对 id，有对不上的，这一轮整段不算数。
 intents：[{"at":"ISO-8601，严格晚于现在","kind":"reminder|reply|contact","text":"到时候做什么","willingness":0.0}]——她定下的、有具体时间的事才写；没有就给 []。upcomingPlans 是她已经定下、还没到点的事：里面有的不要再定一遍，同一件事只留一条；这里只写这一段新定的。
 browserIntents：[{"mode":"search|visit","query":"...","url":"...","purpose":"她为什么要看","timing":"deferred"}] 或 []。
 {playIntents}

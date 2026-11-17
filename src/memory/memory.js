@@ -28,8 +28,9 @@ import { createRecall } from './recall.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate } from '../llm-gate.js';
+import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
+import { NO_BACKFILL, runPendingReset } from '../reset.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -191,7 +192,15 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
  * memory the conversation that happened before memory was installed.
  */
 /** His words as he typed them: without the line dot adds when they were steered into a running turn. */
-export const ownerSaid = (text) => { const busy = `\n${prompt('dot.owner-words.busy')}`; return text.endsWith(busy) ? text.slice(0, -busy.length) : text; };
+export const ownerSaid = (text) => {
+  // …and without the note about lines of hers that did not reach him (dot.owner-words.unsent), which comes last.
+  const head = `\n${prompt('dot.owner-words.unsent', { lines: '\u0000' }).split('\u0000')[0]}`;
+  // (A template someone rewrote to start with the lines themselves leaves no head to recognise: then nothing is cut.)
+  const i = head.trim().length >= 4 ? text.indexOf(head) : -1;
+  const t = i >= 0 ? text.slice(0, i) : text;
+  const busy = `\n${prompt('dot.owner-words.busy')}`;
+  return t.endsWith(busy) ? t.slice(0, -busy.length) : t;
+};
 
 /** An image she sent, as her transcript writes it — the ref itself, so the line can be sent again as it reads: `[表情包 sticker:<id>]`, else `[图 <ref>]` (phone:screen, phone:latest, a URL, face:<n>, a path). */
 export const sentImage = (ref) => { const r = String(ref ?? '').trim(); return /^sticker:/i.test(r) ? `[表情包 ${r}]` : `[图 ${r}]`; };
@@ -256,6 +265,7 @@ export function renderHandoff(tail, gen) {
 
 export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot/memory');
+  runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const user = sectionOf('memory', (m) => logger.warn(m));
   const cfg = { ...defaults, ...setValues(config), ...user };
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
@@ -367,6 +377,8 @@ export function apply(ctx, config = {}) {
     if (backfilling) return backfilling;
     backfilling = (async () => {
       if (lines.length || memory.consolidations || memory.backfilled) return 0;
+      // A reset left this note: her memory was emptied on purpose, the old conversation is not read back in (src/reset.js).
+      if (existsSync(join(home, 'memory', NO_BACKFILL))) return 0;
       const id = dot()?.session?.();
       const sq = ctx.get('sessionQuery');
       if (!id || typeof sq?.readSession !== 'function') { backfilling = null; return 0; }
@@ -417,7 +429,9 @@ export function apply(ctx, config = {}) {
         const said = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
         const text = src.kind === 'user' ? ownerSaid(said) : said;
         if (src.kind === 'user') record({ who: 'owner', session: id, text });
-        else if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
+        // A turn of his QQ words: its answer is recorded by what reached him (api.herSaid, from dot), not at turn end.
+        if (src.kind === 'user' && String(src.rpcId ?? '').startsWith('qq-')) { t.fromQq = true; turns.set(id, t); }
+        else if (src.kind === 'schedule') { record({ who: 'schedule', session: id, text }); t.scheduled = true; turns.set(id, t); }
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
         // What woke her is the query; the result is in front of her before the model is called.
@@ -451,7 +465,8 @@ export function apply(ctx, config = {}) {
       case 'turn/end': {
         turns.delete(id);
         // Her final words count as said only when they were not a QQ turn (desktop / IM bot replies).
-        if (!t.sentViaQq && t.last && !isSilent(t.last)) record({ who: 'her', session: id, text: t.last });
+        // dot reports what reached him for a turn of his QQ words (not for a scheduled turn he spoke into: that one is answered through im.send).
+        if (!t.sentViaQq && !(t.fromQq && !t.scheduled && dot()?.reportsSaid) && t.last && !isSilent(t.last)) record({ who: 'her', session: id, text: t.last });
         recall.clear(id); recall.turnEnded();
         void afterTurn(id);
         return;
@@ -469,7 +484,8 @@ export function apply(ctx, config = {}) {
     let usage = null;
     try {
       let finish = null;
-      for await (const chunk of ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] }))) {
+      const effort = await workEffort(ctx, sel);
+      for await (const chunk of ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] }))) {
         if (chunk.type === 'text-delta') raw += chunk.text;
         if (chunk.type === 'usage') usage = chunk.usage ?? null;
         if (chunk.type === 'finish') finish = chunk.reason;
@@ -713,6 +729,8 @@ export function apply(ctx, config = {}) {
 
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
+    /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
+    herSaid({ session, text, at }) { if (String(text ?? '').trim()) record({ ...(at ? { at } : {}), who: 'her', session, text: String(text) }); },
     /** A real event with someone, from any channel: { handles, platform, name, tier, kind }. Returns the person. */
     touch(e) { const p = touchPerson(memory, e); if (p) save(); return p; },
     /** Who is this ({ handles, platform, name }), without recording anything. */

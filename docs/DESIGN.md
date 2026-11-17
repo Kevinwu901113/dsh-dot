@@ -226,6 +226,15 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **发出前拦截**：`tools/pre-execute` 里，发给他的 `qq_send` 遇到他还有没读的话——缓冲里有，或 `exec.agent.inbox.nextStep` 里还有 `qq-dot-` 来源的消息（steer 了、模型还没读）——就 `deny`，理由是 `dot.owner-interrupt`，并且立刻把缓冲 steer 进去（同步，用 `exec.agent`）。每轮最多 `ownerDenyMax`（2）次，之后放行（`owner-gate-passed`），免得他一直打字时她永远发不出去。
 - **气泡可中断**：`qq.send` 发给他时，每个气泡（第 2 条起）发之前看 `qq.ownerSaidSince(开始时刻)`；他说了话就停，返回 `{ sent, interrupted: true, unsent }`，她看到 `qq.send-interrupted`。
 - **规则**：`dot.rules` 加一条：他连着发几条时等他说完、按最后一条的意思回、不逐条回；回到一半他又说话，先看。
+- **发也算忙，第一条气泡为界**（0.24）：她对他只有三种状态——在写（他的话开的那一轮还开着）、在发（这一轮的回答正一条条发到他 QQ）、都不是。规则只有一条：**还没到他那的让给他刚说的，已经到他那的算数**。
+  - 在写、这一轮还没调过工具：取消这一轮（`agent.cancel(..., { keepInbox: true })`），同一拍里把他刚说的排进下一轮（`agent.send(message, 'next-turn', true)`：宿主把取消之后来的唤醒输入留给下一轮，中止落定后自己开——不等我们的 promise，顺序就是宿主收件箱的顺序）。被取消的那一轮结束时记 `owner-turn-restarted`：真中止了就什么都不留；取消来晚了、它照常写完了（`aborted: false`），那段回答不发，留作草稿。调过工具的不取消，照旧 steer。
+  - 写完要发、缓冲里有他没读的话：整条回答不发，留作草稿（`owner-reply-held`）。
+  - 在发：`qq.send` 在下一条气泡前停下，剩下的留作草稿；他的话等这次发送停稳再交给她，不并行开新一轮。
+  - 草稿跟着他的下一批话给她看一次（`dot.owner-words.unsent`），由她决定重说还是放下；记忆记他的原话时把这段去掉。五分钟内他没再说话，草稿作废，记 `owner-draft-dropped`。
+  - 发到一半 QQ 报错：已经到他那的气泡照常记，没发出去的同样留作草稿（`qq-relayed` 带 `error`）；一条都没发出去才算失败。
+  - 连着让 `ownerPreemptMax`（2）次之后先把话发出去；有一条气泡到了他那就清零——她自己用 `qq_send` 回的、或这一轮她选择不说话，也清零。所以她只要发出一条，这一轮就不会再被取消。
+  - 直接回答走 `sayToOwner` 一个出口；`qq.send` 对同一个对象的发送排队，两次发送的气泡不会交错。
+  - 她的记录按送达写：QQ 轮次的回答不在 `turn/end` 记，由 dot 把真正发出去的气泡报给记忆（`dotMemory.herSaid`）。`sentToOwnerAt` 只由她自己的 `qq_send` 设置。
 - **记忆只记发出去的**：`qq_send` 不再在 `tool/call` 时按参数记，而是等同一 `callId` 的 `tool/result`：出错或被拦（`isError`）→ 不记；否则记 `meta.said` / `meta.imagesSent`（`qq_send` 的 `output.presentationMeta`，落在持久的 `tool/result` 上：打断后没发的、丢掉的英文行、上传失败的图都不在里面）。没有 meta 的旧结果按 `sent N` 取前 N 行。时间用调用的时刻，按时间插回 `lines`（handoff 尾巴、recall 都读它），重放会话日志（`transcriptFromEvents`）走同一个 `qqSentText`。
 
 ## v0.17.2（2026-11-04）：图——她发的记成能发的样子，别人发的她看得见
@@ -354,3 +363,36 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 - **让 dsh 的重试有用**（`llm.holdRetries`，默认开）：同一会话同一 provider 在 `RATE_LIMIT` 之后十几秒内又发请求，就是 dsh 的重试；先按 retry-after，或等到这一分钟里最老的请求老化出去（按命中时窗口里的请求数估上限），最多 30 秒。这是闸门唯一碰前台请求的地方。
 - **不碍事**：闸门内部任何异常只记 debug，请求照常放行。`/dot` 多一行 `model requests: …`，dot 页面「状态」多一张「模型请求」卡；冷却开始 / 结束各记一条日志和审计。
 - 不做：不改后台工作触发的频率，不改 dsh 的重试本身，不记跨进程的状态。
+
+## 0.24：后台干活的思考强度和对话分开
+
+起因（11-17）：为了聊天更像人，把她对话的思考强度从 Low 改成 Off。dsh 只有一个模型选择器，在对话里改会同时存成全局默认；幕间叙述、记忆整理、成长回顾、用法回顾这些手写请求读的正是这个默认（`agentDefaultModel.currentSelection()`），新建的跑腿会话也继承它——于是聊天关思考等于全关。当天 16:16 那一轮幕间在没有任何设备活动的情况下把「登好了 QQ」写成了事实，那一轮多半就是 Off 跑的；多半，因为 `calls.jsonl` 当时不记强度。
+
+- 一个设置 `llm.workEffort`（默认 `high`，`''` = 跟随选择器），一个函数 `workEffort(ctx, route, want)`（`src/llm-gate.js`，和「哪些请求算后台」同一个地方）：
+  - 手写请求（幕间一轮和成长回顾、记忆的 `complete()`、`reflectOnce`）发之前问它；
+  - 跑腿会话：往里送任何东西之前（`resolveLive`），用 `agent.model.select(...)` 把这个会话自己的选择设好——只记在这个会话里，持久，已经是这个值就什么都不做；审计 `errand-effort`（原来是什么、设成什么、为什么）。**不能**走 `agent/request` 瀑布：宿主（agent-loop 0.2.2）在一步开始前就把模型选择定死，瀑布里改强度会让整轮失败（`agent/request proposed reasoning effort "high" after step preparation fixed "off"`）——第一版就是这么写的，上线后一次看手机的跑腿因此失败，十几分钟后改掉。没有 `agent.model.select` 的旧宿主：跑腿跟随选择器；
+  - QQ 群聊评分固定 `off`（只出一个数字，`maxTokens: 8`）；
+  - 她的对话、别的会话：不碰，选择器说什么就是什么。
+- 模型不支持的强度不会发出去（宿主会在请求前直接拒）：先用 `llm.resolveCallConfig`（没有就 `prepareCall`）问一次，按 provider/model/强度记住；明确说不支持 → 跟随选择器并在日志里说一次；问不了（适配器还没注册、宿主没有这个查询）→ 这次跟随，下次再问。dot 没有 inject `llm`，读 `ctx.llm` 会抛，所以先 `ctx.get('llm')`（第一版只包了一层 try，一抛就当成「问不了」，设置等于没生效）。
+- 看得见：闸门记下每类请求实际带出去的强度，`/dot` 的 model requests 一行多了 `thinking: chat off, background high`；幕间 `calls.jsonl` 每条带 `effort`。
+- 没做的：换对话 / 交接时「把对话的强度抄过去」。新对话继承的是全局默认，而全局默认就是他上一次在选择器里选的——通常正是对话那个；在别的会话里改过才会不一致，到时在新对话里再选一次。为这个加一份状态不值得。
+
+## 0.24：幕间——设备上的事只认记录
+
+起因同上（11-17 16:16 那一轮，没有任何设备活动却写她在新手机上登好了 QQ，又原样进了她的对话）。
+
+- **输入**：每轮固定带 `deviceFacts`（`deviceFacts(items, returned)`）——上一轮以来真跑过手机 / 电脑工具的那些 act（`pending.jsonl` 的 `tools > 0` 且有 `on`）和办完回来的跑腿，一条一个 id；什么都没有就是 `[]`，提示词里写明空表的意思是「她没碰过」。`webContext` 每条也带 id（`w1…`）。
+- **输出**：必填 `onDevices`：剧本和 continuity 里凡是说她这段时间在手机 / 电脑上做了什么的，每件一条，`basis` 填依据的 id。
+- **核对**（`checkDeviceClaims`）：有 `basis` 不在给出去的 id 里（或整栏没有）→ 带着 `notKept`（哪几件没有记录）重写一次；第二稿还不行 → 这一轮整段不留：不写剧本、不更新 continuity、不派 intents / 玩 / 试，`pending` 留给下一轮，按失败退避（`round-unbacked`、`round-rejected`）。seed 轮不核对。
+- **这道核对能做到什么**（11-17 拿 16:16 的真实输入重放，每组 5 次，样本小）：
+
+  | 提示词 | 思考 | 把没做的设备操作写成做了 |
+  |---|---|---|
+  | 旧 | off | 4/4（1 次没解析出来） |
+  | 旧 | high | 3/5 |
+  | 新（deviceFacts + onDevices） | high | 0/5 |
+  | 新，去掉 onDevices | high | 2/3（2 次没解析出来） |
+  | 新 | off | 4/5，而且 5 次 `onDevices` 全是 `[]` |
+
+  也就是：新提示词加 high 才干净；思考关掉时叙述者照编不误，并且不申报，**核对一条也拦不住**。`onDevices` 的作用是逼它动笔后回头数一遍（去掉它 high 也会编），不是一道保证。另试过让一个独立的小请求来挑（思考 off）：编了的 4 稿全挑出来了，但干净的 5 稿里也有 4 稿被挑出「看了一眼屏幕」之类——误报太多，没采用。
+- 所以保证不在这里：靠 `llm.workEffort` 不被关掉，加上下一步（她答应他的事由代码记状态，跑腿真做完才算做了）。

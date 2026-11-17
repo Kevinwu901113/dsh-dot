@@ -403,13 +403,16 @@ test('errands: app notifications and phone checks run in her errand session; onl
   const h = harness();
   const followups = [], injected = [], created = [];
   let onNotification;
-  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }) });
+  const selected = [];
+  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: (m) => injected.push({ id, m }),
+    model: { current: () => ({ provider: 'errand-test', model: 'm', reasoningEffort: 'off' }), select: (sel) => selected.push([id, sel]) } });
   const controller = {
     create: async (req) => { created.push(req); return { sessionId: 'errand-1' }; },
     rename: async () => ({}),
     resolveAgent: async (id) => ({ agent: agentFor(id) }),
   };
   h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : orig(name))(h.ctx.get);
+  h.ctx.llm = { resolveCallConfig: async (c) => c };
   apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 30 });
   // her conversation is s1
   h.emit(h.home, 'turn/start', { turn: 1 });
@@ -420,6 +423,11 @@ test('errands: app notifications and phone checks run in her errand session; onl
   await wait(40);
   assert.deepEqual(created, [{ cwd: h.home }], 'the errand session is created in her home');
   assert.deepEqual(followups.map((f) => [f.id, unstamp(f.m.content[0].text).split('\n')[0]]), [['s1', '[手机通知] QQ · 宽：在吗'], ['errand-1', '[手机通知] 小黑盒 · 小黑盒：steam 史低']]);
+  // her errand thinks at llm.workEffort (default high) even with the model selector set to off for the chat: its own
+  // selection was set before the wake went in (agent.model.select); her conversation is left as he set it
+  assert.deepEqual(selected, [['errand-1', { provider: 'errand-test', model: 'm', reasoningEffort: 'high' }]]);
+  assert.ok(h.audit.some((e) => e.event === 'errand-effort' && e.was === 'off' && e.effort === 'high' && e.why === 'set'), 'what it was, what it is set to and why, in the activity log');
+  assert.equal(h.hooks['agent/request'], undefined, 'never through the request waterfall: the host fails the turn when the effort changes there');
   // the errand turn ends with a finding: it is injected (not followed up) into her conversation
   h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
   h.emitAs('errand-1', h.home, 'user/message', { source: PHONE_NOTIFICATION_SOURCE });
@@ -1167,4 +1175,237 @@ test('dot: a qq-bridge session (qqb-…) is never hers, whatever the scope; dshD
   assert.equal(h.ctx.dshDot.hers('qqb-g-1-' + 'a'.repeat(32), h.home), false);
   assert.equal(h.ctx.dshDot.hers('qqb-p-20002', h.home), false);
   stop(h);
+});
+
+// ── her side of the conversation with him: writing / sending; what has not reached him gives way ──
+function talkHarness(cfg = {}) {
+  const o = ownerHarness(cfg);
+  const sends = [], said = [], cancels = [];
+  // The host's handle (dsh-agent-loop): cancel aborts the running turn; waking input sent after it is held for the next turn.
+  o.agent.cancel = (cause, opts) => { cancels.push({ cause, opts }); o.calls.push({ via: 'cancel' }); };
+  o.agent.send = (m, target, wake) => { o.calls.push({ via: `send:${target}`, wake, text: m.content[0].text, m }); (target === 'next-turn' ? o.agent.inbox.nextTurn : o.agent.inbox.nextStep).push(m); };
+  o.services.dshQq.send = (to, text) => { const d = Promise.withResolvers(); sends.push({ to, text, lines: text.split('\n').filter(Boolean), done: (r) => d.resolve(r), fail: (e) => d.reject(e) }); return d.promise; };
+  o.services.dshQq.sentToOwnerAt = 0;
+  o.services.dotMemory = { herSaid: (l) => said.push(l.text) };
+  o.turn.start(90); o.turn.end(90); // she has a conversation, and is idle
+  return { ...o, sends, said, cancels };
+}
+const qqTurn = async (o, n, { answer, tool = false, end = true } = {}) => {
+  const { ownerSource } = await import('../src/dot/core.js');
+  o.turn.start(n);
+  o.h.emit(o.h.home, 'user/message', { source: ownerSource() });
+  if (tool) o.h.emit(o.h.home, 'tool/call', { name: 'mcp__dot-phone__screenshot' });
+  if (answer) o.h.emit(o.h.home, 'assistant/message', msg(answer));
+  if (end) o.turn.end(n);
+};
+
+test('sending counts as busy: his words wait for her bubbles to stop; what was left unsent comes with them, once; her transcript gets what reached him', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { answer: '那就去睡一会\n你昨天六点才睡\n回放的事我自己想办法' });
+    await settle();
+    assert.equal(o.sends.length, 1, 'the turn\'s answer goes to his QQ');
+    assert.equal(o.services.dshDot.sending(), true);
+    o.say('你中午吃什么'); mock.timers.tick(1500); await settle();
+    assert.equal(o.calls.length, 0, 'no turn beside bubbles still going out');
+    // qq.send stopped after the first bubble, because he spoke
+    o.sends[0].done({ sent: 1, said: ['那就去睡一会'], interrupted: true, unsent: ['你昨天六点才睡', '回放的事我自己想办法'] });
+    await settle(); await settle();
+    assert.deepEqual(o.said, ['那就去睡一会'], 'recorded: the bubble that reached him, not what she wrote');
+    assert.equal(o.calls.length, 1);
+    assert.equal(o.calls[0].via, 'followup');
+    assert.deepEqual(lines(o.calls[0]), ['你中午吃什么', '（你上一条里这几句没发出去，他没看到：', '你昨天六点才睡', '回放的事我自己想办法', '看完他说的再回；这几句想说就重新说，不合适了就放下，不用提没发出去这回事。）']);
+    assert.ok(o.h.audit.some((e) => e.event === 'qq-relayed' && e.sent === 1 && e.unsent === 2));
+    // the next turn's answer goes out whole; the draft is not shown again
+    await qqTurn(o, 2, { answer: '刚才煎了个蛋夹吐司' }); await settle();
+    assert.equal(o.sends.length, 2);
+    o.sends[1].done({ sent: 1, said: ['刚才煎了个蛋夹吐司'] }); await settle(); await settle();
+    assert.deepEqual(o.said, ['那就去睡一会', '刚才煎了个蛋夹吐司']);
+    assert.equal(o.services.dshDot.sending(), false);
+    o.say('好'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(lines(o.calls[1]), ['好'], 'the unsent lines were given to her once');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('read before send, without qq_send: an answer written while he has unread words is kept back as a draft and handed to her with them', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { answer: '在的', end: false });
+    o.say('算了'); // still in the buffer when her turn ends
+    o.turn.end(1); await settle();
+    assert.equal(o.sends.length, 0, 'not sent: he has said something she has not read');
+    assert.deepEqual(o.said, [], 'and not recorded as said');
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-reply-held' && e.lines === 1 && e.preempts === 1));
+    mock.timers.tick(1500); await settle();
+    assert.equal(o.calls[0].via, 'followup');
+    assert.deepEqual(lines(o.calls[0]).slice(0, 3), ['算了', '（你上一条里这几句没发出去，他没看到：', '在的']);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('before the first bubble: a turn of his words that has used no tool is started over with what he just said; one that has is steered', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { end: false }); // she is writing
+    o.say('你中午吃什么'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(o.cancels, [{ cause: { kind: 'hook', reason: 'dot-owner-spoke' }, opts: { keepInbox: true } }]);
+    assert.deepEqual(o.calls.map((c) => c.via), ['cancel', 'send:next-turn'], 'cancelled, and his words queued for the next turn in the same tick — nothing waits on the abort');
+    assert.equal(o.calls[1].wake, true);
+    assert.deepEqual(o.agent.inbox.nextTurn.length, 1, 'in the host\'s inbox before anything else can get in front of it');
+    assert.deepEqual(lines(o.calls[1]), ['你中午吃什么'], 'no busy line: it is read at the start of a turn');
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-message' && e.via === 'restart'));
+    // the cancelled turn ends: whatever it had is not an answer
+    o.h.emit(o.h.home, 'assistant/message', msg('那就去睡一会')); o.h.emit(o.h.home, 'turn/end', { turn: 1, reason: { kind: 'aborted' } }); await settle();
+    assert.equal(o.sends.length, 0);
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-turn-restarted' && e.aborted === true));
+    o.say('人呢'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(lines(o.calls.at(-1)), ['人呢'], 'an aborted turn leaves no draft');
+    // a turn that has used a tool is not undone
+    await qqTurn(o, 2, { tool: true, end: false });
+    o.say('先别弄了'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 1);
+    assert.equal(o.calls.at(-1).via, 'steer');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('the cancel came too late (the turn ended as completed): its answer is not sent beside his new words; it is kept as a draft for her', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { end: false });
+    o.say('等下'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 1);
+    o.h.emit(o.h.home, 'assistant/message', msg('在的\n刚洗完头')); o.h.emit(o.h.home, 'turn/end', { turn: 1, reason: { kind: 'completed' } }); await settle();
+    assert.equal(o.sends.length, 0, 'his words are already queued: this answer was written without them');
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-turn-restarted' && e.aborted === false));
+    o.say('我换个问题'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(lines(o.calls.at(-1)).slice(0, 4), ['我换个问题', '（你上一条里这几句没发出去，他没看到：', '在的', '刚洗完头']);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('an unsent draft older than five minutes is not shown to her; the drop is in the activity log', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { end: false });
+    o.say('等下'); mock.timers.tick(1500); await settle();
+    o.h.emit(o.h.home, 'assistant/message', msg('在的')); o.h.emit(o.h.home, 'turn/end', { turn: 1, reason: { kind: 'completed' } }); await settle(); // kept as a draft
+    mock.timers.tick(5 * 60_000 + 1);
+    o.say('还在吗'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(lines(o.calls.at(-1)), ['还在吗'], 'stale: not shown');
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-draft-dropped' && e.lines === 1));
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('ownerPreemptMax counts replies in a row that did not reach him: a turn she answers with qq_send herself starts the count again, and so does one she stays silent in', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    for (const n of [1, 2]) { await qqTurn(o, n, { end: false }); o.say(`第${n}句`); mock.timers.tick(1500); await settle(); o.h.emit(o.h.home, 'turn/end', { turn: n, reason: { kind: 'aborted' } }); await settle(); }
+    assert.equal(o.cancels.length, 2, 'at the cap');
+    // she answers with qq_send in the next turn: something reached him
+    o.turn.start(3); o.h.emit(o.h.home, 'user/message', { source: (await import('../src/dot/core.js')).ownerSource() });
+    o.services.dshQq.sentToOwnerAt = Date.now();
+    o.h.emit(o.h.home, 'assistant/message', msg('好')); o.turn.end(3); await settle();
+    assert.ok(o.h.audit.some((e) => e.event === 'qq-answered-herself'));
+    await qqTurn(o, 4, { end: false }); o.say('第3句'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 3, 'she gives way again');
+    o.h.emit(o.h.home, 'turn/end', { turn: 4, reason: { kind: 'aborted' } }); await settle();
+    await qqTurn(o, 5, { end: false }); o.say('第4句'); mock.timers.tick(1500); await settle();
+    o.h.emit(o.h.home, 'turn/end', { turn: 5, reason: { kind: 'aborted' } }); await settle();
+    assert.equal(o.cancels.length, 4, 'at the cap again');
+    // a turn she chooses to say nothing in: nothing was held back from him
+    o.services.dshQq.sentToOwnerAt = 0;
+    await qqTurn(o, 6, { answer: 'DOT_SILENT' }); await settle();
+    await qqTurn(o, 7, { end: false }); o.say('第5句'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 5);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('a send that fails after some bubbles: what reached him is recorded, the rest is kept as a draft; a failed send never blocks the next one', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    await qqTurn(o, 1, { answer: '到家了\n今天好累' }); await settle();
+    o.sends[0].done({ sent: 1, said: ['到家了'], interrupted: true, unsent: ['今天好累'], error: '发送超时' }); await settle(); await settle();
+    assert.deepEqual(o.said, ['到家了']);
+    assert.ok(o.h.audit.some((e) => e.event === 'qq-relayed' && e.sent === 1 && e.unsent === 1 && e.error === '发送超时'));
+    o.say('怎么了'); mock.timers.tick(1500); await settle();
+    assert.deepEqual(lines(o.calls.at(-1)).slice(0, 3), ['怎么了', '（你上一条里这几句没发出去，他没看到：', '今天好累']);
+    // the whole send throws: reported, and the chain goes on
+    await qqTurn(o, 2, { answer: '没事' }); await settle();
+    o.sends[1].fail(new Error('QQ 掉线')); await settle(); await settle();
+    assert.ok(o.h.audit.some((e) => e.event === 'qq-relay-failed' && e.error === 'QQ 掉线'));
+    assert.equal(o.services.dshDot.sending(), false);
+    await qqTurn(o, 3, { answer: '刚才网不好' }); await settle();
+    assert.equal(o.sends.length, 3, 'the next answer still goes out');
+    o.sends[2].done({ sent: 1, said: ['刚才网不好'] }); await settle(); await settle();
+    assert.deepEqual(o.said, ['到家了', '刚才网不好']);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('a conversation she has left is not hers again: memory hands her over while a turn still runs in the old one, and that turn ending does not pull her back', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    assert.equal(o.services.dshDot.session(), 's1');
+    await qqTurn(o, 1, { end: false }); // a turn is running in s1 (his words restarted there)
+    o.services.dshDot.setSession('s2'); // handoff
+    assert.equal(o.services.dshDot.session(), 's2');
+    o.h.emit(o.h.home, 'assistant/message', msg('好')); o.turn.end(1); await settle();
+    assert.equal(o.services.dshDot.session(), 's2', 'the old conversation\'s turn ended after the handoff');
+    // and once more, from a reminder set in the old conversation
+    o.turn.start(2); o.turn.end(2); await settle();
+    assert.equal(o.services.dshDot.session(), 's2');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('ownerPreemptMax: after giving way twice in a row her reply goes out first; a bubble reaching him resets the count', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    for (const n of [1, 2]) { await qqTurn(o, n, { end: false }); o.say(`第${n}句`); mock.timers.tick(1500); await settle(); o.h.emit(o.h.home, 'turn/end', { turn: n, reason: { kind: 'aborted' } }); await settle(); }
+    assert.equal(o.cancels.length, 2);
+    // third time: not started over (steered), and at its end the answer is sent although he has unread words
+    await qqTurn(o, 3, { end: false });
+    o.say('第3句'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 2, 'the cap');
+    assert.equal(o.calls.at(-1).via, 'steer');
+    o.h.emit(o.h.home, 'assistant/message', msg('我在听')); o.say('第4句'); o.turn.end(3); await settle();
+    assert.equal(o.sends.length, 1, 'sent first, even with his words waiting');
+    o.sends[0].done({ sent: 1, said: ['我在听'] }); await settle(); await settle();
+    // a bubble reached him: she gives way again
+    mock.timers.tick(1500); await settle();
+    await qqTurn(o, 4, { end: false }); o.say('第5句'); mock.timers.tick(1500); await settle();
+    assert.equal(o.cancels.length, 3);
+    stop(o.h);
+  } finally { mock.timers.reset(); }
+});
+
+test('no conversation yet (first run, or after a reset): his words open one in her home; anything else is still dropped', async () => {
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = ownerHarness();
+    const created = [];
+    o.services.sessionController.create = async (opts) => { created.push(opts); return { sessionId: 's1' }; };
+    o.services.sessionController.rename = async () => ({});
+    o.say('在吗'); mock.timers.tick(1500); await settle(); await settle();
+    assert.deepEqual(created, [{ cwd: o.h.home }]);
+    assert.ok(o.h.audit.some((e) => e.event === 'conversation-opened' && e.session === 's1'));
+    assert.equal(o.calls.length, 1);
+    assert.deepEqual(lines(o.calls[0]), ['在吗']);
+    o.say('人呢'); mock.timers.tick(1500); await settle();
+    assert.equal(created.length, 1, 'the conversation it opened is hers from then on');
+    stop(o.h);
+  } finally { mock.timers.reset(); }
 });

@@ -56,6 +56,7 @@ export const defaults = {
   maxBackgroundWaitSeconds: 180, // a background request never waits longer; capped at MAX_WAIT_CAP_SECONDS
   holdRetries: true,          // hold dsh's fast retry of a rate-limited request until the window has room
   retryHoldMaxSeconds: 30,    // …but never longer than this
+  workEffort: 'high',         // reasoning effort of her background work (see workEffort() below); '' = whatever dsh's model selector says
 };
 // Why 20: one background request every 3 s at most. The measured burst (one "like a post" act) was
 // dozens of requests in under a minute; 20 leaves most of a typical entry-tier RPM limit (tens per
@@ -89,7 +90,59 @@ function normalize(c = {}) {
     maxWaitMs: Math.min(MAX_WAIT_CAP_SECONDS, num(c.maxBackgroundWaitSeconds, defaults.maxBackgroundWaitSeconds)) * 1000,
     holdRetries: c.holdRetries === undefined ? defaults.holdRetries : c.holdRetries !== false,
     retryHoldMaxMs: num(c.retryHoldMaxSeconds, defaults.retryHoldMaxSeconds) * 1000,
+    workEffort: typeof c.workEffort === 'string' ? c.workEffort.trim() : defaults.workEffort,
   };
+}
+
+// ── the reasoning effort of her background work ──
+// dsh has one model selector: changing the effort in any conversation also becomes the default every
+// hand-built request read (currentSelection). Turning thinking off for a chat that should sound like a
+// person therefore turned it off for the interlude's narrator, memory consolidation, the growth review
+// and her errands as well — the work where it matters. So background work has its own setting
+// (`llm.workEffort`), and the selector is left to mean what he set it for: the conversation in front of him.
+//
+//   hand-built requests (interlude round and growth, memory, howto reflection): the caller asks here;
+//   her errand sessions: dot answers the host's `agent/request` waterfall with it (dot/core.js);
+//   QQ group scoring (one digit out): always 'off';
+//   her conversation, and everything that is not ours: untouched.
+//
+// An effort the model does not offer is never sent (the host rejects the request before any provider
+// I/O): the host is asked once per model, and when it says no — or cannot be asked — the selector's
+// own value is used, as before.
+const effortOk = new Map(); // provider \0 model \0 effort → true | false
+/**
+ * The effort for one background request on `route` ({ provider, model, reasoningEffort? }: the selection
+ * or request config it would otherwise use). `want` overrides the setting (scoring passes 'off').
+ * Returns the effort to send, or undefined for "do not set one".
+ */
+export async function workEffort(ctx, route, want) { return (await effortFor(ctx, route, want)).effort; }
+/**
+ * The same, with the reason: { effort, why } — why: 'set' (the setting is used), 'same' (the selector already says
+ * it), 'follow' (llm.workEffort is ''), 'unsupported' (the model does not offer it), 'cannot-ask' (no llm service,
+ * or it has neither query), 'ask-failed: <code>' (the host could not answer now), 'error: …'. For the activity log.
+ */
+export async function effortFor(ctx, route, want) {
+  const follow = route?.reasoningEffort || undefined;
+  try {
+    const wanted = want ?? (gateFor(ctx)?.config ?? normalize(sectionOf('llm'))).workEffort;
+    if (!wanted || !route?.provider || !route?.model) return { effort: follow, why: 'follow' };
+    if (wanted === follow) return { effort: follow, why: 'same' };
+    const key = `${route.provider}\0${route.model}\0${wanted}`;
+    if (!effortOk.has(key)) {
+      // A component that did not inject `llm` (dot) may not read ctx.llm at all: each way is tried on its own.
+      let llm;
+      try { llm = ctx?.get?.('llm'); } catch { /* next */ }
+      if (!llm) { try { llm = ctx?.llm; } catch { /* none */ } }
+      const ask = typeof llm?.resolveCallConfig === 'function' ? (c) => llm.resolveCallConfig(c) : typeof llm?.prepareCall === 'function' ? (c) => llm.prepareCall(c) : null;
+      if (!ask) return { effort: follow, why: llm ? 'cannot-ask: llm has neither resolveCallConfig nor prepareCall' : 'cannot-ask: no llm service' }; // not cached, it may come later
+      try { await ask({ provider: route.provider, model: route.model, reasoningEffort: wanted }); effortOk.set(key, true); } catch (err) {
+        if (err?.code !== 'UNSUPPORTED_REASONING_EFFORT') return { effort: follow, why: `ask-failed: ${err?.code ?? err?.message ?? err}` }; // no adapter yet, offline…: ask again next time
+        effortOk.set(key, false);
+        try { ctx?.logger?.('dsh-dot/llm-gate')?.info?.(`${route.provider}/${route.model} has no reasoning effort "${wanted}" (llm.workEffort); background work follows the model selector`); } catch { /* ignore */ }
+      }
+    }
+    return effortOk.get(key) ? { effort: wanted, why: 'set' } : { effort: follow, why: 'unsupported' };
+  } catch (err) { return { effort: follow, why: `error: ${err?.message ?? err}` }; }
 }
 
 /**
@@ -111,7 +164,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   const P = (name) => {
     let p = providers.get(name);
     if (!p) {
-      p = { name, starts: [], bgStarts: [], fg: new Map(), fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, lastAnyHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0 };
+      p = { name, starts: [], bgStarts: [], fg: new Map(), fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, lastAnyHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, effort: {}, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0 };
       providers.set(name, p);
     }
     return p;
@@ -228,6 +281,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     const p = P(String(options?.provider ?? '?'));
     refresh(p, t);
     const rec = { p, cls: classify(options), session: options?.sessionId ? String(options.sessionId) : '', started: false, signal: options?.signal };
+    p.effort[rec.cls] = options?.reasoningEffort ? String(options.reasoningEffort) : 'default'; // what was really sent: shown on /dot
     // An already aborted request is not counted: the adapter ends it at once without a provider call.
     if (rec.signal?.aborted) return { rec, wait: null };
     if (rec.cls === 'foreground') {
@@ -331,10 +385,10 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     status() {
       const t = now();
       return {
-        pacing, backgroundRpm: cfg.backgroundRpm, quietSeconds: cfg.quietMs / 1000, maxWaitSeconds: cfg.maxWaitMs / 1000, holdRetries: cfg.holdRetries,
+        workEffort: cfg.workEffort, pacing, backgroundRpm: cfg.backgroundRpm, quietSeconds: cfg.quietMs / 1000, maxWaitSeconds: cfg.maxWaitMs / 1000, holdRetries: cfg.holdRetries,
         providers: [...providers.values()].map((p) => {
           try { refresh(p, t); } catch { /* status only */ }
-          return { provider: p.name, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fg.size, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries };
+          return { provider: p.name, effort: { ...p.effort }, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fg.size, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries };
         }),
       };
     },
@@ -354,7 +408,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
 export function statusLine(st) {
   if (!st) return 'model requests: gate not installed';
   const head = st.pacing ? `background ≤${st.backgroundRpm}/min, waits ${st.quietSeconds} s after yours, ≤${st.maxWaitSeconds} s` : 'pacing off (llm.backgroundRpm 0)';
-  const per = st.providers.map((p) => `${p.provider} ${p.lastMinute}/min (bg cap ${p.cap}${p.coolingUntil ? `, cooling until ${new Date(p.coolingUntil).toTimeString().slice(0, 8)}` : ''}${p.waiting ? `, ${p.waiting} waiting` : ''}, ${p.delayed} delayed, ${p.rateLimited}×429${p.heldRetries ? `, ${p.heldRetries} retries held` : ''})`);
+  const per = st.providers.map((p) => `${p.provider} ${p.lastMinute}/min (bg cap ${p.cap}${p.coolingUntil ? `, cooling until ${new Date(p.coolingUntil).toTimeString().slice(0, 8)}` : ''}${p.waiting ? `, ${p.waiting} waiting` : ''}, ${p.delayed} delayed, ${p.rateLimited}×429${p.heldRetries ? `, ${p.heldRetries} retries held` : ''}${p.effort?.foreground || p.effort?.background ? `; thinking: chat ${p.effort.foreground ?? '—'}, background ${p.effort.background ?? '—'}` : ''})`);
   return `model requests: ${per.join(' · ') || 'none yet'} — ${head}`;
 }
 

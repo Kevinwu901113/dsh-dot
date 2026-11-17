@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE, castNames } from '../src/interlude/core.js';
+import { apply, parseReply, renderContext, readScript, buildPrompt, inHours, describeNow, onVmSite, thinWhy, observationPrompt, OBSERVATION_SOURCE, castNames, deviceFacts, checkDeviceClaims } from '../src/interlude/core.js';
 
 function fakeStream(text) {
   // A reply starting with "TOOL:" is streamed as an `interval` tool call (arguments in deltas), as dsh-llm does.
@@ -26,10 +26,25 @@ function fakeStream(text) {
 
 const CANON = { characterName: 'dot', characterProfile: '用户的常驻助手，话少，不打句号。' };
 
+// Most tests are not about the device account: a JSON reply that says nothing of it is given the empty one
+// (`onDevices: []` — "she did nothing on her devices"), as a careful narrator would. Tests of the check itself
+// write the field, or pass `rawReplies: true`.
+let rawReplies = false;
+const accounted = (text) => {
+  if (rawReplies) return text;
+  const i = text.indexOf('{'), j = text.lastIndexOf('}');
+  if (i < 0 || j <= i) return text; // prose
+  try {
+    const o = JSON.parse(text.slice(i, j + 1));
+    if (o && typeof o === 'object' && !('onDevices' in o) && ('script' in o || 'continuity' in o || 'state' in o)) return `${text.slice(0, i)}${JSON.stringify({ ...o, onDevices: [] })}${text.slice(j + 1)}`;
+  } catch { /* cut off, or not JSON */ }
+  return text;
+};
+
 function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null, memory = undefined } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
-  const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [];
+  const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [], audits = [];
   let cmd; const tools = {};
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
@@ -41,13 +56,13 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
       commands: { register: (c) => { cmd = c; return () => {}; } },
       tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
       dshIm: { listBots: async () => [{ botId: 'b1' }], listTargets: async () => targets, send: async (b, t, text) => { sent.push({ b, t, text }); return { sent: true }; } },
-      dshComputer: { audit() {} },
+      dshComputer: { audit(e) { audits.push(e); } },
       dotMemory: memory,
       web,
       sessionController: vm ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => { followups.push({ id, m }); vm.onFollowup?.(id, m); } } }) } : undefined,
       sessions: vm ? { flush: async () => {} } : undefined,
     }[n]),
-    llm: { stream: (o) => { calls.push(o); return fakeStream(typeof reply === 'function' ? reply(o) : reply); } },
+    llm: { stream: (o) => { calls.push(o); return fakeStream(accounted(typeof reply === 'function' ? reply(o) : reply)); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
   };
   const ticks = [];
@@ -66,7 +81,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { ctx, home, calls, sent, sections, prompts, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, sections, prompts, audits, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -142,7 +157,7 @@ test('advance round runs without any conversation and says so to the model; the 
   assert.match(h.calls[0].system, /这一段：没有新消息进来/);
   assert.match(h.calls[0].system, /把整轮写成对 `interval` 工具的一次调用/);
   assert.equal(h.calls[0].tools[0].name, 'interval');
-  assert.deepEqual(h.calls[0].tools[0].parameters.required, ['script', 'continuity', 'intents', 'browserIntents', 'playIntents', 'contact']);
+  assert.deepEqual(h.calls[0].tools[0].parameters.required, ['script', 'continuity', 'onDevices', 'intents', 'browserIntents', 'playIntents', 'contact']);
   assert.match(h.calls[0].messages[0].content[0].text, /"currentEvent": \{\s*"type": "none"/);
   assert.equal(h.calls.length, 1, 'a tool call needs no refresh');
   const state = JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8'));
@@ -239,13 +254,103 @@ test('contact: off by default; on, gated by willingness, hours and daily cap', a
   night.stop();
 });
 
-test('a reply that is not JSON still becomes a script entry; state is untouched', async () => {
+test('a reply that cannot be checked is not kept: prose only, and the fields never come, means no script entry and the acts wait', async () => {
   const h = harness({ reply: '今天没什么特别的。' });
   h.act('s1', 'a', 'b');
   const r = await h.cmd().handler({ rawInput: 'now' });
-  assert.match(r.text, /ran: 今天没什么特别的/);
+  assert.match(r.text, /not run: not kept/);
+  assert.equal(h.calls.length, 4, 'the draft and its field call, then once more');
   assert.ok(!existsSync(join(h.home, 'interlude', 'state.json')));
-  assert.equal(readScript(join(h.home, 'interlude', 'script.md'), 5).length, 1);
+  assert.equal(readScript(join(h.home, 'interlude', 'script.md'), 5).length, 0);
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /pending acts: 1/);
+  h.stop();
+});
+
+// ── her devices are real: the record goes in as data, the account comes back with ids, the host checks them ──
+const phoneAct = (h, sid = 's1') => {
+  h.emit(sid, 'turn/start', { turn: 1 });
+  h.emit(sid, 'user/message', { content: [{ type: 'text', text: '[小黑盒] 有人回复了你' }], source: { kind: 'dsh-dot', form: 'phone-notification' } }, { surfaceOp: 'append' });
+  h.emit(sid, 'tool/call', { name: `${PHONE_TOOL_PREFIX}phone_tap` });
+  h.emit(sid, 'assistant/message', { message: { content: [{ type: 'text', text: '回了一句' }] } });
+  h.emit(sid, 'turn/end', { turn: 1 });
+};
+const round = (o) => `TOOL:${JSON.stringify({ script: '她把碗洗了。', continuity: { current: '在厨房', recent: [], salient: [] }, intents: [], browserIntents: [], playIntents: [], contact: null, ...o })}`;
+const payloadOf = (call) => JSON.parse(call.messages[0].content[0].text);
+
+test('deviceFacts: only acts in which a phone / computer tool ran, and errands that came back done; checkDeviceClaims: every claim needs an id it was given', () => {
+  const ts = new Date(2026, 10, 17, 16, 5).toISOString();
+  assert.deepEqual(deviceFacts([
+    { ts, origin: 'user', user: '帮你换了台新手机你看看呢', assistant: '啊？新手机？等下我看看', tools: 0 }, // said, not done
+    { ts, origin: 'user', user: '记一下', assistant: '记了', tools: 1 },                                   // a tool, but not on a device
+    { ts, origin: 'notification', user: '[小黑盒] 有人回复了你', assistant: '回了一句', tools: 3, on: 'phone' },
+    { ts, origin: 'phone-check', user: '（拿起手机看了一眼）', assistant: 'DOT_SILENT', tools: 2, on: 'phone', quiet: true },
+  ], [{ status: 'done', wanted: '看看 B 站动态', report: '关注的人没更新', doneAt: '11-17 16:20 星期二 下午' }, { status: 'expired', wanted: '给帖子点赞' }]), [
+    { id: 'd1', at: '11-17 16:05', on: 'phone', did: '[小黑盒] 有人回复了你 → 回了一句' },
+    { id: 'd2', at: '11-17 16:05', on: 'phone', did: '（拿起手机看了一眼）（没有要理的）' },
+    { id: 'd3', at: '11-17 16:20 星期二 下午', did: '看看 B 站动态 → 关注的人没更新' },
+  ]);
+  assert.deepEqual(deviceFacts([{ ts, user: '在吗', assistant: '在', tools: 0 }], []), [], 'she touched neither: the empty list is the fact');
+  assert.deepEqual(checkDeviceClaims([], []), { ok: true, unbacked: [], missing: false });
+  assert.deepEqual(checkDeviceClaims([{ what: '回了小黑盒的评论', basis: 'd1' }, { what: '查了天气', basis: 'w2' }], ['d1', 'w1', 'w2']), { ok: true, unbacked: [], missing: false });
+  assert.deepEqual(checkDeviceClaims([{ what: '在新手机上登了 QQ', basis: '' }, { what: '换了头像', basis: 'd7' }, { what: '回了评论', basis: 'd1' }], ['d1']), { ok: false, unbacked: ['在新手机上登了 QQ', '换了头像'], missing: false });
+  assert.deepEqual(checkDeviceClaims(null, ['d1']), { ok: false, unbacked: [], missing: true }, 'no account at all cannot be checked');
+  assert.equal(parseReply('{"script":"x","continuity":{"current":"a","recent":[],"salient":[]}}').onDevices, null);
+  assert.deepEqual(parseReply('{"script":"x","continuity":{"current":"a","recent":[],"salient":[]},"onDevices":[{"what":"刷了帖","basis":"d1"}]}').onDevices, [{ what: '刷了帖', basis: 'd1' }]);
+});
+
+test('the round is given what she really did on her devices — an empty list when nothing — and must cite it', async () => {
+  const h = harness({ reply: (o) => round(payloadOf(o).deviceFacts.length ? { script: '她回了小黑盒那条评论。', onDevices: [{ what: '回了小黑盒的评论', basis: 'd1' }] } : { onDevices: [] }) });
+  h.act('s1', '帮你换了台新手机你看看呢？刚好登一下你的qq', '啊？新手机？等下我看看');
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.deepEqual(payloadOf(h.calls[0]).deviceFacts, [], 'she said she would look; nothing ran on a device');
+  assert.match(h.calls[0].system, /它是空的，就是这段时间她没碰过手机和电脑上的任何东西/);
+  assert.match(h.calls[0].system, /onDevices：[\s\S]*找不到 id 的事没有发生/);
+  phoneAct(h);
+  await h.cmd().handler({ rawInput: 'now' });
+  assert.deepEqual(payloadOf(h.calls[1]).deviceFacts.map((f) => [f.id, f.on, f.did]), [['d1', 'phone', '[小黑盒] 有人回复了你 → 回了一句']]);
+  assert.equal(readScript(join(h.home, 'interlude', 'script.md'), 5).length, 2);
+  const calls = readFileSync(join(h.home, 'interlude', 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(calls.map((c) => c.deviceFacts), [0, 1]);
+  h.stop();
+});
+
+test('a draft that says she did something on a device with no record is written once more, told what had none; the second draft is the one kept', async () => {
+  let n = 0;
+  const h = harness({ reply: () => (++n === 1
+    ? round({ script: '她在新手机上登好了 QQ，顺手换了头像。', continuity: { current: '登好了 QQ', recent: [], salient: [] }, onDevices: [{ what: '在新手机上登了 QQ', basis: '' }, { what: '换了头像', basis: 'd1' }] })
+    : round({ script: '新手机还放在桌上没拆，她先把碗洗了。', continuity: { current: '在厨房，惦记着新手机', recent: [], salient: [] }, onDevices: [] })) });
+  h.act('s1', '帮你换了台新手机你看看呢？刚好登一下你的qq', '啊？新手机？等下我看看');
+  const r = await h.cmd().handler({ rawInput: 'now' });
+  assert.match(r.text, /ran: 新手机还放在桌上没拆/);
+  assert.equal(h.calls.length, 2);
+  assert.equal(payloadOf(h.calls[0]).notKept, undefined);
+  assert.deepEqual(payloadOf(h.calls[1]).notKept.claimedWithoutRecord, ['在新手机上登了 QQ', '换了头像'], '"d1" was not among the ids it was given: an invented id is no record');
+  assert.match(payloadOf(h.calls[1]).notKept.why, /它们没有发生/);
+  assert.equal(JSON.parse(readFileSync(join(h.home, 'interlude', 'state.json'), 'utf8')).current, '在厨房，惦记着新手机');
+  assert.deepEqual(readScript(join(h.home, 'interlude', 'script.md'), 5).map((e) => /登好了/.test(e)), [false], 'the first draft left nothing behind');
+  assert.doesNotMatch(h.ctxText(), /登好了 QQ/, 'and nothing of it reaches her conversation');
+  assert.ok(h.audits.some((e) => e.event === 'round-unbacked' && e.attempt === 1 && e.deviceFacts === 0 && e.unbacked.length === 2));
+  const calls = readFileSync(join(h.home, 'interlude', 'calls.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(calls.map((c) => [c.phase, Boolean(c.notKept)]), [['follow-up', true], ['follow-up:again', false]]);
+  h.stop();
+});
+
+test('twice without a record: the round is not kept at all — no script, no continuity, nothing handed on; the acts wait, and it does not try again at once', async () => {
+  const followups = [];
+  const h = harness({ reply: round({ script: '她在新手机上登好了 QQ。', continuity: { current: '登好了 QQ', recent: [], salient: [] }, onDevices: [{ what: '在新手机上登了 QQ', basis: '' }], intents: [{ at: soon, kind: 'reminder', text: '明天给他看新头像' }], playIntents: [{ app: '小黑盒', action: 'like', target: '首页第一条', willingness: 1 }] }), vm: { onFollowup: (id, m) => followups.push(m) } });
+  h.act('s1', '帮你换了台新手机你看看呢？刚好登一下你的qq', '啊？新手机？等下我看看');
+  const r = await h.cmd().handler({ rawInput: 'now' });
+  assert.match(r.text, /not run: not kept — it says she did things on her devices there is no record of: 在新手机上登了 QQ/);
+  assert.equal(h.calls.length, 2);
+  assert.ok(!existsSync(join(h.home, 'interlude', 'state.json')));
+  assert.equal(readScript(join(h.home, 'interlude', 'script.md'), 5).length, 0);
+  assert.equal(h.ctxText(), '', 'her conversation is told nothing');
+  assert.equal(followups.length, 0, 'what the draft wanted to do next is not started either');
+  const st = (await h.cmd().handler({ rawInput: '' })).text;
+  assert.match(st, /pending acts: 1/); assert.match(st, /intents: 0/); assert.match(st, /cursor: never · today 1\//, 'it cost a round of the day');
+  assert.ok(h.audits.some((e) => e.event === 'round-rejected' && e.unbacked[0] === '在新手机上登了 QQ'));
+  assert.match((await h.cmd().handler({ rawInput: 'now' })).text, /not run: paused after failures/);
+  assert.equal(h.calls.length, 2);
   h.stop();
 });
 

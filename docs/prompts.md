@@ -30,7 +30,7 @@
 | | 她自己的经验（进 App 时给） | `dot.howto.given` `dot.howto.no-notes`；整理经验的调用 `dot.howto.reflect` |
 | | 说明书（第一次用时才给） | `dot.manuals.hint` `.what` `.deny` |
 | | 说话提醒（最后一段） | `interlude.voice`（人设里的「说话提醒」优先） |
-| 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`） |
+| 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`；她上一条有话没发出去时附 `dot.owner-words.unsent`） |
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
 | | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |

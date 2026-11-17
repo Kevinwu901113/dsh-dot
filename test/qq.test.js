@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
+import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, echoOpener, asksSomething, plainOf, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -709,5 +709,105 @@ test('qq: the channel section goes to her sessions only when compat is here', as
   const text = (id) => h.sections[0].text({ agent: { session: { id, header: { cwd: '/x' } } } });
   assert.match(text('s1'), /qq_send/);
   for (const id of ['s2', 's3', 's4']) assert.equal(text(id), '', `${id} (${owners[id]}) gets no QQ section`);
+  h.stop();
+});
+
+test('a send that fails after some bubbles went out says which reached them and which did not, instead of failing as if nothing was sent', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  let n = 0;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); const ok = ++n < 2; setTimeout(() => sock.emit('message', JSON.stringify(ok ? { status: 'ok', retcode: 0, data: { message_id: n }, echo: m.echo } : { status: 'failed', retcode: 120, message: '发送超时', echo: m.echo })), 0); };
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  const r = await tool.execute({ to: 'owner', text: '到家了\n今天好累\n你吃了吗' });
+  assert.equal(r.sent, 1); assert.deepEqual(r.said, ['到家了']);
+  assert.equal(r.interrupted, true); assert.deepEqual(r.unsent, ['今天好累', '你吃了吗']); assert.equal(r.error, '发送超时');
+  assert.equal(sendReport(r).split('\n')[1], '发了 1 条，后面的没发出去（发送超时）：今天好累 / 你吃了吗（已发出的别再发一遍）');
+  assert.ok(h.ctx.dshQq.sentToOwnerAt > 0, 'one bubble is with him: she did write to him');
+  // nothing delivered at all: an ordinary failure
+  n = 1;
+  await assert.rejects(tool.execute({ to: 'owner', text: '在吗' }), /发送超时/);
+  h.stop();
+});
+
+test('dropEchoOpeners / dropChainedQuestions: an opener that says his words back, and asking again the turn after asking, are held back', async () => {
+  assert.equal(plainOf('六点多。'), '6点多');
+  assert.equal(echoOpener('六点多', '6点多吧'), true);
+  assert.equal(echoOpener('九点多还运动', '今天？今天9点多起来运动了一下'), false, 'a word of her own in it (还): not just his words back');
+  assert.equal(echoOpener('九点多运动', '今天9点多起来运动了一下'), true, 'only his words, in his order');
+  assert.equal(echoOpener('不是六点多', '6点多吧'), false, 'a correction is not an echo');
+  assert.equal(echoOpener('我也六点多', '6点多吧'), false, 'about herself');
+  assert.equal(echoOpener('你六点多才睡', '6点多吧'), false, 'about him, with more than he said');
+  assert.equal(echoOpener('好的', '好的'), false, 'too short to tell from an ordinary reply');
+  assert.equal(echoOpener('嗯嗯好', '嗯嗯好'), false, 'his whole short message said back is an agreement, not an echo');
+  assert.equal(echoOpener('九点多还运动', '你今天几点起来运动的？'), false, 'he asked something: its words come back in an answer');
+  assert.equal(echoOpener('六点多？', '6点多吧'), false, 'a surprised question is hers to ask');
+  assert.equal(echoOpener('晚安', '晚安'), false);
+  assert.equal(echoOpener('晚上好', '晚上好呀'), false, 'a greeting said back');
+  assert.equal(echoOpener('要红色的', '你要红色的还是蓝色的'), false, 'an answer to a choice');
+  assert.equal(echoOpener('红烧牛肉面，加了个蛋', '吃的什么面'), false);
+  assert.equal(echoOpener('三点你真熬住了', '看啦，blg打得真好。终于拿冠军了'), false);
+  assert.ok(asksSomething('那你今天几点起的') && asksSomething('吃了吗') && asksSomething('哪把最悬，我补回放的时候好重点看') && asksSomething('真的？'));
+  assert.ok(!asksSomething('在上课呢') && !asksSomething('没什么大事') && !asksSomething('谁都行') && !asksSomething('比我还能熬'));
+  const h = harness({}, { dropChainedQuestions: true });
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
+  const says = (text) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text } }], sender: { nickname: '宽' } }));
+  const texts = () => sock.sent.filter((m) => m.action === 'send_private_msg').map((m) => m.params.message[0].data.text);
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  // something he volunteered, said back: how people talk — it stays
+  says('今天又要加班到十点'); await tick(10);
+  let r = await tool.execute({ to: 'owner', text: '又要加班\n心疼' });
+  assert.deepEqual(texts(), ['又要加班', '心疼']); assert.equal(r.trimmed, undefined);
+  // she asks; he answers; her reply opens by reading his answer back: that opener is held back
+  await tool.execute({ to: 'owner', text: '那你昨晚几点睡的' });
+  says('6点多吧'); await tick(10);
+  r = await tool.execute({ to: 'owner', text: '六点多\n比我还能熬\n那你今天几点起的？' });
+  assert.deepEqual(texts().slice(3), ['比我还能熬'], 'the echo is held back, and so is asking again right after asking');
+  assert.deepEqual(r.trimmed, ['六点多', '那你今天几点起的？']); assert.match(r.note, /没发：六点多/);
+  r = await tool.execute({ to: 'owner', text: '那你今天几点起的？' });
+  assert.deepEqual(texts().slice(4), ['那你今天几点起的？'], 'a question on its own always goes out');
+  says('9点多起来运动了一下'); await tick(10);
+  r = await tool.execute({ to: 'owner', text: '挺早的\n那你吃了吗' });
+  assert.deepEqual(texts().slice(5), ['挺早的']);
+  assert.deepEqual(r.trimmed, ['那你吃了吗']);
+  await tool.execute({ to: 'owner', text: '那你吃了吗' });
+  says('6点多吧'); await tick(10);
+  r = await tool.execute({ to: 'owner', text: '六点多' });
+  assert.deepEqual(texts().slice(7), ['六点多']);
+  assert.equal(r.trimmed, undefined, 'a lone bubble is never held back');
+  h.stop();
+});
+
+test('only her own qq_send counts as having written to him: a send by dot (relaying her answer, a notice) does not', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
+  await h.ctx.dshQq.send('owner', '那就去睡一会');
+  assert.equal(h.ctx.dshQq.sentToOwnerAt, 0, 'a relay still typing when his next turn starts must not make that turn look answered');
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  await tool.execute({ to: 'user:30003', text: '在的' });
+  assert.equal(h.ctx.dshQq.sentToOwnerAt, 0, 'to someone else');
+  await tool.execute({ to: 'owner', text: '刚才煎了个蛋夹吐司' });
+  assert.ok(h.ctx.dshQq.sentToOwnerAt > 0, 'her own qq_send to him sets it');
+  h.stop();
+});
+
+test('sends to one conversation go out one after another: the bubbles of two sends never interleave', async () => {
+  const h = harness({}, { typingMsPerChar: 3 });
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 2); };
+  const a = h.ctx.dshQq.send('owner', '那就去睡一会\n你昨天六点才睡');
+  const b = h.ctx.dshQq.send('owner', '刚才煎了个蛋夹吐司\n边糊了一点');
+  await Promise.all([a, b]);
+  assert.deepEqual(sock.sent.filter((m) => m.action === 'send_private_msg').map((m) => m.params.message[0].data.text), ['那就去睡一会', '你昨天六点才睡', '刚才煎了个蛋夹吐司', '边糊了一点']);
+  await assert.rejects(h.ctx.dshQq.send('nobody', 'x'), /bad target/);
   h.stop();
 });

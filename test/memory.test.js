@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -564,4 +564,55 @@ test('a failed consolidation (empty reply) is not retried every turn: the next w
   assert.equal(records(h.calls[2]), 10, 'halved again after the second failure');
   assert.equal(records(h.calls[3]), 20, 'success: the rest of the backlog follows at full size');
   assert.equal(h.services.dotMemory.status().sinceCursor, 0);
+});
+
+test('a scheduled turn his QQ words were steered into: dot sends its answer by the IM bridge and reports nothing, so memory records it at turn end', async () => {
+  const h = harness();
+  h.services.dshDot.reportsSaid = true;
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'schedule' }, content: [{ type: 'text', text: '早上八点叫他起床' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-2' }, content: [{ type: 'text', text: '我醒了' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('那快去洗漱'));
+  h.emit('s1', 'turn/end', {});
+  await wait(10);
+  const got = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((l) => `${l.who}:${l.text}`);
+  assert.equal(got.at(-1), 'her:那快去洗漱');
+});
+
+test('after a reset her memory stays empty: the note it left keeps the old conversation from being read back in', async () => {
+  const { NO_BACKFILL } = await import('../src/reset.js');
+  const events = [{ type: 'user/message', time: 1, data: { source: { kind: 'user' }, content: [{ type: 'text', text: '我下周搬家' }] } }, { type: 'assistant/message', time: 2, data: { message: { content: [{ type: 'text', text: '搬哪' }] } } }];
+  const h = harness({ llmReply: '{}' });
+  h.services.sessionQuery = { readSession: async () => ({ events }) };
+  mkdirSync(join(h.home, 'memory'), { recursive: true }); writeFileSync(join(h.home, 'memory', NO_BACKFILL), 'reset\n');
+  apply(h.ctx, { home: h.home });
+  await h.services.dotMemory.consolidate({ reason: 'manual' });
+  await wait(20);
+  assert.ok(!existsSync(join(h.home, 'memory', 'transcript.jsonl')) || !readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').includes('搬家'), 'nothing of the old conversation');
+  assert.equal(h.calls.length, 0, 'and nothing to consolidate');
+});
+
+test('a QQ turn\'s answer is recorded by what reached him (dot reports it), not at turn end; the unsent note is not his words', async () => {
+  const { ownerSaid } = await import('../src/memory/memory.js');
+  const { ownerWords } = await import('../src/dot/core.js');
+  const { unstamp } = await import('../src/clock.js');
+  assert.equal(ownerSaid(unstamp(ownerWords([{ text: '你中午吃什么' }], Date.now(), { unsent: ['回放的事我自己想办法'] }))), '你中午吃什么');
+  assert.equal(ownerSaid(unstamp(ownerWords([{ text: '算了' }], Date.now(), { whileBusy: true, unsent: ['在的'] }))), '算了');
+  const h = harness();
+  h.services.dshDot.reportsSaid = true;
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '困' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('那就去睡一会\n你昨天六点才睡'));
+  h.emit('s1', 'turn/end', {});
+  h.services.dotMemory.herSaid({ session: 's1', text: '那就去睡一会' });
+  // a turn typed in the dsh window is still recorded at its end
+  h.emit('s1', 'turn/start', {});
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'assistant/message', msg('在'));
+  h.emit('s1', 'turn/end', {});
+  await wait(10);
+  const got = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((l) => `${l.who}:${l.text}`);
+  assert.deepEqual(got, ['owner:困', 'her:那就去睡一会', 'owner:在吗', 'her:在']);
 });

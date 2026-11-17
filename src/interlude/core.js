@@ -23,8 +23,9 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate } from '../llm-gate.js';
+import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { prompt, table } from '../prompts.js';
+import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
 import { createGrowth, growthTool } from './growth.js';
@@ -265,8 +266,37 @@ export const localStamp = (ts) => { const d = new Date(ts); const p = (n) => Str
 
 const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
 
+// ── what she really did on her devices, and the narrator's account of it ──
+// The narrator may give her any life the Canon allows, but her phone and computer are real: what she did on
+// them is only what the host saw happen. A rule in the prompt alone did not hold (11-17: with no device activity
+// at all, a round wrote that she had logged into QQ on her new phone, and that went back into her conversation
+// as fact). So the round is given the record as data, with ids, and has to name the record behind everything it
+// says she did on a device; the host checks the ids, and a round that cites none it was given is not kept.
+/**
+ * The record for one round: acts since the last round in which a phone / computer tool ran (pending.jsonl:
+ * `tools`, `on`), and errands that came back done. `[]` says she touched neither device.
+ */
+export function deviceFacts(items = [], returned = []) {
+  const facts = [];
+  const add = (f) => facts.push({ id: `d${facts.length + 1}`, ...f });
+  for (const i of items) if (Number(i?.tools) > 0 && i.on) add({ at: localStamp(i.ts), on: i.on, did: clip(i.quiet ? `${i.user || '看了一眼'}（没有要理的）` : [i.user, i.assistant].filter(Boolean).join(' → '), 300) });
+  for (const r of returned) if (r?.status === 'done') add({ at: r.doneAt ?? r.startedAt ?? null, did: clip([r.wanted, r.report].filter(Boolean).join(' → '), 300) });
+  return facts;
+}
+/**
+ * Check a round's account against the record. `claims`: parsed.onDevices ([{ what, basis }], or null when the
+ * reply did not carry the field); `ids`: every id it was given (deviceFacts and webContext).
+ * Returns { ok, unbacked: [what…], missing } — missing: the field was not there, so nothing can be checked.
+ */
+export function checkDeviceClaims(claims, ids = []) {
+  if (!Array.isArray(claims)) return { ok: false, unbacked: [], missing: true };
+  const known = new Set(ids);
+  const unbacked = claims.filter((c) => !known.has(c.basis)).map((c) => c.what);
+  return { ok: !unbacked.length, unbacked, missing: false };
+}
+
 /** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false, upcoming = [] }) {
+export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false, upcoming = [], facts = [], rejected = null }) {
   const playing = Boolean(play && playApps.length);
   const system = prompt('interlude.round', {
     canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
@@ -298,10 +328,13 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     ],
     // What she really did in the last half hour, already woven into earlier rounds: where she is now follows from it.
     lastHalfHour,
+    // Everything she did on her phone and computer in this interval, as the host saw it (deviceFacts()). Always
+    // present: an empty list is the fact that she touched neither.
+    deviceFacts: facts,
     dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
     // What she has already set for later (intents.json, minus the one that is due now): she should not set it again.
     upcomingPlans: upcoming,
-    webContext,
+    webContext: webContext.map((w, i) => ({ id: `w${i + 1}`, ...w })),
     // What she knows to be true (dsh-dot/memory): established past, like recentScript.
     memories,
     // Her own notes (dsh-dot/memory's self bank): what she does these days and what she has learned.
@@ -311,7 +344,9 @@ export function buildPrompt({ phase, identity, state, script, digest, cursor, no
     // What she did on her own lately, what each cost, and what he said about it (doings.js).
     ...(doings ? { yourDoings: doings } : {}),
     currentEvent: { type: 'none' },
-    output: 'one `interval` tool call: script, continuity, intents, browserIntents, playIntents, tries, reflect, contact',
+    // The draft before this one was not kept (see round()): what it claimed without a record, to be written without.
+    ...(rejected ? { notKept: { why: prompt('interlude.round.not-kept'), claimedWithoutRecord: rejected } } : {}),
+    output: 'one `interval` tool call: script, continuity, onDevices, intents, browserIntents, playIntents, tries, reflect, contact',
   };
   void digest;
   return { system, user: JSON.stringify(payload, null, 1), tools: [intervalTool({ play: playing, playApps, playActions, speak, trying })] };
@@ -330,6 +365,7 @@ export function intervalTool({ play = false, playApps = [], playActions = [], sp
       properties: {
         script: { ...str, description: 'The passage for this interval, Chinese prose, third person.' },
         continuity: { type: 'object', properties: { current: str, recent: strs, salient: strs }, required: ['current', 'recent', 'salient'] },
+        onDevices: { type: 'array', description: 'Everything script and continuity say she did, saw or changed on her phone or computer in this interval, each with the id of the deviceFacts / webContext entry it rests on. [] when they say nothing of the kind.', items: { type: 'object', properties: { what: str, basis: { ...str, description: 'an id from deviceFacts (d1…) or webContext (w1…)' } }, required: ['what', 'basis'] } },
         intents: { type: 'array', items: { type: 'object', properties: { at: { ...str, description: 'ISO-8601, strictly after now' }, kind: { type: 'string', enum: ['reminder', 'reply', 'contact'] }, text: str, willingness }, required: ['at', 'kind', 'text'] } },
         browserIntents: { type: 'array', items: { type: 'object', properties: { mode: { type: 'string', enum: ['search', 'visit'] }, query: str, url: str, purpose: str }, required: ['mode'] } },
         playIntents: play
@@ -343,7 +379,7 @@ export function intervalTool({ play = false, playApps = [], playActions = [], sp
           ? { anyOf: [{ type: 'null' }, { type: 'object', properties: { content: str, willingness, reason: str }, required: ['content'] }] }
           : { type: 'null' },
       },
-      required: ['script', 'continuity', 'intents', 'browserIntents', 'playIntents', 'contact'],
+      required: ['script', 'continuity', 'onDevices', 'intents', 'browserIntents', 'playIntents', 'contact'],
     },
   };
 }
@@ -376,6 +412,8 @@ export function parseReply(text, now = Date.now()) {
           salient: [].concat(cont.salient ?? cont.threads ?? []).map(str).filter(Boolean).slice(0, 5),
         },
         intents, contact,
+        // null: the reply did not carry the field (an older shape, prose only) — nothing to check it by.
+        onDevices: Array.isArray(o.onDevices) ? o.onDevices.map((x) => ({ what: str(x?.what), basis: str(x?.basis) })).filter((x) => x.what || x.basis).slice(0, 20) : null,
         browserIntents: [].concat(o.browserIntents ?? []).map((b) => ({
           mode: b?.mode === 'visit' ? 'visit' : 'search', query: str(b?.query), url: str(b?.url), purpose: str(b?.purpose),
         })).filter((b) => (b.mode === 'visit' ? /^https?:\/\//.test(b.url) : b.query)).slice(0, 1),
@@ -500,6 +538,7 @@ export async function fetchPreset(hub, code, fetchImpl = globalThis.fetch) {
 
 export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-interlude');
+  runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const cfg = { ...defaults, ...setValues(config), ...sectionOf('interlude', (m) => logger.warn(m)) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: interlude.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
@@ -791,41 +830,74 @@ export function apply(ctx, config = {}) {
       const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
       const playApps = Object.keys(cfg.playApps).filter((label) => onPhone.includes(cfg.playApps[label]));
       const view = doings.view({ rounds: roundCost(), apps: playApps, price: cfg.price });
-      const { system, user, tools } = buildPrompt({
-        phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
-        digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
-        lastHalfHour: lastHalfHour.map((a) => ({ at: localStamp(a.ts), on: a.on, did: a.did })),
-        browser: browsingOpen() ? 'deferred' : 'disabled', webContext: readWebContext(),
-        play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
-        memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
-        doings: view, trying: tryOpen(),
-        upcoming: intents.filter((i) => i.id !== intent?.id).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text })),
-      });
-      const options = background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools, maxTokens: cfg.maxTokens,
-        messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] });
-      const r1 = await collectReply(ctx.llm.stream(options));
-      const spent = [usageOf(r1.usage)];
-      // The `interval` tool call carries the fields; a bare JSON reply is accepted too.
-      const reply = r1.args || r1.text;
-      let parsed = parseReply(reply, now);
-      const script = parsed?.script || r1.text.trim();
-      if (!script) throw new Error('empty script');
-      // Prose without the fields (the model wrote the passage as text, or was cut off): a second
-      // call over the script just written fills every other field — the post-commit continuity
-      // refresh, widened so nothing the round should have produced is lost.
-      if (!parsed?.state) {
-        const r2 = await collectReply(ctx.llm.stream(background({
-          ...options, maxTokens: 2000,
-          system: prompt('interlude.round.refresh'),
-          messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
-        }))).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
-        spent.push(usageOf(r2.usage));
-        const refresh = r2.args || r2.text;
-        const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
-        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: `${phase}:refresh`, usage: usageOf(r2.usage), reply: clip(refresh, 1500) })}\n`); } catch (error) { void error; }
-        if (p2?.state) parsed = { ...p2, script, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], contact: p2.contact ?? parsed?.contact ?? null };
-        audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
+      // What she really did on her devices since the last round, and every id the narrator may cite (deviceFacts above).
+      const facts = deviceFacts(items, back);
+      const web = readWebContext();
+      const ids = [...facts.map((f) => f.id), ...web.map((_, i) => `w${i + 1}`)];
+      const effort = await workEffort(ctx, sel); // her narrator thinks at llm.workEffort, not at whatever the chat was last set to
+      const spent = [];
+      const logCall = (line) => { try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), ...line })}\n`); } catch (error) { void error; } };
+      /** One draft of the round: the call, and the second call that fills the fields when the first wrote prose only. */
+      const draft = async (rejected) => {
+        const { system, user, tools } = buildPrompt({
+          phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
+          digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
+          lastHalfHour: lastHalfHour.map((a) => ({ at: localStamp(a.ts), on: a.on, did: a.did })),
+          browser: browsingOpen() ? 'deferred' : 'disabled', webContext: web,
+          play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
+          memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
+          doings: view, trying: tryOpen(), facts, rejected,
+          upcoming: intents.filter((i) => i.id !== intent?.id).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text })),
+        });
+        const options = background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, tools, maxTokens: cfg.maxTokens,
+          messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] });
+        const r1 = await collectReply(ctx.llm.stream(options));
+        spent.push(usageOf(r1.usage));
+        // The `interval` tool call carries the fields; a bare JSON reply is accepted too.
+        const reply = r1.args || r1.text;
+        let parsed = parseReply(reply, now);
+        const script = parsed?.script || r1.text.trim();
+        if (!script) throw new Error('empty script');
+        // Prose without the fields (the model wrote the passage as text, or was cut off): a second
+        // call over the script just written fills every other field — the post-commit continuity
+        // refresh, widened so nothing the round should have produced is lost.
+        if (!parsed?.state) {
+          const r2 = await collectReply(ctx.llm.stream(background({
+            ...options, maxTokens: 2000,
+            system: prompt('interlude.round.refresh'),
+            messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, deviceFacts: facts, webContext: web.map((w, i) => ({ id: `w${i + 1}`, query: w.query, url: w.url })), script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
+          }))).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
+          spent.push(usageOf(r2.usage));
+          const refresh = r2.args || r2.text;
+          const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
+          logCall({ phase: `${phase}:refresh`, usage: usageOf(r2.usage), reply: clip(refresh, 1500) });
+          if (p2?.state) parsed = { ...p2, script, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], contact: p2.contact ?? parsed?.contact ?? null };
+          audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
+        }
+        return { parsed, script, reply, usage: usageOf(r1.usage), viaTool: Boolean(r1.args) };
+      };
+      const addTokens = () => { for (const u of spent.splice(0)) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; } };
+      let d = await draft(null);
+      // Her devices are real: everything the draft says she did on them must name the record it rests on. The first
+      // draft that does not is written once more, told what had no record; a second one is not kept at all — no
+      // script, no continuity, nothing handed on — and the acts wait for the next round. (A seed opens an empty
+      // script with her past, before there was a record: not checked.)
+      let check = phase === 'seed' ? { ok: true, unbacked: [], missing: false } : checkDeviceClaims(d.parsed?.onDevices ?? null, ids);
+      logCall({ phase, acts: items.length, model: `${sel.provider}/${sel.model}`, effort: effort ?? 'default', usage: d.usage, viaTool: d.viaTool, deviceFacts: facts.length, ...(check.ok ? {} : { notKept: check.missing ? 'no onDevices' : check.unbacked }), reply: clip(d.reply, 2000) });
+      if (!check.ok) {
+        audit('round-unbacked', { phase, attempt: 1, deviceFacts: facts.length, ...(check.missing ? { missing: true } : { unbacked: check.unbacked.map((w) => clip(w, 80)).slice(0, 5) }) });
+        d = await draft(check.missing ? ['（上一稿没有填 onDevices）'] : check.unbacked);
+        check = checkDeviceClaims(d.parsed?.onDevices ?? null, ids);
+        logCall({ phase: `${phase}:again`, effort: effort ?? 'default', usage: d.usage, viaTool: d.viaTool, deviceFacts: facts.length, ...(check.ok ? {} : { notKept: check.missing ? 'no onDevices' : check.unbacked }), reply: clip(d.reply, 2000) });
+        if (!check.ok) {
+          meta.dayRounds++; addTokens(); saveMeta();
+          pausedUntil = Date.now() + Math.min(60, 5 * 2 ** fails++) * 60_000; // like a failed round: not again at once
+          logger.warn(`interlude ${phase}: not kept — it says she did things on her devices that there is no record of (${check.missing ? 'no onDevices' : check.unbacked.join(' / ').slice(0, 120)})`);
+          audit('round-rejected', { phase, deviceFacts: facts.length, ...(check.missing ? { missing: true } : { unbacked: check.unbacked.map((w) => clip(w, 80)).slice(0, 5) }) });
+          return { rejected: check.missing ? ['no onDevices'] : check.unbacked };
+        }
       }
+      const { parsed, script, reply } = d;
       if (phase === 'seed') {
         // "[MM-DD HH:MM] ..." segments become dated entries; anything untagged keeps the current time.
         const segs = script.split(/\n(?=\[\d{1,2}-\d{1,2} \d{1,2}:\d{2}\])/).map((t) => t.trim()).filter(Boolean);
@@ -861,13 +933,12 @@ export function apply(ctx, config = {}) {
         intents = intents.slice(-20);
         saveIntents();
       }
-      try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date(now).toISOString(), phase, acts: items.length, model: `${sel.provider}/${sel.model}`, usage: spent[0], viaTool: Boolean(r1.args), reply: clip(reply, 2000) })}\n`); } catch (error) { void error; }
       writeFileSync(files.pending, '');
       meta.cursor = now; meta.count++; meta.dayRounds++;
       meta.returned = (meta.returned ?? []).filter((r) => !back.includes(r)); // digested; what came back meanwhile waits for the next round
       meta.recentActs = [...lastHalfHour, ...items.map((i) => ({ ts: i.ts, on: i.on, did: clip([i.user, i.assistant].filter(Boolean).join(' → '), 160) }))];
       // The ledger: tokens this round, added to today's count (/interlude shows it).
-      for (const u of spent) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; }
+      addTokens();
       if (phase === 'advance') meta.lastAdvance = now;
       saveMeta();
       // Deferred browsing: the character's browserIntent runs now through dsh's web service;
@@ -1009,11 +1080,12 @@ export function apply(ctx, config = {}) {
       const sel = ctx.agentDefaultModel.currentSelection();
       const system = prompt('interlude.growth.system', { name: canon?.storyDefaults?.characterName ?? 'dot', maxChars: cfg.portraitMaxChars, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
       const messages = [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-interlude' } })];
+      const effort = await workEffort(ctx, sel);
       const call = async (msgs) => {
-        const r = await collectReply(ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs })));
+        const r = await collectReply(ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs })));
         const u = usageOf(r.usage);
         if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; saveMeta(); }
-        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: 'growth', usage: u, reply: clip(r.args || r.text, 3000) })}\n`); } catch (error) { void error; }
+        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: 'growth', effort: effort ?? 'default', usage: u, reply: clip(r.args || r.text, 3000) })}\n`); } catch (error) { void error; }
         try { return JSON.parse(r.args || r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (error) { void error; return null; }
       };
       let out = await call(messages);
@@ -1340,7 +1412,7 @@ export function apply(ctx, config = {}) {
           result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
         } else if (arg === 'now' || arg === 'advance' || arg === 'seed') {
           const r = await round(arg === 'now' ? 'follow-up' : arg);
-          result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.skipped ?? r.error}`;
+          result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.rejected ? `not kept — it says she did things on her devices there is no record of: ${r.rejected.join(' / ')}` : r.skipped ?? r.error}`;
         }
         const { items } = digest();
         rollDay();

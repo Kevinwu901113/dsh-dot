@@ -28,8 +28,9 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate, statusLine as llmGateLine } from '../llm-gate.js';
+import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
+import { runPendingReset } from '../reset.js';
 import { ago, describeNow, mondayOf, stamp } from '../clock.js';
 
 export const name = 'dsh-dot';
@@ -58,7 +59,11 @@ const firstAt = (items, now) => { const t = Date.parse(items?.[0]?.at ?? ''); re
  * His QQ words as she gets them: one stamp per batch, then exactly what he typed, one message per line;
  * `whileBusy` (steered into the turn she is in the middle of) adds one line saying so.
  */
-export const ownerWords = (items, now = Date.now(), { whileBusy = false } = {}) => prompt('dot.owner-words', { stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n'), busy: whileBusy ? prompt('dot.owner-words.busy') : '' });
+export const ownerWords = (items, now = Date.now(), { whileBusy = false, unsent = [] } = {}) => prompt('dot.owner-words', {
+  stamp: stamp(firstAt(items, now), now), text: items.map((n) => n.text).join('\n'), busy: whileBusy ? prompt('dot.owner-words.busy') : '',
+  // What she wrote that never reached him (held back or cut off because he spoke first): shown to her once, with his words.
+  unsent: unsent.length ? prompt('dot.owner-words.unsent', { lines: unsent.join('\n') }) : '',
+});
 /**
  * A wake text with the pictures in it: the text cut right after each picture's words (`[表情包 sticker:<id>]`,
  * `[图片]`), one `{ type: 'image', attachment }` there, in message order. The text parts joined are the text
@@ -193,6 +198,9 @@ export const defaults = {
   ownerMaxWaitMs: 6000,
   ownerTypingMaxMs: 15000,
   ownerDenyMax: 2,      // per turn: how often a qq_send to him is held back because he said something she has not read
+  // In a row: how often a reply of hers that has not reached him yet gives way to what he just said (the turn is
+  // started over, or the finished reply is kept back as a draft). Past this it goes out first. A bubble reaching him resets it.
+  ownerPreemptMax: 2,
   phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
   notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
   // Her errand session: phone checks, app notifications, interlude observations and plays run here,
@@ -417,6 +425,7 @@ export function createNotifier(getIm, cfg, logger, getQq = () => undefined) {
 export function apply(ctx, config = {}) {
   // An empty string means "not set", except for notifyHours, where '' is documented as "always".
   const logger = ctx.logger('dsh-dot');
+  runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const cfg = { ...defaults, ...setValues(config, { keepEmpty: ['notifyHours'] }), ...sectionOf('dot', (m) => logger.warn(m)) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
@@ -452,9 +461,29 @@ export function apply(ctx, config = {}) {
   // Errands that were rotated away stay errands: their last turn/end must not make one of them her
   // "latest session" (his QQ message then goes into an archived errand and he never gets an answer).
   const pastErrands = new Set(store.get('pastErrands') ?? []);
+  // Conversations a reset retired (src/reset.js): a turn ending in one of them does not make it hers again.
+  const pastConversations = new Set(store.get('pastConversations') ?? []);
   const isErrand = (id) => Boolean(id) && (id === errandId || pastErrands.has(id));
   // Her model requests share his provider key: errand steps are background and wait behind his (src/llm-gate.js).
   const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: isErrand });
+  // Her errands think at llm.workEffort whatever the model selector was last set to for a chat (src/llm-gate.js).
+  // The host fixes a step's model selection before the step runs and refuses a different effort from the
+  // `agent/request` waterfall (0.2.2: "use agent.model.select() before step preparation" — the turn fails), so the
+  // errand's own selection is set before anything is sent into it: agent.model.select records it for that session
+  // only, durably, and is a no-op when the session already says so. A host without it: her errands follow the selector.
+  let effortSeen = '';
+  const thinkAtWork = async (agent) => {
+    try {
+      const m = agent?.model;
+      const can = typeof m?.select === 'function' && typeof m?.current === 'function';
+      const cur = can ? m.current() : undefined;
+      const { effort, why } = cur?.provider && cur?.model ? await effortFor(ctx, cur) : { effort: cur?.reasoningEffort, why: can ? 'no model selected yet' : 'host has no agent.model.select' };
+      // In the activity log whenever the outcome changes (not per wake): what the session said, what it is set to, why.
+      const seen = `${cur?.reasoningEffort ?? 'default'}→${effort ?? 'default'} ${why}`;
+      if (seen !== effortSeen) { effortSeen = seen; audit('errand-effort', { ...(cur ? { model: `${cur.provider}/${cur.model}` } : {}), was: cur?.reasoningEffort ?? 'default', effort: effort ?? 'default', why }); }
+      if (cur && effort && effort !== cur.reasoningEffort) m.select({ provider: cur.provider, model: cur.model, reasoningEffort: effort });
+    } catch (err) { logger.debug?.(`errand effort not set: ${err.message}`); }
+  };
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at an errand or at a session archived since (11-03: his QQ messages went into an
   // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -547,7 +576,7 @@ export function apply(ctx, config = {}) {
     const open = turns.get(id);
     if (open) {
       open.lastEventAt = Date.now();
-      if (event.type === 'tool/call') open.doing = shortTool(event.data?.name);
+      if (event.type === 'tool/call') { open.doing = shortTool(event.data?.name); open.tools = (open.tools ?? 0) + 1; }
       if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
     }
     // Pending approvals (the log's pair; the answerer below adds the ones it sees first).
@@ -557,7 +586,7 @@ export function apply(ctx, config = {}) {
       if (key) approvals.get(key).eventId = event.data?.id;
     }
     if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
-    if (event.type === 'turn/end' && !isErrand(id)) setLast(id);
+    if (event.type === 'turn/end' && !isErrand(id) && !pastConversations.has(id)) setLast(id);
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -612,12 +641,22 @@ export function apply(ctx, config = {}) {
     }
     if (ended) {
       const text = t.text.trim();
-      if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
+      // Started over because he spoke before anything of it reached him. His new words are already queued for the
+      // next turn, so whatever this turn wrote does not go out — also when the cancel came too late to abort it
+      // (it ended as completed): that answer is kept as a draft and shown to her with his next words.
+      if (t.fromQq && !t.scheduled && t.cancelled) {
+        const aborted = event.data?.reason?.kind === 'aborted';
+        if (!aborted && text && !isSilent(text)) keepUnsent(stripSilent(text).split('\n').map((l) => l.trim()).filter(Boolean));
+        audit('owner-turn-restarted', { session: id, aborted });
+        return;
+      }
+      if (!text || isSilent(text)) { if (t.fromQq) preempts = 0; audit('silent', { session: id }); return; }
       if (t.fromQq && !t.scheduled) {
-        // She answered him in the conversation; if no qq_send to him happened during the turn, relay it.
+        // She answered him in the conversation; if no qq_send to him happened during the turn, it goes to his QQ.
         const q = ctx.get('dshQq');
-        if (!q?.connected || (q.sentToOwnerAt ?? 0) >= t.startedAt) { audit('qq-answered-herself', { session: id }); return; }
-        q.send('owner', stripSilent(text)).then((r) => audit('qq-relayed', { session: id, sent: r.sent }), (err) => { logger.warn(`qq relay failed: ${err.message}`); audit('qq-relay-failed', { session: id, error: err.message }); });
+        if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
+        if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
+        sayToOwner(id, stripSilent(text));
         return;
       }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
@@ -744,8 +783,9 @@ export function apply(ctx, config = {}) {
       const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
       const llm = ctx.get('llm');
       if (!sel || !llm?.stream) return;
+      const effort = await workEffort(ctx, sel);
       const reply = await collectReply(llm.stream(background({
-        provider: sel.provider, model: sel.model, ...(sel.reasoningEffort ? { reasoningEffort: sel.reasoningEffort } : {}),
+        provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
         system: prompt('dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
       })));
@@ -864,17 +904,29 @@ export function apply(ctx, config = {}) {
    */
   const resolveLive = async (id) => {
     const live = ctx.get('agents')?.get?.(id);
-    if (typeof live?.followup === 'function') return { agent: live };
-    return ctx.get('sessionController')?.resolveAgent(id);
+    const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
+    if (found?.agent && isErrand(id)) await thinkAtWork(found.agent); // before anything is sent into her errand
+    return found;
+  };
+  /** A new conversation of hers in her home; '' when dsh cannot make one. */
+  const openConversation = async (controller) => {
+    try {
+      const { sessionId } = await controller.create({ cwd: home });
+      try { await controller.rename?.({ sessionId, title: 'dot' }); } catch (error) { void error; }
+      setLast(sessionId); audit('conversation-opened', { session: sessionId });
+      return sessionId;
+    } catch (err) { logger.warn(`could not open a conversation for her: ${err.message}`); return ''; }
   };
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
-    const id = target ?? lastSession;
     const pkgs = [...new Set(all.map((n) => n.pkg))];
-    if (!controller || !id) { audit('notification-dropped', { pkgs, why: id ? 'no sessionController' : 'no session yet' }); return; }
+    if (!controller) { audit('notification-dropped', { pkgs, why: 'no sessionController' }); return; }
     const fromOwner = all.filter((n) => n.fromOwner);
     const items = all.filter((n) => !n.fromOwner);
     waking = waking.then(async () => {
+      // No conversation yet (first run, or after a reset): his words open one. Anything else has nowhere to go.
+      const id = target || lastSession || (fromOwner.length ? await openConversation(controller) : '');
+      if (!id) { audit('notification-dropped', { pkgs, why: 'no session yet' }); return; }
       // The live agent loop (ctx.agents) has steer/inject/cancel; the session controller's
       // resolveAgent is the client API layer and hands back a thinner handle (followup only on the
       // desktop host) — it is the fallback that also loads a session that is not live.
@@ -890,6 +942,48 @@ export function apply(ctx, config = {}) {
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
+  // ── her side of the conversation with him ──
+  // Writing (a turn of his words is open, `turns`), sending (its bubbles are going out, `sendingCount`), or neither.
+  // One rule for both: what has not reached him yet gives way to what he just said; what has reached him stands.
+  let sending = Promise.resolve(), sendingCount = 0;
+  let unsentDraft = [], unsentAt = 0; // lines she wrote that never reached him: given to her once, with his next words (if they come soon)
+  const UNSENT_KEEP_MS = 5 * 60_000;
+  const keepUnsent = (lines) => { if (lines.length) { unsentDraft.push(...lines); unsentAt = Date.now(); } };
+  const takeUnsent = () => {
+    const fresh = Date.now() - unsentAt <= UNSENT_KEEP_MS, lines = fresh ? unsentDraft : [];
+    if (!fresh && unsentDraft.length) audit('owner-draft-dropped', { lines: unsentDraft.length, ageMs: Date.now() - unsentAt });
+    unsentDraft = []; return lines;
+  };
+  let preempts = 0;     // replies in a row that gave way before a bubble reached him (see defaults.ownerPreemptMax)
+  /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
+  const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
+  /**
+   * The answer of a turn of his goes to his QQ — the one way out for what she says to him without qq_send.
+   * He said something she has not read (still in the buffer): the whole answer is kept back as a draft and
+   * handed to her with his words. Otherwise its bubbles go out one after another; qq.send stops between
+   * bubbles when he speaks, and what was left is kept the same way.
+   */
+  const sayToOwner = (id, text) => {
+    const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
+    // His unread words: in the buffer, or held while her conversation is being handed over (frozenQueue).
+    const waiting = ownerBatch.length + frozenQueue.filter((n) => n.fromOwner).length;
+    if (waiting && preempts < cfg.ownerPreemptMax) {
+      preempts++; keepUnsent(lines);
+      audit('owner-reply-held', { session: id, lines: lines.length, waiting, preempts });
+      return;
+    }
+    sendingCount++;
+    // One job per answer, wholly caught: a failure in it never leaves the chain rejected (the next answer and
+    // his waiting words hang on this chain).
+    sending = sending.then(async () => {
+      const r = await ctx.get('dshQq').send('owner', text);
+      if (r.sent > 0) preempts = 0;
+      herSaid(id, (r.said ?? []).join('\n'));
+      const left = r.interrupted ? (r.unsent ?? []).map(String) : [];
+      keepUnsent(left);
+      audit('qq-relayed', { session: id, sent: r.sent, ...(left.length ? { unsent: left.length } : {}), ...(r.error ? { error: r.error } : {}) });
+    }).catch((err) => { logger.warn(`qq relay failed: ${err.message}`); audit('qq-relay-failed', { session: id, error: err.message }); }).finally(() => { sendingCount--; });
+  };
   /**
    * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
    * steered into it, so she reads them at her next step instead of after the turn (an agent without
@@ -898,18 +992,31 @@ export function apply(ctx, config = {}) {
   let agentShapeLogged = false;
   const toOwnerAgent = (agent, id, items) => {
     const busy = turns.has(id);
+    const open = turns.get(id);
+    // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
+    // it is started over with what he just said, so the reply she writes is to all of it. A turn that has
+    // used a tool is not undone; his words go into it at its next step.
+    const restart = busy && open?.fromQq && !open.scheduled && !open.tools && typeof agent.cancel === 'function' && preempts < cfg.ownerPreemptMax;
     // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
     // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
-    const via = busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
+    const via = restart ? 'restart' : busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
     if (!agentShapeLogged) {
       agentShapeLogged = true;
       const methods = [...new Set([...Object.keys(agent), ...Object.getOwnPropertyNames(Object.getPrototypeOf(agent) ?? {})])].filter((k) => typeof agent[k] === 'function');
       logger.info(`her agent handle offers: ${methods.join(', ')} (busy now: ${busy}, open turns: ${[...turns.keys()].map((k) => k.slice(0, 16)).join(' ') || 'none'})`);
       audit('agent-handle', { methods, busy, openTurns: turns.size });
     }
-    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via !== 'followup' }), items), source: ownerSource() });
+    const unsent = takeUnsent();
+    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via === 'steer' || via === 'send', unsent }), items), source: ownerSource() });
     try {
-      if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
+      if (via === 'restart') {
+        // The cancelled turn's own input stays in her history. His new words are queued in the same tick: waking
+        // input submitted after an active cancellation is held by the host for the next turn and runs when the
+        // aborted one has settled, so nothing waits on a promise of ours and the order is the host's inbox order.
+        agent.cancel({ kind: 'hook', reason: 'dot-owner-spoke' }, { keepInbox: true });
+        preempts++; open.cancelled = true; // only once the cancel is in: a turn that was not cancelled keeps its answer
+        if (typeof agent.send === 'function') agent.send(message, 'next-turn', true); else agent.followup(message);
+      } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
     } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
     audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
   };
@@ -1020,6 +1127,9 @@ export function apply(ctx, config = {}) {
   /** Deliver his buffered words now. With `agent` (the qq_send gate's caller, her conversation): steered into it synchronously. */
   const flushOwner = (agent) => {
     clearTimeout(ownerTimer); ownerTimer = null;
+    // Her bubbles are still going out: sending counts as busy. They stop at the next bubble (qq.send sees he
+    // spoke); his words go in once they have, together with what was left unsent.
+    if (!agent && sendingCount > 0 && ownerBatch.length) { void sending.finally(() => flushOwner()); return 0; }
     const items = ownerBatch; ownerBatch = []; ownerTyping = ownerTypingSeen = false;
     if (!items.length) return 0;
     const id = lastSession;
@@ -1303,7 +1413,14 @@ export function apply(ctx, config = {}) {
   ctx.provide?.('dshDot', {
     home,
     session: () => lastSession,
-    setSession: (id) => { if (id) setLast(id); },
+    // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
+    // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
+    setSession: (id) => {
+      if (!id || id === lastSession) return;
+      if (lastSession) { pastConversations.add(lastSession); store.set('pastConversations', [...pastConversations].slice(-50)); }
+      pastConversations.delete(id);
+      setLast(id);
+    },
     errand: ensureErrand,
     errandId: () => errandId,
     /**
@@ -1329,6 +1446,10 @@ export function apply(ctx, config = {}) {
     approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, errand: isErrand(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => ownerBatch.length,
+    /** Her bubbles to him are going out right now. */
+    sending: () => sendingCount > 0,
+    /** dot reports what reached him (memory.herSaid): memory does not record a QQ turn's answer on its own. */
+    reportsSaid: true,
     flushOwner: () => flushOwner(),
     isIm: (id) => imSessions.has(id),
     /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */

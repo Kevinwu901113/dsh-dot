@@ -20,8 +20,9 @@ import { QQ_SERVER, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { createStickers, isSticker, STICKER_MAX_BYTES } from './stickers.js';
 import { createStickerSync } from './sticker-sync.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate } from '../llm-gate.js';
+import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
+import { runPendingReset } from '../reset.js';
 
 export const name = 'dot-qq';
 export const inject = [];
@@ -62,6 +63,14 @@ export const defaults = {
   // punctuation, spaces; URLs not counted) is her reasoning leaking into the reply — dropped, with a
   // warning in the log. Short English ("ok", "lol", "GG") passes.
   dropLatinLeaks: true,
+  // With tidy, in a private chat: an opening bubble that only says his last message back to him
+  // ("6点多吧" → "六点多") is dropped when other bubbles follow it — the rest is the reply.
+  dropEchoOpeners: true,
+  // With tidy, in a private chat: when her previous reply to the same person asked him something, the
+  // bubbles of this reply that ask again are dropped as long as another bubble remains, so not every
+  // turn asks. A reply that is only questions goes out whole. Off by default: a question she needs
+  // answered to get on with a task would be held back too.
+  dropChainedQuestions: false,
   // Each line of qq_send's text is its own bubble, sent after a pause that grows with its length
   // (ms per character, capped at 2.5 s) — the way a person types. 0 = all at once.
   typingMsPerChar: 60,
@@ -316,11 +325,53 @@ export function latinLeak(text) {
   return latin / t.length >= 0.8;
 }
 
+const CN_DIGITS = { 零: '0', 〇: '0', 一: '1', 二: '2', 两: '2', 三: '3', 四: '4', 五: '5', 六: '6', 七: '7', 八: '8', 九: '9' };
+/** A line reduced to what it says: no URLs, bracket markers, punctuation or sentence-final particles; 六 and 6 are the same. */
+export function plainOf(text) {
+  return String(text ?? '').replace(/https?:\/\/\S+|\[[^\]]*\]/g, '').replace(/[零〇一二两三四五六七八九]/g, (c) => CN_DIGITS[c])
+    .replace(/[^\p{L}\p{N}]/gu, '').replace(/[吧啊呀呢嘛哦噢哈嗯啦诶欸耶]/g, '').toLowerCase();
+}
+function lcsLength(a, b) {
+  let prev = new Array(b.length + 1).fill(0);
+  for (const ca of a) { const row = [0]; for (let j = 1; j <= b.length; j++) row[j] = ca === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], row[j - 1]); prev = row; }
+  return prev[b.length];
+}
+const ECHO_WINDOW_MS = 10 * 60_000; // his answer counts as "just said" this long
+/**
+ * An opening bubble that only says his words back: short (3–12 characters once reduced) and made of
+ * nothing but his words, in his order — every character of it is in his message. One added or changed
+ * character (不 / 别, another number or day) makes it a reply, not an echo. Never an echo: a question;
+ * a line with 我 or 你 in it (said back, those words point the other way); an answer to something he
+ * asked (the words of a question come back in its answer); a greeting or thanks said back (his
+ * message is ≤ 4 characters and has no digit in it as he typed it).
+ */
+export function echoOpener(first, his) {
+  const f = String(first ?? '').trim(), h = String(his ?? '');
+  if (/[?？]$/.test(f) || /[我你]/.test(f)) return false;
+  if (/[?？]\s*$|吗|还是|哪|什么|几|谁|怎么|多少|是不是|要不要|好不好|有没有/.test(h)) return false;
+  const a = plainOf(f), b = plainOf(h).slice(0, 200);
+  if (a.length < 3 || a.length > 12) return false;
+  if (b.length <= 4 && !/[0-9０-９]/.test(h)) return false;
+  return lcsLength(a, b) === a.length;
+}
+/**
+ * A bubble that asks him something: it ends on a question mark or 吗, or carries a question word (she
+ * often leaves the mark out: "那你今天几点起的"). Question words used as statements (没什么, 谁都, 不怎么) do not count.
+ */
+export function asksSomething(line) {
+  const t = String(line ?? '').trim();
+  if (/([?？]|吗)$/.test(t)) return true;
+  return /哪|什么|啥|谁|怎么|怎样|多少|多久|多大|几点|几号|几岁|几个|干嘛|是不是|有没有|要不要|好不好|能不能|会不会/
+    .test(t.replace(/没什么|没啥|不怎么|什么[都也]|谁[都也]|哪[都也怕]|怎么[都也]|哪里哪里/g, ''));
+}
+
 /** What qq_send tells her: the count, and — when images failed after the text went out — that the text is already there. */
 export function sendReport(v) {
   const lines = [`sent ${v?.sent ?? 0} message(s)`];
-  if (v?.interrupted) lines.push(prompt('qq.send-interrupted', { sent: v.sent ?? 0, unsent: (v.unsent ?? []).join(' / ') }));
+  if (v?.interrupted && v.error) lines.push(`发了 ${v.sent ?? 0} 条，后面的没发出去（${v.error}）：${(v.unsent ?? []).join(' / ')}（已发出的别再发一遍）`);
+  else if (v?.interrupted) lines.push(prompt('qq.send-interrupted', { sent: v.sent ?? 0, unsent: (v.unsent ?? []).join(' / ') }));
   if (v?.dropped) lines.push(`${v.dropped} 行是英文的自言自语，没发`);
+  if (v?.trimmed?.length) lines.push(`没发：${v.trimmed.join(' / ')}（开头只是重复他的话，或者上一轮刚问过他；要紧的问题单独发一条）`);
   const before = v?.textSent === 0 ? '前面的图已发出' : '文字已发出';
   for (const f of v?.failed ?? []) lines.push(`${before}；图片 ${f.image} 没发成：${f.error}（已发出的别再发一遍）`);
   return lines.join('\n');
@@ -517,6 +568,7 @@ export function createLoopBreaker({ max = 4, cooldownMs = 600_000, now = Date.no
 
 export function apply(ctx, config = {}, deps = {}) {
   const logger = withFileLog(ctx.logger('dsh-dot/qq'));
+  runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const settings = readSettingsFile();
   const cfg = { ...defaults, ...settings, ...setValues(config), ...sectionOf('qq', (m) => logger.warn(m)) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: qq.enabled = false)'); return; }
@@ -944,6 +996,8 @@ export function apply(ctx, config = {}, deps = {}) {
   }
   /** Conversations that wrote to her lately: "user:<n>" / "group:<n>" → last message time (sendGate). */
   const recent = new Map();
+  // Per private chat: what they last said (an echo is measured against it) and whether her last reply closed on a question.
+  const lastIn = new Map(), askedLast = new Map();
   function onEvent(ev) {
     // NapCat refusing the token while the key sits in Authorization: send the key in its own header only.
     if (ev.retcode === 1403 && authMode === 'query') { authMode = 'query-only'; logger.info('NapCat rejected the Authorization header; keeping the token in the query string only'); }
@@ -1007,6 +1061,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
     if (fromOwner) lastOwnerAt = Date.now();
     recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
+    if (!isGroup) { lastIn.delete(`user:${msg.userId}`); lastIn.set(`user:${msg.userId}`, { text, at: Date.now() }); if (lastIn.size > 500) lastIn.delete(lastIn.keys().next().value); }
     if (recent.size > 500) recent.delete(recent.keys().next().value);
     if (wanted === 'score') { void scoreAndDeliver(msg, seen); return; }
     deliver(msg, seen);
@@ -1108,7 +1163,8 @@ export function apply(ctx, config = {}, deps = {}) {
     const { system, user } = scorePrompt({ who, recent: lines, message: `${msg.who}：${msg.text.slice(0, 300)}`, group: msg.groupId });
     let text = '';
     try {
-      for await (const chunk of llm.stream(background({ provider, model, system, maxTokens: 8, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }] }))) {
+      const effort = await workEffort(ctx, { provider, model }, 'off'); // one digit out: nothing to think about (and 8 tokens leave no room to)
+      for await (const chunk of llm.stream(background({ provider, model, ...(effort ? { reasoningEffort: effort } : {}), system, maxTokens: 8, messages: [{ role: 'user', content: [{ type: 'text', text: user }] }] }))) {
         if (chunk?.type === 'text-delta') text += chunk.text ?? chunk.delta ?? '';
       }
     } catch (err) { logger.debug(`group score failed: ${err.message}`); return; }
@@ -1189,9 +1245,18 @@ export function apply(ctx, config = {}, deps = {}) {
    * To him: if he says something while the bubbles are going out, the rest is not sent — `{ sent,
    * interrupted: true, unsent: [lines…] }` (images not yet sent are listed as `[图 <ref>]` / `[表情包 sticker:<id>]`).
    */
-  qq.send = async (to, text = '', images = []) => {
+  // Sends to one conversation go out one after another: the bubbles of two sends never interleave.
+  const lanes = new Map(); // "user:<n>" / "group:<n>" → the last send to it
+  qq.send = (to, text = '', images = []) => {
     const target = parseTarget(to, qq.owner);
-    if (!target) throw new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`);
+    if (!target) return Promise.reject(new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`));
+    const key = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
+    const mine = (lanes.get(key) ?? Promise.resolve()).then(() => sendNow(target, to, text, images));
+    const tail = mine.catch(() => {}); lanes.set(key, tail);
+    void tail.then(() => { if (lanes.get(key) === tail) lanes.delete(key); });
+    return mine;
+  };
+  const sendNow = async (target, to, text, images) => {
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
     let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
     let dropped = 0;
@@ -1202,6 +1267,17 @@ export function apply(ctx, config = {}, deps = {}) {
     if (cfg.tidy && cfg.dropLatinLeaks !== false) {
       parts = parts.filter((p) => { if (!latinLeak(p)) return true; dropped++; logger.warn(`dropped an English-prose bubble (reasoning leak?): ${p.slice(0, 60)}`); return false; });
     }
+    const trimmed = [];
+    const peer = target.group_id ? '' : `user:${target.user_id}`;
+    if (cfg.tidy && peer && parts.length) {
+      // Reading his answer back to him: she asked last time, he has just answered, and her reply opens with his own
+      // words. Saying something back that he volunteered (a greeting, a wish, 「又要加班」) is how people talk, and stays.
+      const his = lastIn.get(peer);
+      if (cfg.dropEchoOpeners !== false && parts.length > 1 && askedLast.get(peer) && his && Date.now() - his.at < ECHO_WINDOW_MS && echoOpener(parts[0], his.text)) trimmed.push(parts.shift());
+      if (cfg.dropChainedQuestions === true && askedLast.get(peer) && parts.some(asksSomething) && !parts.every(asksSomething)) { trimmed.push(...parts.filter(asksSomething)); parts = parts.filter((p) => !asksSomething(p)); }
+      if (trimmed.length) logger.info(`held back ${trimmed.length} bubble(s) (echo opener / asking again): ${trimmed.join(' / ').slice(0, 80)}`);
+      askedLast.delete(peer); askedLast.set(peer, parts.some(asksSomething)); if (askedLast.size > 500) askedLast.delete(askedLast.keys().next().value);
+    }
     const refs = [].concat(images ?? []).filter(Boolean);
     const segments = [];
     for (const ref of refs) segments.push(await imageSegment(ref));
@@ -1211,17 +1287,20 @@ export function apply(ctx, config = {}, deps = {}) {
     const started = Date.now();
     const toOwner = Boolean(qq.owner) && target.user_id === Number(qq.owner);
     loop.said(target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`);
-    let unsent = null;
+    let unsent = null, cutBy = '';
     for (const [i, part] of parts.entries()) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
       // He spoke while she was typing these out: stop, she reads him first.
       if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; break; }
-      ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id);
+      try { ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id); } catch (err) {
+        if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
+        // Some bubbles are already with them: say what went out and what did not, instead of failing the whole send.
+        unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; cutBy = err.message; break;
+      }
     }
     if (unsent) {
-      qq.sentToOwnerAt = Date.now();
-      audit({ kind: 'sent', to: target, text: parts.slice(0, ids.length).join(' / ').slice(0, 200), interrupted: true, unsent: unsent.length });
-      return { sent: ids.length, messageIds: ids, interrupted: true, unsent, said: parts.slice(0, ids.length), imagesSent: 0, images: [] };
+      audit({ kind: 'sent', to: target, text: parts.slice(0, ids.length).join(' / ').slice(0, 200), interrupted: true, unsent: unsent.length, ...(cutBy ? { error: cutBy } : {}) });
+      return { sent: ids.length, messageIds: ids, interrupted: true, unsent, said: parts.slice(0, ids.length), imagesSent: 0, images: [], ...(cutBy ? { error: cutBy } : {}) };
     }
     const went = []; // the refs of the images that went out, in order (her transcript records them)
     for (const [i, seg] of segments.entries()) {
@@ -1231,9 +1310,8 @@ export function apply(ctx, config = {}, deps = {}) {
       }
     }
     const n = ids.length;
-    if (qq.owner && target.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
-    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}) });
-    return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}) };
+    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}), ...(trimmed.length ? { trimmed } : {}) });
+    return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}), ...(trimmed.length ? { trimmed } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
   /** The groups she is in: [{ gid, name }] (OneBot get_group_list). */
@@ -1294,8 +1372,12 @@ export function apply(ctx, config = {}, deps = {}) {
       output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, images: v?.images ?? [], ...(v?.interrupted ? { interrupted: true } : {}) }) },
       async execute(args) {
         const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
-        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent } : {}) };
-        return r.failed || r.dropped || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
+        // sentToOwnerAt means "she wrote to him herself with qq_send" (dot then does not relay the turn's answer). Only this tool
+        // sets it: dot's own sends through qq.send (relaying her answer, notices) must not, or a relay still typing its bubbles
+        // out when his next message starts a turn makes that turn look answered and its reply is never sent.
+        if (r.sent > 0 && qq.owner && parseTarget(args.to, qq.owner)?.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
+        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.trimmed ? { trimmed: r.trimmed } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent, ...(r.error ? { error: r.error } : {}) } : {}) };
+        return r.failed || r.dropped || r.trimmed || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({

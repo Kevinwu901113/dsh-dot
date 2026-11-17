@@ -47,6 +47,8 @@ textarea{width:100%;box-sizing:border-box;min-height:160px;font:12px/1.5 ui-mono
 <section id="tab-status" hidden><div id="statusCards" class="mute">加载中…</div></section>
 <section id="tab-settings"><div id="groups" class="mute">加载中…</div>
 <details class="card" style="margin-top:12px"><summary style="cursor:pointer;color:var(--bad)">危险区</summary>
+<div class="item" style="grid-template-columns:1fr auto"><div><b>重置她</b><div class="mute">把选中范围里的东西挪进备份文件夹（<code>~/.dsh/dsh-dot-resets/时间</code>，在她的 home 之外，她自己读不到），不是删除，挪回去就恢复。人设、设置、手机和电脑里装的东西不动（手机用下面的重建）。重启 DeepSeek Harness 后生效。</div>
+<div class="row" style="margin-top:6px">等级 <select id="rsLevel"></select> · 输入 <b>dot</b> 确认 <input type="text" id="rsConfirm" style="width:70px"></div><div class="mute small" id="rsWhat" style="margin-top:4px"></div><div class="msg" id="rsMsg"></div></div><div><button class="btn" id="rs" style="color:var(--bad);border-color:var(--bad)">重置</button> <button class="btn" id="rsCancel" hidden>取消</button></div></div>
 <div class="item" style="grid-template-columns:1fr auto"><div><b>重建手机</b><div class="mute">删掉现在这台手机，用当前的存储和内存设置新建一台。她装的 App、登录、照片全部没了；已下载的系统不用重下，几分钟就好。</div>
 <div class="row" style="margin-top:6px">新存储 <select id="rbGb"><option value="">不变</option><option>8</option><option>16</option><option>32</option><option>64</option></select> GB · 输入 <b>dot</b> 确认 <input type="text" id="rbConfirm" style="width:70px"></div><div class="msg" id="rbMsg"></div></div><div><button class="btn" id="rb" style="color:var(--bad);border-color:var(--bad)">重建手机</button></div></div>
 <div class="item" style="grid-template-columns:1fr auto"><div><b>清理手机下载缓存</b><div class="mute">安装时下载的压缩包。手机已装好的话可以删。</div><div class="msg" id="clMsg"></div></div><div><button class="btn" id="cl">清理</button></div></div>
@@ -175,6 +177,7 @@ async function loadSettings() {
   const j = await api('GET', '/settings');
   entries = j.entries; components = j.components; changes = {};
   showFileErr(j.fileError);
+  renderReset(j.reset);
   renderSettings();
   $('save').disabled = $('revert').disabled = true;
 }
@@ -198,8 +201,8 @@ $('save').onclick = async () => {
   } catch (e) { $('saveMsg').className = 'msg err'; $('saveMsg').textContent = e.message; }
 };
 async function act(name, msgEl, body) {
-  try { const j = await api('POST', '/action/' + name, body); msgEl.className = 'msg ok'; msgEl.textContent = j.message; setTimeout(loadStatus, 800); }
-  catch (e) { msgEl.className = 'msg err'; msgEl.textContent = e.message; }
+  try { const j = await api('POST', '/action/' + name, body); msgEl.className = 'msg ok'; msgEl.textContent = j.message; setTimeout(loadStatus, 800); return true; }
+  catch (e) { msgEl.className = 'msg err'; msgEl.textContent = e.message; return false; }
 }
 
 // ---- doctor
@@ -251,6 +254,30 @@ $('sum').onclick = async () => {
 };
 
 // ---- danger zone
+let resetLevels = [];
+function resetWhat() {
+  const i = resetLevels.findIndex((l) => l.id === $('rsLevel').value);
+  $('rsWhat').innerHTML = resetLevels.slice(0, i + 1).map((l) => '· ' + esc(l.what)).join('<br>');
+}
+function renderReset(r) {
+  if (!r) return;
+  if (!resetLevels.length) {
+    resetLevels = r.levels || [];
+    $('rsLevel').innerHTML = resetLevels.map((l) => '<option value="' + esc(l.id) + '"' + (l.id === 'fresh' ? ' selected' : '') + '>' + esc(l.name) + '</option>').join('');
+    $('rsLevel').onchange = resetWhat;
+    resetWhat();
+  }
+  const name = (id) => (resetLevels.find((l) => l.id === id) || {}).name || id;
+  $('rsCancel').hidden = !r.pending;
+  if (r.pending) { $('rsMsg').className = 'msg ok'; $('rsMsg').textContent = '已安排「' + name(r.pending.level) + '」，重启 DeepSeek Harness 后生效'; }
+  else if (r.last) { $('rsMsg').className = r.last.error ? 'msg err' : 'msg'; $('rsMsg').textContent = '上次重置：' + name(r.last.level) + ' · ' + String(r.last.at).slice(0, 16).replace('T', ' ') + ' UTC · 旧数据在 ' + r.last.backup + (r.last.error ? ' · 出错：' + r.last.error + (r.last.rolledBack ? '（已全部放回原位）' : '（没能全部放回，见备份文件夹）') : ''); }
+}
+$('rs').onclick = async () => {
+  if ($('rsConfirm').value.trim() !== 'dot') { $('rsMsg').className = 'msg err'; $('rsMsg').textContent = '先在框里输入 dot'; return; }
+  if (!confirm('确定重置？重启 DeepSeek Harness 后，所选范围里的东西她都不再有（旧数据在备份文件夹里，可以挪回来）。')) return;
+  if (await act('reset', $('rsMsg'), { level: $('rsLevel').value, confirm: $('rsConfirm').value })) { $('rsCancel').hidden = false; $('rsConfirm').value = ''; }
+};
+$('rsCancel').onclick = async () => { if (await act('reset-cancel', $('rsMsg'))) $('rsCancel').hidden = true; };
 $('rb').onclick = async () => {
   if ($('rbConfirm').value.trim() !== 'dot') { $('rbMsg').className = 'msg err'; $('rbMsg').textContent = '先在框里输入 dot'; return; }
   if (!confirm('确定删掉现在这台手机并新建？她手机里的一切都会没有。')) return;

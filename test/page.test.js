@@ -166,6 +166,15 @@ test('api: danger zone actions reach the phone; setup only stores known flags', 
   const call = async (method, sub, body) => { let status, out; await api({ method, url: sub, async *[Symbol.asyncIterator]() { if (body) yield Buffer.from(JSON.stringify(body)); } }, { writeHead(s) { status = s; return this; }, end(b) { out = JSON.parse(b); } }, sub); return { status, out }; };
   assert.equal((await call('POST', '/action/phone-rebuild', { gb: 32 })).status, 200);
   assert.deepEqual(rebuilt, { gb: 32 });
+  // reset: scheduled for the next start, listed with the settings, and cancellable
+  assert.equal((await call('POST', '/action/reset', { level: 'nope' })).out.error, '没有这个重置等级');
+  assert.equal((await call('POST', '/action/reset', { level: 'life' })).out.error, '先在框里输入 dot', 'the confirmation is checked on the server too');
+  assert.match((await call('POST', '/action/reset', { level: 'life', confirm: 'dot' })).out.message, /^已安排「记忆 \+ 幕间」：重启 DeepSeek Harness 后生效。旧数据会挪进 .*dsh-dot-resets\/时间/);
+  const listed = (await call('GET', '/settings')).out.reset;
+  assert.deepEqual(listed.levels.map((l) => l.id), ['memory', 'life', 'fresh', 'all']);
+  assert.equal(listed.pending.level, 'life');
+  assert.equal((await call('POST', '/action/reset-cancel')).out.message, '已取消安排的重置');
+  assert.equal((await call('GET', '/settings')).out.reset.pending, null);
   assert.equal((await call('POST', '/action/qq-owner', { number: '1' })).out.error, 'QQ组件没开（在 dsh 的插件页打开）');
   await call('PUT', '/setup', { doctorAck: true, evil: 'x', dismissed: 'yes' });
   const saved = JSON.parse(readFileSync(join(home, 'dsh-dot-setup.json'), 'utf8'));

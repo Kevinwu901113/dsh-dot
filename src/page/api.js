@@ -13,6 +13,7 @@ import { gateFor } from '../llm-gate.js';
 import { doctorFor, FIXES } from '../doctor.js';
 import { bundle, summary, versions } from './diag.js';
 import { PAGE_PATH, pageHtml } from './page.js';
+import { RESET_LEVELS, cancelReset, lastReset, pendingReset, resetsDir, scheduleReset } from '../reset.js';
 
 export const API_PATH = '/dsh-dot/api';
 const require = createRequire(import.meta.url);
@@ -51,6 +52,14 @@ const ACTIONS = {
     await need(phone, '手机').rebuild({ gb: body?.gb ? Number(body.gb) : undefined });
     return '旧手机已删除，正在新建并开机（几分钟）';
   },
+  'reset': async ({ dot }, body) => {
+    const level = RESET_LEVELS.find((l) => l.id === String(body?.level ?? ''));
+    if (!level) throw new Error('没有这个重置等级');
+    if (String(body?.confirm ?? '').trim() !== 'dot') throw new Error('先在框里输入 dot');
+    scheduleReset(level.id, dot?.home);
+    return `已安排「${level.name}」：重启 DeepSeek Harness 后生效。旧数据会挪进 ${resetsDir()}/时间，人设不动`;
+  },
+  'reset-cancel': async () => (cancelReset() ? '已取消安排的重置' : '没有安排中的重置'),
   'phone-cleanup': async ({ phone }) => { const b = need(phone, '手机').cleanup(); return `清掉了 ${Math.round(b / 1048576)} MB 下载缓存`; },
   'qq-owner': async ({ qq }, body) => { need(qq, 'QQ').setOwner(String(body?.number ?? '')); return '已设置你的 QQ 号'; },
   'qq-account': async ({ qq }, body) => { need(qq, 'QQ').setAccount(String(body?.number ?? '')); return '已设置她的 QQ 号'; },
@@ -116,7 +125,7 @@ export function createApi(ctx, logger) {
     try {
       if (route === 'GET /status') { const su = setupSteps(ctx); return json(res, 200, { status: statusOf(ctx), fileError: fileError() || null, setup: { done: su.done, dismissed: su.dismissed }, version: pluginVersion }); }
       // components: which sections' components are on (gate exposes no service and is never listed: the page treats an unlisted section as on)
-      if (route === 'GET /settings') { const s = services(ctx); return json(res, 200, { entries: describe(readAll()), fileError: fileError() || null, components: Object.fromEntries(Object.keys(s).map((k) => [k, Boolean(s[k])])) }); }
+      if (route === 'GET /settings') { const s = services(ctx); return json(res, 200, { entries: describe(readAll()), fileError: fileError() || null, components: Object.fromEntries(Object.keys(s).map((k) => [k, Boolean(s[k])])), reset: { levels: RESET_LEVELS, pending: pendingReset(), last: lastReset() } }); }
       if (route === 'PUT /settings') {
         const body = await readJson(req);
         const patch = validatePatch(body.patch);

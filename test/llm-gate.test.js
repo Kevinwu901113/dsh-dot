@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { background, createGate, gateFor, installLlmGate, statusLine } from '../src/llm-gate.js';
+import { background, createGate, effortFor, gateFor, installLlmGate, statusLine, workEffort } from '../src/llm-gate.js';
 import { statusOf } from '../src/page/api.js';
 import { validatePatch } from '../src/settings-schema.js';
 
@@ -376,4 +376,43 @@ test('wiring: one llm/stream listener per dsh wraps the waterfall, delays, passe
 
   // no llm/stream hook at all (older dsh, or a context without `on`): installing is harmless
   assert.ok(installLlmGate({ effect(fn) { fn(); }, logger: () => ({}) }, { deps }));
+});
+
+test('workEffort: her background work has its own reasoning effort; an effort the model does not offer, or a host that cannot say, follows the model selector', async () => {
+  const asked = [];
+  const llm = { resolveCallConfig: async (c) => { asked.push(`${c.model}:${c.reasoningEffort}`); if (c.model === 'plain' || c.reasoningEffort === 'medium') throw Object.assign(new Error('unsupported'), { code: 'UNSUPPORTED_REASONING_EFFORT' }); if (c.model === 'flaky') throw Object.assign(new Error('no adapter'), { code: 'NO_ADAPTER' }); return c; } };
+  const ctx = { llm };
+  // the selector says off (he turned thinking off for the chat): background work still thinks
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'm', reasoningEffort: 'off' }, 'high'), 'high');
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'm' }, 'high'), 'high');
+  assert.deepEqual(asked, ['m:high'], 'the host is asked once per model and effort');
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'm', reasoningEffort: 'low' }, 'off'), 'off', 'scoring: off whatever the selector says');
+  // not offered: what the selector says (or nothing), never a request the host would reject
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'plain' }, 'high'), undefined);
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'm', reasoningEffort: 'low' }, 'medium'), 'low');
+  // the host could not answer (no adapter yet): follow now, ask again next time
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'flaky', reasoningEffort: 'off' }, 'high'), 'off');
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'flaky', reasoningEffort: 'off' }, 'high'), 'off');
+  assert.equal(asked.filter((a) => a === 'flaky:high').length, 2, 'not cached');
+  // a host without the query, or '' = follow the selector
+  assert.equal(await workEffort({ llm: {} }, { provider: 'we', model: 'm2', reasoningEffort: 'off' }, 'high'), 'off');
+  assert.equal(await workEffort(ctx, { provider: 'we', model: 'm', reasoningEffort: 'low' }, ''), 'low');
+  // a component that did not inject llm: reading ctx.llm throws there, the service is taken with ctx.get; and the reason is told
+  const strict = { get llm() { throw new Error('property llm is not injected'); }, get: (n) => (n === 'llm' ? llm : undefined) };
+  assert.deepEqual(await effortFor(strict, { provider: 'we', model: 'm3', reasoningEffort: 'off' }, 'high'), { effort: 'high', why: 'set' });
+  assert.deepEqual(await effortFor({ get: () => undefined }, { provider: 'we', model: 'm4', reasoningEffort: 'off' }, 'high'), { effort: 'off', why: 'cannot-ask: no llm service' });
+  assert.deepEqual(await effortFor(ctx, { provider: 'we', model: 'plain', reasoningEffort: 'off' }, 'high'), { effort: 'off', why: 'unsupported' });
+  assert.deepEqual(await effortFor(ctx, { provider: 'we', model: 'flaky', reasoningEffort: 'off' }, 'high'), { effort: 'off', why: 'ask-failed: NO_ADAPTER' });
+  assert.equal((await effortFor(ctx, { provider: 'we', model: 'm', reasoningEffort: 'high' }, 'high')).why, 'same');
+  // the setting: llm.workEffort, default high; shown with what was really sent
+  const c = clock();
+  assert.equal(gateWith(c).config.workEffort, 'high');
+  assert.equal(gateWith(c, { workEffort: '' }).config.workEffort, '');
+  const gate = gateWith(c, { workEffort: 'max' });
+  const a = request(gate, { provider: 'p', sessionId: 'chat', reasoningEffort: 'off' }); a.release(); await a.promise;
+  const b = request(gate, background({ provider: 'p', reasoningEffort: 'max' })); await c.advance(60_000); b.release(); await b.promise;
+  assert.deepEqual(prov(gate).effort, { foreground: 'off', background: 'max' });
+  assert.match(statusLine(gate.status()), /thinking: chat off, background max/);
+  assert.deepEqual(validatePatch({ llm: { workEffort: 'low' } }), { llm: { workEffort: 'low' } });
+  assert.throws(() => validatePatch({ llm: { workEffort: 'medium' } }));
 });
