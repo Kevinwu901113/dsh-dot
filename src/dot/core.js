@@ -177,10 +177,11 @@ export function wakeText(items, { whileBusy = false, cards = '', now = Date.now(
 export const scheduledRule = () => prompt('dot.scheduled', { silent: SILENT });
 
 /** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
-export function workingRules({ computer = true, phone = false } = {}) {
+export function workingRules({ computer = true, phone = false, handOff = false } = {}) {
   const [computerIntro, computerRule] = computer ? prompt('dot.rules.computer', { vmPrefix: VM_TOOL_PREFIX }).split('\n') : ['', ''];
   const [phoneIntro, phoneRule] = phone ? prompt('dot.rules.phone', { phonePrefix: PHONE_TOOL_PREFIX }).split('\n') : ['', ''];
-  return prompt('dot.rules', { computer: computerIntro, phone: phoneIntro, computerRule: computerRule ?? '', phoneRule: phoneRule ?? '', silent: SILENT });
+  // Its own file, after the rules: a copy of dot.rules.txt someone overrode still gets it.
+  return `${prompt('dot.rules', { computer: computerIntro, phone: phoneIntro, computerRule: computerRule ?? '', phoneRule: phoneRule ?? '', silent: SILENT })}${handOff ? `\n${prompt('dot.rules.hand-off')}` : ''}`;
 }
 
 export const defaults = {
@@ -216,6 +217,11 @@ export const defaults = {
   loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
   // Interlude tasks (her own plays and looks) wait behind real work: one at a time, only while no
   // notification is queued or held for an errand and no errand turn runs.
+  // What he asks her to do on her phone or computer while they talk: she hands it to her errands (hand_off)
+  // and answers him; the errand does it; the report wakes her conversation, and she tells him. In a turn of
+  // his words she does not operate the devices herself (false: as before — she may, and may also just say "等下").
+  handOff: true,
+  handOffTtlMs: 7200000,       // not started within this long: given up, and she is told so
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
   // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
@@ -267,6 +273,17 @@ const NOTED = ['phone-check', 'phone-notification', 'play', 'try'];
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
+/** The message that carries something he asked for to her errand, and the one that brings the report back to her conversation. */
+export const ASK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'ask' });
+export const askResultSource = () => ({ kind: 'dsh-dot', form: 'ask-result', rpcId: `qq-dot-ask-${Date.now().toString(36)}` });
+/** The list her conversation sees: what she handed off and where each stands — written by code from what really happened. */
+export function asksText(asks, now = Date.now()) {
+  const recent = asks.filter((a) => now - a.at < 24 * 3600000).slice(-6);
+  if (!recent.length) return '';
+  const status = table('dot.asks.status');
+  const hhmm = (ms) => { const t = new Date(ms); return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`; };
+  return prompt('dot.asks', { lines: recent.map((a) => `- ${hhmm(a.at)} ${a.what} —— ${status[Object.hasOwn(status, a.status) ? a.status : 'queued']}${a.report ? `：${a.report}` : ''}`).join('\n') });
+}
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
 const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
@@ -605,7 +622,13 @@ export function apply(ctx, config = {}) {
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
-    if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) { t.fromQq = true; return; }
+    if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
+      t.fromQq = true;
+      // Her errand's report on something he asked for: its answer goes to him like any answer; memory records this turn itself.
+      if (event.data?.source?.form === 'ask-result') t.askResult = true;
+      else if (!t.origin && !t.scheduled && !t.tools) t.his = true; // a turn his own words opened
+      return;
+    }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
@@ -626,8 +649,8 @@ export function apply(ctx, config = {}) {
       }
       if (ended) {
         const text = stripSilent(t.text.trim());
-        // Observations hand their text to the interlude themselves; only her own doings are noted.
-        if (text && !isSilent(t.text.trim()) && NOTED.includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
+        // What she did there is left in her conversation as a note (her own time too: its closing lines are her account of it).
+        if (text && !isSilent(t.text.trim()) && (NOTED.includes(t.origin) || t.origin === 'free')) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
         if (taskRunning?.session === id) finishTask(taskRunning, 'done', text, t.cost);
         void rotateErrandIfLarge(id);
       }
@@ -656,7 +679,7 @@ export function apply(ctx, config = {}) {
         const q = ctx.get('dshQq');
         if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
         if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
-        sayToOwner(id, stripSilent(text));
+        sayToOwner(id, stripSilent(text), { record: !t.askResult });
         return;
       }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
@@ -807,7 +830,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
-      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()) }) : ''),
+      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()), handOff: Boolean(cfg.handOff && cfg.errands) }) : ''),
     }), 'dsh-dot: working rules section');
     // Her clock: after the history (like dot:memory), on her conversation and her errands. "Since the
     // last message" counts from the last line said before this turn began, so it holds for the turn.
@@ -840,6 +863,12 @@ export function apply(ctx, config = {}) {
         if (isErrand(id)) return NOTED.includes(turns.get(id)?.origin) ? prompt('dot.errand-report', { silent: SILENT }) : '';
         return id && id === lastSession ? inFlightText() : '';
       },
+    });
+    // What she handed to her errands for him, and where each stands: data from what really happened.
+    scope.systemPrompt.context({
+      name: 'dot:asks',
+      order: 902,
+      text: (c) => (c.agent?.session?.id && c.agent.session.id === lastSession ? asksText(asks) : ''),
     });
   });
 
@@ -963,7 +992,7 @@ export function apply(ctx, config = {}) {
    * handed to her with his words. Otherwise its bubbles go out one after another; qq.send stops between
    * bubbles when he speaks, and what was left is kept the same way.
    */
-  const sayToOwner = (id, text) => {
+  const sayToOwner = (id, text, { record = true } = {}) => {
     const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
     // His unread words: in the buffer, or held while her conversation is being handed over (frozenQueue).
     const waiting = ownerBatch.length + frozenQueue.filter((n) => n.fromOwner).length;
@@ -978,7 +1007,7 @@ export function apply(ctx, config = {}) {
     sending = sending.then(async () => {
       const r = await ctx.get('dshQq').send('owner', text);
       if (r.sent > 0) preempts = 0;
-      herSaid(id, (r.said ?? []).join('\n'));
+      if (record) herSaid(id, (r.said ?? []).join('\n'));
       const left = r.interrupted ? (r.unsent ?? []).map(String) : [];
       keepUnsent(left);
       audit('qq-relayed', { session: id, sent: r.sent, ...(left.length ? { unsent: left.length } : {}), ...(r.error ? { error: r.error } : {}) });
@@ -1107,11 +1136,74 @@ export function apply(ctx, config = {}) {
     const now = Date.now();
     const same = spec.key && taskQueue.find((x) => x.key === spec.key);
     if (same) { same.expiresAt = now + ttlMs; audit('task-refreshed', { kind: same.kind, key: same.key }); return 'refreshed'; }
-    taskQueue.push({ ...spec, queuedAt: now, expiresAt: now + ttlMs, busyWith: busyWith() });
-    while (taskQueue.length > Math.max(1, cfg.interludeQueueMax)) finishTask(taskQueue[0], 'dropped');
+    const task = { ...spec, queuedAt: now, expiresAt: now + ttlMs, busyWith: busyWith() };
+    // What he asked for goes before her own things, after earlier asks; it is never the one dropped for room.
+    if (spec.kind === 'ask') taskQueue.splice(taskQueue.filter((x) => x.kind === 'ask').length, 0, task); else taskQueue.push(task);
+    while (taskQueue.filter((x) => x.kind !== 'ask').length > Math.max(1, cfg.interludeQueueMax)) finishTask(taskQueue.find((x) => x.kind !== 'ask'), 'dropped');
     void nextTask();
     return 'queued';
   };
+  // ── what he asked her to do ──
+  // A thing she agreed to do had no owner: the turn ended on "等下我看看" and nothing followed (11-17). Now it
+  // has one. She hands it off (the hand_off tool, her conversation only); it is kept in dot's state, so a restart
+  // does not lose it; her errand does it before anything of her own; the errand's closing report is stored as it
+  // was written and wakes her conversation, whose answer goes to him. Where each one stands is given to her
+  // conversation as data (dot:asks) — "done" there means the errand came back, and what it says is its own report.
+  let asks = (store.get('asks') ?? []).filter((a) => a && a.id && a.what);
+  const saveAsks = () => { asks = asks.slice(-30); store.set('asks', asks); };
+  const askTask = (a) => enqueueTask({
+    kind: 'ask', key: `ask|${a.id}`, ttlMs: Math.max(60000, a.at + cfg.handOffTtlMs - Date.now()), source: ASK_SOURCE,
+    text: prompt('dot.ask', { stamp: stamp(Date.now(), Date.now()), what: a.what, why: a.why ? `（${a.why}）` : '' }),
+    onStart: () => { a.status = 'doing'; a.startedAt = Date.now(); saveAsks(); },
+    onDone: (r) => {
+      a.status = r.status === 'done' ? 'back' : r.status; // expired / dropped / stalled: it did not get done
+      a.report = String(r.report ?? '').trim().slice(0, 600); a.doneAt = Date.now(); saveAsks();
+      audit('ask-returned', { id: a.id, status: a.status, waitedMs: a.doneAt - a.at });
+      void tellAskResult(a);
+    },
+  });
+  /** The report on something he asked for wakes her conversation: a turn whose answer goes to him. */
+  const tellAskResult = async (a) => {
+    try {
+      const found = lastSession && await resolveLive(lastSession);
+      if (!found || 'error' in found) { audit('ask-result-dropped', { id: a.id, why: 'no conversation' }); return; }
+      const status = table('dot.asks.status');
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-result', { stamp: stamp(Date.now(), Date.now()), what: a.what, status: status[Object.hasOwn(status, a.status) ? a.status : 'back'], report: a.report || '（没有留下汇报）' }) }], source: askResultSource() }));
+      audit('ask-result-woke', { id: a.id, session: lastSession, status: a.status });
+    } catch (err) { logger.warn(`ask result not delivered: ${err.message}`); audit('ask-result-dropped', { id: a.id, why: err.message }); }
+  };
+  const handOff = ({ what, why = '' }) => {
+    const text = String(what ?? '').trim();
+    if (!text) throw new Error('what: 要做什么？用一句话写清楚');
+    const a = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, at: Date.now(), what: text.slice(0, 400), why: String(why ?? '').trim().slice(0, 200), status: 'queued' };
+    asks.push(a); saveAsks();
+    audit('ask-handed-off', { id: a.id, what: a.what.slice(0, 80) });
+    askTask(a);
+    return a;
+  };
+  // What was still waiting or under way when dsh stopped: the queue is in memory, the promise is not. Taken up again
+  // while it is fresh; past handOffTtlMs it is closed as not done.
+  ctx.effect(() => {
+    const timer = setTimeout(() => {
+      for (const a of asks.filter((x) => ['queued', 'doing'].includes(x.status))) {
+        if (Date.now() - a.at < cfg.handOffTtlMs) { a.status = 'queued'; askTask(a); } else { a.status = 'expired'; a.doneAt = Date.now(); }
+      }
+      saveAsks();
+    }, 30000);
+    timer.unref?.();
+    return () => clearTimeout(timer);
+  }, 'dsh-dot: asks left over from before the restart');
+  ctx.inject(['tools'], (scope) => {
+    if (!cfg.handOff || !cfg.errands) return;
+    scope.effect(() => scope.tools.register({
+      name: 'hand_off',
+      description: prompt('dot.hand-off-tool'),
+      parameters: { type: 'object', properties: { what: { type: 'string', description: '要做的事，写给去做的那个你看：做什么、在哪个设备或 App 上、他给的要求和原话里的关键信息' }, why: { type: 'string', description: '可不填：他为什么要这个' } }, required: ['what'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt('dot.hand-off-tool.done', { what: v?.what ?? '' }) }] },
+      async execute(args) { const a = handOff(args ?? {}); return { id: a.id, what: a.what, status: a.status }; },
+    }), 'dsh-dot: hand_off tool');
+  });
+
   // His messages wait for him to stop typing (see defaults.ownerQuietMs): their own buffer and timer,
   // separate from everyone else's notifications.
   let ownerBatch = [], ownerFirstAt = 0, ownerTimer = null, ownerTyping = false, ownerTypingSeen = false;
@@ -1204,6 +1296,13 @@ export function apply(ctx, config = {}) {
       const key = loopKey(exec.name, args), times = (t.calls ??= new Map()).get(key) ?? 0;
       if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return { kind: 'deny', reason: prompt('dot.loop-stopped', { times }) }; }
       t.calls.set(key, times + 1);
+    }
+    // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
+    // her phone and computer are operated by her errand, not here.
+    if (exec.name === 'hand_off' && id !== lastSession) return { kind: 'deny', reason: prompt('dot.hand-off-tool.elsewhere') };
+    if (cfg.handOff && cfg.errands && t?.his && id === lastSession && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX))) {
+      audit('device-tool-in-his-turn', { session: id, tool: exec.name });
+      return { kind: 'deny', reason: prompt('dot.hand-off-tool.instead') };
     }
     if (exec.name !== 'qq_send' || !isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
     if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return { kind: 'deny', reason: prompt('dot.errand-no-owner') }; }

@@ -1406,3 +1406,91 @@ test('no conversation yet (first run, or after a reset): his words open one in h
     stop(o.h);
   } finally { mock.timers.reset(); }
 });
+
+// ── what he asked her to do has an owner: handed off, done by her errand, reported back to him ──
+function handOffHarness(config = {}) {
+  const h = harness();
+  const followups = [], tools = {}, sends = [];
+  let n = 0;
+  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: () => {} });
+  const services = {
+    dshPhone: { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) },
+    sessionController: { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) },
+    tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
+    dshQq: { connected: true, owner: '20002', sentToOwnerAt: 0, onMessage: () => () => {}, onTyping: () => () => {}, send: async (to, text) => { sends.push(text); return { sent: 1, said: text.split('\n') }; } },
+  };
+  h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
+  let dot;
+  h.ctx.provide = (name, svc) => { if (name === 'dshDot') dot = svc; };
+  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0, ...config });
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
+  const gate = (id, name) => h.hooks['tools/pre-execute']({ name, arguments: {}, agent: { session: { id } } }, async () => ({ kind: 'allow' }));
+  const asksContext = () => h.ctx.prompts.find((p) => p.name === 'dot:asks').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
+  return { h, dot, followups, tools, sends, gate, asksContext };
+}
+
+test('hand_off: what he asks for goes to her errand before anything of her own; the report wakes her conversation and its answer reaches him; where it stands is data in her conversation', async () => {
+  const { ownerSource, ASK_SOURCE } = await import('../src/dot/core.js');
+  const { PHONE_TOOL_PREFIX } = await import('../src/tool-prefixes.js');
+  const o = handOffHarness();
+  const { h } = o;
+  assert.match(h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } }), /- 交办：[\s\S]*用 `hand_off` 把这件事交给跑腿/);
+  assert.equal(o.asksContext(), '', 'nothing handed off: nothing shown');
+  // he asks; in this turn she does not operate the phone herself
+  h.emit(h.home, 'turn/start', { turn: 2 });
+  h.emit(h.home, 'user/message', { source: ownerSource() });
+  const denied = await o.gate('s1', `${PHONE_TOOL_PREFIX}mobile_launch_app`);
+  assert.equal(denied.kind, 'deny'); assert.match(denied.reason, /用 hand_off 交给跑腿/);
+  assert.ok(h.audit.some((e) => e.event === 'device-tool-in-his-turn'));
+  // she hands it off
+  const r = await o.tools.hand_off.execute({ what: '在新手机上登录 QQ', why: '他刚给换了手机' });
+  assert.ok(r.id); assert.equal(r.status, 'queued');
+  assert.match(o.tools.hand_off.output.render({}, r)[0].text, /交给跑腿了：在新手机上登录 QQ[\s\S]*结果回来之前，别说已经做好了/);
+  assert.match(o.asksContext(), /你交给跑腿的事（状态是系统记的[\s\S]*- \d\d:\d\d 在新手机上登录 QQ —— 排着，还没开始/);
+  h.emit(h.home, 'assistant/message', msg('我去弄一下')); h.emit(h.home, 'turn/end', { turn: 2 });
+  await wait(40);
+  assert.deepEqual(o.sends, ['我去弄一下'], 'she answers him now');
+  assert.deepEqual(o.followups.map((f) => [f.id, f.m.source.form]), [['errand-1', 'ask']]);
+  // while the errand is on it, something of her own is queued, and then he asks for one more thing
+  h.emitAs('errand-1', h.home, 'turn/start', { turn: 1 });
+  o.dot.task({ kind: 'free', key: 'free|x', text: '自己的时间', source: { kind: 'dsh-interlude', form: 'free' } });
+  await o.tools.hand_off.execute({ what: '看看小黑盒有没有回复' });
+  assert.match(o.followups[0].m.content[0].text, /他交代的事\] 你刚才和他聊天时接下了这件事，现在去做：\n在新手机上登录 QQ（他刚给换了手机）/);
+  assert.match(o.asksContext(), /—— 正在办/);
+  // the errand does it and reports; the report is kept as written and wakes her conversation
+  h.emitAs('errand-1', h.home, 'user/message', { source: ASK_SOURCE });
+  assert.equal((await o.gate('errand-1', `${PHONE_TOOL_PREFIX}mobile_launch_app`)).kind, 'allow', 'the errand is the one with hands');
+  assert.equal((await o.gate('errand-1', 'hand_off')).kind, 'deny', 'and does not hand off again');
+  h.emitAs('errand-1', h.home, 'assistant/message', msg('做了：打开 QQ，输了账号\n结果：卡在短信验证码，没登上\n要他做的：把验证码发我'));
+  h.emitAs('errand-1', h.home, 'turn/end', { turn: 1 });
+  await wait(40);
+  const woke = o.followups.find((f) => f.id === 's1');
+  assert.equal(woke.m.source.form, 'ask-result');
+  assert.match(woke.m.content[0].text, /跑腿回来了\] 你交给跑腿的这件事有结果了：\n在新手机上登录 QQ\n状态：跑腿回来了\n它的汇报：\n做了：打开 QQ，输了账号\n结果：卡在短信验证码，没登上/);
+  assert.match(o.asksContext(), /在新手机上登录 QQ —— 跑腿回来了：做了：打开 QQ，输了账号\n结果：卡在短信验证码，没登上/, 'the report as the errand wrote it — not "done" in dot\'s words');
+  assert.deepEqual(o.followups.filter((f) => f.id === 'errand-1').map((f) => f.m.source.form), ['ask', 'ask'], 'his second thing goes before her own time');
+  assert.ok(h.audit.some((e) => e.event === 'ask-returned' && e.status === 'back') && h.audit.some((e) => e.event === 'ask-result-woke'));
+  // that turn's answer goes to him, though he did not speak; the phone is not operated from here either way
+  h.emit(h.home, 'turn/start', { turn: 3 });
+  h.emit(h.home, 'user/message', { source: woke.m.source });
+  assert.equal((await o.gate('s1', `${PHONE_TOOL_PREFIX}mobile_launch_app`)).kind, 'allow', 'not a turn of his words: the gate is about those');
+  h.emit(h.home, 'assistant/message', msg('没登上\n卡在验证码，你发我一下')); h.emit(h.home, 'turn/end', { turn: 3 });
+  await wait(40);
+  assert.deepEqual(o.sends, ['我去弄一下', '没登上\n卡在验证码，你发我一下']);
+  // kept across a restart
+  const saved = JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-dot-state.json'), 'utf8')).asks;
+  assert.equal(saved.length, 2); assert.equal(saved[0].status, 'back'); assert.match(saved[0].report, /卡在短信验证码/); assert.equal(saved[1].status, 'doing');
+  stop(h);
+});
+
+test('hand_off off (dot.handOff = false): no tool, no rule, and she may use her phone in a turn of his words, as before', async () => {
+  const { ownerSource } = await import('../src/dot/core.js');
+  const { PHONE_TOOL_PREFIX } = await import('../src/tool-prefixes.js');
+  const o = handOffHarness({ handOff: false });
+  assert.equal(o.tools.hand_off, undefined);
+  assert.doesNotMatch(o.h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: o.h.home } } } }), /hand_off/);
+  o.h.emit(o.h.home, 'turn/start', { turn: 2 });
+  o.h.emit(o.h.home, 'user/message', { source: ownerSource() });
+  assert.equal((await o.gate('s1', `${PHONE_TOOL_PREFIX}mobile_launch_app`)).kind, 'allow');
+  stop(o.h);
+});
