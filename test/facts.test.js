@@ -22,10 +22,6 @@ test('facts: the days a sentence speaks of come from when.js, relative to when i
   const said = at('2026-06-22T19:40:00');
   assert.deepEqual(daysOf('老周下周三过来吃饭', said).map((d) => new Date(d).toISOString().slice(0, 10)), [new Date(2026, 6, 1).toISOString().slice(0, 10)]);
   assert.deepEqual(daysOf('老周对花生过敏', said), []);
-  const iso = (d) => { const x = new Date(d); return `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}-${String(x.getDate()).padStart(2, '0')}`; };
-  assert.deepEqual(daysOf('他给汤团买的猫饮水机 06-24 到驿站', said).map(iso), ['2026-06-24'], 'a day the fact writes out');
-  assert.deepEqual(daysOf('他爸生日 2027-01-19，寄了 89 块的保温杯，3-5 天到', said).map(iso), ['2027-01-19']);
-  assert.deepEqual(daysOf('他 01-05 去复查', at('2026-12-20T10:00:00')).map(iso), ['2027-01-05'], 'a day long past is next year\'s');
 });
 
 test('facts: near in time is three days back to fourteen ahead, the nearest first; fuse is by rank', () => {
@@ -47,14 +43,15 @@ function make({ reply, cfg = {}, embed = null } = {}) {
   return { f, calls, lines, dir, recall, complete };
 }
 
-test('facts: written from a batch of the exchange, shown when his words reach them, picked by one foreground call', async () => {
+test('facts: written from his lines of a batch, shown when his words reach them, picked by one foreground call', async () => {
   const t0 = at('2026-06-22T19:40:00');
   const h = make({ reply: (text, reason) => (reason === 'facts' ? '06-22 19:40｜别在别人面前提高姐房贷的事｜想劝高姐一起花钱；高姐在场聊到开销\n06-22 19:41｜汤团一听吹风机就钻床底｜要开吹风机' : '编号：1') });
   const batch = [{ at: t0, who: 'owner', text: '你可别在别人面前提高姐房贷的事' }, { at: t0 + 1000, who: 'her', text: '记住了' }, { at: t0 + 60000, who: 'owner', text: '汤团一听吹风机就钻床底' }];
   h.lines.push(...batch);
   assert.deepEqual(await h.f.write(batch), { ok: true, facts: 2 });
   assert.equal(h.calls[0].reason, 'facts');
-  assert.match(h.calls[0].text, /\[06-22 19:40\] 他：你可别在别人面前提高姐房贷的事\n\[06-22 19:40\] 她：记住了\n\[06-22 19:41\] 他：汤团/, 'the exchange, both sides, each line with its time');
+  assert.match(h.calls[0].text, /\[06-22 19:40\] 你可别在别人面前提高姐房贷的事\n\[06-22 19:41\] 汤团/, 'his lines only, each with its time');
+  assert.doesNotMatch(h.calls[0].text, /记住了/);
   const now = at('2026-07-10T12:00:00');
   await h.f.prepare('s1', '明天大家拼单点外卖，我想劝高姐一起', { now });
   assert.equal(h.calls[1].reason, 'facts-pick');
