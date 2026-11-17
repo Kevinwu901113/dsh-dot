@@ -282,7 +282,27 @@ export function asksText(asks, now = Date.now()) {
   if (!recent.length) return '';
   const status = table('dot.asks.status');
   const hhmm = (ms) => { const t = new Date(ms); return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`; };
-  return prompt('dot.asks', { lines: recent.map((a) => `- ${hhmm(a.at)} ${a.what} —— ${status[Object.hasOwn(status, a.status) ? a.status : 'queued']}${a.report ? `：${a.report}` : ''}`).join('\n') });
+  return prompt('dot.asks', { lines: recent.map((a) => `- ${hhmm(a.at)} ${askAbout(a)} —— ${status[Object.hasOwn(status, a.status) ? a.status : 'queued']}`).join('\n') });
+}
+/** What an ask is about, in the fewest words there are: what he said when he has said it, else what she wrote for her errand. */
+export const askAbout = (a) => (a.said ? `他说「${a.said}」` : a.what);
+/**
+ * What an errand's report may bring into her conversation. Her replies take their length from what is in front of
+ * her: a full report (model, resolution, every icon) came out as a list in 7 of 8 replays, two sentences came out
+ * as chat in 8 of 8, and no wording of the instructions around it changed that (11-17). So the size is set here,
+ * in code: at most CARRY_MAX characters of text, cut at a sentence end, plus its "图：…" lines as written.
+ */
+export const CARRY_MAX = 120;
+export function clipCarry(text, max = CARRY_MAX) {
+  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
+  const images = lines.filter((l) => /^图[：:]/.test(l));
+  let body = lines.filter((l) => !/^图[：:]/.test(l)).join(' ');
+  if (body.length > max) {
+    const head = body.slice(0, max);
+    const end = Math.max(head.lastIndexOf('。'), head.lastIndexOf('！'), head.lastIndexOf('？'), head.lastIndexOf('；'));
+    body = end >= max / 3 ? head.slice(0, end + 1) : `${head}…`;
+  }
+  return [body, ...images].filter(Boolean).join('\n');
 }
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
@@ -626,7 +646,11 @@ export function apply(ctx, config = {}) {
       t.fromQq = true;
       // Her errand's report on something he asked for: its answer goes to him like any answer; memory records this turn itself.
       if (event.data?.source?.form === 'ask-result') t.askResult = true;
-      else if (!t.origin && !t.scheduled && !t.tools) t.his = true; // a turn his own words opened
+      else if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
+        t.his = true;
+        const said = contentText(event.data?.content).replace(/^\[[^\]]*\]\s*/, '').trim();
+        if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
+      }
       return;
     }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
@@ -649,8 +673,8 @@ export function apply(ctx, config = {}) {
       }
       if (ended) {
         const text = stripSilent(t.text.trim());
-        // What she did there is left in her conversation as a note (her own time too: its closing lines are her account of it).
-        if (text && !isSilent(t.text.trim()) && (NOTED.includes(t.origin) || t.origin === 'free')) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
+        // What she did there is left in her conversation as a note.
+        if (text && !isSilent(t.text.trim()) && NOTED.includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
         if (taskRunning?.session === id) finishTask(taskRunning, 'done', text, t.cost);
         void rotateErrandIfLarge(id);
       }
@@ -1159,23 +1183,48 @@ export function apply(ctx, config = {}) {
       a.status = r.status === 'done' ? 'back' : r.status; // expired / dropped / stalled: it did not get done
       a.report = String(r.report ?? '').trim().slice(0, 600); a.doneAt = Date.now(); saveAsks();
       audit('ask-returned', { id: a.id, status: a.status, waitedMs: a.doneAt - a.at });
-      void tellAskResult(a);
+      void carryBack(a).then(() => tellAskResult(a));
     },
   });
+  /**
+   * The errand's report stays where it is (the ask's record, his page); what goes into her conversation is one
+   * or two sentences of it (see clipCarry). One small call without tools writes them; when it cannot, the
+   * report's own opening is cut to the same size. Either way the size is the code's, not the model's.
+   */
+  const carryBack = async (a) => {
+    if (!a.report) { a.say = ''; return; }
+    let say = '';
+    try {
+      const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
+      const llm = ctx.get('llm');
+      if (sel && llm?.stream) {
+        const { effort } = await effortFor(ctx, sel, 'off');
+        const reply = await collectReply(llm.stream(background({
+          provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: 400,
+          system: prompt('dot.ask-carry'),
+          messages: [createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-carry.input', { said: a.said || '（没有原话）', what: a.what, report: a.report }) }], source: { kind: 'dsh-dot', form: 'ask-carry' } })],
+        })));
+        say = String(reply.text ?? '').trim();
+      }
+    } catch (err) { logger.warn(`ask carry-back failed: ${err.message}`); audit('ask-carry-failed', { id: a.id, error: String(err.message).slice(0, 200) }); }
+    a.say = clipCarry(say || a.report);
+    saveAsks();
+    audit('ask-carried', { id: a.id, chars: a.say.length, from: a.report.length, by: say ? 'model' : 'cut' });
+  };
   /** The report on something he asked for wakes her conversation: a turn whose answer goes to him. */
   const tellAskResult = async (a) => {
     try {
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found) { audit('ask-result-dropped', { id: a.id, why: 'no conversation' }); return; }
       const status = table('dot.asks.status');
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-result', { stamp: stamp(Date.now(), Date.now()), what: a.what, status: status[Object.hasOwn(status, a.status) ? a.status : 'back'], report: a.report || '（没有留下汇报）' }) }], source: askResultSource() }));
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-result', { stamp: stamp(Date.now(), Date.now()), about: askAbout(a), status: status[Object.hasOwn(status, a.status) ? a.status : 'back'], say: a.say || '（没有带回话）' }) }], source: askResultSource() }));
       audit('ask-result-woke', { id: a.id, session: lastSession, status: a.status });
     } catch (err) { logger.warn(`ask result not delivered: ${err.message}`); audit('ask-result-dropped', { id: a.id, why: err.message }); }
   };
   const handOff = ({ what, why = '' }) => {
     const text = String(what ?? '').trim();
     if (!text) throw new Error('what: 要做什么？用一句话写清楚');
-    const a = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, at: Date.now(), what: text.slice(0, 400), why: String(why ?? '').trim().slice(0, 200), status: 'queued' };
+    const a = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, at: Date.now(), what: text.slice(0, 400), why: String(why ?? '').trim().slice(0, 200), said: turns.get(lastSession)?.said ?? '', status: 'queued' };
     asks.push(a); saveAsks();
     audit('ask-handed-off', { id: a.id, what: a.what.slice(0, 80) });
     askTask(a);
@@ -1198,7 +1247,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hand_off',
       description: prompt('dot.hand-off-tool'),
-      parameters: { type: 'object', properties: { what: { type: 'string', description: '要做的事，写给去做的那个你看：做什么、在哪个设备或 App 上、他给的要求和原话里的关键信息' }, why: { type: 'string', description: '可不填：他为什么要这个' } }, required: ['what'], additionalProperties: false },
+      parameters: { type: 'object', properties: { what: { type: 'string', description: '要做的事，一句话：照他说的写，他没要的别加' }, why: { type: 'string', description: '可不填：他为什么要这个' } }, required: ['what'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt('dot.hand-off-tool.done', { what: v?.what ?? '' }) }] },
       async execute(args) { const a = handOff(args ?? {}); return { id: a.id, what: a.what, status: a.status }; },
     }), 'dsh-dot: hand_off tool');
