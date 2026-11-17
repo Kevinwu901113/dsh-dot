@@ -1,30 +1,29 @@
-// dsh-interlude/core: 幕间 for DeepSeek Harness — the life she has between conversations.
+// dsh-interlude/core: who she is, and what she really does on her own.
 //
-// 幕前 (on stage) is any dsh conversation in <home>: dsh runs it, dsh-im carries it, dsh-dot pushes
-// scheduled results. 幕间 (between acts) is this plugin: one model call per round in which the
-// character writes the life that happened since the story cursor, decides whether it has a real
-// reason to reach out, and leaves a small continuity snapshot behind. Later acts open with that
-// snapshot in view.
+// This component used to write her a life between conversations (a narrator model, one call per round:
+// script, continuity, intents — the "interlude"). That is gone (0.24): what a narrator writes about her
+// phone, her accounts and the things he asked for cannot be told from what happened, and it went back
+// into her conversation as fact. What is left is what does not need a narrator:
+//   - the Canon (her persona) as the first section of her prompt, dsh's own openers trimmed, her voice
+//     as the last thing before she answers;
+//   - 成长: once a week she rewrites her portrait from her diary, her notes and the ledger (growth.js);
+//   - 自己的时间: a few times a day her errand self has time of her own, inside a token budget;
+//   - the ledger of what she did on her own, what it cost and what he said about it (doings.js),
+//     and tell_him.
+// Her life is what she really did. The component, service, settings section, folder and prompt ids keep
+// the name "interlude" so that nothing an installed copy has (canon.json, dsh-dot.json, prompt
+// overrides) stops working.
 //
-// Rounds (a user message is handled by dsh itself):
-//   follow-up  — a conversation has just gone quiet (idleMinutes)
-//   advance    — independent life progression at a regular interval, even with no conversation
-//   intent     — a stored intent (reminder, promised reply, contact check) came due
-// What carries over between rounds: the Canon (the identity file), the recent script (script.md), the
-// continuity snapshot (state.json) and intents (intents.json); slow change in who she is lives in
-// dsh-dot/memory's self bank.
-//
-// The idea of an interlude comes from HDS-Interlude (https://github.com/REcklessNOLOve117/HDS-Interlude).
-// This is an independent implementation: none of its code or prompt text is used here. The Canon file
-// keeps the `storyDefaults` field names so that personas shared on its preset hub can be imported.
-import { VM_TOOL_PREFIX, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
+// The Canon file keeps HDS-Interlude's `storyDefaults` field names
+// (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
+import { PHONE_TOOL_PREFIX, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
 import { background, installLlmGate, workEffort } from '../llm-gate.js';
-import { prompt, table } from '../prompts.js';
+import { prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
@@ -52,51 +51,11 @@ export const defaults = {
   // A line or two on how she talks, after everything else in her conversation's prompt (the Canon's
   // `voice` field, or interlude.voice from her name). false: none.
   voice: true,
-  // Browsing (the character's browserIntent runs after the round). Two ways to look:
-  //   web — dsh's `web` service: anonymous, read-only, cheap, invisible. Curiosity.
-  //   vm  — a read-only turn in the character's own session using dsh-computer's VM browser: her
-  //         logins, her tabs, visible in the live view. Nothing is approved in that turn: tools
-  //         outside `vmObservationTools` are refused outright, so it can only look.
-  // 'auto' = web first; vm when the host is in `vmSites`, or when the web result came back thin or
-  // blocked. 'web' / 'vm' force one way; 'disabled' turns browsing off. ('deferred' = 'auto'.)
-  browser: 'auto',
-  browseDailyCap: 6,          // observations per day, both ways together
-  vmSites: [],                // hosts (suffix match) observed only in the VM — the sites she is logged into
-  vmDailyCap: 2,              // VM observations per day
-  // Her phone (dsh-dot/phone): hosts whose app she opens instead of the website, as { host: package }.
-  // e.g. { 'xiaoheihe.cn': 'com.max.xiaoheihe', 'bilibili.com': 'tv.danmaku.bili' }. Same rules as
-  // vmSites: never read anonymously, read-only, no approvals; phone and VM share `vmDailyCap`.
-  phoneApps: KNOWN_APPS.sites,
-  phonePreferred: true,       // when both phone and VM could take a thin/blocked web result, the phone goes first
-  vmTimeoutMinutes: 5,        // give up waiting for an observation turn after this long
-  vmSession: '',              // session id to observe in; default: the character's most recent act
-  phoneObservationTools: ['mobile_list_available_devices', 'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_list_apps', 'mobile_launch_app', 'mobile_take_screenshot', 'mobile_list_elements_on_screen', 'mobile_click_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button'],
-  vmObservationTools: ['browser_navigate', 'browser_go_back', 'browser_scroll', 'browser_screenshot', 'browser_vision_screen_capture', 'browser_get_markdown', 'browser_get_text', 'browser_get_clickable_elements', 'browser_read_links', 'browser_tab_list', 'browser_new_tab', 'browser_switch_tab', 'browser_close_tab'],
-  webContextLimit: 4,         // observations later rounds see
   identityFile: '',           // optional extra Canon text file; not read unless set
-  idleMinutes: 10,            // follow-up round this long after a conversation goes quiet
-  advanceEveryMinutes: 90,    // independent life progression; 0 disables
-  activeHours: '08:00-23:00', // outside this, no advance rounds and no proactive contact
-  maxRoundsPerDay: 20,
-  // DeepSeek's reasoning shares this budget with the reply; 1400 cut half the rounds off before the JSON closed.
+  idleMinutes: 10,            // her own time does not start within this long of her last turn
+  activeHours: '08:00-23:00', // outside this, no time of her own and no tell_him
+  // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
-  digestChars: 6000,
-  scriptEntriesInPrompt: 2,   // recent script excerpts later acts see
-  // 玩: social actions on her own accounts, on her phone — like, comment, follow, collect, post (DM/pay
-  // never, by construction). Executed as an errand turn (approvals apply), gated like contact: active
-  // hours, willingness, daily cap. The behaviour rules are Moltbook's agent-social rulebook
-  // (heartbeat.md / rules.md), translated — not written here. Only in apps she installed herself
-  // (playApps is narrowed to what is on her phone), and only these actions; drop 'post' to keep her
-  // from posting anything new.
-  play: true,
-  playActions: ['like', 'comment', 'follow', 'collect', 'post'], // collect = save stickers she likes (qq_sticker_keep)
-  maxPlaysPerDay: 0,          // 0 = no cap: how often she plays is her own habit (her self notes); a round yields at most one play, so ≤ maxRoundsPerDay
-  postDailyCap: 1,            // new posts per day (a post is public and stays); 0 = none
-  // 试: something she has not done before, on her phone or her computer — an open errand inside hard
-  // limits (no money, no account changes, no strangers' DMs, approvals apply). What it cost and what
-  // he said about it come back to her in `yourDoings`.
-  tries: true,
-  tryDailyCap: 3,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
   price: null,
   // 自己的时间: a few times a day her errand self is woken with nothing to do but her own time — all her
@@ -111,8 +70,7 @@ export const defaults = {
   growthAt: 'Sun 21:00',
   portraitMaxChars: 900,
   portraitMaxChange: 0.35,
-  playApps: KNOWN_APPS.labels, // app label → package she may act in; {} = none
-  speak: false,               // allow proactive contact over dsh-im
+  speak: false,               // tell_him (in her own time) really reaches him; off: it is only noted on the ledger
   maxContactsPerDay: 2,
   willingnessThreshold: 0.6,
   imBot: '',
@@ -126,20 +84,6 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
 const dayOf = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 
-/**
- * How she behaves on a social app — Moltbook's rulebook for agents living on a social network
- * (https://www.moltbook.com/heartbeat.md and /rules.md), translated and stripped of its API; the
- * priorities and the restraint are theirs. Used in the interlude prompt when `play` is on and in the
- * turn that carries a play intent out.
- */
-export const playRules = () => prompt('interlude.play-rules');
-
-/** Source of the message that opens an observation turn; such turns are never acts. */
-export const OBSERVATION_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'observation' });
-/** Source of the message that carries a play intent out: a normal turn (she acts; approvals apply). */
-export const PLAY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'play' });
-/** Source of the message that carries a try out: something new she wanted to do (approvals apply). */
-export const TRY_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'try' });
 /** Source of the message that opens her own time. */
 export const FREE_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'free' });
 /** Phone apps where typing could post, comment or message someone: the social ones, QQ and WeChat. */
@@ -174,53 +118,6 @@ export function freePrompt({ budget, left, place, listing = [], tidy = [], conte
   });
 }
 
-/** The message that asks her to go and try the new thing she wanted to. */
-export function tryPrompt(x, now = Date.now()) {
-  const on = table('interlude.try.on');
-  return prompt('interlude.try', { stamp: stamp(now, now), on: on[x.on] ?? on.either ?? '', what: x.what, why: x.why ? `因为${x.why}。` : '', phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX });
-}
-
-/** The message that asks her to go and do the small thing she wanted to do on her phone. */
-export function playPrompt(p, pkg, now = Date.now()) {
-  const parts = table('interlude.play.parts', { text: p.text, why: p.why });
-  const common = { stamp: stamp(now, now), app: p.app, pkg: pkg ? `（${pkg}）` : '', why: p.why ? parts.why : '', phonePrefix: PHONE_TOOL_PREFIX, rules: playRules() };
-  if (p.action === 'collect') return prompt('interlude.play.collect', { ...common, target: p.target && p.target !== '表情包' ? `「${p.target}」` : '' });
-  if (p.action === 'post') return prompt('interlude.play.post', { ...common, target: p.target ? `「${p.target}」` : '', text: p.text });
-  const verbs = table('interlude.play.verbs');
-  return prompt('interlude.play', { ...common, target: p.target, verb: Object.hasOwn(verbs, p.action) ? verbs[p.action] : p.action, said: p.text ? parts.said : '' });
-}
-
-/** Is `url` on one of the character's own sites (host suffix match: "x.com" covers "www.x.com")? */
-export function onVmSite(url, sites = []) {
-  let host = '';
-  try { host = new URL(String(url)).hostname.toLowerCase(); } catch (error) { void error; return false; }
-  return sites.some((s) => { const site = String(s).toLowerCase().replace(/^\*?\./, ''); return host === site || host.endsWith(`.${site}`); });
-}
-
-/** Why a web result looks thin or blocked (the sign a site wants a real browser), or '' when it reads fine. */
-export function thinWhy(content) {
-  const text = String(content ?? '').trim();
-  if (text.length < 160) return 'too short';
-  if (/enable javascript|just a moment|access denied|forbidden|too many requests|verify you are human|captcha|cloudflare|请开启 ?javascript|请完成验证|安全验证|访问受限|登录后查看|请先登录|sign in to continue|log in to see/i.test(text)) return 'blocked or login wall';
-  return '';
-}
-
-/** The app package for `url`'s host in `apps` ({ host: package }, host suffix match), or ''. */
-export function appFor(url, apps = {}) {
-  let host = '';
-  try { host = new URL(String(url)).hostname.toLowerCase(); } catch (error) { void error; return ''; }
-  for (const [site, pkg] of Object.entries(apps)) { const h = String(site).toLowerCase().replace(/^\*?\./, ''); if (host === h || host.endsWith(`.${h}`)) return String(pkg); }
-  return '';
-}
-
-/** The message that asks the character to go and look herself — in her own browser (vm) or on her phone. */
-export function observationPrompt(b, device = 'vm', app = '', now = Date.now()) {
-  const w = table('interlude.observation.where', { app, what: b.purpose || b.query || b.url, url: b.url, query: b.query });
-  const where = device === 'phone' ? (app ? w['phone-app'] : b.mode === 'visit' ? w['phone-visit'] : w['phone-search']) : (b.mode === 'visit' ? w['vm-visit'] : w['vm-search']);
-  const tools = device === 'phone' ? prompt('interlude.observation.phone', { phonePrefix: PHONE_TOOL_PREFIX }) : prompt('interlude.observation.vm', { vmPrefix: VM_TOOL_PREFIX });
-  return prompt('interlude.observation', { stamp: stamp(now, now), purpose: b.purpose ? `「${b.purpose}」` : '', where, tools });
-}
-
 /** Text of a message content array (or string). */
 export function contentText(content) {
   if (typeof content === 'string') return content;
@@ -247,219 +144,8 @@ export function msLeftInHours(spec, date = new Date()) {
   return end - date;
 }
 
-// ── The round's system prompt is one file, src/prompts/interlude.round.txt (overridable whole from
-// <home>/prompts/): what she is writing, the clock, what counts as real (the observed ledger, her
-// own life, the <contact/> marker, playing), how to write it, and the field list. What varies per
-// round is a small file filled into a placeholder.
-
-/** What the <contact/> marker becomes once the host knows whether her message went out ('handed': her conversation decides). */
-export function fillContact(script, contact, said) {
-  const text = String(contact?.text ?? '').replace(/<sep\s*\/>/gi, ' / ').trim();
-  const sent = said && text ? (said === 'handed' ? `（想跟他说「${text}」，等聊天那边看合不合适再说）` : `「${text}」`) : '';
-  const kept = text ? '（打了几个字，最后没发出去）' : '（想了想，没发）';
-  const filled = String(script ?? '').replace(/<contact\s*\/>/gi, () => (sent || kept));
-  return { script: filled, marked: filled !== String(script ?? '') };
-}
-
-/** An event's recorded time (ISO, UTC) as her local "MM-DD HH:MM": the same clock as interval.nowLocal. */
-export const localStamp = (ts) => { const d = new Date(ts); const p = (n) => String(n).padStart(2, '0'); return Number.isFinite(d.getTime()) ? `${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}` : ''; };
-
-const PHASES = { 'follow-up': 'interlude.round.phase.follow-up', intent: 'interlude.round.phase.intent', advance: 'interlude.round.phase.advance' };
-
-// ── what she really did on her devices, and the narrator's account of it ──
-// The narrator may give her any life the Canon allows, but her phone and computer are real: what she did on
-// them is only what the host saw happen. A rule in the prompt alone did not hold (11-17: with no device activity
-// at all, a round wrote that she had logged into QQ on her new phone, and that went back into her conversation
-// as fact). So the round is given the record as data, with ids, and has to name the record behind everything it
-// says she did on a device; the host checks the ids, and a round that cites none it was given is not kept.
-/**
- * The record for one round: acts since the last round in which a phone / computer tool ran (pending.jsonl:
- * `tools`, `on`), and errands that came back done. `[]` says she touched neither device.
- */
-export function deviceFacts(items = [], returned = []) {
-  const facts = [];
-  const add = (f) => facts.push({ id: `d${facts.length + 1}`, ...f });
-  for (const i of items) if (Number(i?.tools) > 0 && i.on) add({ at: localStamp(i.ts), on: i.on, did: clip(i.quiet ? `${i.user || '看了一眼'}（没有要理的）` : [i.user, i.assistant].filter(Boolean).join(' → '), 300) });
-  for (const r of returned) if (r?.status === 'done') add({ at: r.doneAt ?? r.startedAt ?? null, did: clip([r.wanted, r.report].filter(Boolean).join(' → '), 300) });
-  return facts;
-}
-/**
- * Check a round's account against the record. `claims`: parsed.onDevices ([{ what, basis }], or null when the
- * reply did not carry the field); `ids`: every id it was given (deviceFacts and webContext).
- * Returns { ok, unbacked: [what…], missing } — missing: the field was not there, so nothing can be checked.
- */
-export function checkDeviceClaims(claims, ids = []) {
-  if (!Array.isArray(claims)) return { ok: false, unbacked: [], missing: true };
-  const known = new Set(ids);
-  const unbacked = claims.filter((c) => !known.has(c.basis)).map((c) => c.what);
-  return { ok: !unbacked.length, unbacked, missing: false };
-}
-
-/** The round's prompt: interlude.round.txt with this round's variants filled in. `entries` are recentScript items with owner labels. */
-export function buildPrompt({ phase, identity, state, script, digest, cursor, now, intent, speak, model = '', style = '', entries = [], lastHalfHour = [], browser = 'disabled', webContext = [], play = false, playApps = [], playActions = [], stickers = -1, memories = [], herLife = [], returned = [], doings = null, trying = false, upcoming = [], facts = [], rejected = null }) {
-  const playing = Boolean(play && playApps.length);
-  const system = prompt('interlude.round', {
-    canon: identity ? prompt('interlude.round.canon', { identity: identity.trim() }) : '',
-    length: prompt('interlude.round.length'),
-    phase: prompt(PHASES[phase] ?? PHASES.advance), // seed writes like an advance round
-    herLife: herLife.length ? prompt('interlude.round.her-life') : '',
-    returned: returned.length ? prompt('interlude.round.returned') : '',
-    contactRule: speak ? prompt('interlude.round.contact-rule') : prompt('interlude.round.contact-rule.off'),
-    browsing: browser === 'disabled' ? prompt('interlude.round.browsing.disabled') : prompt('interlude.round.browsing.deferred'),
-    agency: speak && phase !== 'follow-up' ? prompt('interlude.round.agency') : '',
-    play: playing ? prompt('interlude.round.play', { playRules: playRules(), playApps: playApps.join('、'), collect: playActions.includes('collect') && stickers >= 0 && stickers < 5 ? prompt('interlude.round.play.collect', { stickers }) : '' }) : '',
-    free: prompt('interlude.round.free'),
-    doings: doings ? prompt('interlude.round.doings') : '',
-    style: style?.trim() || prompt('interlude.round.style.none'),
-    // The field list travels as the arguments of one `interval` tool call, so the provider guarantees
-    // their shape; a reply that is prose only is still accepted (the host fills the rest afterwards).
-    seed: phase === 'seed' ? prompt('interlude.round.seed') : '',
-    playIntents: playing ? prompt('interlude.round.play-intents', { playApps: playApps.join('/'), playActions: playActions.join('|') }) : prompt('interlude.round.play-intents.off'),
-    tries: trying ? prompt('interlude.round.tries') : prompt('interlude.round.tries.off'),
-    contact: speak ? prompt('interlude.round.contact') : prompt('interlude.round.contact.off'),
-  });
-  const payload = {
-    interval: { from: cursor ? describeNow(new Date(cursor)) : null, nowLocal: describeNow(now) },
-    continuitySnapshot: state ?? null,
-    recentScript: [
-      // readScript() lines are "<header>：<body>"; the header is a time stamp, not prose.
-      ...(script ? String(script).split('\n').filter(Boolean).map((line) => { const i = line.indexOf('：'); return i > 0 ? { owner: 'narrator', at: line.slice(0, i).replace(/ · \w[\w-]*$/, ''), content: line.slice(i + 1) } : { owner: 'narrator', content: line }; }) : []),
-      ...entries,
-    ],
-    // What she really did in the last half hour, already woven into earlier rounds: where she is now follows from it.
-    lastHalfHour,
-    // Everything she did on her phone and computer in this interval, as the host saw it (deviceFacts()). Always
-    // present: an empty list is the fact that she touched neither.
-    deviceFacts: facts,
-    dueIntents: intent ? [{ kind: intent.kind, text: intent.text, at: describeNow(new Date(intent.at)) }] : [],
-    // What she has already set for later (intents.json, minus the one that is due now): she should not set it again.
-    upcomingPlans: upcoming,
-    webContext: webContext.map((w, i) => ({ id: `w${i + 1}`, ...w })),
-    // What she knows to be true (dsh-dot/memory): established past, like recentScript.
-    memories,
-    // Her own notes (dsh-dot/memory's self bank): what she does these days and what she has learned.
-    herLife,
-    // What she handed to her errands earlier, now back: what she wanted, what she was busy with, when it happened (or not).
-    returned,
-    // What she did on her own lately, what each cost, and what he said about it (doings.js).
-    ...(doings ? { yourDoings: doings } : {}),
-    currentEvent: { type: 'none' },
-    // The draft before this one was not kept (see round()): what it claimed without a record, to be written without.
-    ...(rejected ? { notKept: { why: prompt('interlude.round.not-kept'), claimedWithoutRecord: rejected } } : {}),
-    output: 'one `interval` tool call: script, continuity, onDevices, intents, browserIntents, playIntents, tries, reflect, contact',
-  };
-  void digest;
-  return { system, user: JSON.stringify(payload, null, 1), tools: [intervalTool({ play: playing, playApps, playActions, speak, trying })] };
-}
-
-/** The round's fields as a tool: the provider validates the arguments, so a call is always JSON. */
-export function intervalTool({ play = false, playApps = [], playActions = [], speak = false, trying = false } = {}) {
-  const str = { type: 'string' };
-  const strs = { type: 'array', items: str };
-  const willingness = { type: 'number', minimum: 0, maximum: 1 };
-  return {
-    name: 'interval',
-    description: 'Write this interval of her life: the passage (script) and the fields the host keeps. Call it exactly once per round.',
-    parameters: {
-      type: 'object',
-      properties: {
-        script: { ...str, description: 'The passage for this interval, Chinese prose, third person.' },
-        continuity: { type: 'object', properties: { current: str, recent: strs, salient: strs }, required: ['current', 'recent', 'salient'] },
-        onDevices: { type: 'array', description: 'Everything script and continuity say she did, saw or changed on her phone or computer in this interval, each with the id of the deviceFacts / webContext entry it rests on. [] when they say nothing of the kind.', items: { type: 'object', properties: { what: str, basis: { ...str, description: 'an id from deviceFacts (d1…) or webContext (w1…)' } }, required: ['what', 'basis'] } },
-        intents: { type: 'array', items: { type: 'object', properties: { at: { ...str, description: 'ISO-8601, strictly after now' }, kind: { type: 'string', enum: ['reminder', 'reply', 'contact'] }, text: str, willingness }, required: ['at', 'kind', 'text'] } },
-        browserIntents: { type: 'array', items: { type: 'object', properties: { mode: { type: 'string', enum: ['search', 'visit'] }, query: str, url: str, purpose: str }, required: ['mode'] } },
-        playIntents: play
-          ? { type: 'array', maxItems: 1, items: { type: 'object', properties: { app: { type: 'string', enum: playApps }, action: { type: 'string', enum: playActions }, target: str, text: str, why: str, willingness }, required: ['app', 'action', 'target'] } }
-          : { type: 'array', maxItems: 0, items: {} },
-        tries: trying
-          ? { type: 'array', maxItems: 1, items: { type: 'object', properties: { what: str, on: { type: 'string', enum: ['phone', 'computer', 'either'] }, why: str, willingness }, required: ['what'] } }
-          : { type: 'array', maxItems: 0, items: {} },
-        reflect: { type: 'array', maxItems: 2, items: { type: 'object', properties: { id: str, text: str }, required: ['text'] } },
-        contact: speak
-          ? { anyOf: [{ type: 'null' }, { type: 'object', properties: { content: str, willingness, reason: str }, required: ['content'] }] }
-          : { type: 'null' },
-      },
-      required: ['script', 'continuity', 'onDevices', 'intents', 'browserIntents', 'playIntents', 'contact'],
-    },
-  };
-}
-
-/** Pull the JSON object out of a model reply (fenced or bare) and normalise it. */
-export function parseReply(text, now = Date.now()) {
-  const fenced = /```(?:json)?\s*([\s\S]*?)```/.exec(text);
-  const candidates = [fenced?.[1], text, text.slice(text.indexOf('{'), text.lastIndexOf('}') + 1)];
-  for (const c of candidates) {
-    if (!c) continue;
-    try {
-      const o = JSON.parse(c);
-      if (!o || typeof o !== 'object') continue;
-      const str = (v) => String(v ?? '').trim();
-      const num = (v, d = 0) => (Number.isFinite(+v) ? Math.min(1, Math.max(0, +v)) : d);
-      const intents = [].concat(o.intents ?? []).map((i) => ({
-        at: Number.isFinite(Date.parse(i?.at)) ? new Date(i.at).toISOString() : null,
-        kind: ['reminder', 'reply', 'contact'].includes(i?.kind) ? i.kind : 'reminder',
-        text: str(i?.text), willingness: num(i?.willingness, 0.5),
-      })).filter((i) => i.at && i.text && Date.parse(i.at) > now).slice(0, 5);
-      const ctext = o.contact && typeof o.contact === 'object' ? str(o.contact.content ?? o.contact.text) : '';
-      const contact = ctext ? { text: ctext, willingness: num(o.contact.willingness, 0), reason: str(o.contact.reason) } : null;
-      const cont = o.continuity ?? o.state ?? {};
-      return {
-        script: str(o.script),
-        // The continuity snapshot: current / recent / salient (older replies' mood/now/next/threads are folded in).
-        state: {
-          current: str(cont.current ?? cont.now ?? cont.mood),
-          recent: [].concat(cont.recent ?? cont.next ?? []).map(str).filter(Boolean).slice(0, 5),
-          salient: [].concat(cont.salient ?? cont.threads ?? []).map(str).filter(Boolean).slice(0, 5),
-        },
-        intents, contact,
-        // null: the reply did not carry the field (an older shape, prose only) — nothing to check it by.
-        onDevices: Array.isArray(o.onDevices) ? o.onDevices.map((x) => ({ what: str(x?.what), basis: str(x?.basis) })).filter((x) => x.what || x.basis).slice(0, 20) : null,
-        browserIntents: [].concat(o.browserIntents ?? []).map((b) => ({
-          mode: b?.mode === 'visit' ? 'visit' : 'search', query: str(b?.query), url: str(b?.url), purpose: str(b?.purpose),
-        })).filter((b) => (b.mode === 'visit' ? /^https?:\/\//.test(b.url) : b.query)).slice(0, 1),
-        playIntents: [].concat(o.playIntents ?? []).map((p) => ({
-          app: str(p?.app), action: str(p?.action).toLowerCase(), target: str(p?.target), text: str(p?.text), why: str(p?.why),
-          willingness: Math.max(0, Math.min(1, Number(p?.willingness ?? 0) || 0)),
-        })).filter((p) => p.app && p.action && (p.target || p.action === 'post')).slice(0, 1),
-        tries: [].concat(o.tries ?? []).map((x) => ({
-          what: str(x?.what), on: ['phone', 'computer'].includes(x?.on) ? x.on : 'either', why: str(x?.why), willingness: num(x?.willingness, 0),
-        })).filter((x) => x.what).slice(0, 1),
-        reflect: [].concat(o.reflect ?? []).map((x) => ({ id: str(x?.id), text: str(x?.text) })).filter((x) => x.text).slice(0, 2),
-      };
-    } catch (error) { void error; }
-  }
-  // A reply cut off by the token limit is not JSON any more; keep at least the script.
-  const m = /"script"\s*:\s*"((?:[^"\\]|\\.)*)"/.exec(text);
-  if (m) {
-    try { return { script: JSON.parse(`"${m[1]}"`), state: null, intents: [], contact: null, truncated: true }; } catch (error) { void error; }
-  }
-  return null;
-}
-
-/** Render the context later acts see: the continuity fields as data, no added prose. */
-export function renderContext({ state, entries, intents, cursor, restarted, now = Date.now() }) {
-  if (!state && !entries.length) return '';
-  const upcoming = intents.filter((i) => Date.parse(i.at) <= now + 24 * 3600000).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text }));
-  const payload = {
-    continuitySnapshot: state ? { current: state.current ?? state.now ?? state.mood ?? '', recent: state.recent ?? (state.next ? [state.next] : []), salient: state.salient ?? state.threads ?? [] } : null,
-    continuitySnapshotAgeMinutes: cursor ? Math.round((now - cursor) / 60000) : null,
-    hostRestartedSinceSnapshot: Boolean(restarted),
-    recentScript: entries.map((content) => ({ owner: 'narrator', content })),
-    upcomingPlans: upcoming,
-  };
-  return clip(`<interlude>\n${JSON.stringify(payload, null, 1)}\n</interlude>`, 2400);
-}
-
 function readJson(file, fallback) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; return fallback; }
-}
-
-/** Last n entries of the script, oldest first, flattened to one line each. */
-export function readScript(file, n) {
-  let text = '';
-  try { text = readFileSync(file, 'utf8'); } catch (error) { void error; return []; }
-  return text.split(/^## /m).filter((s) => s.trim()).slice(-n)
-    .map((s) => { const [head, ...body] = s.split('\n'); return `${head.trim()}：${body.join(' ').replace(/\s+/g, ' ').trim()}`; });
 }
 
 /**
@@ -486,22 +172,8 @@ export async function collectReply(stream) {
   return { text, args, usage };
 }
 
-/** Collect the model reply text from an llm stream. */
-export async function collectText(stream) { return (await collectReply(stream)).text; }
-
 /** Token usage of one call, as the ledger records it (dsh-llm's TokenUsage, or null when the provider gave none). */
 export const usageOf = (u) => (u ? { in: Number(u.inputTokens ?? 0), out: Number(u.outputTokens ?? 0), cached: Number(u.cacheReadTokens ?? 0) } : null);
-
-/** Which device a tool call uses: 'phone', 'vm' (her computer), or '' for neither. */
-export const deviceOf = (name = '') => (name.startsWith(PHONE_TOOL_PREFIX) ? 'phone' : name.startsWith(VM_TOOL_PREFIX) ? 'vm' : '');
-
-/** Names in the Canon's supporting cast, parsed conservatively: 「名叫X」「叫做X」, a segment opening with 「X：」, or a bare list of names. */
-export function castNames(canon) {
-  const cast = String(canon?.storyDefaults?.supportingCast ?? '').trim();
-  const name = '[\\u4e00-\\u9fff]{2,4}';
-  if (new RegExp(`^${name}([、，,\\s]+${name})*$`).test(cast)) return cast.split(/[、，,\s]+/);
-  return [...new Set([...cast.matchAll(new RegExp(`(?:名叫|叫做|名字是)(${name})|(?:^|[\\n；;。])\\s*(${name})\\s*[：:]`, 'g'))].map((m) => m[1] || m[2]))];
-}
 
 /** storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
 export function renderCanon(canon, { withStyle = false } = {}) {
@@ -544,9 +216,8 @@ export function apply(ctx, config = {}) {
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const files = {
-    script: join(dir, 'script.md'), state: join(dir, 'state.json'),
-    intents: join(dir, 'intents.json'), pending: join(dir, 'pending.jsonl'), calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
-    canon: join(dir, 'canon.json'), web: join(dir, 'web-context.jsonl'), doings: join(dir, 'doings.json'),
+    calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
+    canon: join(dir, 'canon.json'), doings: join(dir, 'doings.json'),
   };
   mkdirSync(dir, { recursive: true });
   // The Canon: an imported preset wins; otherwise the configured storyDefaults; AGENTS.md is not involved.
@@ -563,7 +234,6 @@ export function apply(ctx, config = {}) {
     if (own) return own;
     return name || canon?.storyDefaults?.characterProfile ? prompt('interlude.voice', { name: name || '你自己' }) : '';
   };
-  const startedAt = Date.now();
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
   const doings = createDoings(files.doings);
   // Outside her own folder: only the weekly review changes her portrait (she could rewrite a file in <home>/her).
@@ -571,39 +241,26 @@ export function apply(ctx, config = {}) {
   const portraitSection = () => { const p = growth?.portrait(); return p ? prompt('interlude.growth.section', { portrait: p }) : ''; };
   const herPlace = join(home, 'her');
   mkdirSync(herPlace, { recursive: true });
-  // Today's rounds (writing her life) as a cost record: dayTokensIn counts the cached reads too.
+  // Today's model calls of this component (the weekly review) as a cost record: dayTokensIn counts the cached reads too.
   const roundCost = () => ({ in: Math.max(0, (meta.dayTokensIn ?? 0) - (meta.dayTokensCached ?? 0)), cached: meta.dayTokensCached ?? 0, out: meta.dayTokensOut ?? 0 });
 
-  let state = readJson(files.state, null);
-  let intents = readJson(files.intents, []);
-  const meta = { cursor: 0, count: 0, day: dayOf(), dayRounds: 0, dayContacts: 0, dayBrowses: 0, dayVm: 0, dayPlays: 0, dayPosts: 0, dayTries: 0, lastAdvance: 0, ...readJson(files.meta, {}) };
-  if (!meta.lastAdvance) meta.lastAdvance = startedAt; // the first life round comes one interval after boot
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayRounds = 0; meta.dayContacts = 0; meta.dayBrowses = 0; meta.dayVm = 0; meta.dayPlays = 0; meta.dayPosts = 0; meta.dayTries = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
+  const meta = { day: dayOf(), dayContacts: 0, ...readJson(files.meta, {}) };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayContacts = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
-  const saveIntents = () => { try { writeFileSync(files.intents, JSON.stringify(intents, null, 2)); } catch (error) { void error; } };
 
-  // 1. 幕前: watch the acts in <home>.
-  const turns = new Map();
+  // 1. Her sessions: which ones are hers, whether a turn is running, when she was last busy.
   const homeSessions = new Set(); // sessions that are acts: cwd inside home, or opened from an IM bot
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
   let lastActivity = 0;
   let running = 0;
-  let lastActSession = meta.lastSession || ''; // the character's most recent act: where observations happen (remembered across restarts)
-  const observing = new Map(); // session id → resolve(assistant text) while an observation turn runs
-  const looked = new Map(); // session id → the device ('phone' | 'vm') an observation turn really used
-  // With dsh-dot, plays and device looks are tasks its errands take when free; what comes back
-  // (and how long it waited, behind what) is plot for the next round.
   const dshDot = () => ctx.get('dshDot');
   const at = (ms) => (ms ? describeNow(new Date(ms)) : null);
-  const remember = (kind, wanted, r, doing = '') => {
+  /** A task came back from her errands: settled in the ledger. */
+  const remember = (kind, r, doing = '') => {
     if (doing) doings.settle(doing, { status: r.status, result: r.report, usage: r.cost, doneAt: r.doneAt });
-    const tokens = r.cost ? tokensOf(r.cost) : undefined;
-    meta.returned = [...(meta.returned ?? []), { kind, wanted, status: r.status, queuedAt: at(r.queuedAt), busyWith: r.busyWith || '', startedAt: at(r.startedAt), doneAt: at(r.doneAt), report: clip(String(r.report ?? ''), 400), ...(doing ? { id: doing } : {}), ...(tokens !== undefined ? { tokens } : {}) }].slice(-5);
-    saveMeta();
     audit('task-returned', { kind, status: r.status });
   };
-  const errandSession = async () => { try { return (await ctx.get('dshDot')?.errand?.()) || ''; } catch (error) { void error; return ''; } };
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
@@ -612,458 +269,22 @@ export function apply(ctx, config = {}) {
     if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) homeSessions.add(id);
     if (wantIm && event.type === 'user/message' && isImMessage(event.data)) homeSessions.add(id);
     if (!homeSessions.has(id)) return;
-    const t = turns.get(id);
-    switch (event.type) {
-      case 'turn/start': turns.set(id, { origin: 'user', user: '', assistant: '', approvals: 0, tools: 0 }); running++; return;
-      case 'user/message':
-        if (!t || event.surfaceOp !== 'append') return;
-        if (event.data?.source?.kind === 'schedule') t.origin = 'schedule';
-        if (event.data?.source?.kind === OBSERVATION_SOURCE.kind && event.data?.source?.form === 'observation') t.origin = 'observation';
-        if (event.data?.source?.kind === PLAY_SOURCE.kind && event.data?.source?.form === 'play') { t.origin = 'play'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
-        if (event.data?.source?.kind === TRY_SOURCE.kind && event.data?.source?.form === 'try') { t.origin = 'try'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
-        if (event.data?.source?.kind === FREE_SOURCE.kind && event.data?.source?.form === 'free') { t.origin = 'free'; t.user ||= '（她自己的时间）'; }
-        if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-notification') { t.origin = 'notification'; t.user ||= contentText(event.data?.content).split('\n')[0]; }
-        if (event.data?.source?.kind === 'dsh-dot' && event.data?.source?.form === 'phone-check') { t.origin = 'phone-check'; t.user ||= '（拿起手机看了一眼）'; }
-        if (['user', 'schedule'].includes(event.data?.source?.kind)) t.user ||= contentText(event.data?.content);
-        return;
-      case 'assistant/message': { if (!t || event.data?.interrupted) return; const text = contentText(event.data?.message?.content); if (text.trim()) t.assistant = text; return; }
-      case 'tool/call': if (t) { t.tools++; t.on = deviceOf(event.data?.name) || t.on; } return;
-      case 'approval/asked': if (t) t.approvals++; return;
-      case 'turn/end': {
-        running = Math.max(0, running - 1);
-        if (!t) return;
-        turns.delete(id);
-        // An observation turn is the character looking, not an act: hand the text back, keep it out of the script.
-        if (t.origin === 'observation') { observing.get(id)?.(t.assistant); return; }
-        if (t.origin === 'try' && !dshDot()?.task) trying.delete(id);
-        lastActivity = Date.now();
-        // Her errand session (dsh-dot) is not where she lives: it never becomes the act session.
-        if (lastActSession !== id && !ctx.get('dshDot')?.isErrand?.(id)) { lastActSession = id; meta.lastSession = id; saveMeta(); }
-        const quiet = ['schedule', 'phone-check', 'notification', 'play', 'try'].includes(t.origin) && /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(t.assistant);
-        const line = JSON.stringify({ ts: new Date().toISOString(), session: id, origin: t.origin, user: clip(t.user, 400), assistant: clip(t.assistant, 600), tools: t.tools, approvals: t.approvals, quiet, on: t.on || undefined });
-        try { appendFileSync(files.pending, `${line}\n`); } catch (error) { logger.warn(`pending write failed: ${error.message}`); }
-        return;
-      }
-      default:
-    }
+    // What the scheduler needs to know: a turn is running, and when she was last busy.
+    if (event.type === 'turn/start') { running++; return; }
+    if (event.type === 'turn/end') { running = Math.max(0, running - 1); lastActivity = Date.now(); }
   });
 
-  // Web observations (webContext), bounded; the newest cfg.webContextLimit are shown.
-  const readWebContext = () => {
-    let lines = [];
-    try { lines = readFileSync(files.web, 'utf8').split('\n').filter(Boolean); } catch (error) { void error; }
-    return lines.slice(-cfg.webContextLimit).map((l) => { try { return JSON.parse(l); } catch (error) { void error; return null; } }).filter(Boolean);
-  };
-  const browserMode = () => (cfg.browser === 'deferred' ? 'auto' : cfg.browser);
-  const webOpen = () => ['auto', 'web'].includes(browserMode()) && Boolean(ctx.get('web'));
-  // "Go and look yourself" needs a session to wake and a device: the VM (dsh-computer) or the phone
-  // (dsh-dot/phone, when it is ready). Both count against vmDailyCap.
-  const selfOpen = () => { rollDay(); return ['auto', 'vm'].includes(browserMode()) && Boolean(ctx.get('sessionController')) && meta.dayVm < cfg.vmDailyCap; };
-  const phoneReady = () => Boolean(ctx.get('dshPhone')?.isReady);
-  const vmOpen = () => selfOpen() && (Boolean(ctx.get('dshComputer')) || phoneReady());
-  const deviceFor = (b) => {
-    const app = b.mode === 'visit' ? appFor(b.url, cfg.phoneApps) : '';
-    if (app && phoneReady()) return { device: 'phone', app };
-    if (b.mode === 'visit' && onVmSite(b.url, cfg.vmSites) && ctx.get('dshComputer')) return { device: 'vm', app: '' };
-    if (cfg.phonePreferred && phoneReady()) return { device: 'phone', app: '' };
-    if (ctx.get('dshComputer')) return { device: 'vm', app: '' };
-    return phoneReady() ? { device: 'phone', app: '' } : null;
-  };
-  const browsingOpen = () => { rollDay(); return browserMode() !== 'disabled' && (webOpen() || vmOpen()) && meta.dayBrowses < cfg.browseDailyCap; };
-  const record = (phase, observed) => {
-    appendFileSync(files.web, `${JSON.stringify({ at: describeNow(new Date()), ...observed })}\n`);
-    meta.dayBrowses++; if (observed.via !== 'web') meta.dayVm++;
-    saveMeta();
-    audit('browse', { phase, via: observed.via, mode: observed.mode, query: observed.query || observed.url, thin: Boolean(observed.thin) });
-  };
-  /** Which way this intent is observed: 'vm' for the sites she is logged into, else web first (auto). */
-  const routeOf = (b) => {
-    const mode = browserMode();
-    if (mode === 'web' || mode === 'vm') return mode;
-    return b.mode === 'visit' && (onVmSite(b.url, cfg.vmSites) || appFor(b.url, cfg.phoneApps)) ? 'vm' : 'web';
-  };
-  async function browse(b, phase) {
-    if (!browsingOpen()) { audit('browse-held', { phase, why: browserMode() === 'disabled' ? 'disabled' : meta.dayBrowses >= cfg.browseDailyCap ? 'daily cap' : 'no web service and no VM' }); return false; }
-    let route = routeOf(b);
-    if (route === 'web' && !webOpen()) route = vmOpen() ? 'vm' : route;
-    if (route === 'vm' && !vmOpen()) {
-      // Her sites are never read anonymously: if the VM is not available today, this intent waits.
-      audit('browse-held', { phase, why: ctx.get('dshComputer') || phoneReady() ? 'vm daily cap' : 'no VM and no phone', route: 'vm', query: b.query || b.url });
-      return false;
-    }
-    let lookId = '';
-    try {
-      if (route === 'web') {
-        const observed = await observeOnWeb(b);
-        // A thin or blocked page is the usual sign that the site wants a real browser (or a login):
-        // in auto mode the character goes to look herself, once, if the VM has room today.
-        if (observed.thin && browserMode() === 'auto' && vmOpen()) {
-          audit('browse-upgrade', { phase, why: observed.thin, query: b.query || b.url });
-          route = 'vm';
-        } else { record(phase, observed); settleLook(doings.add({ kind: 'look', device: 'web', what: b.purpose || b.query || b.url }), observed); return true; }
-      }
-      const target = deviceFor(b);
-      if (!target) { audit('browse-held', { phase, why: 'no device', route: 'vm' }); return false; }
-      if (dshDot()?.task) return lookLater(b, target, phase);
-      lookId = doings.add({ kind: 'look', device: target.device, what: b.purpose || b.query || b.url });
-      const observed = await observeInVm(b, target);
-      if (!observed) { doings.settle(lookId, { status: 'dropped' }); return false; }
-      record(phase, observed);
-      settleLook(lookId, observed);
-      return true;
-    } catch (error) {
-      if (lookId) doings.settle(lookId, { status: 'dropped', result: error.message }); logger.warn(`browse failed: ${error.message}`); audit('browse-failed', { phase, route, error: clip(error.message, 200) }); return false; }
-  }
-  function settleLook(id, observed) {
-    const got = observed.sources?.length ? observed.sources.map((x) => x.title).filter(Boolean).slice(0, 3).join('；') : observed.content;
-    doings.settle(id, { status: observed.thin ? 'thin' : 'done', result: got });
-  }
-  async function observeOnWeb(b) {
-    const web = ctx.get('web');
-    if (b.mode === 'visit') {
-      const r = await web.fetch({ url: b.url });
-      const content = String(r?.content ?? r?.text ?? '');
-      return { via: 'web', mode: 'visit', url: b.url, purpose: b.purpose, content: clip(content, 1200), thin: thinWhy(content) };
-    }
-    const r = await web.search({ query: b.query, maxResults: 5 });
-    const sources = (r?.sources ?? []).slice(0, 5).map((x) => ({ title: x.title, url: x.url, snippet: clip(String(x.snippet ?? ''), 200) }));
-    const content = String(r?.content ?? '');
-    return { via: 'web', mode: 'search', query: b.query, purpose: b.purpose, content: clip(content, 600), sources, thin: sources.length || content.trim() ? thinWhy(content + sources.map((s) => s.snippet).join(' ')) : 'no results' };
-  }
-  /**
-   * The character looks herself: one read-only turn in her own session, through the VM browser
-   * (dsh-computer). No approvals happen in that turn — `tools/pre-execute` below refuses anything
-   * outside cfg.vmObservationTools — so the worst she can do is look at a page she is logged into.
-   * The turn's final reply is the observation; the turn is not an act and leaves no script entry.
-   */
-  async function observeInVm(b, { device = 'vm', app = '' } = {}) {
-    // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
-    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
-    if (!sessionId) { audit('browse-held', { why: 'no session to observe in yet', route: 'vm' }); return null; }
-    if (observing.has(sessionId)) { audit('browse-held', { why: 'observation already running', route: 'vm' }); return null; }
-    const controller = ctx.get('sessionController');
-    const found = await controller.resolveAgent(sessionId);
-    looked.delete(sessionId);
-    if (!found || 'error' in found) throw new Error(`session ${sessionId}: ${found?.error?.message ?? 'not found'}`);
-    const { agent } = found;
-    try { if (ctx.get('goals')?.get(agent)?.phase === 'active') { audit('browse-held', { why: 'goal active', route: 'vm' }); return null; } } catch (error) { void error; }
-    const text = await new Promise((resolve) => {
-      const timer = setTimeout(() => { observing.delete(sessionId); resolve(null); }, cfg.vmTimeoutMinutes * 60000);
-      timer.unref?.(); // a pending observation must not hold dsh open for minutes at shutdown
-      observing.set(sessionId, (t) => { clearTimeout(timer); observing.delete(sessionId); resolve(t ?? ''); });
-      agent.followup(createUserMessage({ content: [{ type: 'text', text: observationPrompt(b, device, app) }], source: OBSERVATION_SOURCE }));
-    });
-    try { await ctx.get('sessions')?.flush?.(agent.session); } catch (error) { void error; }
-    if (text === null) { audit('browse-failed', { route: 'vm', error: 'timed out' }); return null; }
-    // The device she really looked with (a refused phone call that ended on the computer is 'vm').
-    const via = looked.get(sessionId) || device;
-    return { via, app: (via === device && app) || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(text.trim(), 1200), session: sessionId };
-  }
-  /** The same look as a dsh-dot task: the round goes on; the observation lands in webContext and `returned` when it is done. */
-  function lookLater(b, { device, app }, phase) {
-    let sid = '', doing = '';
-    const release = () => { if (sid) observing.delete(sid); };
-    const queued = dshDot().task({
-      kind: 'look', key: `look|${device}|${b.url || b.query}`, text: observationPrompt(b, device, app), source: OBSERVATION_SOURCE, readOnly: true,
-      onStart: (id) => { sid = id; looked.delete(id); observing.set(id, release); },
-      onDone: (r) => {
-        const via = looked.get(sid) || device;
-        release();
-        if (r.status === 'done' && r.report) record(phase, { via, app: (via === device && app) || undefined, mode: b.mode, url: b.url, query: b.query, purpose: b.purpose, content: clip(r.report, 1200), session: sid });
-        remember('look', b.purpose || b.query || b.url, r, doing);
-      },
-    });
-    if (queued !== 'refreshed') doing = doings.add({ kind: 'look', device, what: b.purpose || b.query || b.url });
-    audit('browse-queued', { phase, device, query: b.query || b.url });
-    return true;
-  }
-  // Observation turns: read-only, and nothing to approve. Registered ahead of dsh-computer's gate
-  // so no `ask` is ever produced; everything the allowlist does not name is refused with a reason
-  // the model can read, and it moves on.
-  ctx.on('tools/pre-execute', async (exec, next) => {
-    const sessionId = exec.agent?.session?.id;
-    if (!sessionId || !observing.has(sessionId)) return next();
-    const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
-    const phoneTool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
-    if ((vmTool && cfg.vmObservationTools.includes(vmTool)) || (phoneTool && cfg.phoneObservationTools.includes(phoneTool)) || exec.name === PHONE_ZOOM_TOOL) {
-      if (deviceOf(exec.name)) looked.set(sessionId, deviceOf(exec.name));
-      // Answering here skips the phone's own hook: take its lease (one session drives the phone at a time).
-      const busy = phoneTool || exec.name === PHONE_ZOOM_TOOL ? await ctx.get('dshPhone')?.lease?.(sessionId, phoneTool || exec.name) : null;
-      return busy ? { kind: 'deny', reason: busy } : { kind: 'allow' };
-    }
-    audit('observation-refused', { session: sessionId, tool: exec.name });
-    return { kind: 'deny', reason: `dsh-interlude: this is an observation — looking only, nothing to approve. "${exec.name}" is not available here; look with ${cfg.vmObservationTools.slice(0, 2).join(', ')}, ${cfg.phoneObservationTools.slice(5, 7).join(', ')}… or write down what you saw.` };
-  }, { prepend: true });
-
-  // 2. 幕间: one round.
-  function digest() {
-    let lines = [];
-    try { lines = readFileSync(files.pending, 'utf8').split('\n').filter(Boolean); } catch (error) { void error; }
-    const items = lines.map((l) => { try { return JSON.parse(l); } catch (error) { void error; return null; } }).filter(Boolean);
-    const text = items.map((i) => `[${localStamp(i.ts)}${i.origin === 'schedule' ? ' 定时任务' : ' 用户'}]${i.approvals ? `（有 ${i.approvals} 次审批）` : ''}\n用户/任务：${i.user || '（无）'}\n我：${i.assistant || '（无回复）'}`).join('\n\n');
-    return { items, text: text.length > cfg.digestChars ? `…${text.slice(-cfg.digestChars)}` : text };
-  }
-  let busy = false, fails = 0, pausedUntil = 0;
-  async function round(phase, intent = null) {
-    if (busy) return { skipped: 'busy' };
-    // After a failed round (model down, balance empty) the next one waits 5, 10, 20 … up to 60 minutes.
-    if (Date.now() < pausedUntil) return { skipped: 'paused after failures' };
-    rollDay();
-    if (meta.dayRounds >= cfg.maxRoundsPerDay) return { skipped: 'daily cap' };
-    const { items, text } = digest();
-    if (phase === 'follow-up' && !items.some((i) => !i.quiet)) return { skipped: 'nothing happened' };
-    if (phase === 'seed' && readScript(files.script, 1).length) return { skipped: 'script already has entries (seed only opens an empty script)' };
-    busy = true;
-    const now = Date.now();
-    try {
-      const identity = [canonText(), portraitSection()].filter(Boolean).join('\n\n');
-      const sel = ctx.agentDefaultModel.currentSelection();
-      // Acts become recentScript entries with owner labels.
-      const entries = items.flatMap((i) => [
-        i.user ? { owner: i.origin === 'schedule' ? 'scheduled-task' : i.origin === 'notification' ? 'phone' : ['phone-check', 'play', 'try', 'free'].includes(i.origin) ? 'character' : 'user', at: localStamp(i.ts), content: i.user } : null,
-        i.assistant ? { owner: 'character', ...(i.on ? { on: i.on } : {}), content: i.assistant } : null,
-      ]).filter(Boolean);
-      const back = meta.returned ?? [];
-      const lastHalfHour = (meta.recentActs ?? []).filter((a) => Date.parse(a.ts) >= now - 30 * 60000);
-      const mem = ctx.get('dotMemory');
-      // She plays only in apps she has installed herself: playApps narrowed to what is on her phone.
-      const onPhone = await (ctx.get('dshPhone')?.apps?.() ?? []);
-      const playApps = Object.keys(cfg.playApps).filter((label) => onPhone.includes(cfg.playApps[label]));
-      const view = doings.view({ rounds: roundCost(), apps: playApps, price: cfg.price });
-      // What she really did on her devices since the last round, and every id the narrator may cite (deviceFacts above).
-      const facts = deviceFacts(items, back);
-      const web = readWebContext();
-      const ids = [...facts.map((f) => f.id), ...web.map((_, i) => `w${i + 1}`)];
-      const effort = await workEffort(ctx, sel); // her narrator thinks at llm.workEffort, not at whatever the chat was last set to
-      const spent = [];
-      const logCall = (line) => { try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), ...line })}\n`); } catch (error) { void error; } };
-      /** One draft of the round: the call, and the second call that fills the fields when the first wrote prose only. */
-      const draft = async (rejected) => {
-        const { system, user, tools } = buildPrompt({
-          phase, identity: clip(identity, 6000), state, script: readScript(files.script, cfg.scriptEntriesInPrompt).join('\n'),
-          digest: text, cursor: meta.cursor, now, intent, speak: cfg.speak, model: sel.model, style: canon?.storyDefaults?.style ?? '', entries,
-          lastHalfHour: lastHalfHour.map((a) => ({ at: localStamp(a.ts), on: a.on, did: a.did })),
-          browser: browsingOpen() ? 'deferred' : 'disabled', webContext: web,
-          play: cfg.play && Boolean(ctx.get('dshPhone')?.isReady), playApps, playActions: cfg.playActions, stickers: ctx.get('dshQq')?.connected ? ctx.get('dshQq').stickerCount?.() ?? -1 : -1,
-          memories: mem?.forInterlude?.() ?? [], herLife: mem?.herLife?.() ?? [], returned: back,
-          doings: view, trying: tryOpen(), facts, rejected,
-          upcoming: intents.filter((i) => i.id !== intent?.id).map((i) => ({ at: describeNow(new Date(i.at)), kind: i.kind, text: i.text })),
-        });
-        const options = background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, tools, maxTokens: cfg.maxTokens,
-          messages: [createUserMessage({ content: [{ type: 'text', text: user }], source: { kind: 'dsh-interlude' } })] });
-        const r1 = await collectReply(ctx.llm.stream(options));
-        spent.push(usageOf(r1.usage));
-        // The `interval` tool call carries the fields; a bare JSON reply is accepted too.
-        const reply = r1.args || r1.text;
-        let parsed = parseReply(reply, now);
-        const script = parsed?.script || r1.text.trim();
-        if (!script) throw new Error('empty script');
-        // Prose without the fields (the model wrote the passage as text, or was cut off): a second
-        // call over the script just written fills every other field — the post-commit continuity
-        // refresh, widened so nothing the round should have produced is lost.
-        if (!parsed?.state) {
-          const r2 = await collectReply(ctx.llm.stream(background({
-            ...options, maxTokens: 2000,
-            system: prompt('interlude.round.refresh'),
-            messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify({ interval: { nowLocal: describeNow(now) }, previousContinuity: state ?? null, deviceFacts: facts, webContext: web.map((w, i) => ({ id: `w${i + 1}`, query: w.query, url: w.url })), script }, null, 1) }], source: { kind: 'dsh-interlude' } })],
-          }))).catch((error) => { logger.warn(`continuity refresh failed: ${error.message}`); return { text: '', args: '', usage: null }; });
-          spent.push(usageOf(r2.usage));
-          const refresh = r2.args || r2.text;
-          const p2 = parseReply(refresh.includes('"script"') ? refresh : `{"script":"x",${refresh.replace(/^[^{]*\{/, '')}`, now);
-          logCall({ phase: `${phase}:refresh`, usage: usageOf(r2.usage), reply: clip(refresh, 1500) });
-          if (p2?.state) parsed = { ...p2, script, intents: p2.intents?.length ? p2.intents : parsed?.intents ?? [], contact: p2.contact ?? parsed?.contact ?? null };
-          audit('continuity-refresh', { phase, recovered: Boolean(p2?.state) });
-        }
-        return { parsed, script, reply, usage: usageOf(r1.usage), viaTool: Boolean(r1.args) };
-      };
-      const addTokens = () => { for (const u of spent.splice(0)) if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; } };
-      let d = await draft(null);
-      // Her devices are real: everything the draft says she did on them must name the record it rests on. The first
-      // draft that does not is written once more, told what had no record; a second one is not kept at all — no
-      // script, no continuity, nothing handed on — and the acts wait for the next round. (A seed opens an empty
-      // script with her past, before there was a record: not checked.)
-      let check = phase === 'seed' ? { ok: true, unbacked: [], missing: false } : checkDeviceClaims(d.parsed?.onDevices ?? null, ids);
-      logCall({ phase, acts: items.length, model: `${sel.provider}/${sel.model}`, effort: effort ?? 'default', usage: d.usage, viaTool: d.viaTool, deviceFacts: facts.length, ...(check.ok ? {} : { notKept: check.missing ? 'no onDevices' : check.unbacked }), reply: clip(d.reply, 2000) });
-      if (!check.ok) {
-        audit('round-unbacked', { phase, attempt: 1, deviceFacts: facts.length, ...(check.missing ? { missing: true } : { unbacked: check.unbacked.map((w) => clip(w, 80)).slice(0, 5) }) });
-        d = await draft(check.missing ? ['（上一稿没有填 onDevices）'] : check.unbacked);
-        check = checkDeviceClaims(d.parsed?.onDevices ?? null, ids);
-        logCall({ phase: `${phase}:again`, effort: effort ?? 'default', usage: d.usage, viaTool: d.viaTool, deviceFacts: facts.length, ...(check.ok ? {} : { notKept: check.missing ? 'no onDevices' : check.unbacked }), reply: clip(d.reply, 2000) });
-        if (!check.ok) {
-          meta.dayRounds++; addTokens(); saveMeta();
-          pausedUntil = Date.now() + Math.min(60, 5 * 2 ** fails++) * 60_000; // like a failed round: not again at once
-          logger.warn(`interlude ${phase}: not kept — it says she did things on her devices that there is no record of (${check.missing ? 'no onDevices' : check.unbacked.join(' / ').slice(0, 120)})`);
-          audit('round-rejected', { phase, deviceFacts: facts.length, ...(check.missing ? { missing: true } : { unbacked: check.unbacked.map((w) => clip(w, 80)).slice(0, 5) }) });
-          return { rejected: check.missing ? ['no onDevices'] : check.unbacked };
-        }
-      }
-      const { parsed, script, reply } = d;
-      if (phase === 'seed') {
-        // "[MM-DD HH:MM] ..." segments become dated entries; anything untagged keeps the current time.
-        const segs = script.split(/\n(?=\[\d{1,2}-\d{1,2} \d{1,2}:\d{2}\])/).map((t) => t.trim()).filter(Boolean);
-        const year = new Date(now).getFullYear();
-        for (const seg of segs) {
-          const m = /^\[(\d{1,2})-(\d{1,2}) (\d{1,2}):(\d{2})\]\s*/.exec(seg);
-          const at = m ? new Date(year, +m[1] - 1, +m[2], +m[3], +m[4]) : new Date(now);
-          appendFileSync(files.script, `## ${describeNow(at)} · seed\n${m ? seg.slice(m[0].length) : seg}\n\n`);
-        }
-      }
-      // Her message to the user goes out (or not) before the passage is written down, so the
-      // <contact/> marker becomes what really happened.
-      let said = false;
-      if (parsed?.contact) said = await contact(parsed.contact, phase);
-      if (phase !== 'seed') {
-        const filled = fillContact(script, parsed?.contact, said);
-        const sentLine = said === true && !filled.marked ? `（主动联系：${parsed.contact.text.replace(/<sep\s*\/>/gi, ' / ')}）\n\n` : '';
-        appendFileSync(files.script, `## ${describeNow(new Date(now))} · ${phase}\n${filled.script}\n\n${sentLine}`);
-      }
-      if (parsed?.truncated) logger.warn('interlude reply was cut off; kept the script only (raise maxTokens?)');
-      if (parsed && parsed.state) {
-        state = { ...parsed.state, updatedAt: new Date(now).toISOString() };
-        writeFileSync(files.state, JSON.stringify(state, null, 2));
-        if (intent) intents = intents.filter((i) => i.id !== intent.id);
-        // An intent round settles the intent that woke it; it does not plant the next one, or the
-        // character keeps waking herself all day. New intents come from follow-up and advance rounds.
-        // People who live only in the Canon never wake her for something no real app can show.
-        const fictional = castNames(canon).filter((n) => !mem?.knows?.(n));
-        if (phase !== 'intent') for (const i of parsed.intents) {
-          if (fictional.some((n) => i.text.includes(n))) { audit('intent-dropped', { why: 'fictional person', text: i.text }); continue; }
-          intents.push({ id: `${now.toString(36)}-${intents.length}`, ...i, createdAt: new Date(now).toISOString() });
-        }
-        intents = intents.slice(-20);
-        saveIntents();
-      }
-      writeFileSync(files.pending, '');
-      meta.cursor = now; meta.count++; meta.dayRounds++;
-      meta.returned = (meta.returned ?? []).filter((r) => !back.includes(r)); // digested; what came back meanwhile waits for the next round
-      meta.recentActs = [...lastHalfHour, ...items.map((i) => ({ ts: i.ts, on: i.on, did: clip([i.user, i.assistant].filter(Boolean).join(' → '), 160) }))];
-      // The ledger: tokens this round, added to today's count (/interlude shows it).
-      addTokens();
-      if (phase === 'advance') meta.lastAdvance = now;
-      saveMeta();
-      // Deferred browsing: the character's browserIntent runs now through dsh's web service;
-      // the observation is evidence for later rounds (webContext), never for this script.
-      for (const b of parsed?.browserIntents ?? []) await browse(b, phase);
-      for (const p of parsed?.playIntents ?? []) await playOut(p, phase);
-      for (const x of parsed?.tries ?? []) await tryOut(x, phase);
-      // Her own afterthoughts on things she did: kept beside his reactions.
-      for (const r of parsed?.reflect ?? []) if (r.id && doings.feedback(r.id, r.text, 'her', { exact: true })) audit('reflected', { id: r.id });
-      audit('round', { phase, acts: items.length, intents: intents.length, browsed: (parsed?.browserIntents ?? []).length, played: (parsed?.playIntents ?? []).length, tried: (parsed?.tries ?? []).length, contact: Boolean(parsed?.contact), said });
-      logger.info(`interlude #${meta.count} (${phase}): ${items.length} act(s)${said ? ' + contact' : ''}`);
-      fails = 0;
-      return { ok: true, script, contact: parsed?.contact ?? null, said };
-    } catch (error) {
-      pausedUntil = Date.now() + Math.min(60, 5 * 2 ** fails++) * 60_000;
-      logger.warn(`interlude ${phase} failed: ${error.message}`);
-      audit('round-failed', { phase, error: clip(error.message, 200) });
-      return { error: error.message };
-    } finally { busy = false; }
-  }
-
-  // 玩: a play intent becomes one normal turn in her latest session (she acts on her phone; the
-  // phone gate's approvals apply). Gated like contact; actions outside playActions are dropped.
-  async function playOut(p, phase) {
-    const held = (why) => { audit('play-held', { phase, why, app: p.app, action: p.action, target: p.target }); return false; };
-    if (!cfg.play) return held('disabled');
-    if (!cfg.playActions.includes(p.action)) return held(`action ${p.action} not allowed`);
-    const pkg = cfg.playApps[p.app];
-    if (!pkg) return held(`app ${p.app} not in playApps`);
-    if (!inHours(cfg.activeHours)) return held('outside active hours');
-    if (p.willingness < cfg.willingnessThreshold) return held('willingness');
-    rollDay();
-    if (cfg.maxPlaysPerDay > 0 && meta.dayPlays >= cfg.maxPlaysPerDay) return held('daily cap');
-    if (p.action === 'post' && (meta.dayPosts ?? 0) >= cfg.postDailyCap) return held('post daily cap');
-    if (p.action === 'post' && !p.text) return held('post without text');
-    const phone = ctx.get('dshPhone');
-    if (!phone?.isReady) return held('phone not ready');
-    if (!(await phone.apps?.().catch(() => []) ?? []).includes(pkg)) return held(`${p.app} is not on her phone`);
-    const counted = () => { meta.dayPlays++; if (p.action === 'post') meta.dayPosts = (meta.dayPosts ?? 0) + 1; saveMeta(); };
-    const entry = { kind: 'play', app: p.app, action: p.action, what: [p.target, p.text].filter(Boolean).join('：'), why: p.why };
-    if (dshDot()?.task) {
-      let doing = '';
-      // A post's key carries its text, so two different posts to one board are two tasks.
-      const key = `play|${p.app}|${p.action}|${p.target}${p.action === 'post' ? `|${p.text}` : ''}`;
-      const r = dshDot().task({ kind: 'play', key, text: playPrompt(p, pkg), source: PLAY_SOURCE, ttlMs: ttlInHours(), onDone: (res) => remember('play', `${p.app} ${p.action}：${p.target}`, res, doing) });
-      if (r === 'refreshed') { audit('play-merged', { phase, app: p.app, action: p.action }); return false; } // the same one is already waiting
-      doing = doings.add(entry);
-      counted();
-      audit('play-queued', { phase, app: p.app, action: p.action, target: p.target });
-      return true;
-    }
-    // Looking and playing run in her errand session when dsh-dot has one: never in the middle of a conversation.
-    const sessionId = cfg.vmSession || (await errandSession()) || lastActSession;
-    const controller = ctx.get('sessionController');
-    if (!sessionId || !controller) return held('no session');
-    try {
-      const found = await controller.resolveAgent(sessionId);
-      if (!found || 'error' in found) return held(found?.error?.message ?? 'session not found');
-      try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: playPrompt(p, pkg) }], source: PLAY_SOURCE }));
-      counted(); doings.settle(doings.add(entry), { status: 'sent' });
-      audit('play', { phase, app: p.app, action: p.action, target: p.target, why: p.why, session: sessionId });
-      return true;
-    } catch (error) { return held(error.message); }
-  }
   /** A task queued now expires when her active hours end (or at dot's own TTL, whichever is first). */
   const ttlInHours = () => { const left = msLeftInHours(cfg.activeHours); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
-  // 试: something new she wanted to do, on her phone or her computer — an errand turn with hard limits
-  // in its prompt (interlude.try.txt) and the phone / computer gates' approvals on every act.
-  const tryDevices = () => [phoneReady() ? 'phone' : '', ctx.get('dshComputer') ? 'computer' : ''].filter(Boolean);
-  const tryOpen = () => {
-    rollDay();
-    if (!cfg.tries || !inHours(cfg.activeHours) || (meta.dayTries ?? 0) >= cfg.tryDailyCap) return false;
-    // Only in an errand (or a session set aside for this): never in the middle of her conversation.
-    if (!dshDot()?.task && !(cfg.vmSession && ctx.get('sessionController'))) return false;
-    return tryDevices().length > 0;
-  };
-  // Sessions running a try right now: the tools that would speak for her elsewhere are refused there.
-  const trying = new Set();
-  async function tryOut(x, phase) {
-    const held = (why) => { audit('try-held', { phase, why, what: x.what }); return false; };
-    if (!tryOpen()) return held(!cfg.tries ? 'disabled' : (meta.dayTries ?? 0) >= cfg.tryDailyCap ? 'daily cap' : !inHours(cfg.activeHours) ? 'outside active hours' : 'no errand or no device');
-    if (x.willingness < cfg.willingnessThreshold) return held('willingness');
-    if (x.on !== 'either' && !tryDevices().includes(x.on)) return held(`no ${x.on}`);
-    const entry = { kind: 'try', what: x.what, why: x.why, device: x.on };
-    const started = () => { meta.dayTries = (meta.dayTries ?? 0) + 1; saveMeta(); audit('try', { phase, what: x.what, on: x.on, why: x.why }); };
-    if (dshDot()?.task) {
-      let doing = '', sid = '';
-      const r = dshDot().task({
-        kind: 'try', key: `try|${x.what}`, text: tryPrompt(x), source: TRY_SOURCE, ttlMs: ttlInHours(),
-        onStart: (id) => { sid = id; trying.add(id); },
-        onDone: (res) => { if (sid) trying.delete(sid); remember('try', x.what, res, doing); },
-      });
-      if (r === 'refreshed') { audit('try-merged', { phase, what: x.what }); return false; }
-      doing = doings.add(entry); started();
-      return true;
-    }
-    const controller = ctx.get('sessionController');
-    try {
-      const found = await controller.resolveAgent(cfg.vmSession);
-      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'session not found');
-      try { if (ctx.get('goals')?.get(found.agent)?.phase === 'active') return held('goal active'); } catch (error) { void error; }
-      trying.add(cfg.vmSession);
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: tryPrompt(x) }], source: TRY_SOURCE }));
-      doings.settle(doings.add(entry), { status: 'sent' }); started();
-      return true;
-    } catch (error) { return held(error.message); }
-  }
-  // A try is hers to do on her phone and computer, not a way to talk: sending on QQ (to him or
-  // anyone) and the ledger tool are refused in that turn. Contact has its own gates (speak, caps).
+  // The ledger takes his reactions in her conversation with him only: not an errand, not a chat with someone else.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
-    // The ledger takes his reactions in her conversation with him only: not an errand, not a chat with someone else.
     if (exec.name === 'doings' && sessionId && dshDot() && (dshDot().isErrand?.(sessionId) || (dshDot().session?.() && dshDot().session() !== sessionId))) {
       return { kind: 'deny', reason: prompt('interlude.doings-tool.elsewhere') };
     }
-    if (!sessionId || !trying.has(sessionId)) return next();
-    if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
-      audit('try-refused', { session: sessionId, tool: exec.name });
-      return { kind: 'deny', reason: prompt('interlude.try.refused', { tool: exec.name }) };
-    }
     return next();
   });
-
 
   // 成长: the weekly review (growth.js). One call; a portrait that changed too much is asked for again once.
   let reviewing = false;
@@ -1135,7 +356,6 @@ export function apply(ctx, config = {}) {
       now: describeNow(new Date()),
       yourNotes: mem?.herLife?.() ?? [],
       yourDoings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 10 }),
-      lately: state?.current ?? null,
     };
     let doing = '', sid = '', f = null;
     const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), tidy: growth?.tidy() ?? [], context });
@@ -1146,7 +366,7 @@ export function apply(ctx, config = {}) {
         freeQueued = false;
         if (sid && free.get(sid) === f) free.delete(sid);
         const status = f?.stopped ? 'stopped' : res.status;
-        remember('free', '自己的时间', { ...res, status }, doing);
+        remember('free', { ...res, status }, doing);
         audit('free-done', { status, tokens: res.cost ? tokensOf(res.cost) : 0 });
       },
     });
@@ -1272,12 +492,11 @@ export function apply(ctx, config = {}) {
     } catch (error) { logger.warn(`contact failed: ${error.message}`); return false; }
   }
 
-  // 3. Scheduling: follow-up after quiet, advance on an interval, intents when due.
+  // 3. Scheduling: the weekly review and her own time.
   function tick() {
-    if (busy || running > 0) return;
+    if (running > 0) return;
     const now = Date.now();
     rollDay();
-    // The weekly review runs beside the rounds, never instead of them.
     if (growth && !reviewing && growth.due(now) && now - (meta.growthFailedAt ?? 0) >= 3600000) void reviewGrowth();
     if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
       if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
@@ -1286,22 +505,14 @@ export function apply(ctx, config = {}) {
         void freeTime('scheduled'); return;
       }
     }
-    const due = intents.find((i) => Date.parse(i.at) <= now);
-    if (due) { void round('intent', due); return; }
-    if (lastActivity && now - lastActivity >= cfg.idleMinutes * 60000 && digest().items.some((i) => !i.quiet)) { void round('follow-up'); return; }
-    if (cfg.advanceEveryMinutes > 0 && inHours(cfg.activeHours) && now - Math.max(meta.cursor, meta.lastAdvance) >= cfg.advanceEveryMinutes * 60000 && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
-      void round('advance');
-    }
   }
   ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
-  // Model requests (src/llm-gate.js): rounds and the growth review are marked above. With dsh-dot her
-  // looks, plays, tries and free time run in its errand (dot registers that); without it, the session
-  // set aside in vmSession and a look / try / free-time session that is not her conversation.
-  const herConversation = (id) => { const d = dshDot(); return d ? id === d.session?.() : id === lastActSession && id !== cfg.vmSession; };
-  installLlmGate(ctx, { name: 'dot-interlude', backgroundSessions: (id) => ((Boolean(cfg.vmSession) && id === cfg.vmSession) || observing.has(id) || trying.has(id) || free.has(id)) && !herConversation(id) });
+  // Model requests (src/llm-gate.js): the growth review is marked above; her own time runs in dot's errand
+  // (dot registers that as background).
+  installLlmGate(ctx, { name: 'dot-interlude' });
 
   // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
-  // session so the cached prefix holds); the continuity is a dynamic context after the history.
+  // session so the cached prefix holds).
   const inHome = (c) => { const s = c.agent?.session; return cfg.scope === 'all' || Boolean((wantHome && s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({
@@ -1333,14 +544,6 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         if (!cfg.voice || !inHome(c) || dshDot()?.isErrand?.(c.agent?.session?.id)) return '';
         return voiceText();
-      },
-    });
-    scope.systemPrompt.context({
-      name: 'interlude',
-      order: 905,
-      text: (c) => {
-        if (!inHome(c)) return '';
-        return renderContext({ state, entries: readScript(files.script, cfg.scriptEntriesInPrompt), intents, cursor: meta.cursor, restarted: meta.cursor > 0 && meta.cursor < startedAt });
       },
     });
   });
@@ -1379,8 +582,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: '幕间 status; "now" runs a follow-up round, "advance" a life round, "seed" opens an empty script with the last day of life, "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one (the latest without #id), "free" gives her own time now, "growth" shows her portrait and its history ("growth now" reviews this week, "growth <week>" shows one, "growth rollback <week>" goes back to it)',
-      input: { hint: '[now | advance | seed | preset <code> | canon | doings | feedback [#id] <text> | free | growth [now | <week> | rollback <week>]]' },
+      description: 'Her persona and her own doings: status; "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one, "free" gives her some time of her own now, "growth" shows her portrait ("growth now" reviews it, "growth rollback <week>" goes back).',
+      input: { hint: '[preset <code> | canon | doings | feedback [#id] <text> | free | growth [now | <week> | rollback <week>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
@@ -1410,27 +613,21 @@ export function apply(ctx, config = {}) {
           result = d ? `\nnoted on #${d.id}: ${d.what}` : m && !m[2].trim() ? '\nwhat should she hear? /interlude feedback [#id] <text>' : `\nno such doing${m?.[1] ? ` #${m[1]}` : ''}`;
         } else if (arg === 'canon') {
           result = `\n${canonText() || '(no canon: /interlude preset <share code>, or set config.canon)'}`;
-        } else if (arg === 'now' || arg === 'advance' || arg === 'seed') {
-          const r = await round(arg === 'now' ? 'follow-up' : arg);
-          result = r.ok ? `\nran: ${clip(r.script, 200)}${r.contact ? `\ncontact: ${r.contact.text} (${r.said ? 'sent' : 'held'})` : ''}` : `\nnot run: ${r.rejected ? `not kept — it says she did things on her devices there is no record of: ${r.rejected.join(' / ')}` : r.skipped ?? r.error}`;
         }
-        const { items } = digest();
         rollDay();
         const lines = [
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
-          `continuity: ${state?.current || state?.mood || '(none yet)'}`,
-          `script: ${readScript(files.script, 10000).length} entries · intents: ${intents.length} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
-          `cursor: ${meta.cursor ? describeNow(new Date(meta.cursor)) : 'never'} · today ${meta.dayRounds}/${cfg.maxRoundsPerDay} rounds, ${meta.dayContacts}/${cfg.maxContactsPerDay} contacts`,
-          `pending acts: ${items.length} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min (follow-up after ${cfg.idleMinutes}) · advance every ${cfg.advanceEveryMinutes} min in ${cfg.activeHours}`,
-          `speak: ${cfg.speak ? 'on' : 'off'} · play: ${cfg.play ? `on (${Object.keys(cfg.playApps).join(', ') || 'no playApps'}; today ${meta.dayPlays}${cfg.maxPlaysPerDay > 0 ? `/${cfg.maxPlaysPerDay}` : ''}, posts ${meta.dayPosts ?? 0}/${cfg.postDailyCap})` : 'off'} · tries: ${cfg.tries ? `on (today ${meta.dayTries ?? 0}/${cfg.tryDailyCap})` : 'off'} · free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · growth: ${growth ? (growth.lastWeek() || 'no review yet') : 'off'} · browser: ${browserMode()}${ctx.get('web') ? '' : ' (no web service)'}${ctx.get('dshComputer') ? '' : ' (no VM)'}${phoneReady() ? '' : ' (no phone)'} · today ${meta.dayBrowses}/${cfg.browseDailyCap} (self ${meta.dayVm}/${cfg.vmDailyCap}) · vmSites: ${cfg.vmSites.length ? cfg.vmSites.join(', ') : '(none)'} · phoneApps: ${Object.keys(cfg.phoneApps).length ? Object.keys(cfg.phoneApps).join(', ') : '(none)'} · observe in: ${cfg.vmSession || lastActSession || '(no act yet)'} · webContext: ${readWebContext().length}`,
+          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min · active ${cfg.activeHours}`,
+          `doings: ${doings.all().length} on the ledger · tell_him: ${cfg.speak ? `on (${meta.dayContacts}/${cfg.maxContactsPerDay} today)` : 'off (interlude.speak)'}`,
+          `growth: ${growth ? (growth.lastWeek() ? `last review ${growth.lastWeek()}` : 'no review yet') : 'off'} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },
     }), 'dsh-interlude: /interlude command');
   });
 
-  // For the panel (dsh-dot/dot): where her life stands, as data.
+  // For the panel (dsh-dot/dot) and the page: her persona, what she did on her own, her portrait — as data.
   ctx.provide?.('dshInterlude', {
     /** Import her persona from the preset hub by share code (the dot page's setup; /interlude preset does the same). */
     async importPreset(code) {
@@ -1445,18 +642,13 @@ export function apply(ctx, config = {}) {
     who() { const sd = canon?.storyDefaults ?? {}; return `${sd.characterName ?? 'dot'}：${String(sd.characterProfile ?? '').replace(/\s+/g, ' ').slice(0, 240)}`; },
     status() {
       rollDay();
-      const script = (() => { let t = ''; try { t = readFileSync(files.script, 'utf8'); } catch (error) { void error; } return t.split(/^## /m).filter((x) => x.trim()).slice(-2).map((x) => { const [head, ...body] = x.split('\n'); return { head: head.trim(), text: body.join('\n').trim() }; }); })();
       return {
         name: canon?.storyDefaults?.characterName ?? 'dot',
-        state, cursor: meta.cursor, lastAdvance: meta.lastAdvance, rounds: meta.count,
-        today: { rounds: meta.dayRounds, maxRounds: cfg.maxRoundsPerDay, contacts: meta.dayContacts, browses: meta.dayBrowses, plays: meta.dayPlays, tries: meta.dayTries ?? 0, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
-        doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 5 }),
+        today: { contacts: meta.dayContacts, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
+        doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8 }),
         free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: (meta.freeAt ?? [])[0] ?? null },
         growth: growth ? { portrait: growth.portrait(), week: growth.lastWeek(), history: growth.history().map((h) => ({ week: h.week, changes: h.changes })) } : null,
-        intents: intents.map((i) => ({ at: i.at, kind: i.kind, text: i.text })),
-        script,
-        speak: cfg.speak, play: cfg.play, activeHours: cfg.activeHours, advanceEveryMinutes: cfg.advanceEveryMinutes,
-        nextAdvanceAt: cfg.advanceEveryMinutes > 0 ? Math.max(meta.cursor, meta.lastAdvance) + cfg.advanceEveryMinutes * 60000 : null,
+        speak: cfg.speak, activeHours: cfg.activeHours,
       };
     },
   });

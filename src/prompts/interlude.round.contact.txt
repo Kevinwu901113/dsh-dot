@@ -1,1 +1,0 @@
-contact：她这一刻真要发给他的话，{"content":"原话，几条之间用 <sep/> 隔开","willingness":0.0,"reason":"为什么是现在"}，willingness 是 0 到 1；不发就是 null。想到他、打了草稿、打算晚点再说，都不算发，留在 script 里。

@@ -657,9 +657,6 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
   assert.match(errandNote('play', '点了个赞', now), /^\[11-04 04:51 刚才在手机上玩了会儿\] 点了个赞/);
   assert.match(phoneCheckText(now), /^\[11-04 04:51 拿起手机\] /);
   assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
-  const { playPrompt, observationPrompt } = await import('../src/interlude/core.js');
-  assert.match(playPrompt({ app: '小黑盒', action: 'like', target: '帖子' }, '', now), /^\[11-04 04:51 想玩会儿手机\] /);
-  assert.match(observationPrompt({ mode: 'search', query: 'q' }, 'vm', '', now), /^\[11-04 04:51 幕间观察\] /);
 });
 
 test('dot:now: one line after the history, on her conversation and errands; "since" counts from before the turn, omitted under a minute', async () => {

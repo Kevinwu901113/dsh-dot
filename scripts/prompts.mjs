@@ -44,7 +44,6 @@ const LINES = [
   { at: T0 + 864e5, session: 'old', who: 'owner', text: '我感冒了，嗓子疼' },
   { at: T0 + 864e5 + 6e4, session: 'old', who: 'her', text: '多喝水 别硬撑 benchmark 晚一天也行' },
 ];
-const STATE = { current: '在出租屋里改简历，有点困', recent: ['下午去楼下买了杯咖啡'], salient: ['周五他要交 benchmark'] };
 const STICKERS = P.prompt('qq.stickers', { list: 'a1b2c3d4e5（无语）、f6e5d4c3b2（偷笑 ×3）' });
 const variant = (pairs) => pairs.map(([k, v]) => `━━ ${k} ━━\n${v}`).join('\n\n');
 
@@ -65,7 +64,6 @@ async function recallText() {
   return (await r.query('你 benchmark 跑完了吗', { session: 's1', record: false })).text;
 }
 const standing = () => S.renderStanding(sampleMemory());
-const context = () => I.renderContext({ state: STATE, entries: ['11-03 14:00：她把窗帘拉开一半，靠在床头改简历，咖啡放凉了。'], intents: [{ at: new Date(Date.now() + 3 * 36e5).toISOString(), kind: 'contact', text: '问他感冒好点没' }], cursor: Date.now() - 90 * 6e4, restarted: false });
 
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
 export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消息'], ['call', '独立模型调用']];
@@ -85,7 +83,7 @@ export const entries = [
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
   { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、还没了的事（加一行先搁着的）', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header'], render: recallText },
-  { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话、幕间数据之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
+  { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
     render: () => P.prompt('interlude.voice', { name: '小点' }) },
 
   { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：等他停下（1.5 秒没新消息，最多 6 秒）一批盖一个时间戳，后面是他打的原话；她这轮还没做完时插进这一轮，多一行 dot.owner-words.busy；她上一条有没发出去的话（他先说了话），附在后面给她看一次 dot.owner-words.unsent', files: ['dot.owner-words', 'dot.owner-words.busy', 'dot.owner-words.unsent'],
@@ -107,18 +105,12 @@ export const entries = [
     render: () => { const t = P.table('dot.errand-inflight'); return variant([['跑腿那一轮', P.prompt('dot.errand-report', { silent: D.SILENT })], ['跑腿找他被拦', P.prompt('dot.errand-no-owner')], ['她对话里：还在做的', P.fill(t.line, { doing: `${P.fill(t.thread, { app: '小黑盒', source: '《耳机测评》', count: 3 })}；${t.other}` })], ['重复调用被拦', P.prompt('dot.loop-stopped', { times: 5 })]]); } },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],
     render: () => M.renderHandoff(LINES.slice(-2), 3) },
-  { id: 'observation', group: 'wake', name: '幕间：去看一眼', note: '她自己想去看看的时候，只看不动', files: ['interlude.observation', 'interlude.observation.where', 'interlude.observation.vm', 'interlude.observation.phone'],
-    render: () => variant([['电脑浏览器里搜', I.observationPrompt({ mode: 'search', query: '广州 本周 降温', purpose: '他感冒了，看看天气' }, 'vm')], ['手机 App', I.observationPrompt({ mode: 'search', query: '新番', purpose: '看看有没有新番' }, 'phone', 'tv.danmaku.bili')]]) },
-  { id: 'play', group: 'wake', name: '幕间：玩一会儿', note: '去 App 里点赞、评论、发帖、攒表情包', files: ['interlude.play', 'interlude.play.collect', 'interlude.play.post', 'interlude.play.verbs', 'interlude.play.parts', 'interlude.play-rules'],
-    render: () => variant([['评论', I.playPrompt({ app: '小黑盒', action: 'comment', target: '那篇耳机测评', text: '低频确实糊', why: '她也用这副耳机' }, 'com.max.xiaoheihe')], ['发帖', I.playPrompt({ app: '小黑盒', action: 'post', target: '耳机区', text: '用了一个月，说说这副耳机的低频', why: '攒了一肚子想法' }, 'com.max.xiaoheihe')], ['攒表情包', I.playPrompt({ app: 'B站', action: 'collect', target: '表情包', why: '表情包太少了' }, 'tv.danmaku.bili')]]) },
-  { id: 'free', group: 'wake', name: '幕间：自己的时间', note: '每天 interlude.freeTimesPerDay 次（默认 2），随机时刻叫醒跑腿的她，什么任务都不给；预算到 80% 提醒一句（.budget），到 100% 停下；这段时间里 QQ 和账本工具被拒（.refused），在社交 App 里打字要他批准（.typing）；想找他用 tell_him（只在这里能用，别处是 .elsewhere）', files: ['interlude.free', 'interlude.free.tidy', 'interlude.free.budget', 'interlude.free.over', 'interlude.free.refused', 'interlude.free.typing', 'interlude.tell-him', 'interlude.tell-him.elsewhere'],
-    render: () => variant([['开头', I.freePrompt({ budget: 150000, left: 300000, place: '~/dot/her', listing: ['notes/', 'notes/想学的.md · 412 B · 11-7', 'growth/'], tidy: ['每晚十点逛小黑盒'], context: { now: '2026-11-08 15:20 星期日 下午', portrait: '我最近迷上了画画……', yourNotes: ['装了小黑盒'], yourDoings: { today: { doings: 2, tokens: 30100, livingTokens: 20000 } }, lately: '窝在床上看番' } })], ['预算快用完', P.prompt('interlude.free.budget', { stamp: '[11-08 15:40]', used: 121000, budget: 150000 })], ['预算用完之后', P.prompt('interlude.free.over')], ['发 QQ 被拦', P.prompt('interlude.free.refused', { tool: 'qq_send' })], ['社交 App 里打字', P.prompt('interlude.free.typing', { app: '小黑盒' })], ['tell_him 工具说明', P.prompt('interlude.tell-him')], ['别处用 tell_him', P.prompt('interlude.tell-him.elsewhere')]]) },
+  { id: 'free', group: 'wake', name: '自己的时间', note: '每天 interlude.freeTimesPerDay 次（默认 2），随机时刻叫醒跑腿的她，什么任务都不给；预算到 80% 提醒一句（.budget），到 100% 停下；这段时间里 QQ 和账本工具被拒（.refused），在社交 App 里打字要他批准（.typing）；想找他用 tell_him（只在这里能用，别处是 .elsewhere）', files: ['interlude.free', 'interlude.free.tidy', 'interlude.free.budget', 'interlude.free.over', 'interlude.free.refused', 'interlude.free.typing', 'interlude.tell-him', 'interlude.tell-him.elsewhere', 'interlude.doings-tool', 'interlude.doings-tool.elsewhere'],
+    render: () => variant([['开头', I.freePrompt({ budget: 150000, left: 300000, place: '~/dot/her', listing: ['notes/', 'notes/想学的.md · 412 B · 11-7', 'growth/'], tidy: ['每晚十点逛小黑盒'], context: { now: '2026-11-08 15:20 星期日 下午', portrait: '我最近迷上了画画……', yourNotes: ['装了小黑盒'], yourDoings: { today: { doings: 2, tokens: 30100, livingTokens: 20000 } } } })], ['预算快用完', P.prompt('interlude.free.budget', { stamp: '[11-08 15:40]', used: 121000, budget: 150000 })], ['预算用完之后', P.prompt('interlude.free.over')], ['发 QQ 被拦', P.prompt('interlude.free.refused', { tool: 'qq_send' })], ['社交 App 里打字', P.prompt('interlude.free.typing', { app: '小黑盒' })], ['tell_him 工具说明', P.prompt('interlude.tell-him')], ['别处用 tell_him', P.prompt('interlude.tell-him.elsewhere')], ['doings 工具的说明（她对话里记下他的反应）', P.prompt('interlude.doings-tool')], ['别处用 doings', P.prompt('interlude.doings-tool.elsewhere')]]) },
   { id: 'howto-reflect', group: 'call', name: '整理 App 经验', note: '她某一轮在一个 App 里走了 dot.howtoMinSteps（默认 12）步以上、或出过错：轮结束后一次小调用读她这轮的操作（只有操作和报错，不带屏幕上的文字）、这个 App 现有的笔记和最近几次的步数，重写笔记（≤ dot.howtoMaxChars，默认 800 字）：教训、捷径（只写做成过的）', files: ['dot.howto.reflect'],
     render: () => P.prompt('dot.howto.reflect', { maxChars: 800 }) },
   { id: 'growth', group: 'call', name: '成长：每周回顾', note: '每周 interlude.growthAt（默认周日 21:00）一次：她读这周的日记、自己的笔记、账和他的反应，重写「她现在的样子」（最多改 portraitMaxChange，默认 35%；改多了用 .too-much 再要一次），存进 <home>/interlude/growth；这一段作为系统提示词跟在人设后面（.section）。不写记忆。', files: ['interlude.growth.system', 'interlude.growth.too-much', 'interlude.growth.too-long', 'interlude.growth.section'],
     render: () => variant([['system', P.prompt('interlude.growth.system', { name: 'dot', maxChars: 900, change: '35%' })], ['改太多时', P.prompt('interlude.growth.too-much', { ratio: '52%', change: '35%' })], ['太长时', P.prompt('interlude.growth.too-long', { length: 1180, maxChars: 900 })], ['放进系统提示词的样子', P.prompt('interlude.growth.section', { portrait: '我最近迷上了画画，晚上不怎么刷小黑盒了……' })]]) },
-  { id: 'try', group: 'wake', name: '幕间：试点新的', note: '她想做一件没做过的事：交给跑腿真去做，只有几条硬边界；做了什么、花了多少 token、他怎么说，都记在她的账上（doings 工具让对话里的她记下他的反应）', files: ['interlude.try', 'interlude.try.on', 'interlude.try.refused', 'interlude.doings-tool', 'interlude.doings-tool.elsewhere'],
-    render: () => variant([['在电脑上', I.tryPrompt({ what: '用画图软件给自己画个新头像', on: 'computer', why: '看腻了现在这个' })], ['手机或电脑都行', I.tryPrompt({ what: '找个记账 App 试试', on: 'either' })], ['doings 工具的说明', P.prompt('interlude.doings-tool')], ['试的那一趟里想发 QQ', P.prompt('interlude.try.refused', { tool: 'qq_send' })], ['别处用 doings', P.prompt('interlude.doings-tool.elsewhere')]]) },
 
   { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进三栏笔记和人物卡：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off'],
     render: () => {
@@ -128,11 +120,6 @@ export const entries = [
     } },
   { id: 'diary', group: 'call', name: '日记', note: '每天 dailyAt（23:30），当天有记录才写，单独一次调用', files: ['memory.diary'],
     render: () => M.diaryPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n') }) },
-  { id: 'round', group: 'call', name: '幕间一轮', note: '写她这段时间的生活：interlude.round 是整段系统提示词，后面是按情况填进去的小段', files: ['interlude.round', 'interlude.round.canon', 'interlude.round.length', 'interlude.round.phase.advance', 'interlude.round.phase.follow-up', 'interlude.round.phase.intent', 'interlude.round.her-life', 'interlude.round.free', 'interlude.round.doings', 'interlude.round.returned', 'interlude.round.contact-rule', 'interlude.round.contact-rule.off', 'interlude.round.browsing.deferred', 'interlude.round.browsing.disabled', 'interlude.round.agency', 'interlude.round.play', 'interlude.round.play.collect', 'interlude.round.style.none', 'interlude.round.seed', 'interlude.round.play-intents', 'interlude.round.play-intents.off', 'interlude.round.tries', 'interlude.round.tries.off', 'interlude.round.contact', 'interlude.round.contact.off', 'interlude.round.refresh', 'interlude.round.not-kept'],
-    render: () => {
-      const r = I.buildPrompt({ phase: 'advance', identity: I.renderCanon(CANON), state: STATE, script: '11-03 14:00：她把窗帘拉开一半，靠在床头改简历。', cursor: Date.now() - 90 * 6e4, now: new Date(), speak: true, model: 'deepseek-chat', entries: [{ owner: 'user', at: '11-03 15:10', content: '在吗' }], browser: 'deferred', play: true, playApps: ['小黑盒', 'B站'], playActions: ['like', 'comment', 'follow', 'collect', 'post'], stickers: 2, trying: true, doings: { today: { doings: 3, tokens: 61200, livingTokens: 40100 }, last7Days: [{ what: '小黑盒 点赞', times: 9, done: 8, tokens: 52000, reactions: 0 }, { what: '去看（手机）', times: 3, done: 3, tokens: 30500, reactions: 1 }], leftAloneThisWeek: ['B站'], recent: [{ id: 'k3f0', at: '11-03 15:20', what: '小黑盒 点赞：那篇耳机测评', status: 'done', result: '点了赞', tokens: 5400, feedback: ['他：别老点赞了，去评论两句'] }] }, memories: ['他叫宽，在广州做 AI agent 开发'], herLife: ['装了小黑盒，常在晚上逛'], returned: [{ kind: 'play', wanted: '小黑盒 like：那篇耳机测评', status: 'done', queuedAt: '2026-11-03 15:20 星期二 下午', busyWith: '看小黑盒《帖子A》的 3 条', startedAt: '2026-11-03 15:41 星期二 下午', doneAt: '2026-11-03 15:43 星期二 下午', report: '做了：点了赞\n结果：成了\n找他：不用' }] });
-      return variant([['system（生活推进、主动联系开、玩开、浏览延后、herLife 有内容、有回来的事）', r.system], ['user', r.user], ['补全那一次（第一次没给全时）', P.prompt('interlude.round.refresh')]]);
-    } },
   { id: 'score', group: 'call', name: '群消息打分', note: '群消息值不值得她插一句（群消息设成打分时）', files: ['qq.score.system', 'qq.score.who', 'qq.score.user'],
     render: () => { const r = Q.scorePrompt({ who: '小点：二十三岁，话少、直接', recent: '阿满：今晚谁打瓦\n老王：我', message: '小点你上次说的那个耳机多少钱', group: '123456' }); return variant([['system', r.system], ['user', r.user]]); } },
   { id: 'setup', group: 'system', name: '手机/电脑还在装', note: '只在第一次安装、开机还没好时带着（装好就消失）；装好那一刻用 dot.setup-done 叫她自己说一声', files: ['dot.setup', 'dot.setup-done'], render: () => `${D.setupText({ state: 'downloading', progress: { text: '下载系统镜像 820/1450 MB，约 6 分钟' } }, { state: 'starting', stage: 'downloading' })}\n\n${P.prompt('dot.setup-done', { device: '手机' })}` },
@@ -167,7 +154,6 @@ export async function full() {
     ['定时任务那一轮（只在那一轮）', D.scheduledRule()],
     ['记忆', standing()],
     ['想起的原话', await recallText()],
-    ['幕间的连续性（数据，没有文字）', context()],
     ['说话提醒（最后一段）', String((readCanon() ?? CANON)?.voice ?? '').trim() || P.prompt('interlude.voice', { name: (readCanon() ?? CANON)?.storyDefaults?.characterName ?? '她' })],
   ];
   return parts.map(([k, v]) => (v ? `━━━━ ${k} ━━━━\n${v}` : `━━━━ ${k} ━━━━`)).join('\n\n');

@@ -1,1 +1,0 @@
-上一稿没有留下。claimedWithoutRecord 里这几件事，上一稿写成她已经在手机或电脑上做了，可 deviceFacts 里没有对应的记录——它们没有发生。把这一段重新写一遍，里面不要有这些事；她要是惦记着、打算去做，就写成惦记和打算，真要做的写进 tries、playIntents 或 browserIntents。

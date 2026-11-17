@@ -1,3 +1,0 @@
-phone=在手机上
-computer=在电脑上
-either=

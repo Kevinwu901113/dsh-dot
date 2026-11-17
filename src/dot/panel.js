@@ -97,7 +97,7 @@ h2 select{float:right;font:inherit;font-size:11px;background:var(--card);color:v
 <div class="card"><h2><span id="actTitle">最近 30 场</span><select id="actN" aria-label="scenes"><option>10</option><option selected>30</option><option>60</option><option>100</option></select></h2><div class="scenes" id="activity"></div></div>
 <div class="card"><h2>记忆</h2><div id="memory"></div></div>
 <div class="card"><h2>日记</h2><div id="diary"></div></div>
-<div class="card"><h2>剧本</h2><div id="script"></div></div>
+<div class="card"><h2>她自己做的事</h2><div id="script"></div></div>
 <div class="mute" id="foot"></div><div id="err"></div>
 </main>
 <script>
@@ -162,17 +162,15 @@ function render(s){
   for(const n of Array.isArray(s.prompts)?s.prompts:[])b+=badge('warn','提示词覆盖',n);
   $('badges').innerHTML=b||'<span class="mute">没有组件在线</span>';
   if(it){
-    const st=it.state||{};
     let h='<div class="kv">';
-    h+='<span>此刻</span><span>'+esc(st.current||'（还没有幕间）')+'</span>';
-    if(st.salient&&st.salient.length) h+='<span>挂念</span><span>'+st.salient.map(esc).join('；')+'</span>';
-    if(it.intents&&it.intents.length) h+='<span>打算</span><span><ul>'+it.intents.map(i=>'<li>'+esc(at(Date.parse(i.at)))+' · '+esc(i.text)+'</li>').join('')+'</ul></span>';
-    h+='<span>上一幕</span><span>'+esc(ago(it.cursor))+(it.nextAdvanceAt?' <span class="mute">· 下一次独立推进约 '+esc(at(it.nextAdvanceAt))+'</span>':'')+'</span>';
+    const f=it.free||{};
+    h+='<span>自己的时间</span><span>'+(f.perDay?('今天 '+(f.today||0)+'/'+f.perDay+' 次 · '+fmt(f.tokens||0)+'/'+fmt(f.dailyTokens||0)+' token'+(f.next?' <span class="mute">· 下一次约 '+esc(at(f.next))+'</span>':'')):'关着')+'</span>';
+    if(it.growth) h+='<span>她现在的样子</span><span>'+(it.growth.portrait?'<div class="pre">'+esc(it.growth.portrait)+'</div>'+(it.growth.week?'<span class="mute">'+esc(it.growth.week)+' 写的</span>':''):'<span class="mute">还没有（每周回顾一次）</span>')+'</span>';
     h+='</div>';
     $('now').innerHTML=h;
-  } else $('now').innerHTML='<span class="mute">幕间未加载</span>';
+  } else $('now').innerHTML='<span class="mute">人设组件未加载</span>';
   let t='';
-  if(it){t+=tile(it.today.rounds+(it.today.maxRounds?'/'+it.today.maxRounds:''),'幕间轮')+tile(it.today.plays,'玩')+tile(it.today.browses,'去看')+tile(it.today.contacts,'找你');}
+  if(it){t+=tile((it.doings&&it.doings.today?it.doings.today.doings:0),'自己做的事')+tile(it.today.contacts,'找你');}
   if(dot&&dot.today){t+=tile(dot.today.woke,'通知叫醒')+tile(dot.today.owner,'你的消息');}
   const tin=(it?it.today.tokensIn:0)+(m?m.ledger.in:0), tout=(it?it.today.tokensOut:0)+(m?m.ledger.out:0);
   t+=tile(fmt(tin),'token 入')+tile(fmt(tout),'token 出');
@@ -196,9 +194,10 @@ function render(s){
       $('diary').innerHTML=dh;
     } else $('diary').innerHTML='<span class="mute">还没有日记（每天 '+esc(m.dailyAt)+' 写）</span>';
   } else {$('memory').innerHTML='<span class="mute">记忆未加载</span>';$('diary').innerHTML='';}
-  if(it&&it.script&&it.script.length){
-    $('script').innerHTML=it.script.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.head)+'</b><div class="pre">'+esc(e.text)+'</div></div>').join('');
-  } else $('script').innerHTML='<span class="mute">还没有剧本</span>';
+  const dz=(it&&it.doings&&it.doings.recent)||[];
+  if(dz.length){
+    $('script').innerHTML=dz.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.at)+' · '+esc(e.status||'')+(e.tokens?' · '+fmt(e.tokens)+' token':'')+'</b><div class="pre">'+esc(e.what)+(e.result?'\n'+esc(e.result):'')+(e.feedback?'\n'+e.feedback.map(esc).join('\n'):'')+'</div></div>').join('');
+  } else $('script').innerHTML='<span class="mute">还没有（自己的时间里做的事会记在这里）</span>';
   renderActivity(s.activity);
   $('foot').textContent='更新于 '+new Date(s.at).toLocaleTimeString('zh-CN');
 }
