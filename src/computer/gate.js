@@ -89,6 +89,27 @@ const insideOf = (root, p) => p === root || p.startsWith(root.endsWith('/') ? ro
  * @param {string} command
  * @param {{ shared: string[], cwd?: string, home?: string }} where - shared folders as the VM sees them; the working folder.
  */
+/**
+ * Is a script handed to the browser one that only reads the page — text, titles, links, sizes — and changes nothing,
+ * goes nowhere and takes nothing kept by the browser? Judged on the text, on the careful side: anything that
+ * assigns (other than a declaration), calls something that acts (click, submit, fetch, navigation, timers, storage,
+ * cookies, clipboard, dialogs, eval, DOM writes), or cannot be read at all, is not.
+ */
+export function readOnlyScript(script) {
+  if (typeof script !== 'string' || !script.trim() || script.length > 4000) return false;
+  const ACTS = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|eval|Function|setTimeout|setInterval|requestAnimationFrame|postMessage|alert|confirm|prompt|open|close|print|click|submit|reset|focus|blur|select|dispatchEvent|remove|removeChild|appendChild|append|prepend|before|after|replaceWith|replaceChild|replaceChildren|insertBefore|insertAdjacentHTML|insertAdjacentElement|insertAdjacentText|write|writeln|setAttribute|removeAttribute|toggleAttribute|setProperty|removeProperty|add|toggle|scroll|scrollTo|scrollBy|scrollIntoView|play|pause|load|requestFullscreen|assign|replace(?=\s*\(\s*['"`h])|reload|pushState|replaceState|go|back|forward|setItem|removeItem|clear|execCommand|attachShadow|import)\s*\(|\b(cookie|localStorage|sessionStorage|indexedDB|caches|clipboard|credentials|serviceWorker|history|opener)\b|\bdelete\b|\bnew\s+(?!(Set|Map|Date|RegExp|Array|URL|URLSearchParams|Object)\b)|\+\+|--|\bawait\b|\bimport\b/;
+  // What is inside string and template literals is text; regex literals are left in (a `=` in one only makes this stricter).
+  const code = script.replace(/"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\$]|\$(?!\{))*`/g, '""');
+  if (code.includes('`') || ACTS.test(code)) return false;
+  // An `=` that is not a comparison or an arrow must belong to a declaration (const / let / var …).
+  for (const m of code.matchAll(/(?<![=!<>])=(?![=>])/g)) {
+    const before = code.slice(Math.max(0, code.lastIndexOf(';', m.index) + 1, code.lastIndexOf('{', m.index) + 1, code.lastIndexOf('(', m.index) + 1), m.index);
+    if (!/^\s*(const|let|var)\s+[\w$\s,]+$/.test(before)) return false;
+  }
+  return true;
+}
+const scriptOf = (args) => { try { const a = typeof args === 'string' ? JSON.parse(args) : args; return a?.script ?? a?.expression ?? a?.code ?? a?.function ?? a?.js ?? ''; } catch { return ''; } };
+
 export function sharedTouch(command, { shared = [], cwd = '', home = defaults.vmHome } = {}) {
   const roots = shared.filter(Boolean).map((p) => p.replace(/\/+$/, '') || '/');
   let dir = cwd || home;
@@ -149,6 +170,8 @@ export function decide(call, cfg, compiled = compile(cfg)) {
   }
   if (cfg.fileTools.includes(tool)) return compiled.destructive.some((r) => r.test(args)) ? `dsh-computer: destructive file operation (${vmTool})` : null;
   if (cfg.readOnlyTools.includes(vmTool)) return cfg.mode === 'browser' && vmTool.startsWith('browser_') ? `dsh-computer: browser action ${vmTool}` : null;
+  // A script that only reads the page is looking, like browser_get_text: it runs. Anything else of these tools asks.
+  if (vmTool === 'browser_evaluate' && readOnlyScript(scriptOf(args))) return cfg.mode === 'browser' ? `dsh-computer: browser action ${vmTool}` : null;
   if (cfg.alwaysAskTools.includes(vmTool)) return `dsh-computer: ${vmTool} (runs code or raw input in her computer)`;
   // Everything else acts on the browser or the desktop — known action tools and unknown tools alike.
   if (cfg.mode === 'browser') return `dsh-computer: browser action ${vmTool}`;

@@ -258,7 +258,7 @@ export const defaults = {
   // the hands do it and say what is on the screen, she decides the next step. With this on she does not hand things
   // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
   hands: true,
-  handsMaxMs: 150000,
+  handsMaxMs: 360000,
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
