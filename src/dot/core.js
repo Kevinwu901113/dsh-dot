@@ -1311,10 +1311,18 @@ export function apply(ctx, config = {}) {
       name: 'hands',
       description: prompt('dot.hands-tool'),
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' } }, required: ['device', 'do'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }, ...(v?.image ? [{ type: 'text', text: prompt('dot.hands.screen') }, { type: 'image', attachment: v.image }] : [])] },
       async execute(args) {
         const device = args?.device === 'computer' ? 'computer' : 'phone';
-        return hands.run({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}` });
+        const r = await hands.run({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}` });
+        // What the screen shows now, for her own eyes: the hands say what they did, she sees whether it is so.
+        if (device === 'phone' && r.status !== 'failed') {
+          try {
+            const p = phone(), images = ctx.get('attachments');
+            if (p?.isReady && typeof images?.saveImages === 'function') { const [image] = await images.saveImages([{ data: new Uint8Array(await p.screenshot()), mediaType: 'image/png', name: 'phone-screen' }]); if (image) r.image = image; }
+          } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
+        }
+        return r;
       },
     }), 'dsh-dot: hands tool');
   });
