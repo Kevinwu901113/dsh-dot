@@ -60,9 +60,14 @@ export const prompt = (id, vars = {}) => fill(raw(id), vars, id);
 /** A `key=value` per line file as an object, each value filled with `vars`. */
 export function table(id, vars = {}) {
   const out = {};
-  for (const line of raw(id).split('\n')) {
-    const i = line.indexOf('=');
-    if (i > 0) out[line.slice(0, i).trim()] = fill(line.slice(i + 1), vars, id);
+  const text = raw(id), builtin = readText(builtinPath(id)) ?? '';
+  // The built-in first, then the override over it: a key added to the built-in after someone made their own
+  // copy still has its text (an override from before never names it).
+  for (const src of text === builtin ? [text] : [builtin, text]) {
+    for (const line of src.split('\n')) {
+      const i = line.indexOf('=');
+      if (i > 0) out[line.slice(0, i).trim()] = fill(line.slice(i + 1), vars, id);
+    }
   }
   return out;
 }

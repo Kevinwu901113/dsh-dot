@@ -170,3 +170,16 @@ test('prompts render: stickers — where they really are, and how each phone app
     assert.match(t, /手机 QQ 的"收藏"栏本来是空的，想让它们出现在那要自己添加，见手机那段/, id);
   }
 });
+
+test('a table someone overrode before a key was added still has that key: the built-in under the override', () => {
+  configure({ home: HOME });
+  mkdirSync(join(HOME, 'prompts'), { recursive: true });
+  writeFileSync(overridePath('memory.standing'), '# base: 000000000000\nintro=我自己写的开头\nowner=## 关于他\nself=## 我记的\nopen=## 没了的事\nshelved=- 另有 {n} 件\n');
+  const t = table('memory.standing', { n: 2, titles: 'x' });
+  assert.equal(t.intro, '我自己写的开头');
+  assert.equal(t.self, '## 我记的');
+  assert.equal(t.shelved, '- 另有 2 件');
+  assert.match(t.words, /^## 你知道的说法/, 'added to the built-in later: not undefined');
+  rmSync(overridePath('memory.standing'));
+  assert.match(table('memory.standing', { n: 0, titles: '' }).words, /^## 你知道的说法/);
+});
