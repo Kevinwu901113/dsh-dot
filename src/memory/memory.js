@@ -15,6 +15,7 @@
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
 // She edits her notes herself too (`memory`), and looks things up (`recall`).
+import { deny } from '../refusals.js';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -465,7 +466,7 @@ export function apply(ctx, config = {}) {
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
     const today = lines.filter((l) => l.who === 'seen' && l.at >= startOfToday());
     const why = seenRefusal({ text: args?.text, errand: Boolean(dot()?.isErrand?.(id)), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
-    if (why) { audit('seen-refused', { session: id, why }); return { kind: 'deny', reason: seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay }) }; }
+    if (why) { audit('seen-refused', { session: id, why }); return deny(seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay })); }
     seenCalls.push(id);
     return next();
   });

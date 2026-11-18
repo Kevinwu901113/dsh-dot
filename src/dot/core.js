@@ -13,6 +13,7 @@
 //      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
+import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -804,6 +805,7 @@ export function apply(ctx, config = {}) {
     try { pkg = String((await phone()?.foreground?.()) ?? '').split('/')[0] || pkg; } catch (error) { void error; }
     const app = labelOf(pkg);
     howto.step(s.id, app, exec.name, input, { isError: Boolean(result?.isError), error: contentText(result?.content ?? []) });
+    if (howto.needsReview(app)) void reflectHowto({ review: true, app });
     const got = howto.take(s.id, app);
     if (!got) return null;
     audit('howto-given', { session: s.id, app });
@@ -832,6 +834,7 @@ export function apply(ctx, config = {}) {
   }
   async function reflectOnce(r) {
     try {
+      if (r.review && !howto.needsReview(r.app)) return; // read over meanwhile
       // Not injected into dsh-dot (it would wait on them): taken when needed.
       const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
       const llm = ctx.get('llm');
@@ -839,11 +842,12 @@ export function apply(ctx, config = {}) {
       const effort = await workEffort(ctx, sel);
       const reply = await collectReply(llm.stream(background({
         provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
-        system: prompt('dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
+        system: prompt(r.review ? 'dot.howto.review' : 'dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
       })));
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
-      if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked) });
+      if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
+      if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked), ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
     } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
   }
   // The manual rides along with the first call's result, for her next step (in the post-execute hook above).
@@ -1356,18 +1360,18 @@ export function apply(ctx, config = {}) {
     // Looking and scrolling repeat by nature (the screen changes, the call does not): never a loop.
     if (t && cfg.loopRepeat > 0 && !LOOP_EXEMPT.test(exec.name)) {
       const key = loopKey(exec.name, args), times = (t.calls ??= new Map()).get(key) ?? 0;
-      if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return { kind: 'deny', reason: prompt('dot.loop-stopped', { times }) }; }
+      if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return deny(prompt('dot.loop-stopped', { times })); }
       t.calls.set(key, times + 1);
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
-    if (exec.name === 'hand_off' && id !== lastSession) return { kind: 'deny', reason: prompt('dot.hand-off-tool.elsewhere') };
+    if (exec.name === 'hand_off' && id !== lastSession) return deny(prompt('dot.hand-off-tool.elsewhere'));
     if (cfg.handOff && cfg.errands && t?.his && id === lastSession && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX))) {
       audit('device-tool-in-his-turn', { session: id, tool: exec.name });
-      return { kind: 'deny', reason: prompt('dot.hand-off-tool.instead') };
+      return deny(prompt('dot.hand-off-tool.instead'));
     }
     if (exec.name !== 'qq_send' || !isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
-    if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return { kind: 'deny', reason: prompt('dot.errand-no-owner') }; }
+    if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return deny(prompt('dot.errand-no-owner')); }
     // Her own send: it can still be handed back. Once a turn — a second draft goes out as it is, so a phrase list
     // that is wrong costs one call, not her answer.
     if (cfg.replyCheck && t && !t.replyChecked && typeof args?.text === 'string') {
@@ -1375,7 +1379,7 @@ export function apply(ctx, config = {}) {
       if (c.hits.length || c.stripped) {
         t.replyChecked = true;
         audit('reply-check', { session: id, via: 'qq_send', stripped: c.stripped, hits: c.hits, denied: true });
-        return { kind: 'deny', reason: replyCheckText(c) };
+        return deny(replyCheckText(c));
       }
     }
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
@@ -1385,7 +1389,7 @@ export function apply(ctx, config = {}) {
     ownerDenies.set(id, n + 1);
     const flushed = buffered ? flushOwner(exec.agent) : 0;
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
-    return { kind: 'deny', reason: ownerInterruptText() };
+    return deny(ownerInterruptText());
   });
   // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
   // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
@@ -1545,7 +1549,7 @@ export function apply(ctx, config = {}) {
         }
         if (/^howto\b/.test(arg)) {
           const app = arg.slice(5).trim();
-          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}\n\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.worked === false ? '✗' : ''}`).join(' → ') || '-'}` };
+          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}${howto.needsReview(app) ? '\n(old notes: read over before she is given them again)' : ''}\n\nsteps per task, oldest first: ${howto.tasks(app).map((t) => `${t.task} ${t.steps.join(' → ')}`).join(' · ') || '-'}\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.worked === false ? '✗' : ''}`).join(' → ') || '-'}` };
           const rows = howto.apps().map((a) => { const r = howto.recent(a, 10); return `${a}: ${r.map((x) => x.steps).join(' → ') || '-'}${howto.notes(a) ? ' · notes' : ''}`; });
           return { kind: 'success', text: `steps per run, oldest first (notes in ${howto.dir})\n${rows.join('\n') || '(nothing yet)'}` };
         }

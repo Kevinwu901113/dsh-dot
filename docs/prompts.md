@@ -28,7 +28,7 @@
 | | 手机/电脑还在装（只在第一次装、开机没好时） / 装好那一刻 | `dot.setup` / `dot.setup-done` |
 | | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header`（她逛的时候记下的别人的说法另起一段：`memory.recall.seen`） |
 | | 记下看到的一句话 | `memory.seen.tool`（`keep_line` 的工具说明）/ `memory.seen`（被拒绝的理由，一行一个） |
-| | 她自己的经验（进 App 时给） | `dot.howto.given` `dot.howto.no-notes`；整理经验的调用 `dot.howto.reflect` |
+| | 她自己的经验（进 App 时给） | `dot.howto.given` `dot.howto.no-notes`；整理经验的调用 `dot.howto.reflect`、翻旧笔记 `dot.howto.review` |
 | | 说明书（第一次用时才给） | `dot.manuals.hint` `.what` `.deny` |
 | | 说话提醒（最后一段） | `interlude.voice`（人设里的「说话提醒」优先） |
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`；她上一条有话没发出去时附 `dot.owner-words.unsent`） |

@@ -16,6 +16,7 @@
 //
 // The Canon file keeps HDS-Interlude's `storyDefaults` field names
 // (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
+import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -291,7 +292,7 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
     if (exec.name === 'doings' && sessionId && dshDot() && (dshDot().isErrand?.(sessionId) || (dshDot().session?.() && dshDot().session() !== sessionId))) {
-      return { kind: 'deny', reason: prompt('interlude.doings-tool.elsewhere') };
+      return deny(prompt('interlude.doings-tool.elsewhere'));
     }
     return next();
   });
@@ -430,12 +431,12 @@ export function apply(ctx, config = {}) {
   // In her own time: no QQ (he is reached through tell_him), no ledger tool, and typing in a social app asks first.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
-    if (exec.name === 'tell_him') return sessionId && free.has(sessionId) ? next() : { kind: 'deny', reason: prompt('interlude.tell-him.elsewhere') };
+    if (exec.name === 'tell_him') return sessionId && free.has(sessionId) ? next() : deny(prompt('interlude.tell-him.elsewhere'));
     if (!sessionId || !free.has(sessionId)) return next();
-    if (free.get(sessionId).stopped) return { kind: 'deny', reason: prompt('interlude.free.over') };
+    if (free.get(sessionId).stopped) return deny(prompt('interlude.free.over'));
     if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
       audit('free-refused', { session: sessionId, tool: exec.name });
-      return { kind: 'deny', reason: prompt('interlude.free.refused', { tool: exec.name }) };
+      return deny(prompt('interlude.free.refused', { tool: exec.name }));
     }
     const tool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     const input = exec.input ?? exec.args ?? exec.arguments;
@@ -443,7 +444,7 @@ export function apply(ctx, config = {}) {
       const phone = ctx.get('dshPhone');
       // The phone first (one session drives it at a time), then which app is in front.
       const busyPhone = await phone?.lease?.(sessionId, tool);
-      if (busyPhone) return { kind: 'deny', reason: busyPhone };
+      if (busyPhone) return deny(busyPhone);
       let pkg = '';
       try { pkg = String((await phone?.foreground?.()) ?? '').split('/')[0]; } catch (error) { void error; }
       // A batch that opens an app and types: the app it opens is where the typing lands.

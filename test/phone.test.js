@@ -1,4 +1,5 @@
 import { test } from 'node:test';
+import { wasRefused } from '../src/refusals.js';
 import assert from 'node:assert/strict';
 import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -466,7 +467,7 @@ test('phone_zoom tool: a part of the screen, enlarged, through the attachment st
   h.stop();
 });
 
-const audits = () => readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'phone-lease' || e.kind === 'qq-send-blocked');
+const audits = () => readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'qq-type-allowed' || e.kind === 'phone-lease' || e.kind === 'qq-send-blocked');
 
 test('phone lease: one session drives the phone; another waits, then is refused; turn end and idle free it; her conversation goes first', async () => {
   const h = harness({ config: { leaseWaitMs: 300, leaseIdleMs: 700 } });
@@ -497,20 +498,29 @@ test('phone lease: one session drives the phone; another waits, then is refused;
   h.stop();
 });
 
-test('phone QQ: typing or Enter with QQ in front is refused (search excepted); other apps and qqSendOnPhone pass', async () => {
+test('phone QQ: typing or Enter into the message box is refused; single-line fields (login, password, search) type; other apps and qqSendOnPhone pass', async () => {
   let top = 'com.tencent.mobileqq/.activity.SplashActivity';
+  const editor = (type, pkg = 'com.tencent.mobileqq') => `  mCurEditorInfo:\n    inputType=0x${type} imeOptions=0x40000004 privateImeOptions=null\n    actionLabel=null actionId=0\n    hintText=null label=null\n    packageName=${pkg} autofillId=1 fieldId=7 fieldName=null\n`;
+  let field = editor('20001');
   const run = async (config) => {
     const h = harness({ config });
-    h.ctx.dshPhone.adbExec = async (args) => ({ stdout: args.join(' ').includes('dumpsys activity') ? `  topResumedActivity=ActivityRecord{1 u0 ${top} t9}\n` : '' });
+    h.ctx.dshPhone.adbExec = async (args) => ({ stdout: args.join(' ').includes('dumpsys activity') ? `  topResumedActivity=ActivityRecord{1 u0 ${top} t9}\n` : args.join(' ').includes('dumpsys input_method') ? field : '' });
     return h;
   };
   const h = await run({});
   const typed = await h.gate('mcp__dot-phone__mobile_type_keys', { text: '你好', submit: true }, 's');
-  assert.deepEqual(typed, { kind: 'deny', reason: '在手机 QQ 里不发消息，给人发 QQ 用 qq_send。' });
+  assert.deepEqual(typed, { kind: 'deny', reason: '这是写消息的输入框：在手机 QQ 里不发消息，给人发 QQ 用 qq_send。' });
+  assert.ok(wasRefused(`Error: ${typed.reason}`), 'known as a refusal (src/refusals.js)');
   assert.equal((await h.gate('mcp__dot-phone__mobile_press_button', { button: 'ENTER' }, 's')).kind, 'deny');
   assert.equal((await h.gate('mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 1, y: 2 }, 's')).via, 'next', 'reading: taps pass');
-  top = 'com.tencent.mobileqq/com.tencent.mobileqq.search.activity.UniteSearchActivity';
-  assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: '宽' }, 's')).via, 'next', 'QQ search may type');
+  for (const [type, what] of [['1', 'a search box, a login name'], ['81', 'a password'], ['2', 'a number'], ['20001', 'the keyboard is on another app']]) {
+    field = editor(type, type === '20001' ? 'com.android.chrome' : undefined);
+    assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: '2450548644' }, 's')).via, 'next', what);
+  }
+  field = '';
+  assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: 'x' }, 's')).via, 'next', 'no field known: not refused');
+  assert.ok(audits().some((e) => e.kind === 'qq-type-allowed' && e.field === '0x81') && audits().some((e) => e.kind === 'qq-type-allowed' && e.field === 'unknown'));
+  field = editor('20001');
   top = 'com.android.chrome/com.google.android.apps.chrome.Main';
   assert.equal((await h.gate('mcp__dot-phone__mobile_type_keys', { text: 'hi' }, 's')).via, 'next');
   assert.ok(audits().some((e) => e.kind === 'qq-send-blocked' && e.tool === 'mobile_type_keys'));

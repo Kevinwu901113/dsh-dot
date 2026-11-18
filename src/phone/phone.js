@@ -4,6 +4,7 @@
 // Google's repository (after the SDK license is accepted), writes the AVD itself (no Java, no
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. She runs headless and is
 // watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
+import { deny } from '../refusals.js';
 import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -201,6 +202,23 @@ export function phoneGate(exec, cfg) {
   if (tool === 'mobile_type_keys') {
     const text = JSON.stringify(exec.input ?? exec.args ?? exec.arguments ?? {});
     if (cfg.sensitivePatterns.some((p) => new RegExp(p, 'i').test(text))) return 'dsh-dot/phone: typing something that looks sensitive';
+  }
+  return null;
+}
+
+/**
+ * The text field the keyboard is attached to, from `dumpsys input_method` (EditorInfo: "inputType=0x… imeOptions=0x…",
+ * then "packageName=<pkg> …" a few lines down): { inputType, multiLine } for the first one that belongs to `pkg`, or
+ * null (no field has focus there, or the dump reads differently). multiLine: a text field that takes several lines —
+ * where a message, a comment, a post is written; a search box, a login name, a password, a code are single-line.
+ */
+export function focusedEditor(dump, pkg) {
+  const text = String(dump ?? '');
+  for (const m of text.matchAll(/inputType=0x([0-9a-f]+)\s+imeOptions=0x([0-9a-f]+)/gi)) {
+    const owner = /packageName=([\w.]+)/.exec(text.slice(m.index, m.index + 800))?.[1];
+    if (owner !== pkg) continue;
+    const inputType = parseInt(m[1], 16);
+    return { inputType, multiLine: (inputType & 0xf) === 1 && (inputType & 0x60000) !== 0 };
   }
   return null;
 }
@@ -466,6 +484,8 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   /** The resumed activity, "pkg/.Activity" ('' when unknown). */
   phone.foreground = async () => { try { return /([\w.]+\/[\w.$]+)/.exec(await phone.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity|mResumedActivity'"))?.[1] ?? ''; } catch { return ''; } };
+  /** The text field in `pkg` the keyboard is attached to (focusedEditor), or null. */
+  phone.editor = async (pkg) => { try { return focusedEditor(await phone.shell('dumpsys input_method'), pkg); } catch { return null; } };
   /** PNG of the screen right now (a blank frame — mid-transition, screen waking — is retaken once). */
   phone.screenshot = () => screencapRetry(async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout));
   /**
@@ -901,7 +921,7 @@ export function apply(ctx, config = {}, deps = {}) {
 
   // Approval gate for phone tools: installs/uninstalls, and typing that looks like a secret or a payment.
   ctx.on('tools/pre-execute', async (exec_, next) => {
-    if (off && (exec_.name?.startsWith(PHONE_TOOL_PREFIX) || exec_.name === PHONE_ZOOM_TOOL)) return { kind: 'deny', reason: '手机关着（他关的）。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /phone on' };
+    if (off && (exec_.name?.startsWith(PHONE_TOOL_PREFIX) || exec_.name === PHONE_ZOOM_TOOL)) return deny('手机关着（他关的）。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /phone on');
     const reason = phoneGate(exec_, cfg);
     if (!reason) return next();
     audit({ kind: 'approval-asked', tool: exec_.name, session: exec_.agent?.session?.id, reason });
@@ -941,11 +961,17 @@ export function apply(ctx, config = {}, deps = {}) {
     const id = exec_.agent?.session?.id;
     if (!tool) return next();
     const refused = id ? await takeLease(id, tool) : null;
-    if (refused) return { kind: 'deny', reason: refused };
-    // QQ goes one way on the phone: she reads there, and sends with qq_send (QQ's search box still types).
-    if (!cfg.qqSendOnPhone && typesText(tool, exec_.input ?? exec_.args ?? exec_.arguments) && /^com\.tencent\.mobileqq\/(?!.*search)/i.test(await phone.foreground())) {
-      audit({ kind: 'qq-send-blocked', session: id, tool });
-      return { kind: 'deny', reason: '在手机 QQ 里不发消息，给人发 QQ 用 qq_send。' };
+    if (refused) return deny(refused);
+    // QQ goes one way on the phone: she reads there, and sends with qq_send. What is refused is typing into the
+    // box a message is written in (a multi-line field); the login name, the password, a code, the search box are
+    // single-line fields and type as anywhere else. No field known to have focus: not refused (logged, to check).
+    if (!cfg.qqSendOnPhone && typesText(tool, exec_.input ?? exec_.args ?? exec_.arguments) && /^com\.tencent\.mobileqq\//i.test(await phone.foreground())) {
+      const editor = await phone.editor('com.tencent.mobileqq');
+      if (editor?.multiLine) {
+        audit({ kind: 'qq-send-blocked', session: id, tool });
+        return deny('这是写消息的输入框：在手机 QQ 里不发消息，给人发 QQ 用 qq_send。');
+      }
+      audit({ kind: 'qq-type-allowed', session: id, tool, field: editor ? `0x${editor.inputType.toString(16)}` : 'unknown' });
     }
     return next();
   }, { prepend: true });

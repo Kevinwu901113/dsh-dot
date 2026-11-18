@@ -4,7 +4,9 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { existsSync, writeFileSync } from 'node:fs';
 import { createHowto, callLine, fileOf, batchLaunch, batchFailures, errorType, isRefusal } from '../src/dot/howto.js';
+import { deny } from '../src/refusals.js';
 
 const P = 'mcp__dot-phone__';
 
@@ -63,4 +65,45 @@ test('howto: long runs are worth it only when clearly above her usual; notes onc
   assert.ok(readFileSync(join(dir, '_log.jsonl'), 'utf8').includes('"worked":true'));
   const input = h.input({ app: '小黑盒', steps: 3, errors: [], calls: ['a'], said: 'x' });
   assert.equal(input.notesNow, '新的');
+});
+
+test('howto: a call her own rules refused is marked, not an error; the task named by the reflection lines its runs up', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'howto-'));
+  let t = Date.now();
+  const h = createHowto({ dir, minSteps: 3, cooldownMs: 0, now: () => t });
+  const { reason } = deny('这是写消息的输入框：在手机 QQ 里不发消息，给人发 QQ 用 qq_send。');
+  const run = (n, refuse = false) => {
+    h.turnStarted('s');
+    if (refuse) h.step('s', 'QQ', `${P}mobile_type_keys`, { text: '在吗' }, { isError: true, error: `Error: ${reason}` });
+    for (let i = 0; i < n; i++) h.step('s', 'QQ', `${P}mobile_click_on_screen_at_coordinates`, { x: 1, y: 2 });
+    t += 60000;
+    return h.end('s');
+  };
+  const [first] = run(9, true);
+  assert.deepEqual(first.errors, [], 'the refusal is no error of the app');
+  assert.equal(first.calls[0], 'type_keys(在吗) ⊘');
+  assert.deepEqual(run(0, true), [], 'refusals alone are nothing to learn from');
+  h.keep('QQ', { notes: '## 教训\n- 登录前先勾协议', worked: true, task: '登录' }, first.id);
+  const [second] = run(20);
+  assert.deepEqual(h.input(second).knownTasks, ['登录']);
+  h.keep('QQ', { notes: '## 教训\n- 登录前先勾协议', worked: true, task: '登录' }, second.id);
+  assert.deepEqual(h.tasks('QQ'), [{ task: '登录', steps: [10, 20] }]);
+  assert.match(h.take('s2', 'QQ').recent, /登录 10 步；.*登录 20 步/);
+});
+
+test('howto: notes from before refusals were told apart are read over once before they are given again', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'howto-'));
+  writeFileSync(join(dir, 'QQ.md'), '## 教训\n- 打字只能走 clipboard + 长按粘贴\n');
+  const h = createHowto({ dir });
+  assert.ok(h.needsReview('QQ') && !h.needsReview('小黑盒'));
+  assert.equal(h.take('s', 'QQ'), null, 'not given as they are');
+  assert.deepEqual(Object.keys(h.input({ review: true, app: 'QQ' })), ['app', 'notesNow', 'limits']);
+  h.keep('QQ', { notes: '## 教训\n\n## 捷径' });
+  assert.ok(!h.needsReview('QQ'));
+  assert.equal(h.take('s', 'QQ').notes, '## 教训\n\n## 捷径');
+  assert.ok(!createHowto({ dir }).needsReview('QQ'), 'remembered (_meta.json)');
+  const fresh = mkdtempSync(join(tmpdir(), 'howto-'));
+  const f = createHowto({ dir: fresh });
+  f.keep('QQ', { notes: '新记的' });
+  assert.ok(existsSync(join(fresh, '_meta.json')) && !createHowto({ dir: fresh }).needsReview('QQ'), 'a new folder has nothing to read over');
 });
