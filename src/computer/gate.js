@@ -103,7 +103,10 @@ export function sharedTouch(command, { shared = [], cwd = '', home = defaults.vm
     if (base === '/' || base === home) return p;
     return roots.some((r) => insideOf(r, p) || insideOf(base, r)) ? p : '';
   };
-  for (const seg of String(command).split(/\n|;|&&|\|\||\|/)) {
+  // Inside quotes, > | ; & are text, not shell (a script handed to a tool: `eval "(()=>{const t=…})()"` is no redirect
+  // to a file called {const): they are masked before the command is cut into segments and scanned for redirects.
+  const unquoted = String(command).replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (q) => q.replace(/[>|;&\n]/g, '\u0001'));
+  for (const seg of unquoted.split(/\n|;|&&|\|\||\|/)) {
     // Redirects that overwrite (not >>, not >&, not to /dev/null).
     for (const m of seg.matchAll(/(?<![>&0-9])[0-9]?>(?![>&])\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g)) {
       const t = m[1].replace(/^["']|["']$/g, '');

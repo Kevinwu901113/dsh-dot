@@ -112,6 +112,8 @@ const SL_QQ_PIN = {
 // NapCat's xvfb-run leaves sockets of dead servers there (:101, :102), and QQ exits on one of those.
 const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc|x11vnc)$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` +
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
+/** Shell that sets $D to her computer's desktop display (for anything that looks at or draws on that screen). */
+export const VM_DISPLAY = SL_DISPLAY;
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
 // How often /qq qr puts a fresh code in front of her camera, and for how long.

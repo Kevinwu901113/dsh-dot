@@ -61,3 +61,12 @@ test('screenLines: the words on the screen and where to tap them, top to bottom,
   assert.equal(screenLines(''), '');
   assert.equal(screenLines(xml, { max: 1 }).split('\n').length, 1);
 });
+
+test('computer gate: > | ; inside quotes are text — a script handed to a tool is not a redirect into a shared folder', async () => {
+  const { sharedTouch } = await import('../src/computer/gate.js');
+  const o = { shared: ['/Users/k/dot'], cwd: '/Users/k/dot', home: '/home/gem' };
+  assert.equal(sharedTouch(`agent-browser eval "(()=>{const t=document.body.innerText;return t.slice(0,9)})()" 2>&1 | tail -40`, o), '');
+  assert.equal(sharedTouch('echo hi > notes.txt', o), '/Users/k/dot/notes.txt');
+  assert.equal(sharedTouch('echo "a > b" > "my file.txt"', o), '/Users/k/dot/my file.txt');
+  assert.equal(sharedTouch("grep 'x;rm -rf her' log.txt", o), '');
+});

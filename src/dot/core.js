@@ -16,7 +16,7 @@
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
-import { qqSpoken } from '../qq/qq.js';
+import { VM_DISPLAY, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
@@ -718,6 +718,15 @@ export function apply(ctx, config = {}) {
       const t = turns.get(exec.agent?.session?.id);
       if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: exec.agent?.session?.id, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
     }
+    // Typed into her phone's QQ (a chat there, not its search or sign-in): said, as much as a qq_send is. The QQ on her
+    // computer does not report what her account sends from elsewhere, so it is recorded here, where the words go in.
+    if (exec?.name === PHONE_TYPE_TOOL && !result?.isError) {
+      try {
+        const fg = String((await phone()?.foreground?.()) ?? '');
+        const text = String((exec.input ?? exec.args ?? exec.arguments)?.text ?? '').trim();
+        if (text && /^com\.tencent\.mobileqq\//i.test(fg) && !/search|login|register|verify/i.test(fg)) { ctx.get('dotMemory')?.herSaid?.({ session: lastSession, text, to: '手机QQ' }); audit('said-on-phone', { chars: text.length }); }
+      } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
+    }
     const minutes = expiredCalls.get(exec?.callId);
     const notes = [cfg.manuals && exec?.name ? manualFor(exec) : null, cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
@@ -1115,21 +1124,31 @@ export function apply(ctx, config = {}) {
     void nextTask();
     return 'queued';
   };
+  /** A picture of her computer's desktop right now (PNG), or null when the computer has no way to take one. */
+  const computerScreen = async () => {
+    const sh = computer()?.backend?.rootShell;
+    if (typeof sh !== 'function') return null;
+    const out = String(await sh([VM_DISPLAY, 'f=/tmp/dot-hands-screen.png; rm -f $f',
+      'if command -v import >/dev/null; then DISPLAY=$D import -window root $f 2>/dev/null; elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D 2>/dev/null | convert xwd:- $f 2>/dev/null; elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f 2>/dev/null; fi',
+      '[ -s $f ] && base64 -w0 $f; rm -f $f'].join('\n'))).trim().split('\n').pop() ?? '';
+    return out.length > 100 ? Buffer.from(out, 'base64') : null;
+  };
   ctx.inject(['tools'], (scope) => {
     if (!cfg.hands) return;
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' } }, required: ['device', 'do'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }, ...(v?.image ? [{ type: 'text', text: prompt('dot.hands.screen') }, { type: 'image', attachment: v.image }] : [])] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }, ...(v?.image ? [{ type: 'text', text: prompt(v.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen') }, { type: 'image', attachment: v.image }] : [])] },
       async execute(args) {
         const device = args?.device === 'computer' ? 'computer' : 'phone';
         const r = await hands.run({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}` });
         // What the screen shows now, for her own eyes: the hands say what they did, she sees whether it is so.
-        if (device === 'phone' && r.status !== 'failed') {
+        if (r.status !== 'failed') {
           try {
-            const p = phone(), images = ctx.get('attachments');
-            if (p?.isReady && typeof images?.saveImages === 'function') { const [image] = await images.saveImages([{ data: new Uint8Array(await p.screenshot()), mediaType: 'image/png', name: 'phone-screen' }]); if (image) r.image = image; }
+            const images = ctx.get('attachments');
+            const png = typeof images?.saveImages !== 'function' ? null : device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
+            if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${device}-screen` }]); if (image) { r.image = image; r.device = device; } }
           } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
         }
         return r;
