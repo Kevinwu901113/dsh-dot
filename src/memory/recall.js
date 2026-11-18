@@ -9,14 +9,18 @@
 //              by cosine, plus the top recallCandidates by BM25 over characters and character bigrams
 //              (CJK) and words (the rest): a rare name or number (阿兰, 签名牌, 0731) that one sentence
 //              vector washes out. Her current session is left out (it is in her window already).
-//   rerank     a cross-encoder reads every candidate against the message and decides: at most
-//              recallTopK, fewer when fewer are relevant (recallRerankMin), never padded. Without a
-//              reranker (none configured, or still downloading): each list keeps only the hits that
-//              stand out from the whole index (contrast), interleaved.
-//   shown      grouped by day, each day headed "06-22 周一 · 15 天前", and 明天 / 下周三 in the
-//              words given their exact date by code (when.js). A message with fewer than
+//   ranked     each list keeps only the hits that stand out from the whole index (contrast, at most
+//              60), and the last recallRecentTurns turns before her window are a third list; the
+//              three are fused by reciprocal rank (k 60), at most recallTopK. With a reranker set
+//              (none by default) a cross-encoder reads every candidate against the message and its
+//              order decides instead (recallRerankMin).
+//   shown      what came in on each turn (his words), not what she said back: a third of the tokens,
+//              so three times the turns fit recallMaxTokens. What is left of the budget goes to the
+//              turns just before and after the hits (recallNeighbors). Grouped by day, each day
+//              headed "06-22 周一 · 15 天前", and 明天 / 下周三 in the words given their exact date
+//              by code (when.js). Her own `recall` tool shows whole turns. A message with fewer than
 //              recallMinQueryLength distinct content tokens (好的 / 哈哈哈哈 / ok thanks) recalls nothing.
-//   backends   local — multilingual-e5-small (ONNX q8) + a bge reranker via transformers.js on the
+//   backends   local — multilingual-e5-small (ONNX q8), and a bge reranker when one is set, via transformers.js on the
 //                       CPU, no key. The library is 300–480 MB, so it is not a dependency: it is
 //                       installed into $DSH_HOME on first use (the way qq/phone pull their MCP servers
 //                       with npx), models come from an HF mirror. Until they are there, queries fall
@@ -37,9 +41,9 @@ import { prompt } from '../prompts.js';
 
 export const BACKENDS = ['local', 'siliconflow', 'dashscope', 'off'];
 const MODELS = {
-  local: { embed: 'Xenova/multilingual-e5-small', rerank: 'Xenova/bge-reranker-base' }, // 0.20: + reranker
-  siliconflow: { embed: 'BAAI/bge-m3', rerank: 'BAAI/bge-reranker-v2-m3' },
-  dashscope: { embed: 'qwen3.7-text-embedding', rerank: 'qwen3.7-text-rerank' },
+  local: { embed: 'Xenova/multilingual-e5-small' },
+  siliconflow: { embed: 'BAAI/bge-m3' },
+  dashscope: { embed: 'qwen3.7-text-embedding' },
 };
 const KEY_ENV = { siliconflow: 'SILICONFLOW_API_KEY', dashscope: 'DASHSCOPE_API_KEY' };
 // transformers.js needs the ONNX export; people will type the BAAI name from the model card.
@@ -370,6 +374,12 @@ async function localEmbedder({ model, rerank, mirror, install, version, log, onP
 /** Recalled turns as she reads them: grouped by day under "06-22 周一 · 15 天前", 明天 / 下周三 dated. */
 const todayText = (now = Date.now()) => { const d = new Date(now); return `${dayMark(now, now)} 周${'日一二三四五六'[d.getDay()]}`; };
 const STAMPED = /^\[(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2})\] /;
+/** A turn without what she said back: what came in (his words, a notification). A turn that is only hers stays whole. */
+export function incomingWords(text) {
+  const head = STAMPED.exec(text)?.[0] ?? '';
+  const kept = text.slice(head.length).split('\n').filter((l) => !/^我[：（]/.test(l));
+  return kept.length ? head + kept.join('\n') : text;
+}
 export function renderTurns(chunks, now = Date.now()) {
   const out = [];
   let day = '';
@@ -397,7 +407,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
   const saved = () => readSettings().recall ?? {};
   // Command-set values (dsh-memory.json) win over plugin config, so switching needs no restart or file edit.
   const backend = () => { const b = saved().backend ?? cfg.recallBackend; return BACKENDS.includes(b) ? b : 'local'; };
-  const pick = (field, b, def) => saved()[field]?.[b] || (b === cfg.recallBackend && cfg[def]) || MODELS[b]?.[field === 'model' ? 'embed' : 'rerank'] || '';
+  const pick = (field, b, def) => saved()[field]?.[b] || (b === cfg.recallBackend && cfg[def]) || (field === 'model' && MODELS[b]?.embed) || '';
   const model = (b = backend()) => { const m = pick('model', b, 'recallModel'); return b === 'local' ? (ALIASES[m] ?? m) : m; };
   const rerankModel = (b = backend()) => { const m = pick('rerank', b, 'recallRerankModel'); return b === 'local' ? (ALIASES[m] ?? m) : m; };
   const keyOf = (b) => { const k = saved().keys?.[b]; if (k) return { key: k, from: 'dsh-memory.json' }; const e = process.env[KEY_ENV[b]]; return e ? { key: e, from: KEY_ENV[b] } : { key: '', from: '' }; };
@@ -483,15 +493,24 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     const cut = Math.max(contrastCut(scores, Number(cfg.recallContrast) || 0), 1e-9);
     return scores.map((s, j) => ({ j, s })).filter((x) => x.s >= cut).sort((a, b) => b.s - a.s);
   };
-  /** Two lists, alternately, without repeats. */
-  const interleave = (a, b) => { const out = [], seen = new Set(); for (let i = 0; i < Math.max(a.length, b.length); i++) for (const x of [a[i], b[i]]) if (x && !seen.has(x.j)) { seen.add(x.j); out.push(x); } return out; };
+  /**
+   * Reciprocal-rank fusion (k 60) of ranked lists, best first: a turn in both lists gets both
+   * contributions. `o` is the fused order key; `s` keeps the turn's own score (shown, not compared:
+   * cosine and BM25 are on different scales).
+   */
+  const fuse = (...lists) => {
+    const m = new Map();
+    for (const l of lists) l.forEach((x, r) => { const e = m.get(x.j) ?? { j: x.j, s: x.s, o: 0 }; e.o += 1 / (60 + r + 1); m.set(x.j, e); });
+    return [...m.values()].sort((a, b) => b.o - a.o);
+  };
 
   /**
    * The turns for `query` outside `session`: { text, hits, candidates, mode, ms } (text '' when
    * nothing). `candidates` are the times of every turn handed to the reranker (for measurement).
+   * `whole`: turns with what she said back and no neighbours (her own lookup).
    */
   let last = null;
-  async function query(q, { session = '', record = true } = {}) {
+  async function query(q, { session = '', record = true, whole = false, more = [] } = {}) {
     const t0 = performance.now();
     const b = backend();
     const res = { text: '', hits: [], candidates: [], mode: b, ms: 0 };
@@ -508,7 +527,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     if (impl) await sync();
     const N = Number(cfg.recallWindowTurns) || 0;
     const K = Number(cfg.recallCandidates) || 20;
-    const topK = Number(cfg.recallTopK) || 10;
+    const topK = Number(cfg.recallTopK) || 30;
     const lexical = cfg.recallLexical !== false;
     // What she already sees: her whole current session (dsh keeps it in the window until the
     // handoff), or — for a host that shows only the last N turns — those N.
@@ -517,16 +536,20 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     const outside = (all) => { const turns = all.filter((c) => c.kind !== 'seen'); return N > 0 ? turns.slice(0, Math.max(0, turns.length - N)) : turns.filter((c) => c.session !== session); };
     const seenMax = Math.max(0, Number(cfg.recallSeenMax ?? 2) || 0);
     let seen = [];
-    let picked = null;
+    let picked = null, from = [];
     if (impl) {
       try {
         const ix = index(b);
         const pool = outside(ix.meta().map((m, i) => ({ ...m, i })));
         let qvec = null;
         const queryVec = async () => (qvec ??= (await impl.embed([q], 'query')).map(norm)[0]);
-        picked = [];
+        picked = []; from = pool;
         if (pool.length) {
-          const qv = await queryVec();
+          // `more`: other wordings of the same wake (a rewrite of what he may have said back then). Each
+          // gets its own cosine and BM25 list; all of them are fused by rank with the lists of his words.
+          const also = more.map((x) => clip(String(x ?? '').trim(), 500)).filter((x) => x && x !== q && rejectReason(x) !== 'secret').slice(0, 3);
+          const [qv, ...mv] = (await impl.embed([q, ...also], 'query')).map(norm);
+          qvec = qv;
           const vecs = ix.vecs();
           const cos = pool.map((c) => dot(qv, vecs[c.i]));
           const bm = lexical ? bm25For(ix).score(q, pool.map((c) => c.i)) : [];
@@ -542,13 +565,16 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
           if (ranked) {
             // The reranker decides; fewer than topK when fewer clear its bar, never padded.
             const min = Number(cfg.recallRerankMin) || -Infinity;
-            picked = ranked.filter((x) => x.score >= min).slice(0, topK).map((x) => ({ c: pool[keys[x.index]], s: x.score }));
+            picked = ranked.filter((x) => x.score >= min).slice(0, topK).map((x) => ({ j: keys[x.index], s: x.score }));
             res.mode = `${b}+rerank`;
           } else {
-            // No reranker (none set, or not ready yet): each channel keeps what stands out.
+            // No reranker (the default; or not ready yet): each channel keeps what stands out, and
+            // the last turns before her window are a list of their own (newest first), fused by rank.
             const floor = Number(cfg.recallMinScore) || -Infinity;
-            const vec = standOut(cos).filter((x) => x.s >= floor);
-            picked = interleave(vec, lexical ? standOut(bm) : []).slice(0, topK).map((x) => ({ c: pool[x.j], s: x.s }));
+            const vec = standOut(cos).filter((x) => x.s >= floor).slice(0, 60);
+            const recent = Array.from({ length: Math.min(Number(cfg.recallRecentTurns) || 0, pool.length) }, (_, r) => ({ j: pool.length - 1 - r, s: 0 }));
+            const extra = also.flatMap((x, n) => [standOut(pool.map((c) => dot(mv[n], vecs[c.i]))).filter((y) => y.s >= floor).slice(0, 60), lexical ? standOut(bm25For(ix).score(x, pool.map((c) => c.i))).slice(0, 60) : []]);
+            picked = fuse(vec, lexical ? standOut(bm).slice(0, 60) : [], ...extra, recent).slice(0, topK);
           }
         }
         const kept = seenMax ? ix.meta().map((m, i) => ({ ...m, i })).filter((c) => c.kind === 'seen') : [];
@@ -576,15 +602,29 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
       if (kept.length) { const sb = createBm25(); for (const c of kept) sb.add(c.text); seen = standOut(sb.score(q)).slice(0, seenMax).map((x) => ({ c: kept[x.j], s: x.s })); }
       const bm = createBm25(); for (const c of all) bm.add(c.text);
       const words = standOut(bm.score(q));
-      picked = words.length ? words.slice(0, topK).map((x) => ({ c: all[x.j], s: x.s })) : search(all, q, topK).map((c, i) => ({ c, s: 1 - i / 100 }));
+      from = all;
+      picked = words.length ? words.slice(0, topK).map((x) => ({ j: x.j, s: x.s })) : search(all, q, topK).map((c, i) => ({ j: all.indexOf(c), s: 1 - i / 100 }));
     }
-    // Fit the budget by dropping the weakest, then show by day.
+    // Fit the budget by dropping the weakest (by the fused order without a reranker); what is left
+    // of it goes to the turns next to the hits, best hit first. Then show by day.
     const budget = Number(cfg.recallMaxTokens) || Infinity;
-    picked.sort((x, y) => y.s - x.s);
+    const said = whole ? (c) => c.text : (c) => incomingWords(c.text);
+    picked.sort((x, y) => (y.o ?? y.s) - (x.o ?? x.s));
     let used = 0;
-    picked = picked.filter((x) => { const n = estimateTokens(x.c.text); if (used + n > budget) return false; used += n; return true; });
-    res.hits = picked.map((x) => ({ at: x.c.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.c.text })).sort((x, y) => x.at - y.at);
-    res.text = picked.length ? `${prompt('memory.recall.header', { today: todayText() })}\n\n${renderTurns(picked.map((x) => x.c))}` : '';
+    const taken = new Set();
+    const shown = [];
+    const take = (j, s) => {
+      if (!from[j] || taken.has(j)) return;
+      const text = said(from[j]);
+      const n = estimateTokens(text);
+      if (used + n > budget) return;
+      used += n; taken.add(j); shown.push({ at: from[j].at, s, text });
+    };
+    for (const x of picked) take(x.j, x.s);
+    const near = whole ? 0 : Number(cfg.recallNeighbors) || 0;
+    for (const j of [...taken]) for (let d = 1; d <= near; d++) { take(j - d, 0); take(j + d, 0); }
+    res.hits = shown.map((x) => ({ at: x.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.text })).sort((x, y) => x.at - y.at);
+    res.text = shown.length ? `${prompt('memory.recall.header', { today: todayText() })}\n\n${renderTurns(shown)}` : '';
     // The lines she kept, after the turns and under their own heading, inside their own small budget.
     const seenBudget = Number(cfg.recallSeenMaxTokens ?? 200) || Infinity;
     let seenUsed = 0;
@@ -598,9 +638,9 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
 
   // ── per-session result for the prompt: computed when the waking message arrives ──
   const results = new Map(); // session → { promise, text }
-  function prepare(session, text) {
+  function prepare(session, text, more = []) {
     const r = { text: '', done: false };
-    r.promise = query(text, { session }).then((x) => { r.text = x.text; return x; }, (err) => { logger.warn(`recall query failed: ${err.message}`); return { text: '' }; }).finally(() => { r.done = true; });
+    r.promise = query(text, { session, more }).then((x) => { r.text = x.text; return x; }, (err) => { logger.warn(`recall query failed: ${err.message}`); return { text: '' }; }).finally(() => { r.done = true; });
     results.set(session, r);
     return r.promise;
   }
@@ -676,6 +716,10 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
 
   return {
     sync, query, prepare, status, command,
+    /** Vectors (normalised) for `texts` from the current embedder, or null while there is none (facts.js). */
+    async embed(texts, role = 'passage', use = '') { if (!texts.length) return []; const impl = await ready(backend(), 50); return impl ? (await impl.embed(texts, role, use)).map(norm) : null; },
+    /** `<backend>-<model>`: what an index built with the current embedder is filed under. */
+    indexId: () => `${backend()}-${slug(model())}`,
     /** Wait until the backend is usable (install / download / key check) and the index caught up. */
     async warm() { const impl = await ready(); if (impl?.rerankReady) await impl.rerankReady; await sync(); return Boolean(impl); },
     /** A turn of hers ended: every transcript line so far belongs to a finished turn. */
@@ -688,7 +732,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     pending: (session) => { const r = results.get(session); return r && !r.done ? r.promise : null; },
     clear: (session) => results.delete(session),
     /** Her own lookup (the `recall` tool): the same search over everything, her current session included. */
-    find: (q) => query(q, { session: '\u0000tool', record: false }),
+    find: (q) => query(q, { session: '\u0000tool', record: false, whole: true }),
     backend,
   };
 }

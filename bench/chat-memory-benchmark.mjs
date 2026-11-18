@@ -10,7 +10,8 @@
 //            60-second timer is fired at every minute where it can act (the diary at dailyAt).
 //   exam     at each question's exam time (after the maintenance due by then) a fresh, independent
 //            session is assembled: the dot:now line, the dot:memory context the plugin injects, the
-//            auto-recall hits for the question (recall.prepare → dot:recall, default settings), and the
+//            auto-recall hits for the question (recall.prepare → dot:recall, default settings), the facts picked
+//            for it (facts.prepare → dot:facts), and the
 //            last WINDOW turns as chat messages. One completion, no tools. The question and the answer
 //            never reach the transcript, the memory or the recall index.
 //   output   answers.jsonl ({"id","answer"} for grading/grade.py), run.jsonl, meta.json; a checkpoint
@@ -19,7 +20,7 @@
 // node bench/chat-memory-benchmark.mjs --dataset <…/datasets/natural-timegrid-20261101-v2> --out <dir>
 //   [--persona P01]… [--resume] [--fake-llm] [--recall local|off] [--window 6] [--max-questions N] [--only ids.txt] [--save-prompts]
 // env: DEEPSEEK_API_KEY, DEEPSEEK_BASE_URL (https://api.deepseek.com), DSH_BENCH_MODEL (deepseek-flash),
-//      DSH_BENCH_EMBED / DSH_BENCH_RERANK (local recall models; 'none' = no reranker), DSH_BENCH_MEMORY
+//      DSH_BENCH_EMBED / DSH_BENCH_RERANK (local recall models; no reranker unless DSH_BENCH_RERANK names one), DSH_BENCH_MEMORY
 //      (JSON for the memory section of the bench's own dsh-dot.json, e.g. '{"recallLexical":false}'),
 //      DSH_BENCH_EXTRA_BODY (JSON merged into every request), DSH_BENCH_MAX_TOKENS_CAP (8192),
 //      DSH_BENCH_PRICE_RMB ("0.2,2,3": per 1M tokens, input cache hit, input cache miss, output)
@@ -31,7 +32,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
 
-export const ADAPTER_VERSION = '2.0.0'; // 0.20 memory: no idle consolidation, the diary is its own call
+export const ADAPTER_VERSION = '2.1.0'; // facts: written at consolidation, picked for the exam question
 const REPO = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
 // ── fake clock: Date.now() and new Date() are the logical time; everything else is the real one ──
@@ -94,15 +95,11 @@ export function createModel({ fake = false, baseUrl, apiKey, model, extraBody = 
       return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
     }
     const said = [...all.matchAll(/^\[[\d-]+ \d{2}:\d{2}\] 他：(.+)$/gm)].map((m) => m[1].trim()).filter(Boolean);
-    const last = said.at(-1) ?? '';
-    if (purpose === 'diary' || /写今天的日记/.test(all)) {
-      const text = '今天和他聊了几句。';
+    if (/写今天的日记/.test(all)) { // the daily call: a diary, banks left as they are
+      const text = JSON.stringify({ diary: '今天和他聊了几句。' });
       return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
     }
-    const out = {
-      owner: last ? [{ action: 'add', content: `他说过：${clip(last, 40)}` }] : [], self: [], people: [], same: [],
-      open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null, owed: false })),
-    };
+    const out = { people: [], same: [], open: said.slice(-1).map((s) => ({ action: 'add', content: clip(s, 50), due: null })) };
     const text = JSON.stringify(out);
     return { text, finish: 'stop', hit: 0, miss: est(all), out: est(text) };
   }
@@ -236,7 +233,7 @@ async function main() {
   if (!existsSync(link) && !(() => { try { return lstatSync(link).isSymbolicLink(); } catch { return false; } })()) symlinkSync(realLib, link, process.platform === 'win32' ? 'junction' : 'dir');
   let savedRecall = {};
   try { savedRecall = JSON.parse(readFileSync(join(realDsh, 'dsh-memory.json'), 'utf8')).recall ?? {}; } catch { /* none */ }
-  // DSH_BENCH_EMBED / DSH_BENCH_RERANK pick the local models (a model name, or 'none' for no reranker).
+  // DSH_BENCH_EMBED / DSH_BENCH_RERANK pick the local models (no reranker unless DSH_BENCH_RERANK names one).
   writeFileSync(join(benchDsh, 'dsh-memory.json'), JSON.stringify({ recall: { backend: o.recall, ...(savedRecall.mirror ? { mirror: savedRecall.mirror } : {}), ...(process.env.DSH_BENCH_EMBED ? { model: { local: process.env.DSH_BENCH_EMBED } } : {}), ...(process.env.DSH_BENCH_RERANK ? { rerank: { local: process.env.DSH_BENCH_RERANK } } : {}) } }, null, 2));
   // DSH_BENCH_MEMORY: JSON merged into the memory section of the bench's own dsh-dot.json (a variant to measure).
   writeFileSync(join(benchDsh, 'dsh-dot.json'), JSON.stringify({ memory: process.env.DSH_BENCH_MEMORY ? JSON.parse(process.env.DSH_BENCH_MEMORY) : {} }, null, 2));
@@ -267,7 +264,7 @@ async function main() {
     model: o['fake-llm'] ? 'fake-llm' : modelName, baseUrl: o['fake-llm'] ? null : baseUrl, extraBody, thinking: extraBody.thinking ? JSON.stringify(extraBody.thinking) : 'the model\'s default (deepseek-flash reasons by default, billed as output); DSH_BENCH_EXTRA_BODY=\'{"thinking":{"type":"disabled"}}\' turns it off',
     usedFor: 'consolidation (memory.js via ctx.llm.stream) and answering, same model',
     window: { turns: WINDOW, why: 'the last 6 complete turns as chat messages, as Soul/ROFM/Qwen/OpenViking/Hindsight/Suzu were tested (docs/tested-configurations.md)' },
-    recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'Xenova/bge-reranker-base') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
+    recall: { backend: o.recall, model: o.recall === 'local' ? (process.env.DSH_BENCH_EMBED || 'Xenova/multilingual-e5-small') : null, rerank: o.recall === 'local' ? (process.env.DSH_BENCH_RERANK || 'none') : null, mirror: savedRecall.mirror || process.env.HF_ENDPOINT || 'https://hf-mirror.com', candidates: defaults.recallCandidates, topK: defaults.recallTopK, maxTokens: defaults.recallMaxTokens, rerankMin: defaults.recallRerankMin, minQueryLength: defaults.recallMinQueryLength, contrast: defaults.recallContrast, minScore: defaults.recallMinScore, lexical: defaults.recallLexical, windowTurns: WINDOW, note: 'recall.js defaults; recallWindowTurns = window so the shown turns are not recalled twice' },
     memory: { handoffTokens: defaults.handoffTokens, minTokensBetweenHandoffs: defaults.minTokensBetweenHandoffs, consolidateEveryLines: defaults.consolidateEveryLines, dailyAt: defaults.dailyAt, inputChars: defaults.inputChars, limits: defaults.limits, sessionBaseTokens: SESSION_BASE, tz: o.tz },
     pricingAssumptionRmbPerMTokens: { inputCacheHit: price[0], inputCacheMiss: price[1], output: price[2], source: 'DeepSeek list price for deepseek-flash (assumption; override DSH_BENCH_PRICE_RMB)' },
     personas: oldMeta?.personas ?? {},
@@ -315,6 +312,7 @@ async function main() {
     setClock(state.clock);
     const host = hostFor({ apply, home, model, modelName, state, sessionBaseTokens: SESSION_BASE, estimateTokens });
     const { api, contexts, emit } = host;
+    api.facts.hold(true); // replayed messages of his pick no facts; an exam question does
 
     // Let whatever the plugin started (consolidation, handoff, indexing) finish before time moves on.
     async function quiesce() {
@@ -322,6 +320,7 @@ async function main() {
         let idle = 0;
         while (idle < 5) { await new Promise((r) => { setImmediate(r); }); if (model.inflight === 0) idle++; else { idle = 0; await sleep(25); } }
         await api.recall.sync();
+        await api.facts.sync();
       }
     }
 
@@ -422,15 +421,19 @@ async function main() {
       const r = await api.recall.prepare(examId, q.question);
       const recallText = contexts.get('dot:recall')?.text(c) ?? '';
       api.recall.clear(examId);
+      // The facts for this message: ranked and picked as on a real wake (one more model call).
+      await api.facts.prepare(examId, q.question, { force: true, now: clockMs });
+      const factsText = contexts.get('dot:facts')?.text(c) ?? '';
+      api.facts.clear(examId);
       const nowLine = nowText(now, api.lastSaidAt(clockMs + 1));
       const win = history.slice(Math.max(0, state.turnsDone - WINDOW), state.turnsDone);
       const messages = [
-        { role: 'system', content: [SYSTEM, nowLine, memoryText, recallText].filter(Boolean).join('\n\n') },
+        { role: 'system', content: [SYSTEM, nowLine, memoryText, recallText, factsText].filter(Boolean).join('\n\n') },
         ...win.flatMap((h) => [{ role: 'user', content: prompt('dot.owner-words', { stamp: stamp(h.at, now), text: h.user, busy: '' }) }, { role: 'assistant', content: h.assistant }]),
         { role: 'user', content: prompt('dot.owner-words', { stamp: stamp(now, now), text: q.question, busy: '' }) },
       ];
       if (o['save-prompts']) appendFileSync(files.prompts, `${JSON.stringify({ id: q.id, messages, recall: { hits: (r?.hits ?? []).map((h) => h.at), candidates: r?.candidates ?? [], mode: r?.mode ?? '' } })}\n`);
-      const row = { id: q.id, persona, cutoff_turn: q.cutoff_turn, now: q.now, recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', memory_chars: memoryText.length, window: win.length, sessions: state.sessions };
+      const row = { id: q.id, persona, cutoff_turn: q.cutoff_turn, now: q.now, recall_hits: r?.hits?.length ?? 0, recall_mode: r?.mode ?? '', memory_chars: memoryText.length, facts_chars: factsText.length, facts: api.facts.size, window: win.length, sessions: state.sessions };
       try {
         const a = await model.complete(messages, { maxTokens: 2048, purpose: 'answer' });
         const answer = a.text.trim();

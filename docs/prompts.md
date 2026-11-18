@@ -10,7 +10,7 @@
 - `{名字}` 是占位符，代码填；没填到的原样留着，并在日志里提醒一次。别删，删了那部分内容就不出现了。
 - 某一行只有一个 `{名字}` 且它是空的（比如没开电脑时的 `{computerRule}`），这一行整行省掉。
 - 带条件的片段是单独的文件（`qq.channel.owner.txt` 只在设了主人时拼进 `{owner}`；`phone.device.number.txt` 只在设了手机号时拼进 `phone.device` 的 `{number}` 那一行，里面的 `{number}` 是号码本身；`phone.stickers.txt` 是 `phone.device` 的 `{stickers}`，各 App 怎么加表情包，整段手机提示词只在手机开着时出现）。
-- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`memory.standing`、`memory.handoff`）：只改等号右边。
+- 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`memory.standing`、`memory.handoff`、`memory.daily.bank`）：只改等号右边。
 - **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
 - `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
 - `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
@@ -39,8 +39,8 @@
 | | 拿起手机 / 留在她对话里的一句 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what` |
 | | 交接 | `memory.handoff` |
 | | 自己的时间 | `interlude.free` `.budget` `.over` `.typing` |
-| 独立模型调用 | 整理记忆 | `memory.extract`（规则，放在最前面）`memory.extract.input` `.banks` `.banks.off` |
-| | 日记 | `memory.diary` |
+| 独立模型调用 | 整理记忆（还没了的事、人物） | `memory.extract`（规则，放在最前面）`memory.extract.input`（认识的人在还没了的事前面：前者少变，后者几乎每次都变） |
+| | 每天一次：日记和关于他 / 她自己 | `memory.daily`（固定的说明在前，日子和记录在最后）`memory.daily.bank`（每栏的标题；`owner.full` / `self.full` 是这一栏满了（剩下不到 60 字）时的标题；`off` 是和别的记忆插件共存时那一行） |
 | | 群消息打分 | `qq.score.system` `qq.score.who` `qq.score.user` |
 
 **还在代码里的**：

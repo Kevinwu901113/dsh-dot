@@ -7,10 +7,12 @@
 //   recall      before each turn, the old turns that bear on the message that woke her (recall.js):
 //               vector + BM25 candidates, reranked, shown by day with exact dates.
 //   memory      <home>/memory/memory.json (+ memory.md for reading) — three notes (about him, her own,
-//               还没了的事 with its shelf) and the people (store.js). In front of her every turn.
-//   consolidate one model call over the transcript since the last one: note edits and people. When
-//               `consolidateEveryLines` new lines have piled up, and before a handoff.
-//   diary       once a day at `dailyAt`, when there was anything that day: one short call.
+//               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
+//   consolidate one model call over the transcript since the last one: 还没了的事 and people. When
+//               `consolidateEveryLines` new lines have piled up, before the diary, and before a handoff.
+//   daily       once a day at `dailyAt`, when there was anything that day: one call writes the diary
+//               and is the only writer of the owner / self banks besides her own tool — what of the
+//               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
@@ -21,11 +23,12 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, fitOpen, renderItem, setImpression,
+  DEFAULT_LIMITS, bankOp, bankSize, bankUsage, bankFull, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp, quoteIn,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 import { createRecall } from './recall.js';
+import { createFacts } from './facts.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { sectionOf, setValues } from '../settings.js';
@@ -40,14 +43,16 @@ export const defaults = {
   home: '',
   handoffTokens: 150000,        // her conversation is handed over to a fresh session past this
   minTokensBetweenHandoffs: 40000,
-  consolidateEveryLines: 40,    // transcript lines since the last consolidation that trigger one (and every handoff)
-  chunkLines: 80,               // at most this many lines per consolidation call; a backlog is read in several
+  consolidateEveryLines: 120,   // transcript lines since the last consolidation that trigger one (also: before the diary, and every handoff)
+  chunkLines: 160,              // at most this many lines per consolidation call (above the trigger, so one batch is one call); a backlog is read in several
   minChunkLines: 10,            // after failed calls the chunk is halved, down to this
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
   dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
   maxTokens: 16384,
-  limits: DEFAULT_LIMITS,
+  limits: DEFAULT_LIMITS,        // limits.open is how much of 还没了的事 is shown each turn, not how much is kept
+  openKeepDaysAfterDue: 3,      // an item with a due date goes this many days after it
+  openKeepDaysIdle: 14,         // an item without one goes after this many days untouched (added, replaced, brought up again)
   // Living next to another memory plugin. full: everything on. people-only: keep people, 还没了的事
   // and the diary, but leave the owner/self notes (prompt text and consolidation) to the other one,
   // so two plugins do not both narrate what she knows about him. auto: people-only when one of
@@ -60,13 +65,15 @@ export const defaults = {
   // /dot memory recall … (saved to $DSH_HOME/dsh-memory.json, which wins over this config).
   recallBackend: 'local',       // local (on this machine, no key) | siliconflow | dashscope | off
   recallModel: '',              // embedding model; '' = the backend's own (local Xenova/multilingual-e5-small · siliconflow BAAI/bge-m3 · dashscope qwen3.7-text-embedding); BAAI/bge-small-zh-v1.5 is the lighter Chinese-only local one
-  recallRerankModel: '',        // '' = the backend's own (local Xenova/bge-reranker-base · siliconflow BAAI/bge-reranker-v2-m3 · dashscope qwen3.7-text-rerank); 'none' = no reranker
+  recallRerankModel: '',        // '' or 'none' = no reranker (the default); a name turns one on: local Xenova/bge-reranker-base · siliconflow BAAI/bge-reranker-v2-m3 · dashscope qwen3.7-text-rerank
   recallMirror: '',             // where local models download from; '' = $HF_ENDPOINT, else https://hf-mirror.com
   recallInstall: true,          // install @huggingface/transformers into $DSH_HOME/dsh-dot-recall on first use (300–480 MB; not a package dependency)
   recallTransformersVersion: '4.3.2',
-  recallCandidates: 20,         // turns each channel (vector, BM25) hands to the reranker
-  recallTopK: 10,               // at most this many turns injected per wake — fewer when fewer are relevant
+  recallCandidates: 20,         // turns each channel (vector, BM25) hands to the reranker, when one is set
+  recallTopK: 30,               // at most this many turns found per wake — fewer when fewer stand out; shown without her replies
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
+  recallRecentTurns: 20,        // the last turns before her window are a ranked list of their own (newest first), without a reranker; 0 = off
+  recallNeighbors: 1,           // budget left over goes to the turns this close before and after each hit; 0 = off
   recallRerankMin: 0,           // a reranked turn needs at least this score (0–1); 0 = the reranker's order alone decides
   // Lines she kept while browsing (who: 'seen', the keep_line tool): chosen apart from the turns, so they never take a
   // turn's place. At most recallSeenMax of them per wake (0 = never shown), each above recallSeenMin with a reranker,
@@ -85,6 +92,12 @@ export const defaults = {
   recallWindowTurns: 0,         // 0: skip her whole current session (dsh keeps it in the window); N: skip only the last N turns (hosts that show a window)
   recallChunkChars: 1200,       // one turn's text is clipped to this before embedding
   recallWaitMs: 3000,           // prompt assembly waits this long for a query still running, then goes on without it
+  // Facts (facts.js): a sentence per thing worth keeping, written when records are consolidated, and
+  // the ones that bear on what he just said put in her prompt (one model call per wake picks them).
+  facts: true,
+  factsShown: 60,               // the pick call reads this many, the best by the fused lists
+  factsPicked: 6,               // at most this many lines reach her prompt
+  factsWaitMs: 8000,            // prompt assembly waits this long for the pick, then goes on without it
   recallSiliconflowUrl: 'https://api.siliconflow.cn/v1',
   recallDashscopeUrl: 'https://dashscope.aliyuncs.com', // a workspace host (https://<ws>.cn-beijing.maas.aliyuncs.com) works too
 };
@@ -148,23 +161,32 @@ export function takeChunk(fresh, maxChars) {
 export const extractRules = () => prompt('memory.extract');
 
 /**
- * The whole consolidation prompt. The rules come first and never change, so every call shares that
- * prefix (the provider's cache); what she already has comes next; the new records last.
+ * The whole consolidation prompt, from what changes least to what changes most, so calls share the
+ * longest prefix (the provider's cache): the rules (never change), the people (new ones are added at
+ * the end, an impression now and then), 还没了的事 (different nearly every call), the new records.
  */
-export function extractPrompt({ text = '', bankless = false, owner = [], self = [], words = [], known = '', open = '', shelved = '' }) {
+export function extractPrompt({ text = '', known = '', open = '', words = [] }) {
   return [
     extractRules(),
     '',
-    prompt('memory.extract.input', {
-      records: text || '（这段时间没有新记录）',
-      banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', open: open || '（没有）', shelved: shelved || '（没有）', words: words.map((e) => `- ${e}`).join('\n') || '（还没有）',
-    }),
+    prompt('memory.extract.input', { records: text || '（这段时间没有新记录）', people: known || '（还没有）', open: open || '（没有）', words: words.map((e) => `- ${e}`).join('\n') || '（还没有）' }),
   ].join('\n');
 }
 
-/** The diary prompt: today's records, and the day as the diary heads it. */
-export const diaryPrompt = ({ day, text }) => prompt('memory.diary', { day, records: text || '（今天没有记录）' });
+const BANKS = ['owner', 'self'];
+/**
+ * The daily call: the fixed instructions, then both banks (oldest → newest, size, limit; a full bank's
+ * header says so and asks for a replace), then the day and its records — what is the same from call
+ * to call first. banks: { owner, self }, or null
+ * when they are another plugin's (people-only): then it is told to write the diary only.
+ */
+export function dailyPrompt({ day, text, banks, limits = DEFAULT_LIMITS }) {
+  const show = (bank) => `${table('memory.daily.bank', { size: bankSize(banks[bank]), limit: limits[bank] })[bankFull(banks[bank], limits[bank]) ? `${bank}.full` : bank]}\n${banks[bank].map((e) => `- ${e}`).join('\n') || '（空）'}`;
+  return prompt('memory.daily', {
+    banks: banks ? BANKS.map(show).join('\n') : table('memory.daily.bank', { size: 0, limit: 0 }).off,
+    day, records: text || '（今天没有记录）',
+  });
+}
 
 /** Pull a JSON object out of a reply (bare, fenced, or between the first { and last }). */
 export function parseLooseJson(raw) {
@@ -178,29 +200,28 @@ export function parseLooseJson(raw) {
   return null;
 }
 
-/** Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory). */
-export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), evidence } = {}) {
-  const report = { owner: 0, self: 0, words: 0, open: 0, done: 0, shelved: 0, people: 0, errors: [] };
+/**
+ * Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory).
+ * Items that have run out go afterwards (keepAfterDue / keepIdle: days, see isLive). `segment` is the
+ * record the call read: a done on an item it does not mention is skipped (openOp).
+ */
+export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle, segment, evidence = segment } = {}) {
+  // owner / self are not the consolidation's (the daily call writes them): in a reply they are ignored.
+  const report = { words: 0, open: 0, done: 0, expired: 0, people: 0, errors: [] };
   // 词 and 梗: each kept only with a quote that is in the records just read (`evidence`) and contains it.
   for (const op of [].concat(out?.words ?? [])) {
     if (!op || typeof op !== 'object') continue;
     const r = wordOp(memory.words ?? [], op, limits.words ?? DEFAULT_LIMITS.words, { evidence });
     if (r.ok) { if (!r.note) report.words++; memory.words = r.entries; } else report.errors.push(`words: ${r.error}`);
   }
-  for (const bank of ['owner', 'self']) {
-    for (const op of [].concat(out?.[bank] ?? [])) {
-      const r = bankOp(memory[bank], op, limits[bank]);
-      if (r.ok) { if (!r.note) report[bank]++; memory[bank] = r.entries; } else report.errors.push(`${bank}: ${r.error}`);
-    }
-  }
   for (const op of [].concat(out?.open ?? [])) {
     if (!op || typeof op !== 'object') continue;
-    const r = openOp(memory, { ...op, due: op.due ?? undefined }, { now });
+    const r = openOp(memory, { ...op, due: op.due ?? undefined }, { now, segment });
     if (!r.ok) { report.errors.push(`open: ${r.error}`); continue; }
     if (r.note) continue;
     if (op.action === 'done' || op.action === 'remove') report.done++; else report.open++;
   }
-  report.shelved = fitOpen(memory, { limits, now }).length;
+  report.expired = expireOpen(memory, { now, keepAfterDue, keepIdle });
   for (const u of [].concat(out?.people ?? [])) {
     if (!u || typeof u !== 'object') continue;
     let p = findPerson(memory.people, u.id) ?? resolvePerson(memory.people, { platform: u.platform, name: u.name });
@@ -300,7 +321,9 @@ export function apply(ctx, config = {}) {
   runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const user = sectionOf('memory', (m) => logger.warn(m));
   const cfg = { ...defaults, ...setValues(config), ...user };
+  if (process.env.DSH_DOT_FACTS === 'off') cfg.facts = false; // the switch without a config file (and for tests of the rest)
   cfg.limits = { ...DEFAULT_LIMITS, ...(config.limits ?? {}), ...(user.limits ?? {}) };
+  const keep = { keepAfterDue: Number(cfg.openKeepDaysAfterDue), keepIdle: Number(cfg.openKeepDaysIdle) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: memory.enabled = false)'); return; }
   const home = cfg.home || join(homedir(), 'dot');
   configurePrompts({ home });
@@ -348,15 +371,13 @@ export function apply(ctx, config = {}) {
       `# 她记得的（第 ${memory.gen} 段，整理过 ${memory.consolidations} 次）`, '',
       `## 关于你（${bankUsage(memory.owner, cfg.limits.owner)}）`, ...memory.owner.map((e) => `- ${e}`), '',
       `## 她自己记下的（${bankUsage(memory.self, cfg.limits.self)}）`, ...memory.self.map((e) => `- ${e}`), '',
-      `## 还没了的事（${usage(memory.open, cfg.limits.open)}）`, ...memory.open.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
-      `## 先搁着的（${memory.shelved.length}）`, ...memory.shelved.map((x) => `- ${x.id} ${renderItem(x)}${x.owed ? ' · 答应过' : ''}`), '',
+      `## 还没了的事（${usage(memory.open, cfg.limits.open)}）`, ...memory.open.map((x) => `- ${x.id} ${renderItem(x)}`), '',
       `## 认识的人（${people.length}）`, ...people.map((p) => renderPerson(p)), '',
       `## 待确认的合并（${memory.merges.length}）`, ...memory.merges.map((m) => `- ${m.id} · ${m.a} + ${m.b}：${m.why}`), '',
     ].join('\n');
   }
   // A 0.19 memory was migrated on load: what is no longer kept goes to memory.v019.json (never
-  // overwritten), and memory-migration.md says where everything went — above all, the open items
-  // that did not fit and were shelved.
+  // overwritten), and memory-migration.md says where everything went.
   if (memory.migration) {
     const { archive, report } = memory.migration;
     delete memory.migration;
@@ -372,16 +393,17 @@ export function apply(ctx, config = {}) {
     try {
       writeFileSync(files.migration, [
         `# 记忆升级到 0.20（${new Date().toISOString()}）`, '',
-        `- 还没了的事：${report.open.length} 件进了第三栏${report.shelved.length ? `，${report.shelved.length} 件放不下，先搁着（仍会被提起、可以 recall）` : ''}`,
-        ...report.shelved.map((t) => `  - 搁着：${t}`),
+        `- 还没了的事：${report.open.length} 件进了第三栏（很久没再提的会自己拿掉，原话都还在）`,
         `- 钉住的碎片进了"关于他"：${report.toOwner.length} 条`, ...report.toOwner.map((t) => `  - ${t}`),
         `- 不再保留、存进 ${kept || '（没能写出，memory.json 未改动）'}：碎片 ${report.archived} 条、人物卡上的事实 ${report.facts} 条、待核实 ${report.pending} 条（原话都还在，提到时会翻出来）`, '',
       ].join('\n'));
     } catch (err) { logger.warn(`migration files: ${err.message}`); }
     save();
-    audit('migrated', { open: report.open.length, shelved: report.shelved.length, toOwner: report.toOwner.length, archived: report.archived, facts: report.facts, pending: report.pending });
-    logger.info(`memory migrated to 0.20: ${report.open.length} open, ${report.shelved.length} shelved, ${report.archived} fragment(s) archived → ${files.migration}`);
+    audit('migrated', { open: report.open.length, toOwner: report.toOwner.length, archived: report.archived, facts: report.facts, pending: report.pending });
+    logger.info(`memory migrated to 0.20: ${report.open.length} open, ${report.archived} fragment(s) archived → ${files.migration}`);
   }
+  // 还没了的事 that ran out while dsh was down (or a shelf from 0.23, folded in on load) go now.
+  if (expireOpen(memory, keep)) save();
 
   // ── transcript ──
   let lines = [];
@@ -401,6 +423,7 @@ export function apply(ctx, config = {}) {
   };
   const sinceCursor = () => lines.filter((l) => l.at > memory.cursor);
   const recall = createRecall({ cfg, dir, lines: () => lines, transcriptFile: files.transcript, logger, audit: (event, data) => audit(event, data), embedder: config.recallEmbedder });
+  const facts = createFacts({ cfg, dir, recall, complete: (text, reason, o) => complete(text, reason, o), lines: () => lines, logger, audit: (event, data) => audit(event, data) });
   // Catch the index up with what happened while dsh was down (the local backend installs on first use).
   ctx.effect(() => { const t = setTimeout(() => { void recall.sync(); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: recall index');
 
@@ -502,11 +525,11 @@ export function apply(ctx, config = {}) {
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
         else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); }
         // What woke her is the query; the result is in front of her before the model is called.
-        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) void recall.prepare(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
+        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
         return;
       }
       case 'turn/end': {
-        running.delete(id); recall.clear(id); recall.turnEnded();
+        running.delete(id); recall.clear(id); facts.clear(id); recall.turnEnded();
         void afterTurn(id);
         return;
       }
@@ -516,15 +539,18 @@ export function apply(ctx, config = {}) {
 
   // ── model calls ──
   /** One completion with her default model: { raw, spent } or { error }. Every call is counted in the day's ledger. */
-  async function complete(text, reason) {
+  async function complete(text, reason, { foreground = false } = {}) {
     const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
     if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
     let raw = '';
     let usage = null;
     try {
       let finish = null;
-      const effort = await workEffort(ctx, sel);
-      for await (const chunk of ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] }))) {
+      // A background call thinks at the work effort; the pick, part of answering him, at the model's own.
+      const effort = foreground ? sel.reasoningEffort : await workEffort(ctx, sel);
+      const options = { provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] };
+      // The pick of facts is part of answering him: it must not wait behind his own turn (llm-gate).
+      for await (const chunk of ctx.llm.stream(foreground ? options : background(options))) {
         if (chunk.type === 'text-delta') raw += chunk.text;
         if (chunk.type === 'usage') usage = chunk.usage ?? null;
         if (chunk.type === 'finish') finish = chunk.reason;
@@ -575,50 +601,94 @@ export function apply(ctx, config = {}) {
   }
   async function consolidateOnce(fresh, { reason }) {
     const text = fresh.map(transcriptLine).join('\n');
-    const bankless = peopleOnly();
     const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
-    const item = (x) => `- ${renderItem(x)}${x.owed ? '（答应过）' : ''}`;
-    const ask = extractPrompt({
-      text, bankless, owner: memory.owner, self: memory.self, words: memory.words ?? [], known,
-      open: memory.open.map(item).join('\n'),
-      shelved: memory.shelved.slice(-30).map(item).join('\n'),
-    });
+    // The items she is shown, in her order (not every stored one: those are many and go by themselves).
+    const view = openView(memory, { limits: cfg.limits, ...keep });
+    const ask = extractPrompt({ text, known, words: memory.words ?? [], open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n') });
     const r = await complete(ask, 'consolidation');
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
     const out = parseLooseJson(r.raw);
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
-    if (bankless) { delete out.owner; delete out.self; }
-    const report = applyExtraction(memory, out, { limits: cfg.limits, evidence: text });
+    const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });
+    for (const e of report.errors) if (e.startsWith('open: done skipped')) logger.warn(e);
+    // What the daily call reads instead of these lines (it only reads what no consolidation has).
+    const note = typeof out.day === 'string' ? clip(out.day.trim(), 400) : '';
+    memory.dayNotes = (memory.dayNotes ?? []).filter((n) => n.at >= startOfToday() - 86400000);
+    if (note && !rejectReason(note) && fresh.length) memory.dayNotes.push({ from: fresh[0].at, at: fresh.at(-1).at, text: note });
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();
+    // The facts of the same batch: their own call, after the notes are safe (a failure costs these lines' facts only).
+    { const f = await facts.write(fresh); if (f?.error) logger.warn(`facts not written for ${fresh.length} line(s): ${f.error}`); }
     audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
-    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, words ${report.words}, open +${report.open} / done ${report.done} / shelved ${report.shelved}, people ${report.people}`);
+    logger.info(`consolidated ${fresh.length} line(s): words ${report.words}, open +${report.open} / done ${report.done} / expired ${report.expired}, people ${report.people}`);
     return { ok: true, report };
   }
 
-  // ── diary: once a day, about that day, when anything happened ──
+  // ── the daily call: the diary, and the owner / self banks ──
+  // Once a day, when anything happened: one call returns the diary and, per bank, only what of the day
+  // is lasting — adds and replaces, applied with bankOp (one that does not fit or does not apply is
+  // skipped, the rest still go in; a full bank's header asks for a replace). It reads the day's
+  // lines no consolidation has read yet; of the lines one has, it reads that call's note (`day`)
+  // instead, so no line is paid for twice. What is still unread and longer than inputChars is read
+  // in several calls, oldest first, each seeing the banks as the one before left them (the notes go
+  // with the first); the diary is the last call's.
   let writingDiary = null;
   async function diary({ reason = 'daily' } = {}) {
     if (writingDiary) return writingDiary;
     writingDiary = (async () => {
       const day = dayLabel(new Date());
-      const today = lines.filter((l) => l.at >= startOfToday() && rejectReason(l.text) !== 'secret');
-      if (!today.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
-      const r = await complete(diaryPrompt({ day, text: takeChunk([...today].reverse(), cfg.inputChars).reverse().map(transcriptLine).join('\n') }), 'diary');
-      if (r.raw === undefined) return r;
-      try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: today.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+      const today = lines.filter((l) => l.at >= startOfToday() && l.at > memory.cursor && rejectReason(l.text) !== 'secret');
+      const earlier = (memory.dayNotes ?? []).filter((n) => n.at >= startOfToday()).map((n) => `[${stamp(n.from)} 到 ${stamp(n.at)} 的摘记] ${n.text}`);
+      const banks = !peopleOnly(); // people-only: the banks are the other plugin's; the diary alone
+      if (!today.length && !earlier.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      const notes = {};
+      const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
+      let left = today, out = null, first = true;
+      do {
+        const part = left.length ? takeChunk(left, cfg.inputChars) : [];
+        left = left.slice(part.length);
+        const text = [...(first ? earlier : []), ...part.map(transcriptLine)].join('\n');
+        first = false;
+        const r = await complete(dailyPrompt({ day, text, banks: banks ? { owner: memory.owner, self: memory.self } : null, limits: cfg.limits }), 'daily');
+        if (r.raw === undefined) return r;
+        try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: part.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+        out = parseLooseJson(r.raw);
+        if (banks) for (const bank of BANKS) note(bank, applyOps(bank, out));
+      } while (left.length);
       memory.lastDiary = day.slice(0, 10);
-      const entry = r.raw.trim().replace(/^["“「]|["”」]$/g, '');
+      memory.dayNotes = [];
+      const entry = typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
       if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${day}\n${entry}\n\n`); } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
       save();
-      audit('diary', { reason, lines: today.length, written: Boolean(entry) });
-      return { ok: true, diary: entry };
+      audit('diary', { reason, lines: today.length, notes: earlier.length, written: Boolean(entry), banks: Object.keys(notes) });
+      logger.info(`daily (${reason}): diary ${entry ? 'written' : 'not written'}${Object.entries(notes).map(([b, n]) => `; ${b} ${n}`).join('')}`);
+      return { ok: true, diary: entry, banks: notes };
     })();
     try { return await writingDiary; } finally { writingDiary = null; }
   }
-
+  /**
+   * The day's ops on one bank (`<bank>: [{action: add|replace, …}]`), applied in order with bankOp: an
+   * op that does not apply (no or several entries match its oldText, a line not kept, an add or a longer
+   * replace that does not fit, not an add or a replace) is skipped with a warning, the rest still go in. Returns what happened, or ''.
+   */
+  function applyOps(bank, out) {
+    if (out?.[bank] == null) return '';
+    let added = 0, replaced = 0;
+    const skipped = [];
+    for (const op of [].concat(out[bank])) {
+      const r = op && typeof op === 'object' && ['add', 'replace'].includes(op.action) ? bankOp(memory[bank], op, cfg.limits[bank]) : { ok: false, error: `not an add or replace: ${clip(JSON.stringify(op) ?? '', 60)}` };
+      if (!r.ok) { skipped.push(r.error); continue; }
+      if (r.note) continue; // already there
+      memory[bank] = r.entries;
+      if (op.action === 'add') added++; else replaced++;
+    }
+    for (const e of skipped) logger.warn(`daily: ${bank} op skipped (${e})`);
+    if (skipped.length) audit('daily-op-skipped', { bank, errors: skipped.map((e) => clip(e, 200)) });
+    if (!added && !replaced && !skipped.length) return '';
+    return `+${added} added, ${replaced} replaced${skipped.length ? `, ${skipped.length} skipped` : ''} → ${bankUsage(memory[bank], cfg.limits[bank])}`;
+  }
   // ── handoff ──
   let handingOff = false;
   async function measure(id) {
@@ -676,9 +746,20 @@ export function apply(ctx, config = {}) {
     const pending = sinceCursor().length;
     if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
-  // Once a minute: the diary, from dailyAt on, once a day (a failed one is tried again next minute).
+  // Once a minute: the day's end, from dailyAt on, once a day (a failed diary is tried again next minute).
+  // The day's unread lines are consolidated first: what he said tonight about tomorrow is in 还没了的事
+  // before the day ends, and the diary call reads that call's note, not the lines again. A failed
+  // consolidation leaves them unread, and the diary reads them as before.
+  let endingDay = null;
+  function dayEnd() {
+    endingDay ??= (async () => {
+      if (sinceCursor().length) { try { await consolidate({ reason: 'day-end' }); } catch (error) { void error; } }
+      return diary({ reason: 'daily' });
+    })().finally(() => { endingDay = null; });
+    return endingDay;
+  }
   ctx.effect(() => {
-    const timer = setInterval(() => { if (dailyDue()) void diary({ reason: 'daily' }); }, 60000);
+    const timer = setInterval(() => { if (dailyDue()) void dayEnd(); }, 60000);
     timer.unref?.();
     return () => clearInterval(timer);
   }, 'dsh-dot/memory: daily diary');
@@ -692,7 +773,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         const s = c.agent?.session;
         if (!s || dot()?.isErrand?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
-        return renderStanding(memory, { banks: !peopleOnly() });
+        return renderStanding(memory, { banks: !peopleOnly(), limits: cfg.limits, ...keep });
       },
     });
     // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
@@ -701,6 +782,12 @@ export function apply(ctx, config = {}) {
       name: 'dot:recall',
       order: 905,
       text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
+    });
+    // The facts picked for this wake, after the turns recall found.
+    scope.systemPrompt.context({
+      name: 'dot:facts',
+      order: 906,
+      text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? facts.textFor(s.id) : ''; },
     });
     // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited
     // for here, bounded by recallWaitMs, and its text put into the assembly. Registered on the
@@ -715,6 +802,13 @@ export function apply(ctx, config = {}) {
         const text = recall.textFor(id);
         if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:recall', text });
       }
+      const f = id && facts.pending(id);
+      if (f && Array.isArray(assembly?.contexts)) {
+        await Promise.race([f, new Promise((r) => { setTimeout(r, cfg.factsWaitMs).unref?.(); })]);
+        const entry = assembly.contexts.find((x) => x.name === 'dot:facts');
+        const text = facts.textFor(id);
+        if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:facts', text });
+      }
       return next();
     }), 'dsh-dot/memory: recall waits for its query');
   });
@@ -723,8 +817,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条）、shelve（先搁着）、restore（搁着的又要办了），add/replace 时可带 due（MM-DD）和 owed（答应过别人填 true）。每栏有字数上限，满了先合并或删掉旧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
-      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done', 'shelve', 'restore'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' }, owed: { type: 'boolean' } }, required: ['target', 'action'], additionalProperties: false },
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {
         if (args.target === 'person') {
@@ -735,15 +829,17 @@ export function apply(ctx, config = {}) {
           save(); return { ok: true, usage: 'impression' };
         }
         if (args.target === 'open') {
+          if (args.action === 'shelve' || args.action === 'restore') return { ok: true, note: `${args.action} 已经没有了：还没了的事一直留着，办完了给 done，过了日子会自己拿掉` };
           const r = openOp(memory, { ...args, action: args.action === 'remove' ? 'done' : args.action });
           if (!r.ok) return { ok: false, error: r.error, items: memory.open.map((x) => x.text) };
-          const moved = fitOpen(memory, { limits: cfg.limits });
+          expireOpen(memory, keep);
           save(); audit('memory-tool', { target: 'open', action: args.action });
-          return { ok: true, usage: `${memory.open.length} open, ${memory.shelved.length} shelved`, note: r.note ?? (moved.length ? `满了，先搁着：${moved.map((x) => x.text).join('；')}` : undefined) };
+          return { ok: true, usage: `${memory.open.length} open`, note: r.note };
         }
         const bank = args.target === 'owner' ? 'owner' : 'self';
         if (!['add', 'replace', 'remove'].includes(args.action)) return { ok: false, error: `${args.action} is for target=open` };
         const r = bankOp(memory[bank], args, cfg.limits[bank]);
+        if (r.full) return { ok: false, error: `这一栏满了（${bankSize(memory[bank])}/${cfg.limits[bank]} 字），没记上：要记这条，用 replace 换掉一条现在不那么要紧的（过去了的一次性的事，或同一件事的旧说法）。`, entries: memory[bank] };
         if (!r.ok) return { ok: false, error: r.error, entries: memory[bank] };
         memory[bank] = r.entries; save();
         audit('memory-tool', { target: bank, action: args.action });
@@ -752,12 +848,12 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot/memory: memory tool');
     scope.effect(() => scope.tools.register({
       name: 'recall',
-      description: '想不起来的时候翻一翻：在认识的人、还没了的事（含先搁着的）、和以前真实聊过的原话里找。query 写想找的事或关键词（人名、地点、事情）。',
+      description: '想不起来的时候翻一翻：在认识的人、还没了的事、和以前真实聊过的原话里找。query 写想找的事或关键词（人名、地点、事情）。',
       parameters: { type: 'object', properties: { query: { type: 'string' } }, required: ['query'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { found: { type: 'string' } }, required: ['found'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.found ?? '' }] },
       async execute({ query }) {
         const people = search(Object.values(memory.people).map((p) => ({ text: `${p.names.join(' ')} ${p.impression}`, p })), query, 3).map((x) => renderPerson(x.p));
-        const items = search([...memory.open, ...memory.shelved], query, 5).map((x) => `- ${renderItem(x)}${memory.shelved.includes(x) ? '（先搁着的）' : ''}`);
+        const items = search(memory.open, query, 5).map((x) => `- ${renderItem(x)}`);
         let said = '';
         try { said = (await recall.find(query)).text; } catch (err) { logger.warn(`recall tool: ${err.message}`); }
         const found = [people.length ? `认识的人：\n${people.join('\n')}` : '', items.length ? `还没了的事：\n${items.join('\n')}` : '', said].filter(Boolean).join('\n\n');
@@ -812,7 +908,8 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, words: (memory.words ?? []).length, seen: lines.filter((l) => l.who === 'seen').length, open: memory.open.length, shelved: memory.shelved.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    facts,
+    consolidate, diary, dayEnd, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, words: (memory.words ?? []).length, seen: lines.filter((l) => l.who === 'seen').length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();
@@ -823,7 +920,7 @@ export function apply(ctx, config = {}) {
         gen: memory.gen, consolidations: memory.consolidations,
         owner: { entries: memory.owner, chars: memory.owner.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.owner },
         self: { entries: memory.self, chars: memory.self.reduce((n, e) => n + e.length + 1, 0), limit: cfg.limits.self },
-        open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open, shelved: memory.shelved.length },
+        open: { entries: memory.open.map((x) => renderItem(x)), chars: memory.open.reduce((n, x) => n + x.text.length + 1, 0), limit: cfg.limits.open },
         people: Object.values(memory.people).filter((p) => p.tier !== 'contact').length, contacts: Object.values(memory.people).filter((p) => p.tier === 'contact').length,
         merges: memory.merges.length, sinceCursor: sinceCursor().length, consolidateEvery: cfg.consolidateEveryLines,
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
@@ -845,13 +942,13 @@ export function apply(ctx, config = {}) {
       }
       if (sub === 'recall') return recall.command(rest);
       if (sub === 'now') { const r = await consolidate({ reason: 'manual' }); return r.ok ? `consolidated: ${JSON.stringify(r.report)}` : `not run: ${r.skipped ?? r.error}`; }
-      if (sub === 'diary') { const r = await diary({ reason: 'manual' }); return r.ok ? `diary → ${files.diary}\n${r.diary}` : `not run: ${r.skipped ?? r.error}`; }
+      if (sub === 'diary') { const r = await diary({ reason: 'manual' }); return r.ok ? `diary → ${files.diary}\n${r.diary}${Object.entries(r.banks ?? {}).map(([b, t]) => `\n${b}: ${t}`).join('')}` : `not run: ${r.skipped ?? r.error}`; }
       if (sub === 'handoff') { const id = dot()?.session?.(); if (!id) return 'no conversation yet'; const r = await handoff(id, await measure(id)); return r.ok ? `handed over → ${r.sessionId}` : `not run: ${r.skipped ?? r.error}`; }
       const s = api.status();
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} (+${s.shelved} shelved) · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
         `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');

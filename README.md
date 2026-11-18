@@ -219,7 +219,7 @@ flowchart LR
 | 组件 | 是什么 | 依赖 | 关掉 |
 |---|---|---|---|
 | **`interlude`** 🌙 | 人设（Canon）、人设卡和说话检查表、每轮最后的说话提醒；自己的时间；她自己做过的事的账 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
-| **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small + bge-reranker-base，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
+| **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
 | **`dot`** ◎ | 联系人层：通知和定时把她叫醒、她的手（操作手机和电脑的另一个会话）、定时结果 → IM、审批与设备提醒、工作规则、她在每个 App 里攒的用法笔记、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 
 **她的东西**

@@ -1,10 +1,11 @@
+process.env.DSH_DOT_FACTS = 'off'; // facts have their own tests (facts.test.js): here every model call counted is the notes'
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../src/memory/memory.js';
-import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, lexTokens, libDir, openIndex, queryLength, renderTurns, settingsFile } from '../src/memory/recall.js';
+import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, incomingWords, lexTokens, libDir, openIndex, queryLength, renderTurns, settingsFile } from '../src/memory/recall.js';
 import { annotate, dayHeading } from '../src/memory/when.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -46,7 +47,7 @@ function harness(config = {}, emb = fakeEmbedders(), over = null) {
     provide(n, v) { services[n] = v; },
     inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
   };
-  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short
+  apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, recallNeighbors: 0, recallRecentTurns: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short; neighbours and the recent list have their own test
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
   let clock = new Date(2026, 9, 1, 10, 0).getTime();
   const realNow = Date.now;
@@ -120,7 +121,7 @@ test('index: what she said after her turn was indexed (bubbles still going out) 
   assert.equal(ix.size, 2, 'the turn was taken back out and went in whole');
   assert.match(ix.meta()[1].text, /他：下个月去成都出差\n我：记得带伞/);
   assert.equal(statSync(join(dir, 'vectors.f32')).size, 2 * 512 * 4);
-  const r = await h.recall().query('成都', { session: 's1' });
+  const r = await h.recall().query('成都', { session: 's1', whole: true }); // her own recall tool: whole turns
   assert.ok(r.hits.some((x) => /记得带伞/.test(x.text)));
 });
 
@@ -135,7 +136,7 @@ test('query: the waking message → top-k older turns in time order, minus her c
   await h.recall().pending('s1');
   const text = h.text('s1');
   assert.match(text, /^你记得的相关原话/);
-  assert.match(text, /— 10-01 周四 · \d+ 天前\n10:0\d 他：我家猫叫团子[\s\S]*\n10:0\d 他：团子今天又把杯子推下桌了/, 'chronological, under the day');
+  assert.match(text, /— 10-01 周四 · \d+ 天前\n10:\d\d 他：我家猫叫团子[\s\S]*\n10:\d\d 他：团子今天又把杯子推下桌了/, 'chronological, under the day');
   assert.doesNotMatch(text, /不爱吃饭/, 'her current session is not repeated');
   assert.doesNotMatch(text, /成都/, 'top-k');
   assert.equal(h.text('errand'), '', 'errands are not her remembering');
@@ -179,7 +180,7 @@ test('backends: each backend+model keeps its own index; switching never mixes or
   h.turn('s0', '团子是橘猫', '嗯');
   await h.recall().sync();
   const localDir = h.recall().status().dir;
-  assert.match(await h.api().command('memory recall backend siliconflow'), /recall: siliconflow · BAAI\/bge-m3 \+ BAAI\/bge-reranker-v2-m3/);
+  assert.match(await h.api().command('memory recall backend siliconflow'), /recall: siliconflow · BAAI\/bge-m3 · no reranker/);
   await h.recall().sync();
   const s = h.recall().status();
   assert.notEqual(s.dir, localDir);
@@ -188,7 +189,7 @@ test('backends: each backend+model keeps its own index; switching never mixes or
   h.turn('s0', '下周去成都', '好');
   await h.recall().sync();
   const r = await h.recall().query('团子', { session: 's1' });
-  assert.equal(r.mode, 'siliconflow+rerank');
+  assert.equal(r.mode, 'siliconflow');
   await h.api().command('memory recall backend local');
   await h.recall().sync();
   assert.equal(h.recall().status().turns, 2, 'local caught up with the turn it missed');
@@ -204,7 +205,7 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   h.turn('s0', '团子是橘猫', '嗯');
   await h.recall().sync();
   let out = await h.api().command('memory recall');
-  assert.match(out, /recall: local · Xenova\/multilingual-e5-small \+ Xenova\/bge-reranker-base \([^)]*\) · ready/, 'the default local models (0.20: + reranker)');
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · no reranker · ready/, 'the default local model, no reranker');
   assert.match(out, /index: 1 turn\(s\) through 2026-10-01/);
   assert.match(out, /mirror https:\/\/hf-mirror\.com/);
   assert.match(await h.api().command('memory'), /recall: local/, '/dot memory shows it too');
@@ -218,21 +219,21 @@ test('commands: status, key (0600, masked), model, rerank, mirror, rebuild, test
   assert.match(await h.api().command('memory recall rerank none'), /recall: siliconflow · BAAI\/bge-m3 · no reranker · /);
   await h.api().command('memory recall backend local');
   assert.match(await h.api().command('memory recall rerank BAAI/bge-reranker-v2-m3'), /\+ onnx-community\/bge-reranker-v2-m3-ONNX[\s\S]*the index stays as it is/, 'the BAAI name maps to its ONNX export');
-  await h.api().command('memory recall rerank default');
+  assert.match(await h.api().command('memory recall rerank default'), /· no reranker · /, 'the default is none');
   assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
   out = await h.api().command('memory recall model BAAI/bge-small-zh-v1.5');
-  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 \+ /, 'the BAAI name maps to its ONNX export');
+  assert.match(out, /recall: local · Xenova\/bge-small-zh-v1\.5 · /, 'the BAAI name maps to its ONNX export');
   await h.recall().sync();
   assert.match(h.recall().status().dir, /local-Xenova_bge-small-zh-v1\.5$/);
   assert.equal(h.recall().status().turns, 1);
   out = await h.api().command('memory recall model intfloat/multilingual-e5-small');
-  assert.match(out, /recall: local · Xenova\/multilingual-e5-small \+ /, 'so does the intfloat name');
+  assert.match(out, /recall: local · Xenova\/multilingual-e5-small · /, 'so does the intfloat name');
   assert.match(h.recall().status().dir, /local-Xenova_multilingual-e5-small$/);
   await h.api().command('memory recall model default');
   assert.match(await h.api().command('memory recall mirror https://huggingface.co'), /mirror: https:\/\/huggingface\.co/);
   assert.match(await h.api().command('memory recall mirror ftp://x'), /http\(s\) URL/);
   assert.match(await h.api().command('memory recall rebuild'), /rebuilt[\s\S]*index: 1 turn/);
-  assert.match(await h.api().command('memory recall test 团子什么颜色'), /^local\+rerank · \d+ ms · 1 hit\(s\) of 1 candidate\(s\)[\s\S]*他：团子是橘猫/);
+  assert.match(await h.api().command('memory recall test 团子什么颜色'), /^local · \d+ ms · 1 hit\(s\) of 1 candidate\(s\)[\s\S]*他：团子是橘猫/);
   assert.match(await h.api().command('memory recall backend nope'), /one of local, siliconflow, dashscope, off/);
   const panel = await h.api().panel();
   assert.equal(panel.recall.backend, 'local');
@@ -345,7 +346,7 @@ test('first use: the model download is logged and shown in status (phase, %), re
     const lines = [{ at, session: 's0', who: 'owner', text: '团子是橘猫' }, { at: at + 1, session: 's0', who: 'her', text: '嗯' }];
     const logs = [];
     const logger = { info: (m) => logs.push(m), warn: (m) => logs.push(m) };
-    const cfg = { recallBackend: 'local', recallModel: '', recallMirror: '', recallMinScore: 0.45, recallInstall: false, recallTopK: 8, recallMaxTokens: 1500, recallChunkChars: 1200, recallCandidates: 20 };
+    const cfg = { recallBackend: 'local', recallModel: '', recallMirror: '', recallMinScore: 0.45, recallInstall: false, recallTopK: 8, recallMaxTokens: 1500, recallChunkChars: 1200, recallCandidates: 20, recallRerankModel: 'Xenova/bge-reranker-base' };
     const r = createRecall({ cfg, dir, lines: () => lines, transcriptFile: join(dir, 'transcript.jsonl'), logger });
     assert.equal(r.status().state, 'not started');
     const q = await r.query('团子什么颜色', { session: 's1' });
@@ -472,7 +473,64 @@ test('candidates from both channels, then the reranker decides: a turn the vecto
   assert.deepEqual([q.hits.length, q.text], [0, ''], 'nothing relevant, nothing shown');
 });
 
-test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes or reported speech', () => {
+test('no reranker, tight budget: the two lists are fused by rank, not raw scores — the cosine top hit and a turn both lists found survive BM25-only hits', async () => {
+  // Vectors by content: 团子 turns point near the query, the rest away (cosines < 1); BM25 scores are > 1.
+  const vecs = { async embed(texts, role) { return texts.map((t) => (role === 'query' ? Float32Array.from([1, 0]) : /团子是橘猫/.test(t) ? Float32Array.from([0.95, 0.31]) : /团子/.test(t) ? Float32Array.from([0.9, 0.44]) : Float32Array.from([0.2, 0.98]))); } };
+  const dir = mkdtempSync(join(tmpdir(), 'mem-'));
+  let at = new Date(2026, 4, 1, 10, 0).getTime();
+  const lines = [];
+  const say = (who, text) => lines.push({ at: (at += 60000), who, text, session: 'old' });
+  for (let i = 0; i < 25; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', '嗯嗯'); }
+  say('owner', '团子是橘猫'); say('her', '记住了'); // cosine top, no word of the query
+  say('owner', '阿兰说团子胖了'); say('her', '哈哈'); // in both lists
+  for (let i = 0; i < 4; i++) { say('owner', `阿兰阿兰又来借伞${i}`); say('her', '好'); } // BM25 only
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const cfg = { recallTopK: 10, recallMaxTokens: 50, recallContrast: 0.35, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 20, recallWindowTurns: 0, recallBackend: 'local', recallRerankModel: 'none' };
+  const r = createRecall({ cfg, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger: { info() {}, warn() {} }, embedder: () => vecs });
+  r.turnEnded(); await r.warm();
+  const q = await r.query('阿兰的猫', { session: 'now' });
+  assert.equal(q.mode, 'local');
+  const said = q.hits.map((h) => h.text);
+  assert.ok(said.length >= 2 && said.length < 6, `the budget cuts: ${said.length}`);
+  assert.ok(said.some((t) => /团子是橘猫/.test(t)), 'the cosine top hit stays');
+  assert.ok(said.some((t) => /阿兰说团子胖了/.test(t)), 'the turn both lists found stays');
+});
+
+test('shown: his words without her replies; leftover budget goes to the turns next to the hits; the last turns before the window are a list of their own; her own lookup shows whole turns', async () => {
+  const vecs = { async embed(texts, role) { return texts.map((t) => (role === 'query' || /团子/.test(t) ? Float32Array.from([1, 0]) : Float32Array.from([0, 1]))); } };
+  const dir = mkdtempSync(join(tmpdir(), 'mem-'));
+  let at = new Date(2026, 4, 1, 10, 0).getTime();
+  const lines = [];
+  const say = (who, text) => lines.push({ at: (at += 60000), who, text, session: 'old' });
+  for (let i = 0; i < 30; i++) { say('owner', `今天第${i}次随便聊聊天气`); say('her', `回${i}`); }
+  say('owner', '出门前记得关窗'); say('her', '关了');
+  say('owner', '团子是橘猫'); say('her', '记住了，橘色的');
+  say('owner', '晚上吃面'); say('her', '好呀');
+  for (let i = 0; i < 30; i++) { say('owner', `后来第${i}次聊到加班`); say('her', `嗯${i}`); }
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const base = { recallMaxTokens: 1500, recallContrast: 0.35, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 20, recallWindowTurns: 0, recallBackend: 'local' };
+  const mk = (cfg) => createRecall({ cfg: { ...base, ...cfg }, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger: { info() {}, warn() {} }, embedder: () => vecs });
+  let r = mk({ recallTopK: 30 }); r.turnEnded(); await r.warm();
+  let q = await r.query('团子什么颜色', { session: 'now' });
+  assert.equal(q.mode, 'local', 'no reranker unless one is set');
+  assert.deepEqual(q.hits.map((h) => h.text.slice(19)), ['他：团子是橘猫'], 'the hit, without what she said back');
+  assert.doesNotMatch(q.text, /记住了/);
+  r = mk({ recallTopK: 30, recallNeighbors: 1 }); r.turnEnded(); await r.warm();
+  q = await r.query('团子什么颜色', { session: 'now' });
+  assert.deepEqual(q.hits.map((h) => h.text.slice(19)), ['他：出门前记得关窗', '他：团子是橘猫', '他：晚上吃面'], 'the turns before and after it, in time order');
+  r = mk({ recallTopK: 30, recallNeighbors: 1, recallMaxTokens: 20 }); r.turnEnded(); await r.warm();
+  q = await r.query('团子什么颜色', { session: 'now' });
+  assert.deepEqual(q.hits.map((h) => h.text.slice(19)), ['他：团子是橘猫'], 'neighbours only from what is left of the budget');
+  r = mk({ recallTopK: 30, recallRecentTurns: 3 }); r.turnEnded(); await r.warm();
+  q = await r.query('团子什么颜色', { session: 'now' });
+  assert.deepEqual(q.hits.map((h) => h.text.slice(19)), ['他：团子是橘猫', '他：后来第27次聊到加班', '他：后来第28次聊到加班', '他：后来第29次聊到加班'], 'the last three turns come along');
+  assert.equal(incomingWords('[2026-05-01 10:00] 我：我先睡了\n我（发给 阿兰）：晚安'), '[2026-05-01 10:00] 我：我先睡了\n我（发给 阿兰）：晚安', 'a turn that is only hers stays whole');
+  assert.equal(incomingWords('[2026-05-01 10:00] [手机]：快递到了\n我：去拿'), '[2026-05-01 10:00] [手机]：快递到了');
+  q = await r.find('团子什么颜色');
+  assert.match(q.text, /他：团子是橘猫\n我：记住了，橘色的/, 'her own lookup reads whole turns');
+});
+
+test('rendering: recalled turns under their day, 明天 / 下周三 dated by code, nothing in quotes, imagined or said another day', () => {
   const mon = new Date(2026, 6, 6, 20, 15).getTime(); // a Monday
   const now = mon + 15 * 86400000;
   const out = renderTurns([
@@ -480,10 +538,12 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
     { at: mon, text: '[2026-07-06 20:15] 他：明天去，他说后天也行' },
     { at: mon - 86400000, text: '[2026-07-05 09:00] 他：“明天见”她写的' },
   ], now);
-  assert.equal(out, ['— 07-05 周日 · 16 天前', '09:00 他：“明天见”她写的', '— 07-06 周一 · 15 天前', '20:15 他：明天（=07-07）去，他说后天也行', '21:15 他：下周三（=07-15）（我记得是）之前寄', '我：好'].join('\n'));
+  assert.equal(out, ['— 07-05 周日 · 16 天前', '09:00 他：“明天见”她写的', '— 07-06 周一 · 15 天前', '20:15 他：明天（=07-07）去，他说后天（=07-08）也行', '21:15 他：下周三（=07-15）（我记得是）之前寄', '我：好'].join('\n'));
   assert.equal(dayHeading(now, now), '07-21 周二 · 今天');
   assert.equal(annotate('如果明天下雨就算了', mon), '如果明天下雨就算了', 'hypothetical');
-  assert.equal(annotate('月底交，周三开会', mon), '月底交，周三开会', 'ambiguous: left as said');
+  assert.equal(annotate('周末交，周三开会', mon), '周末交，周三开会', 'ambiguous: left as said');
+  assert.equal(annotate('说这周六还她就行', mon), '说这周六（=07-11）还她就行', 'someone said it today');
+  for (const t of ['昨天他说明天来', '上次她说下周三还', '第二天她问我昨晚是不是起来了']) assert.equal(annotate(t, mon).replace(/^昨天（=07-05）/, '昨天'), t, `said another day: ${t}`);
   assert.equal(annotate('上周五和这周日', mon), '上周五（=07-03）和这周日（=07-12）');
   assert.equal(annotate('明天（07-07）去', mon), '明天（07-07）去', 'already written out');
   for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
@@ -540,4 +600,43 @@ test('lines she kept while browsing: chunks of their own that never split a turn
   assert.match(q.mode, /lexical/);
   assert.equal(q.seen.length, 1);
   assert.ok(q.hits.every((h) => !/我看到的/.test(h.text)));
+});
+
+test('annotate: 三天后 / 7天以后 / 一周后 / 两个礼拜之后 from the line\'s day; not 过两天, 几天后, 三天后悔, a duration or a day counted from another', () => {
+  const at = new Date(2026, 11, 8, 18, 24).getTime(); // 12-08
+  assert.equal(annotate('三天后取，7天以后复查，十天之后交图', at), '三天后（=12-11）取，7天以后（=12-15）复查，十天之后（=12-18）交图');
+  assert.equal(annotate('一周后出意见，两周后复查，一个礼拜后再说，两个星期后见，十四天后看', at),
+    '一周后（=12-15）出意见，两周后（=12-22）复查，一个礼拜后（=12-15）再说，两个星期后（=12-22）见，十四天后（=12-22）看');
+  assert.equal(annotate('三周后', new Date(2026, 11, 20, 9, 0).getTime()), '三周后（=2027-01-10）', 'the year when it rolls over');
+  assert.equal(annotate('她说三天后取', at), '她说三天后（=12-11）取', 'said today');
+  for (const t of ['过两天再说', '过几天吧', '几天后', '三天后悔了', '观察一周', '三天前', '前三天后', '第三天后', '三四天后', '那三天后的稿', '过了三天后',
+    '两周后来', '如果三天后不退', '七天后要是不退', '上次她说三天后取', '“三天后见”', '果然三天后和好了', '三天后她自己打过来了', '十天后这个坎算是迈过去了']) assert.equal(annotate(t, at), t, t);
+  assert.equal(annotate('下周三天后', at), '下周三（=12-16）天后', 'the longer, earlier match wins');
+});
+
+test('annotate: 月底, X号, lunar dates and festivals by the built-in Chinese calendar, the year written when it rolls over', () => {
+  const at = (y, m, d) => new Date(y, m - 1, d, 20, 0).getTime();
+  // 2025-12-20: 腊月 2025 starts 2026-01-19 (29 days), 正月初一 is 2026-02-17.
+  assert.equal(annotate('我爸生日腊月十二，春节前十天回去，除夕到家，大年初二走，元旦前两天先请假', at(2025, 12, 20)),
+    '我爸生日腊月十二（=2026-01-30），春节前十天（=2026-02-07）回去，除夕（=2026-02-16）到家，大年初二（=2026-02-18）走，元旦前两天（=12-30）先请假');
+  assert.equal(annotate('元旦后两天，大年三十', at(2025, 12, 20)), '元旦后两天（=2026-01-03），大年三十（=2026-02-16）');
+  assert.equal(annotate('腊月三十', at(2025, 12, 20)), '腊月三十', 'that 腊月 has 29 days');
+  // 2025 has a leap sixth month (闰六月初一 = 07-25): 七月 comes after it, 六月 is next year's.
+  assert.equal(annotate('农历七月初一', at(2025, 7, 20)), '农历七月初一（=08-23）');
+  assert.equal(annotate('闰六月初一', at(2025, 7, 20)), '闰六月初一（=07-25）');
+  assert.equal(annotate('农历六月初一', at(2025, 7, 20)), '农历六月初一（=2026-07-14）');
+  assert.equal(annotate('冬月十七，三月初八', at(2026, 12, 8)), '冬月十七（=12-25），三月初八（=2027-04-14）');
+  assert.equal(annotate('腊月十二', at(2026, 1, 25)), '腊月十二（=01-30）', 'not yet: this one');
+  assert.equal(annotate('腊月十二', at(2026, 2, 8)), '腊月十二（=01-30）', 'nine days ago: the one just gone');
+  // Where ICU is a day off (2027 正月 starts 02-06, 2030 正月 02-03): the true dates.
+  assert.equal(annotate('除夕到家，大年初二走，初四开门，春节前十天还书', at(2027, 1, 20)), '除夕（=02-05）到家，大年初二（=02-07）走，初四（=02-09）开门，春节前十天（=01-27）还书');
+  assert.equal(annotate('腊月三十，正月初一，大年初二，二月初一', at(2030, 1, 10)), '腊月三十（=02-02），正月初一（=02-03），大年初二（=02-04），二月初一（=03-04）');
+  // A bare 初N only near the Spring Festival.
+  assert.equal(annotate('初四开门', at(2026, 2, 1)), '初四（=02-20）开门');
+  assert.equal(annotate('初四开门', at(2026, 5, 1)), '初四开门');
+  // 月底 / X号: the month in question; a day passed a week ago or less is left as said.
+  assert.equal(annotate('下个月1号、月底、下月底、28号、15号、10号、3号楼', at(2026, 12, 14)),
+    '下个月1号（=2027-01-01）、月底（=12-31）、下月底（=2027-01-31）、28号（=12-28）、15号（=12-15）、10号、3号楼');
+  assert.equal(annotate('二十七号交，5号复查', at(2026, 11, 24)), '二十七号（=11-27）交，5号（=12-05）复查');
+  for (const t of ['八月十五回家', '春节后第三天开门', '反正月初三', '他上初三了', '三号窗口', '大一号的', '31号', '每月底', '十二月底']) assert.equal(annotate(t, at(2026, 2, 1)), t, t);
 });

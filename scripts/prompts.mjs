@@ -52,9 +52,8 @@ function sampleMemory() {
   m.owner = ['他叫宽，在广州做 AI agent 开发', '不喜欢被叫"亲"'];
   m.self = ['装了小黑盒，常在晚上逛', '学会了在 B 站发弹幕'];
   S.openOp(m, { action: 'add', content: '10-31 他说这周要赶一个 benchmark，周五前交', due: '11-01' }, { now: T0 });
-  S.openOp(m, { action: 'add', content: '10-29 她答应周末陪他看新番', owed: true }, { now: T0 + 1 });
+  S.openOp(m, { action: 'add', content: '10-29 她答应周末陪他看新番' }, { now: T0 + 1 });
   S.openOp(m, { action: 'add', content: '10-20 他说想换个机械键盘，先搁着' }, { now: T0 - 9 * 864e5 });
-  S.openOp(m, { action: 'shelve', oldText: '机械键盘' }, { now: T0 });
   return m;
 }
 let recallDir = '';
@@ -63,7 +62,7 @@ async function recallText() {
   const r = createRecall({ cfg: { recallBackend: 'local', recallTopK: 3, recallChunkChars: 1200, recallMaxTokens: 800, recallWindowTurns: 0 }, dir: recallDir, lines: () => LINES, logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('preview')) });
   return (await r.query('你 benchmark 跑完了吗', { session: 's1', record: false })).text;
 }
-const standing = () => S.renderStanding(sampleMemory());
+const standing = () => S.renderStanding(sampleMemory(), { now: T0 + 3.5 * 864e5 }); // the day the benchmark is due: it shows under 今天到期的
 
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
 export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消息'], ['call', '独立模型调用']];
@@ -79,7 +78,7 @@ export const entries = [
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
     render: () => variant([['隔了一阵', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)], ['刚说过话（不到一分钟，或者从没说过）', D.nowText(Date.now(), 0)]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
-  { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、还没了的事（加一行先搁着的）', files: ['memory.standing'], render: standing },
+  { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、今天到期的（到期当天、当天还没提过的）、还没了的事（有日子的在前，放不下的不显示）', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header', 'memory.recall.seen'], render: async () => `${await recallText()}\n\n${renderSeen([{ text: '[2026-11-18 15:02] [我看到的]（小黑盒）：这把纯纯坐牢' }])}` },
   { id: 'seen', group: 'wake', name: '记下看到的一句话', note: '她自己逛的时候用 keep_line 记别人的原话（工具说明）；不是自己逛的时候、太长、带链接、当天记满、记过了、屏幕文字里找不到这句时被拒绝的理由（工具结果）', files: ['memory.seen.tool', 'memory.seen'],
     render: () => variant([['工具说明', P.prompt('memory.seen.tool', { max: 80 })], ...['elsewhere', 'long', 'not-words', 'full', 'again', 'not-shown'].map((c) => [c, M.seenRefusalText(c, { max: 80, perDay: 30 })])]) },
@@ -115,14 +114,20 @@ export const entries = [
     render: () => variant([['手的系统提示词', P.prompt('dot.hands.system')], ['hands 工具说明', P.prompt('dot.hands-tool')], ['没做完', P.prompt('dot.hands.cut', { why: '他说话了' })], ['别处', P.prompt('dot.hands.instead')]]) },
   { id: 'howto-reflect', group: 'call', name: '整理 App 经验', note: '她某一轮在一个 App 里走了 dot.howtoMinSteps（默认 12）步以上、或出过错：轮结束后一次小调用读她这轮的操作（只有操作和报错，不带屏幕上的文字）、这个 App 现有的笔记和最近几次的步数，重写笔记（≤ dot.howtoMaxChars，默认 800 字）：教训、捷径（只写做成过的），并给这次做的事起个短名（同一件事的步数就能排在一起看）；被规则拦下的那几步（⊘）不写成教训。分清这两样之前记下的旧笔记，再给她之前先翻一遍（.review）', files: ['dot.howto.reflect', 'dot.howto.review'],
     render: () => variant([['整理', P.prompt('dot.howto.reflect', { maxChars: 800 })], ['翻旧笔记', P.prompt('dot.howto.review', { maxChars: 800 })]]) },
-  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进三栏笔记和人物卡：规则在前（每次一样，命中缓存），已有的在中间，新记录在最后', files: ['memory.extract', 'memory.extract.input', 'memory.extract.banks', 'memory.extract.banks.off'],
+  { id: 'extract', group: 'call', name: '整理记忆', note: '攒够一批记录（或交班前）时，把它们整理进还没了的事和人物卡（关于他 / 她自己不在这里写，归每天那一次）：从最少变的到最常变的排，好命中前缀缓存——规则、认识的人、还没了的事、新记录', files: ['memory.extract', 'memory.extract.input'],
     render: () => {
       const m = sampleMemory();
-      const item = (x) => `- ${S.renderItem(x)}${x.owed ? '（答应过）' : ''}`;
-      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), owner: m.owner, self: m.self, known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map(item).join('\n'), shelved: m.shelved.map(item).join('\n') });
+      return M.extractPrompt({ text: LINES.map(M.transcriptLine).join('\n'), known: 'u0002 · 阿满 · qq:42 · talked · 大学室友，爱打瓦', open: m.open.map((x) => `- ${S.renderItem(x)}`).join('\n') });
     } },
-  { id: 'diary', group: 'call', name: '日记', note: '每天 dailyAt（23:30），当天有记录才写，单独一次调用', files: ['memory.diary'],
-    render: () => M.diaryPrompt({ day: M.dayLabel(new Date(T0)), text: LINES.slice(0, 2).map(M.transcriptLine).join('\n') }) },
+  { id: 'facts', group: 'call', name: '事实条', note: '整理一批记录时另有一次调用，把他说的话里以后用得上的事各写成一行（时间｜一句话｜该想起它的情境）；他叫醒她时，代码按日子、和他的话相近、和情境相近排出前 60 条，再一次调用挑出用得上的，最多 6 条列进她的提示词（memory.facts.header 是那几行的标题）', files: ['memory.facts.write', 'memory.facts.pick', 'memory.facts.header'],
+    render: () => variant([['写（整理时）', P.prompt('memory.facts.write', { records: '[06-22 19:40] 老周下周三（=07-01）过来吃饭，他花生过敏你记着点' })], ['挑（他叫醒她时）', P.prompt('memory.facts.pick', { facts: '1. [06-22] 老周对花生过敏\n2. [06-22] 老周 07-01 过来吃饭', recent: '他：晚上吃啥\n你：看你想吃啥', now: '06-30 18:02', said: '明天老周来，我想做个宫保鸡丁' })], ['她看到的', `${P.prompt('memory.facts.header')}\n- [06-22] 老周对花生过敏`]]) },
+  { id: 'daily', group: 'call', name: '日记和笔记', note: '每天 dailyAt（23:30），当天有记录时一次调用：写日记，并且是关于他 / 她自己两栏唯一的整理者——当天值得一直记着的，只给加、换的改动（多数日子没有），代码照着改；栏超了上限也只是超着，不删不重写。固定的说明在前，两栏在中间，日子和当天记录在最后。当天记录超过 inputChars 就分几次读，日记取最后一次的', files: ['memory.daily', 'memory.daily.bank'],
+    render: () => {
+      const m = sampleMemory();
+      const text = LINES.slice(0, 2).map(M.transcriptLine).join('\n');
+      return variant([['日记和笔记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: { owner: m.owner, self: m.self } })],
+        ['和别的记忆插件共存（people-only）：只写日记', M.dailyPrompt({ day: M.dayLabel(new Date(T0)), text, banks: null })]]);
+    } },
   { id: 'score', group: 'call', name: '群消息打分', note: '群消息值不值得她插一句（群消息设成打分时）', files: ['qq.score.system', 'qq.score.who', 'qq.score.user'],
     render: () => { const r = Q.scorePrompt({ who: '小点：二十三岁，话少、直接', recent: '阿满：今晚谁打瓦\n老王：我', message: '小点你上次说的那个耳机多少钱', group: '123456' }); return variant([['system', r.system], ['user', r.user]]); } },
   { id: 'setup', group: 'system', name: '手机/电脑还在装', note: '只在第一次安装、开机还没好时带着（装好就消失）；装好那一刻用 dot.setup-done 叫她自己说一声', files: ['dot.setup', 'dot.setup-done'], render: () => `${D.setupText({ state: 'downloading', progress: { text: '下载系统镜像 820/1450 MB，约 6 分钟' } }, { state: 'starting', stage: 'downloading' })}\n\n${P.prompt('dot.setup-done', { device: '手机' })}` },

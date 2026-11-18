@@ -3,12 +3,14 @@
 // The words she said and heard are the evidence (transcript + recall.js); what is kept here is only
 // what stays true, small enough to be in front of her every turn:
 //   banks      — Hermes (NousResearch hermes-agent; ported in dsh-hermes-memory, MIT): bounded lists
-//                of short entries edited by add / replace / remove under a character budget.
+//                of short entries edited by add / replace / remove under a character budget; when a
+//                bank is full, something new goes in by replacing the entry that matters least.
 //                `owner` (what she knows about you) and `self` (her own notes).
 //   open       — 还没了的事: things planned, promised or put off that have no outcome yet. One item
-//                each (what, when it was said, a due date, whether it is owed to someone). Done or
-//                called off → removed. Over the budget, items are never cut: the least pressing move
-//                to `shelved`, which stays searchable and is counted on her last line.
+//                each (what, when it was said, a due date). Done or called off → removed; code lets
+//                the rest go by themselves: a few days past the due date, or long untouched without
+//                one (the words stay in the transcript and the recall index). All live items are
+//                kept; the budget only limits how many are shown, and what is due comes first.
 //   people     — one registry for everyone she meets in any app; a person has many handles. Counts
 //                and "last seen" are written by code from real events, a one-line impression by the
 //                model. Tiers: owner, talked (exchanged messages), seen (only their posts), contact
@@ -17,11 +19,12 @@
 // Text similarity is whale's (dsh-whale-inurqq, FABAGV, MIT): normalised characters, 3-gram Jaccard.
 import { table } from '../prompts.js';
 import { dayMark } from '../clock.js';
+import { daysBetween } from './when.js';
 
 export const MEMORY_VERSION = 2;
 
-// Characters per bank; `open` is 还没了的事, `impression` one person's line; `shelved` is a count.
-export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200, words: 600 });
+// Characters per bank; `open` is 还没了的事 as shown (a display budget, not storage), `impression` one person's line.
+export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80, words: 600 });
 
 // ── text ─────────────────────────────────────────────────────────────────────
 
@@ -44,6 +47,26 @@ export function jaccard(a, b) {
   let inter = 0;
   for (const g of A.size <= B.size ? A : B) if ((A.size <= B.size ? B : A).has(g)) inter++;
   return inter / (A.size + B.size - inter);
+}
+
+// Whether a stretch of the record touches an item: the share of the item's two-character pieces
+// (dates, numbers and pieces with a common function character left out) found in it. Calibrated on
+// three benchmark runs' consolidation calls: a done given at under 0.25 was, in a hand-checked
+// sample, mostly about something the segment never mentioned (all of the dones that removed an item
+// before its day); at 0.25 and over, mostly about something it did.
+const COMMON = new Set('他她我你们的了是在和跟说要会就也都还把被给到去来这那个不没有很太好吗呢吧啊着过得地上下里么呀哦嗯又再才先让对当一二三四五六七八九十百千万零两'.split(''));
+const DATED = /（=[^）]*）|\d+|大?[今明后昨前]天|[这下上](个)?(周|星期|礼拜).|周[一二三四五六日天]|月底|号/g;
+export const TOUCH_MIN = 0.25;
+export function touchShare(item, text) {
+  const pieces = new Set();
+  for (const run of String(item ?? '').replace(DATED, ' ').match(/[\u4e00-\u9fff]+/g) ?? []) {
+    for (let i = 0; i + 2 <= run.length; i++) if (!COMMON.has(run[i]) && !COMMON.has(run[i + 1])) pieces.add(run.slice(i, i + 2));
+  }
+  if (!pieces.size) return 1;
+  const t = String(text ?? '');
+  let n = 0;
+  for (const g of pieces) if (t.includes(g)) n++;
+  return n / pieces.size;
 }
 
 /** Chinese runs ~1.4–1.6 characters per token; estimate conservatively. */
@@ -74,11 +97,14 @@ export function rejectReason(text) {
 
 // ── banks (Hermes) ────────────────────────────────────────────────────────────
 
-const bankSize = (entries) => entries.reduce((n, e) => n + e.length + 1, 0);
+export const bankSize = (entries) => (entries ?? []).reduce((n, e) => n + e.length + 1, 0);
 
 /**
- * One Hermes-style operation on a bank. Returns { ok, entries } or { ok: false, error }.
+ * One Hermes-style operation on a bank. Returns { ok, entries } or { ok: false, error, full? }.
  * replace/remove match by a short unique substring (oldText).
+ * An op whose result would be over the limit and larger than the bank was is refused (`full`): an
+ * add, or a replace with a longer entry. One that does not grow it always applies, so a bank already
+ * over its limit (written by an earlier build) is edited down by replaces and removes.
  */
 export function bankOp(entries, op, limit) {
   const list = [...(entries ?? [])];
@@ -100,16 +126,22 @@ export function bankOp(entries, op, limit) {
   } else if (op?.action === 'replace') {
     const f = find(); if (f.error) return { ok: false, error: f.error };
     if (!content) return { ok: false, error: 'content is required (use remove to delete)' };
+    const why = rejectReason(content);
+    if (why) return { ok: false, error: `not kept (${why})` };
     list[f.index] = content;
   } else if (op?.action === 'remove') {
     const f = find(); if (f.error) return { ok: false, error: f.error };
     list.splice(f.index, 1);
   } else return { ok: false, error: `unknown action ${op?.action}` };
-  if (bankSize(list) > limit) return { ok: false, error: `over the limit (${bankSize(list)}/${limit} chars): replace overlapping entries with shorter ones, or remove stale ones, then retry` };
+  if (bankSize(list) > limit && bankSize(list) > bankSize(entries)) return { ok: false, full: true, error: `over the limit (${bankSize(list)}/${limit} chars): replace an entry that matters less now, or remove a stale one, then retry` };
   return { ok: true, entries: list };
 }
 
-export const bankUsage = (entries, limit) => `${bankSize(entries ?? [])}/${limit} chars`;
+export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars`;
+
+/** Room under which a bank counts as full: an average new entry would no longer fit. */
+export const BANK_FULL_ROOM = 60;
+export const bankFull = (entries, limit) => limit - bankSize(entries) < BANK_FULL_ROOM;
 
 // ── words: 词 and 梗 she has met, each with what it means ────────────────────
 
@@ -367,16 +399,37 @@ export function setImpression(memory, ref, text, { limits = DEFAULT_LIMITS } = {
 
 // ── 还没了的事 ────────────────────────────────────────────────────────────────
 
-const openSize = (items) => items.reduce((n, x) => n + x.text.length + 1, 0);
-/** "2026-07-15" from "2026-07-15" / "07-15" / "7-15" (the year of `now`); '' when it is not a date. */
+/**
+ * "2026-07-15" from "2026-07-15" / "07-15" / "7-15" (the year of `now`, or the next one when that
+ * would put it half a year back: "01-06" said in December); '' when it is not a date.
+ */
 export function cleanDue(due, now = Date.now()) {
   const m = /^\s*(?:(\d{4})[-/.年])?(\d{1,2})[-/.月](\d{1,2})日?\s*$/.exec(String(due ?? ''));
   if (!m) return '';
-  const y = Number(m[1] ?? new Date(now).getFullYear()), mo = Number(m[2]), d = Number(m[3]);
+  const mo = Number(m[2]), d = Number(m[3]);
+  let y = Number(m[1] ?? new Date(now).getFullYear());
+  if (!m[1] && daysBetween(new Date(y, mo - 1, d).getTime(), now) > 183) y++;
   const t = new Date(y, mo - 1, d);
   if (t.getMonth() !== mo - 1 || t.getDate() !== d) return '';
   return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
 }
+const CN_NUM = (n) => (n < 10 ? '〇一二三四五六七八九'[n] : `${n >= 20 ? '〇一二三四五六七八九'[Math.floor(n / 10)] : ''}十${n % 10 ? '〇一二三四五六七八九'[n % 10] : ''}`);
+/**
+ * Whether the record (annotated transcript lines) says the day `due` (YYYY-MM-DD): its "（=MM-DD）",
+ * or the date written out (3月15号 / 三月十五 / 03-15 / 3.15). Line stamps "[03-15 10:20]" do not count.
+ */
+export function dueSaid(due, segment) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(due ?? ''));
+  if (!m) return false;
+  const mo = Number(m[2]), d = Number(m[3]);
+  const text = String(segment ?? '').replace(/^\[[^\]\n]*\]/gm, '');
+  if (new RegExp(`[（(]=(?:\\d{4}-)?${m[2]}-${m[3]}[）)]`).test(text)) return true;
+  const cn = CN_NUM(d), cnd = d > 20 && d < 30 ? `(?:${cn}|廿${CN_NUM(d % 10)})` : cn;
+  return new RegExp(`(?<![\\d.])0?${mo}\\s*(?:月\\s*0?${d}\\s*[号日]?|[-/.]0?${d})(?![\\d])|(?<![一二三四五六七八九十])${CN_NUM(mo)}月${cnd}(?![一二三四五六七八九十])`).test(text);
+}
+/** `content` without the "（=MM-DD）" marks that disagree with the day `due` (YYYY-MM-DD) it keeps. */
+const dropStaleMarks = (content, due) => content.replace(/[（(]=\s*(?:(\d{4})-)?(\d{1,2})-(\d{1,2})\s*[）)]/g, (all, y, mo, d) =>
+  (`${due.slice(5, 7)}-${due.slice(8)}` === `${mo.padStart(2, '0')}-${d.padStart(2, '0')}` && (!y || y === due.slice(0, 4)) ? all : ''));
 /** The item in `list` whose text contains `old` uniquely: { index } or { error }. */
 function findItem(list, old) {
   const o = String(old ?? '').trim();
@@ -386,43 +439,44 @@ function findItem(list, old) {
   if (hits.length > 1) return { error: `"${o}" matches ${hits.length} items; use a longer piece` };
   return { index: hits[0] };
 }
-// How pressing an item is, for the shelf: owed to someone counts most, then a due date; then the newest.
-const urgency = (x) => (x.owed ? 2 : 0) + (x.due ? 1 : 0);
-const shelfOrder = (a, b) => urgency(a) - urgency(b) || (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id);
-
-/**
- * Over the budget, the least pressing items move to the shelf, one at a time (never cut). Returns
- * the moved items. The shelf keeps the newest `limits.shelved`; older ones drop off it (the words
- * stay in the transcript and the recall index).
- */
-export function fitOpen(memory, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const moved = [];
-  while (memory.open.length > 1 && openSize(memory.open) > limits.open) {
-    const victim = [...memory.open].sort(shelfOrder)[0];
-    memory.open = memory.open.filter((x) => x !== victim);
-    memory.shelved.push({ ...victim, shelvedAt: now });
-    moved.push(victim);
-  }
-  if (memory.shelved.length > limits.shelved) memory.shelved = memory.shelved.slice(-limits.shelved);
-  return moved;
+// The life of an item is code's: `at` when it was added, `saidAt` the last time it came up again (an
+// add that was already there, a replace). Expiry options: { now, keepAfterDue, keepIdle } (days).
+// Whole local days, so what she is shown changes at midnight, not in the middle of a conversation.
+const dueMs = (x) => new Date(`${x.due}T00:00:00`).getTime();
+/** Still live: a dated item until `keepAfterDue` days past its day; one without a date until `keepIdle` days untouched. */
+export function isLive(x, { now = Date.now(), keepAfterDue = 3, keepIdle = 14 } = {}) {
+  if (x.due) return daysBetween(dueMs(x), now) <= keepAfterDue;
+  return daysBetween(Math.max(x.at ?? 0, x.saidAt ?? 0), now) <= keepIdle;
+}
+/** Drop the items that have run out (removed, not kept anywhere). Returns how many went. */
+export function expireOpen(memory, opts = {}) {
+  const before = memory.open.length;
+  memory.open = memory.open.filter((x) => isLive(x, opts));
+  return before - memory.open.length;
 }
 
 /**
- * One operation on 还没了的事: add { content, due, owed } · replace { oldText, content, due, owed } ·
- * done { oldText } (finished, called off, no longer wanted: it goes; shelved items too) ·
- * shelve { oldText } · restore { oldText } (back from the shelf). Returns { ok, error?, note? }.
+ * One operation on 还没了的事: add { content, due } · replace { oldText, content, due } ·
+ * done { oldText } (finished, called off, no longer wanted: it goes). `owed` is ignored; shelve /
+ * restore (the shelf is gone) are a no-op with a note. With `segment` (the record a consolidation
+ * read), a done on an item it does not touch (touchShare) is refused: the item stays and goes by
+ * itself; and a replace of a dated item keeps its due (and drops the replacing text's stale "（=MM-DD）")
+ * unless the record says the new day (dueSaid). Returns { ok, error?, note?, dueKept? }.
  */
-export function openOp(memory, op, { now = Date.now() } = {}) {
+export function openOp(memory, op, { now = Date.now(), segment } = {}) {
   const action = String(op?.action ?? '');
-  const content = String(op?.content ?? '').trim();
+  // The "（到 MM-DD）" she is shown after an item is added when it is rendered: copied back, it would double.
+  const content = String(op?.content ?? '').trim().replace(/(?:\s*[（(]到 [^（）()]{1,12}[）)])+$/, '');
   const due = op?.due === undefined ? undefined : cleanDue(op.due, now);
   if (action === 'add') {
     if (!content) return { ok: false, error: 'content is required' };
     const why = rejectReason(content);
     if (why) return { ok: false, error: `not kept (${why})` };
-    const same = [...memory.open, ...memory.shelved].find((x) => normText(x.text) === normText(content) || jaccard(x.text, content) >= 0.82);
-    if (same) return { ok: true, note: 'already there' };
-    memory.open.push({ id: `o${String((memory.oseq = (memory.oseq ?? 0) + 1)).padStart(4, '0')}`, text: content, at: now, due: due || '', owed: op?.owed === true });
+    // Due the same day, a looser match is the same thing reworded (0.55: on the benchmark's replies the
+    // rewordings scored 0.57+, while two different errands "明天…" shared a template at 0.52).
+    const same = memory.open.find((x) => normText(x.text) === normText(content) || jaccard(x.text, content) >= (due && x.due === due ? 0.55 : 0.82));
+    if (same) { same.saidAt = now; return { ok: true, note: 'already there' }; }
+    memory.open.push({ id: `o${String((memory.oseq = (memory.oseq ?? 0) + 1)).padStart(4, '0')}`, text: content, at: now, due: due || '' });
     return { ok: true };
   }
   if (action === 'replace') {
@@ -431,71 +485,53 @@ export function openOp(memory, op, { now = Date.now() } = {}) {
     if (!content) return { ok: false, error: 'content is required (use done when it is over)' };
     if (rejectReason(content)) return { ok: false, error: `not kept (${rejectReason(content)})` };
     const x = memory.open[f.index];
-    x.text = content;
-    if (due !== undefined) x.due = due;
-    if (typeof op?.owed === 'boolean') x.owed = op.owed;
-    return { ok: true };
+    // A dated item keeps its day unless the record read says the new one: a replace written days later
+    // re-reads "下个月十五号" from that day, and the date moves by accident (02-15 → 03-15).
+    const keep = segment != null && x.due && due !== undefined && due !== x.due && !(due && dueSaid(due, segment));
+    x.text = keep ? dropStaleMarks(content, x.due) : content;
+    if (due !== undefined && !keep) x.due = due;
+    x.saidAt = now;
+    return keep ? { ok: true, dueKept: true } : { ok: true };
   }
   if (action === 'done' || action === 'remove') {
     const f = findItem(memory.open, op?.oldText);
-    if (!f.error) { memory.open.splice(f.index, 1); return { ok: true }; }
-    const g = findItem(memory.shelved, op?.oldText);
-    if (g.error) return { ok: false, error: f.error };
-    memory.shelved.splice(g.index, 1);
-    return { ok: true };
-  }
-  if (action === 'shelve') {
-    const f = findItem(memory.open, op?.oldText);
     if (f.error) return { ok: false, error: f.error };
-    const [x] = memory.open.splice(f.index, 1);
-    memory.shelved.push({ ...x, shelvedAt: now });
+    if (segment != null && touchShare(memory.open[f.index].text, segment) < TOUCH_MIN) return { ok: false, error: `done skipped, the record read does not mention it: ${memory.open[f.index].text.slice(0, 60)}` };
+    memory.open.splice(f.index, 1);
     return { ok: true };
   }
-  if (action === 'restore') {
-    const f = findItem(memory.shelved, op?.oldText);
-    if (f.error) return { ok: false, error: f.error };
-    const [x] = memory.shelved.splice(f.index, 1);
-    delete x.shelvedAt;
-    // Back in front of her as of now: otherwise, the oldest, it would be the first moved back to the shelf.
-    x.at = now;
-    memory.open.push(x);
-    return { ok: true };
-  }
+  if (action === 'shelve' || action === 'restore') return { ok: true, note: 'shelve / restore no longer exist: items stay until done, or go by themselves after their date' };
   return { ok: false, error: `unknown action ${action}` };
 }
 
 /** One item as she reads it: its words, and the due date when it has one. */
-export const renderItem = (x, now = Date.now()) => `${x.text}${x.due ? `（到 ${dayMark(new Date(`${x.due}T00:00:00`).getTime(), now)}）` : ''}`;
-/** A shelved item as a short title, for the line that says what is on the shelf. */
-export const shelfTitle = (x) => { const t = x.text.replace(/\s+/g, ' '); return t.length > 14 ? `${t.slice(0, 14)}…` : t; };
+export const renderItem = (x, now = Date.now()) => `${x.text}${x.due ? `（到 ${dayMark(dueMs(x), now)}）` : ''}`;
 
 // ── the whole thing ───────────────────────────────────────────────────────────
 
 export function emptyMemory() {
-  return { version: MEMORY_VERSION, gen: 1, seq: 0, oseq: 0, owner: [], self: [], words: [], open: [], shelved: [], people: {}, merges: [], cursor: 0, consolidations: 0, useq: 0 };
+  return { version: MEMORY_VERSION, gen: 1, seq: 0, oseq: 0, owner: [], self: [], words: [], open: [], people: {}, merges: [], cursor: 0, consolidations: 0, useq: 0 };
 }
 
 /**
  * 0.19 memory (fragments, facts on cards, pending facts) → 0.20. Open fragments become 还没了的事
- * (a promise is owed); what does not fit goes to the shelf. Pinned fragments join the owner bank
+ * (and then run out like any other). Pinned fragments join the owner bank
  * while there is room. Everything else that is no longer kept — the other fragments, the facts on
  * cards, pending facts — is returned as `archive` for the caller to write to a file (the words they
  * came from are still in the transcript and the recall index), with a `report` of where each went.
  */
 export function migrateV1(m, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
   const frags = (m.fragments ?? []).filter((f) => f && typeof f.text === 'string' && f.text.trim());
-  const report = { open: [], shelved: [], toOwner: [], archived: 0, facts: 0, pending: 0 };
+  const report = { open: [], toOwner: [], archived: 0, facts: 0, pending: 0 };
   const archive = { from: 'dsh-dot memory v1 (0.19)', at: new Date(now).toISOString(), fragments: [], facts: {}, pending: [...(m.pending ?? [])] };
-  const out = { ...m, version: MEMORY_VERSION, open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])] };
+  const out = { ...m, version: MEMORY_VERSION, open: [...(m.open ?? [])] };
   for (const f of frags.filter((x) => x.open).sort((a, b) => (a.createdAt ?? 0) - (b.createdAt ?? 0))) {
-    out.open.push({ id: `o${String((out.oseq = (out.oseq ?? 0) + 1)).padStart(4, '0')}`, text: f.text, at: f.createdAt ?? now, due: '', owed: f.kind === 'promise' });
+    out.open.push({ id: `o${String((out.oseq = (out.oseq ?? 0) + 1)).padStart(4, '0')}`, text: f.text, at: f.createdAt ?? now, due: '' });
   }
   for (const f of frags.filter((x) => !x.open)) {
     if (f.pinned && bankSize([...(out.owner ?? []), f.text]) <= limits.owner) { out.owner = [...(out.owner ?? []), f.text]; report.toOwner.push(f.text); continue; }
     archive.fragments.push(f);
   }
-  const moved = fitOpen(out, { limits, now });
-  report.shelved = moved.map((x) => x.text);
   report.open = out.open.map((x) => x.text);
   report.archived = archive.fragments.length;
   for (const p of Object.values(out.people ?? {})) {
@@ -522,30 +558,61 @@ export function normalizeMemory(m, { limits = DEFAULT_LIMITS, now = Date.now() }
     m = r.memory;
     migration = { archive: r.archive, report: r.report };
   }
-  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], words: [...(m.words ?? [])], open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])], people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
+  // 0.23 kept a shelf and an `owed` flag: shelved items join the list (and run out like the rest).
+  const open = [...(m.open ?? []), ...(Array.isArray(m.shelved) ? m.shelved : [])].map((x) => { const y = { ...x }; delete y.owed; delete y.shelvedAt; return y; });
+  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], words: [...(m.words ?? [])], open, people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
+  delete out.shelved;
   if (migration) out.migration = migration;
   return out;
 }
 
+const TODAY_MAX = 5;
 /**
- * What every turn of hers sees: you, her own notes, what is not over yet, and a line naming what is
- * on the shelf. Byte-stable for the same memory (no counters; the clock only through the year in a
- * date), because a context snapshot is re-sent only when its text changes.
+ * Shown order of 还没了的事: what is still to come first (nearest date first), then the items without
+ * a date (newest first), then the ones whose date has passed (latest first). The list is cut at
+ * `limits.open` characters, so the overdue ones are what falls off, not tomorrow's.
  */
-export function renderStanding(memory, { banks = true, now = Date.now() } = {}) {
-  const open = [...memory.open].sort((a, b) => (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id));
-  const shelf = [...memory.shelved].sort((a, b) => (b.shelvedAt ?? 0) - (a.shelvedAt ?? 0) || b.id.localeCompare(a.id));
-  const t = table('memory.standing', { n: shelf.length, titles: shelf.slice(0, 8).map(shelfTitle).join('、') + (shelf.length > 8 ? '…' : '') });
+const openOrder = (now) => {
+  const rank = (x) => (!x.due ? 1 : daysBetween(dueMs(x), now) > 0 ? 2 : 0);
+  return (a, b) => rank(a) - rank(b)
+    || (a.due && b.due ? (rank(a) === 2 ? b.due.localeCompare(a.due) : a.due.localeCompare(b.due)) : 0)
+    || (b.at ?? 0) - (a.at ?? 0) || b.id.localeCompare(a.id);
+};
+
+/**
+ * 还没了的事 as she is shown it, from all live items: `today` — due today and not brought up yet today
+ * (at most TODAY_MAX; overdue ones are at the end of the list); `list` — the rest in
+ * openOrder, as many as fit in `limits.open` characters (what does not fit is still stored).
+ */
+export function openView(memory, { limits = DEFAULT_LIMITS, now = Date.now(), keepAfterDue, keepIdle } = {}) {
+  const live = memory.open.filter((x) => isLive(x, { now, keepAfterDue, keepIdle }));
+  const today = live.filter((x) => x.due && daysBetween(dueMs(x), now) === 0 && !((x.saidAt ?? 0) >= dueMs(x)))
+    .sort((a, b) => (a.at ?? 0) - (b.at ?? 0) || a.id.localeCompare(b.id)).slice(0, TODAY_MAX);
+  const list = [];
+  let used = 0;
+  for (const x of live.filter((y) => !today.includes(y)).sort(openOrder(now))) {
+    const n = x.text.length + 1;
+    if (list.length && used + n > limits.open) continue;
+    list.push(x); used += n;
+  }
+  return { today, list };
+}
+
+/**
+ * What every turn of hers sees: you, her own notes, what is due today, what else is not over yet.
+ * Byte-stable for the same memory and day (no counters; the clock only through the day), because a
+ * context snapshot is re-sent only when its text changes.
+ */
+export function renderStanding(memory, { banks = true, now = Date.now(), limits = DEFAULT_LIMITS, ...view } = {}) {
+  const { today, list } = openView(memory, { now, limits, ...view });
+  const t = table('memory.standing');
   const parts = [];
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
   if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
   if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
   if (memory.words?.length) parts.push(`${t.words}\n${memory.words.map((e) => `- ${e}`).join('\n')}`);
-  if (open.length || shelf.length) {
-    const lines = open.map((x) => `- ${renderItem(x, now)}`);
-    if (shelf.length) lines.push(t.shelved);
-    parts.push(`${t.open}\n${lines.join('\n')}`);
-  }
+  if (today.length) parts.push(`${t.today}\n${today.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
+  if (list.length) parts.push(`${t.open}\n${list.map((x) => `- ${renderItem(x, now)}`).join('\n')}`);
   if (!parts.length) return '';
   return ['<memory>', t.intro, ...parts, '</memory>'].join('\n');
 }

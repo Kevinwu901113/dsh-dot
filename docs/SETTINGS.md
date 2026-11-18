@@ -169,18 +169,24 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
 | `handoffTokens` | `150000` | 对话多长换新会话 |
-| `consolidateEveryLines` | `40` | 新记录攒满多少行整理一次（交班前也整理一次） |
-| `dailyAt` | `"23:30"` | 每天写日记的时间（当天有记录才写） |
-| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 }` | 三栏笔记各多少字、人物印象多少字、先搁着的最多几件 |
+| `consolidateEveryLines` | `120` | 新记录攒满多少行整理一次（每天写日记前、交班前也各整理一次） |
+| `dailyAt` | `"23:30"` | 每天写日记、整理关于他 / 她自己的时间（当天有记录才调用） |
+| `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：硬上限，放不下的加不进去，满了要记新的就换掉一条；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
+| `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
+| `openKeepDaysIdle` | `14` | 没日子的还没了的事多少天没被碰过就拿掉 |
 | `coexist` | `"auto"` | `auto` / `people-only` / `full` |
 | `recallBackend` | `"local"` | `local` / `siliconflow` / `dashscope` / `off`（建议用 `/dot memory recall backend`，命令设的值优先） |
 | `recallModel` | `""` | 本机默认 `Xenova/multilingual-e5-small`；只用中文可填 `BAAI/bge-small-zh-v1.5`（更轻，23 MB / 约 0.13 GB）。建议用 `/dot memory recall model` |
-| `recallRerankModel` | `""` | 本机默认 `Xenova/bge-reranker-base`（279 MB）；`BAAI/bge-reranker-v2-m3` 更强更慢（571 MB）；`none` 不重排。建议用 `/dot memory recall rerank` |
-| `recallCandidates` / `recallTopK` / `recallMaxTokens` | `20` / `10` / `1500` | 向量、BM25 各出多少候选；重排后最多注入几条、多少 token（可以更少，不凑数） |
+| `recallRerankModel` | `""` | 默认不重排。填名字打开：本机 `BAAI/bge-reranker-base`（279 MB）或 `BAAI/bge-reranker-v2-m3`（更强更慢，571 MB）。建议用 `/dot memory recall rerank` |
+| `recallTopK` / `recallMaxTokens` | `30` / `1500` | 最多注入几轮、多少 token（只给他那边的话，不带她的回复；可以更少，不凑数） |
+| `recallRecentTurns` / `recallNeighbors` | `20` / `1` | 窗口之前最近多少轮单独算一路名单（`0` 关掉）；预算有余量时，每条命中前后各带几轮（`0` 关掉） |
+| `recallCandidates` | `20` | 设了重排模型时，向量、BM25 各交给它多少候选 |
 | `recallRerankMin` | `0` | 重排分（0–1）的可选门槛；0 = 只看重排的顺序 |
-| `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；不重排时，命中要比整个索引的中位数高出一截；不重排时可选的余弦下限。见 [memory.md](memory.md) |
+| `recallMinQueryLength` / `recallContrast` / `recallMinScore` | `4` / `0.35` / `0` | 话太少不查；每一路的命中要比整个索引的中位数高出一截；可选的余弦下限（都只在不重排时用）。见 [memory.md](memory.md) |
 | `recallLexical` | `true` | BM25 那一路候选（汉字 + 两字）；`false` 只用向量 |
 | `recallMirror` | `""` | 本机模型下载镜像，默认 hf-mirror |
+| `facts` | `true` | 事实条（memory.md）：整理时把以后用得上的事各写成一句话，他叫醒她时挑出用得上的几条给她看；`false` 或环境变量 `DSH_DOT_FACTS=off` 关掉 |
+| `factsShown` / `factsPicked` / `factsWaitMs` | `60` / `6` / `8000` | 挑的那次调用读多少条；最多几条进她的提示词；提示词拼装最多等它多久 |
 
 ### `interlude`
 
