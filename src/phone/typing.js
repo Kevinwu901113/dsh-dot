@@ -69,3 +69,23 @@ export function createTyping({ shell, install, sleep = (ms) => new Promise((r) =
     },
   };
 }
+
+/**
+ * What is on the screen, from a `uiautomator dump`: one line per thing with words on it — 「words」 (x, y), the point
+ * to tap — top to bottom, the same words at the same place once, at most `max` lines. '' when the dump has nothing.
+ */
+export function screenLines(xml, { max = 70, chars = 60 } = {}) {
+  const out = [], seen = new Set();
+  for (const m of String(xml ?? '').matchAll(/<node\b[^>]*>/g)) {
+    const words = (attr(m[0], 'text') || attr(m[0], 'content-desc') || '').replace(/\s+/g, ' ').trim();
+    const b = /bounds="\[(\d+),(\d+)\]\[(\d+),(\d+)\]"/.exec(m[0]);
+    if (!words || !b) continue;
+    const x = Math.round((Number(b[1]) + Number(b[3])) / 2), y = Math.round((Number(b[2]) + Number(b[4])) / 2);
+    const key = `${words}@${Math.round(x / 20)},${Math.round(y / 20)}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ y, x, line: `「${words.length > chars ? `${words.slice(0, chars)}…` : words}」(${x}, ${y})${attr(m[0], 'focused') === 'true' ? ' ←光标在这' : ''}` });
+  }
+  out.sort((p, q) => p.y - q.y || p.x - q.x);
+  return out.slice(0, max).map((o) => o.line).join('\n');
+}

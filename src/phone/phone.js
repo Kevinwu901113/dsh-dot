@@ -6,7 +6,8 @@
 // watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { deny } from '../refusals.js';
 import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
-import { KEYBOARD, createTyping } from './typing.js';
+import { KEYBOARD, createTyping, screenLines } from './typing.js';
+import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
@@ -77,6 +78,8 @@ export const defaults = {
   notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
   notifyCatchUpMs: 12 * 3600_000, // at start, notifications that arrived while dsh was down (no older than this) still wake her
   // One session drives the phone at a time (her conversation, an errand, an interlude round all act as her).
+  screenAfter: true,        // after a tap, swipe, launch, typing: what is on the screen now comes with the result
+  screenAfterMs: 700,       // how long the screen is given to settle before it is read
   leaseIdleMs: 120_000,     // the lease lapses this long after its holder's last phone call (or when its turn ends)
   leaseWaitMs: 60_000,      // another session's phone call waits this long for it, then is refused
   mcp: true,                // mount mobile-mcp as mcp__dot-phone__*
@@ -969,6 +972,22 @@ export function apply(ctx, config = {}, deps = {}) {
     if (refused) return deny(refused);
     return next();
   }, { prepend: true });
+
+  // After a call that changes the screen, what the screen shows now comes along with the result: the words on it and
+  // where to tap them. Looking again after every tap was half of all phone calls (11-18: 6 of 11, 442 of 1500).
+  const ACTS = /mobile_(click_on_screen_at_coordinates|double_tap_on_screen|long_press_on_screen_at_coordinates|swipe_on_screen|press_button|launch_app|open_url|batch_commands)$/;
+  ctx.on('tools/post-execute', async (exec_, result, next) => {
+    const name = String(exec_?.name ?? '');
+    if (!cfg.screenAfter || !(ACTS.test(name) || name === PHONE_TYPE_TOOL) || result?.isError || !phone.isReady) return next();
+    const d = await next();
+    try {
+      await new Promise((r) => setTimeout(r, cfg.screenAfterMs));
+      const lines = screenLines(await phone.shell('uiautomator dump /dev/tty'));
+      if (!lines) return d;
+      const note = createUserMessage({ content: [{ type: 'text', text: `（屏幕上现在有这些，括号里是点它的位置；看不出布局或图片时再截图）\n${lines}` }], source: { kind: 'dsh-dot', form: 'phone-screen' } });
+      return { ...d, additionalContexts: [...(d?.additionalContexts ?? []), note] };
+    } catch (err) { logger.debug?.(`screen not read: ${err.message}`); return d; }
+  });
 
   ctx.inject(['systemPrompt'], (scope) => {
     // The phone section goes to every session that has the phone tools; the parts about her (wake-ups

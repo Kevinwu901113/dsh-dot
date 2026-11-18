@@ -1,7 +1,7 @@
 // dsh-dot/phone typing: through the input method, a few characters at a time, read back.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTyping, chunks, focusedField, KEYBOARD } from '../src/phone/typing.js';
+import { createTyping, chunks, focusedField, screenLines, KEYBOARD } from '../src/phone/typing.js';
 
 const dump = (text, { password = false } = {}) => `<?xml version='1.0'?><hierarchy><node index="0" text="百度一下" class="android.widget.Button" focused="false" password="false" /><node index="1" text="${text}" class="android.widget.EditText" focused="true" password="${password}" /></hierarchy>UI hierchary dumped to: /dev/tty`;
 
@@ -53,4 +53,11 @@ test('typing: no focused field in the dump (a web page) — the text newly on th
   assert.equal((await typing.type('鲸鱼娘')).verified, true);
   lands = false;
   assert.equal((await typing.type('别的字')).verified, null);
+});
+
+test('screenLines: the words on the screen and where to tap them, top to bottom, once each', () => {
+  const xml = '<hierarchy><node text="" content-desc="" bounds="[0,0][1080,2400]" /><node text="百度一下" bounds="[800,300][1000,400]" focused="false" /><node text="" content-desc="语音搜索" bounds="[600,300][700,400]" /><node text="鲸鱼娘" class="android.widget.EditText" bounds="[100,300][500,400]" focused="true" /><node text="鲸鱼娘" bounds="[100,300][500,400]" /><node text="新闻" bounds="[0,900][200,1000]" /></hierarchy>';
+  assert.equal(screenLines(xml), '「鲸鱼娘」(300, 350) ←光标在这\n「语音搜索」(650, 350)\n「百度一下」(900, 350)\n「新闻」(100, 950)');
+  assert.equal(screenLines(''), '');
+  assert.equal(screenLines(xml, { max: 1 }).split('\n').length, 1);
 });
