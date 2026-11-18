@@ -119,7 +119,6 @@ setx DSH_DOT_COMPUTER off
 | `notifyCatchUpMs` | `43200000`（12 小时） | dsh 没开时到的通知，重启后这么久以内的照样叫醒她；更早的不叫 |
 | `leaseIdleMs` | `120000` | 同一时间只有一件事在用手机：占着的那件事这么久没碰手机（或它这一轮结束）就让出来 |
 | `leaseWaitMs` | `60000` | 别的事要用手机时最多等这么久，等不到就告诉她稍后再试；和你的对话排在最前 |
-| `qqSendOnPhone` | `false` | `false` = 手机 QQ 里只看不发（往写消息的输入框里打字、回车会被拦下；登录、搜索照常），发 QQ 用 `qq_send` |
 | `keepAppsAlive` | `true` | 不让后台 App 被冻结（聊天 App 收消息靠它） |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址，用于实时画面链接 |
 

@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, echoOpener, asksSomething, plainOf, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
+import { apply, selfMessage, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, echoOpener, asksSomething, plainOf, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -809,5 +809,32 @@ test('sends to one conversation go out one after another: the bubbles of two sen
   await Promise.all([a, b]);
   assert.deepEqual(sock.sent.filter((m) => m.action === 'send_private_msg').map((m) => m.params.message[0].data.text), ['那就去睡一会', '你昨天六点才睡', '刚才煎了个蛋夹吐司', '边糊了一点']);
   await assert.rejects(h.ctx.dshQq.send('nobody', 'x'), /bad target/);
+  h.stop();
+});
+
+test('qq: her own messages as the backend reports them — what this plugin sent is not news, what went out another way is told', async () => {
+  assert.deepEqual(selfMessage({ post_type: 'message_sent', message_type: 'private', user_id: 10001, target_id: 20002, self_id: 10001, message_id: 9, message: [{ type: 'text', data: { text: '在' } }] }), { to: 'user:20002', text: '在', messageId: 9 });
+  assert.deepEqual(selfMessage({ post_type: 'message', message_type: 'group', group_id: 777, user_id: 10001, self_id: 10001, message: 'hi' }), { to: 'group:777', text: 'hi', messageId: undefined });
+  assert.equal(selfMessage({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: 'x' }), null, 'someone else');
+  const h = harness({}, { selfSettleMs: 20 });
+  const got = [], heard = [];
+  h.ctx.dshQq.onMessage((m) => heard.push(m));
+  h.ctx.dshQq.onSelf((m) => got.push(m));
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
+  // typed on her phone
+  sock.emit('message', JSON.stringify({ post_type: 'message_sent', message_type: 'private', user_id: 10001, target_id: 20002, self_id: 10001, message_id: 71, message: [{ type: 'text', data: { text: '手机上回的' } }] }));
+  sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 10001, target_id: 20002, self_id: 10001, message_id: 71, message: [{ type: 'text', data: { text: '手机上回的' } }] }));
+  await tick(60);
+  assert.deepEqual(got.map((m) => [m.to, m.text]), [['user:20002', '手机上回的']], 'once, though reported twice');
+  assert.equal(heard.length, 0, 'her own words never wake her');
+  // sent by this plugin: its report (before or after the call returns) is not news
+  const sending = h.ctx.dshQq.send('user:20002', '插件发的');
+  await tick(5);
+  sock.emit('message', JSON.stringify({ post_type: 'message_sent', message_type: 'private', user_id: 10001, target_id: 20002, self_id: 10001, message_id: 72, message: [{ type: 'text', data: { text: '插件发的' } }] }));
+  sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 72 }, echo: sock.sent.at(-1).echo }));
+  await sending; await tick(60);
+  assert.equal(got.length, 1);
   h.stop();
 });

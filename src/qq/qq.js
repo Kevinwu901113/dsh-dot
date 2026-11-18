@@ -74,6 +74,7 @@ export const defaults = {
   // Each line of qq_send's text is its own bubble, sent after a pause that grows with its length
   // (ms per character, capped at 2.5 s) — the way a person types. 0 = all at once.
   typingMsPerChar: 60,
+  selfSettleMs: 1500,       // a report of her own message is looked at this long after it came (the send call may not have returned its id yet)
   // qq_send approval: 'reply' (default) lets her write to the owner, and answer with text or web
   // images whoever wrote to her within replyWindowMinutes (a conversation, group or private); anything
   // else asks — a new contact, a group nobody spoke in, or files from her phone or computer (those
@@ -498,6 +499,38 @@ export function qqToolGate(name, args = {}, cfg = {}, helpers = {}) {
 }
 
 /**
+ * What a call says on QQ and to whom — her own qq_send, or one of the QQ backend's send actions: { to, text }
+ * (to: "owner" | "user:<n>" | "group:<n>"), or null when the call sends no message.
+ */
+export function qqSpoken(name, args = {}) {
+  if (name === 'qq_send') return { to: String(args?.to ?? ''), text: typeof args?.text === 'string' ? args.text : '' };
+  if (!String(name ?? '').startsWith(QQ_TOOL_PREFIX)) return null;
+  const action = typeof args?.action === 'string' ? args.action.trim() : '';
+  if (!QQ_SEND_ACTIONS.has(action)) return null;
+  let params = args.params ?? args.input ?? args.args ?? args.arguments ?? {};
+  if (typeof params === 'string') { try { params = JSON.parse(params); } catch { params = {}; } }
+  const msg = params?.message ?? params?.messages ?? '';
+  const text = typeof msg === 'string' ? msg : Array.isArray(msg) ? segmentsToText(msg.map((s) => (s?.type === 'node' ? { type: 'text', data: { text: segmentsToText(s.data?.content ?? []) } } : s))) : '';
+  return { to: params?.group_id ? `group:${params.group_id}` : params?.user_id ? `user:${params.user_id}` : '', text };
+}
+
+/**
+ * A message of her own account as the backend reports it (sent from anywhere: this plugin, the backend's own tools,
+ * her phone's QQ): { to, text, messageId }, or null for any other event. go-cqhttp style backends post
+ * `message_sent`; others post an ordinary `message` whose user_id is her own. In a private chat the other side is
+ * target_id (peer_id on some backends).
+ */
+export function selfMessage(ev, selfId) {
+  if (ev?.post_type !== 'message' && ev?.post_type !== 'message_sent') return null;
+  const self = String(ev.self_id ?? selfId ?? '');
+  if (ev.post_type !== 'message_sent' && String(ev.user_id) !== self) return null;
+  const peer = ev.target_id ?? ev.peer_id ?? (String(ev.user_id) !== self ? ev.user_id : undefined);
+  const to = ev.message_type === 'group' && ev.group_id ? `group:${ev.group_id}` : peer !== undefined && peer !== null && String(peer) ? `user:${peer}` : '';
+  const text = typeof ev.message === 'string' ? ev.message : segmentsToText(Array.isArray(ev.message) ? ev.message : [], self);
+  return { to, text: String(text ?? '').trim(), messageId: ev.message_id };
+}
+
+/**
  * A "he is typing" notice from the QQ backend, for his private chat only: `{ typing }`, or null when the
  * event is anything else. NapCat sends `{ post_type: 'notice', notice_type: 'notify', sub_type:
  * 'input_status', user_id, status_text: '对方正在输入...', event_type }` (an empty status_text when he
@@ -605,6 +638,30 @@ export function apply(ctx, config = {}, deps = {}) {
   const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit, sentToOwnerAt: 0 };
   const listeners = new Set();
   qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
+  // Her own messages as the backend reports them: what this plugin sent itself is known (by message id, or a send
+  // to that conversation under way) and is not news; anything else went out some other way — the backend's own
+  // tools, her phone — and is told to the listeners, so it is on record as said wherever it was said.
+  const selfListeners = new Set();
+  qq.onSelf = (fn) => { selfListeners.add(fn); return () => selfListeners.delete(fn); };
+  const ownIds = new Set(), sendingTo = new Map(), selfSeen = new Set();
+  const cap = (set, n) => { while (set.size > n) set.delete(set.values().next().value); };
+  const own = (id) => { if (id !== undefined && id !== null) { ownIds.add(String(id)); cap(ownIds, 400); } return id; };
+  let selfReported = false;
+  const heardSelf = (m) => {
+    // Once per run: this backend does report her own messages (what she sends from her phone will be seen).
+    if (!selfReported) { selfReported = true; audit({ kind: 'self-reported' }); }
+    if (!m.text) return;
+    const id = m.messageId === undefined || m.messageId === null ? '' : String(m.messageId);
+    if (id) { if (selfSeen.has(id)) return; selfSeen.add(id); cap(selfSeen, 400); }
+    const busy = (sendingTo.get(m.to) ?? 0) > 0;
+    // The report can come before the send call returns its id: look again shortly.
+    const timer = setTimeout(() => {
+      if ((id && ownIds.has(id)) || busy || (sendingTo.get(m.to) ?? 0) > 0) return;
+      audit({ kind: 'self-message', to: m.to, chars: m.text.length });
+      for (const fn of selfListeners) { try { fn({ to: m.to, text: m.text, at: new Date().toISOString(), messageId: m.messageId }); } catch (err) { logger.warn(`qq self listener: ${err.message}`); } }
+    }, cfg.selfSettleMs);
+    timer.unref?.();
+  };
   // "He is typing" (NapCat input_status notices, his private chat only): { userId, fromOwner, typing }.
   const typingListeners = new Set();
   qq.onTyping = (fn) => { typingListeners.add(fn); return () => typingListeners.delete(fn); };
@@ -1025,9 +1082,10 @@ export function apply(ctx, config = {}, deps = {}) {
       if (st) for (const fn of typingListeners) { try { fn({ userId: String(ev.user_id), fromOwner: true, ...st }); } catch (err) { logger.warn(`qq typing listener: ${err.message}`); } }
       return;
     }
-    if (ev.post_type !== 'message') return;
     const selfId = String(ev.self_id ?? qq.selfId);
-    if (String(ev.user_id) === selfId) return;
+    const mine = selfMessage(ev, selfId);
+    if (mine) { heardSelf(mine); return; }
+    if (ev.post_type !== 'message') return;
     const isGroup = ev.message_type === 'group';
     const chat = isGroup ? `group:${ev.group_id}` : `user:${ev.user_id}`;
     // Another bot's words: not hers to answer (an owner message is never ignored).
@@ -1251,7 +1309,9 @@ export function apply(ctx, config = {}, deps = {}) {
     const target = parseTarget(to, qq.owner);
     if (!target) return Promise.reject(new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`));
     const key = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
-    const mine = (lanes.get(key) ?? Promise.resolve()).then(() => sendNow(target, to, text, images));
+    sendingTo.set(`${key}`, (sendingTo.get(key) ?? 0) + 1);
+    const done = () => { const t = setTimeout(() => { const n = (sendingTo.get(key) ?? 1) - 1; if (n > 0) sendingTo.set(key, n); else sendingTo.delete(key); }, 3000); t.unref?.(); };
+    const mine = (lanes.get(key) ?? Promise.resolve()).then(() => sendNow(target, to, text, images)).then((r) => { for (const id of r?.messageIds ?? []) own(id); return r; }).finally(done);
     const tail = mine.catch(() => {}); lanes.set(key, tail);
     void tail.then(() => { if (lanes.get(key) === tail) lanes.delete(key); });
     return mine;
@@ -1292,7 +1352,7 @@ export function apply(ctx, config = {}, deps = {}) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
       // He spoke while she was typing these out: stop, she reads him first.
       if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; break; }
-      try { ids.push((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id); } catch (err) {
+      try { ids.push(own((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id)); } catch (err) {
         if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
         // Some bubbles are already with them: say what went out and what did not, instead of failing the whole send.
         unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; cutBy = err.message; break;
@@ -1304,7 +1364,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }
     const went = []; // the refs of the images that went out, in order (her transcript records them)
     for (const [i, seg] of segments.entries()) {
-      try { ids.push((await call(action, { ...target, message: [seg] }))?.message_id); went.push(sentRef(refs[i])); } catch (err) {
+      try { ids.push(own((await call(action, { ...target, message: [seg] }))?.message_id)); went.push(sentRef(refs[i])); } catch (err) {
         if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
         failed.push({ image: String(refs[i]).slice(0, 80), error: err.message });
       }

@@ -800,7 +800,12 @@ export function apply(ctx, config = {}) {
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
     /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
-    herSaid({ session, text, at }) { if (String(text ?? '').trim()) record({ ...(at ? { at } : {}), who: 'her', session, text: String(text) }); },
+    herSaid({ session, text, at, to }) {
+      if (!String(text ?? '').trim()) return;
+      record({ ...(at ? { at } : {}), who: 'her', session, ...(to ? { to: String(to) } : {}), text: String(text) });
+      const m = /^user:(\d+)$/.exec(String(to ?? ''));
+      if (m) { touchPerson(memory, { handles: [`qq:${m[1]}`], platform: 'qq', tier: 'talked', kind: 'sent' }); save(); }
+    },
     /** A real event with someone, from any channel: { handles, platform, name, tier, kind }. Returns the person. */
     touch(e) { const p = touchPerson(memory, e); if (p) save(); return p; },
     /** Who is this ({ handles, platform, name }), without recording anything. */

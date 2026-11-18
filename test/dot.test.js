@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, isSilent, stripSilent, contentText } from '../src/dot/core.js';
+import { apply, isSilent, stripSilent, contentText, spokenOf } from '../src/dot/core.js';
 import { unstamp } from '../src/clock.js';
 
 const STAMP = /^\[\d{2}-\d{2} \d{2}:\d{2}[\] ]/; // every message that wakes her starts with one
@@ -1550,11 +1550,26 @@ test('what she says to him is checked in code: brackets out of a relayed answer;
     assert.equal(await call('这不是偷懒而是战略休息'), 'ran');
     o.turn.end(3);
     o.turn.start(4);
-    assert.equal(await call('综上所述', 'user:30003'), 'ran', 'to someone else: not checked');
-    assert.match((await call('好 (笑)')).reason, /括号/);
+    assert.match((await call('综上所述', 'user:30003')).reason, /「综上所述」/, 'to someone else: her words all the same');
     assert.equal(await call('刚醒\n嗓子好干'), 'ran');
     o.turn.end(4);
-    assert.equal(o.h.audit.filter((e) => e.event === 'reply-check' && e.denied).length, 2);
+    o.turn.start(5);
+    assert.match((await call('好 (笑)')).reason, /括号/);
+    o.turn.end(5);
+    // the other ways out: a send action of the QQ backend's own tools, a comment typed on her phone
+    o.turn.start(6);
+    const tool = await o.pre({ name: 'mcp__dot-qq__invoke_action', arguments: { action: 'send_group_msg', params: { group_id: 777, message: '综上所述，我觉得可以' } }, agent: o.agent }, async () => 'ran');
+    assert.match(tool.reason, /「综上所述」/);
+    o.turn.end(6);
+    o.turn.start(7);
+    const typed = await o.pre({ name: 'mcp__dot-phone__mobile_batch_commands', arguments: { steps: [{ name: 'mobile_click_on_screen_at_coordinates', arguments: { x: 1, y: 2 } }, { name: 'mobile_type_keys', arguments: { text: '综上所述这游戏不错' } }] }, agent: o.agent }, async () => 'ran');
+    assert.match(typed.reason, /「综上所述」/);
+    assert.equal(await o.pre({ name: 'mcp__dot-phone__mobile_type_keys', arguments: { text: '2450548644' }, agent: o.agent }, async () => 'ran'), 'ran', 'a login name is just typed');
+    o.turn.end(7);
+    assert.deepEqual(o.h.audit.filter((e) => e.event === 'reply-check' && e.denied).map((e) => e.via), ['qq_send', 'qq_send', 'qq_send', 'qq-tool', 'phone']);
+    assert.deepEqual(spokenOf('qq_send', { to: 'owner', text: '在' }), { via: 'qq', to: 'owner', text: '在' });
+    assert.equal(spokenOf('mcp__dot-phone__mobile_press_button', { button: 'ENTER' }), null);
+    assert.equal(spokenOf('mcp__dot-qq__query_action', { action: 'get_friend_list' }), null);
     // off: nothing is checked
     const off = talkHarness({ replyCheck: false });
     off.services.dshInterlude = { checks: () => parseBlacklist('综上所述') };

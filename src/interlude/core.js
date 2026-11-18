@@ -18,6 +18,7 @@
 // (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
+import { typesText } from '../phone/phone.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -90,8 +91,6 @@ const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
 export const FREE_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'free' });
 /** Phone apps where typing could post, comment or message someone: the social ones, QQ and WeChat. */
 export const SOCIAL_PACKAGES = [...new Set([...Object.values(KNOWN_APPS.labels), 'com.tencent.mobileqq', 'com.tencent.mm'])];
-/** A phone call that would type in the foreground app (as dsh-dot/phone's typesText). */
-const typesText = (tool, input) => tool === 'mobile_type_keys' || (['mobile_press_button', 'mobile_batch_commands'].includes(tool) && /ENTER|type_keys/i.test(JSON.stringify(input ?? '')));
 
 /** Her own folder as a short listing (relative paths, size, day), at most `max` entries. */
 export function listPlace(root, { max = 60, depth = 3 } = {}) {

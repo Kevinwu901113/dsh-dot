@@ -38,7 +38,6 @@ export const SCHEMA = [
   e('phone', 'timezone', '手机·其他', 'text', 'restart-phone', '时区'),
   e('phone', 'number', '手机·其他', 'text', 'live', '她的手机号（注册、登录 App 用）'),
   e('phone', 'keepAppsAlive', '手机·其他', 'bool', 'restart-phone', '不让后台 App 被冻结（聊天 App 收消息靠它）'),
-  e('phone', 'qqSendOnPhone', '手机·其他', 'bool', 'restart-dsh', '允许在手机 QQ 里发消息（默认只看，发用 qq_send）'),
   e('phone', 'publicUrl', '手机·其他', 'text', 'restart-dsh', '对外的 dsh 地址（实时画面链接用）'),
   // computer
   e('computer', 'image', '电脑', { type: 'enum-or-text', values: ['enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest', 'ghcr.io/agent-infra/sandbox:latest'] }, 'create', '镜像源（国内镜像 / 官方 ghcr）'),

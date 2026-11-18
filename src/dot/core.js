@@ -16,6 +16,8 @@
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
+import { qqSpoken } from '../qq/qq.js';
+import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
@@ -91,6 +93,18 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
 /** The model-facing reason a qq_send to him is handed back by the reply check: listed phrases, or bracketed stage directions. */
 export const replyCheckText = ({ hits = [] } = {}) => prompt('dot.reply-check', { why: hits.length ? prompt('dot.reply-check.phrases', { phrases: hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') });
+/**
+ * What a call is about to say, by whatever way out: her qq_send or a send action of the QQ backend's own tools
+ * ({ via: 'qq', to, text }), or text typed on her phone — a message, a comment, a post ({ via: 'phone', text }).
+ * null for a call that says nothing. The rules about her words hang on this, not on a tool's name.
+ */
+export function spokenOf(name, args) {
+  const q = qqSpoken(name, args);
+  if (q) return { via: 'qq', ...q };
+  if (!String(name ?? '').startsWith(PHONE_TOOL_PREFIX)) return null;
+  const text = typedText(String(name).slice(PHONE_TOOL_PREFIX.length), args);
+  return text ? { via: 'phone', to: '', text } : null;
+}
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
 export function isOwnerTarget(to, owner) {
   const s = String(to ?? '').trim();
@@ -1349,6 +1363,11 @@ export function apply(ctx, config = {}) {
     handles: [`qq:${m.userId}`], platform: 'qq', name: m.who, kind: m.kind,
   })) ?? (() => {}), 'dsh-dot: qq messages'));
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
+  // What she said on QQ some other way than qq_send (the backend's own tools, her phone's QQ): on record all the same.
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onSelf?.((m) => {
+    audit('said-elsewhere', { to: m.to, chars: m.text.length });
+    try { ctx.get('dotMemory')?.herSaid?.({ session: lastSession, text: m.text, to: m.to, at: Date.parse(m.at) || Date.now() }); } catch (err) { logger.warn(`transcript: ${err.message}`); }
+  }) ?? (() => {}), 'dsh-dot: her own qq messages'));
   // Read before you speak: a qq_send to him while he has said something she has not read yet (still in
   // the buffer, or steered but not reached by the model) is held back once or twice per turn; the
   // buffer goes in right away, so her next step has it.
@@ -1370,18 +1389,22 @@ export function apply(ctx, config = {}) {
       audit('device-tool-in-his-turn', { session: id, tool: exec.name });
       return deny(prompt('dot.hand-off-tool.instead'));
     }
-    if (exec.name !== 'qq_send' || !isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
-    if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return deny(prompt('dot.errand-no-owner')); }
-    // Her own send: it can still be handed back. Once a turn — a second draft goes out as it is, so a phrase list
-    // that is wrong costs one call, not her answer.
-    if (cfg.replyCheck && t && !t.replyChecked && typeof args?.text === 'string') {
-      const c = checkReply(args.text, replyChecks());
+    // From here on it is about what she is saying, whichever way it goes out (spokenOf).
+    const spoken = spokenOf(exec.name, args);
+    if (!spoken) return next();
+    const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
+    if (toOwner && isErrand(id)) { audit('errand-owner-refused', { session: id, tool: exec.name }); return deny(prompt('dot.errand-no-owner')); }
+    // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
+    // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
+    if (cfg.replyCheck && t && !t.replyChecked && spoken.text) {
+      const c = checkReply(spoken.text, replyChecks());
       if (c.hits.length || c.stripped) {
         t.replyChecked = true;
-        audit('reply-check', { session: id, via: 'qq_send', stripped: c.stripped, hits: c.hits, denied: true });
+        audit('reply-check', { session: id, via: exec.name === 'qq_send' ? 'qq_send' : spoken.via === 'phone' ? 'phone' : 'qq-tool', ...(toOwner ? {} : { to: spoken.to || 'app' }), stripped: c.stripped, hits: c.hits, denied: true });
         return deny(replyCheckText(c));
       }
     }
+    if (!toOwner) return next();
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return next();
     const n = ownerDenies.get(id) ?? 0;
