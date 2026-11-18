@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { tooShort, canonToCard, parseBlacklist, phrasePattern, stripStage, checkReply, migrateCanon, readCard, readChecks, checksText } from '../src/persona/card.js';
+import { tooShort, canonToCard, parseBlacklist, phrasePattern, stripStage, checkReply, syncCard, readCard, readChecks, checksText } from '../src/persona/card.js';
 
 const CANON = {
   storyDefaults: { characterName: '林夏（小夏）', characterProfile: '22岁的女大学生。', perspective: '第一人称（我）。', relationship: '网上认识两年多的老熟人。', world: '现代日常。', supportingCast: '亲姐林秋。', location: '台北的出租屋。', replyRules: '只输出发出去的消息文本本身。\n一条一行。', style: '叙事文风不进卡' },
@@ -54,20 +54,37 @@ test('checkReply: lines kept, stage directions counted, blacklisted phrases name
   assert.deepEqual(checkReply('（笑）好', ps, { strip: false }).lines, ['（笑）好']);
 });
 
-test('migrateCanon: writes the card and the checks once; never over what is there', () => {
+test('syncCard: writes the card and the checks from the canon, follows a replaced canon, never writes over an edited file', () => {
   const home = mkdtempSync(join(tmpdir(), 'persona-'));
-  assert.deepEqual(migrateCanon(home, null), { card: false, checks: false });
-  assert.deepEqual(migrateCanon(home, CANON), { card: true, checks: true });
+  assert.deepEqual(syncCard(home, null), { card: 'none', checks: 'none' });
+  assert.deepEqual(syncCard(home, CANON), { card: 'written', checks: 'written' });
   assert.equal(readCard(home), canonToCard(CANON).trim());
   // 首先 / 其次 / 我认: too short to check, written commented out
   assert.deepEqual(readChecks(home).map((p) => p.phrase), ['综上所述', '不是……而是……', '与其说……不如说', '这条我认', '我理解你的感受']);
   assert.match(readFileSync(join(home, 'persona.checks.txt'), 'utf8'), /\n# 首先\n# 其次\n# 我认\n$/);
   assert.ok(readFileSync(join(home, 'persona.checks.txt'), 'utf8').startsWith('#'));
+  assert.deepEqual(syncCard(home, CANON), { card: 'same', checks: 'same' });
+  // another canon.json in its place: both follow, the old ones kept beside them
+  const NEXT = { storyDefaults: { ...CANON.storyDefaults, characterName: '木槿' }, examples: CANON.examples, blacklist: ['「行吧，正经的」'] };
+  assert.deepEqual(syncCard(home, NEXT, { now: new Date('2026-11-18T08:00:00Z') }), { card: 'rewritten', checks: 'rewritten' });
+  assert.match(readCard(home), /^# 你是 木槿/);
+  assert.deepEqual(readChecks(home).map((p) => p.phrase), ['行吧，正经的']);
+  assert.equal(readFileSync(join(home, 'persona.md.bak-20261118080000'), 'utf8'), canonToCard(CANON));
+  // edited by hand: left alone whatever the canon becomes; the checks file, untouched, still follows
   writeFileSync(join(home, 'persona.md'), '# 我自己写的\n');
-  assert.deepEqual(migrateCanon(home, CANON), { card: false, checks: false });
+  assert.deepEqual(syncCard(home, CANON), { card: 'kept', checks: 'rewritten' });
   assert.equal(readCard(home), '# 我自己写的');
+  // imported on purpose: written whatever is there
+  assert.deepEqual(syncCard(home, NEXT, { force: true }), { card: 'rewritten', checks: 'rewritten' });
+  assert.match(readCard(home), /^# 你是 木槿/);
+  // a card from before there was a record: adopted only when it is exactly what this canon makes
+  const old = mkdtempSync(join(tmpdir(), 'persona-'));
+  writeFileSync(join(old, 'persona.md'), canonToCard(CANON));
+  assert.equal(syncCard(old, NEXT).card, 'kept');
+  assert.equal(syncCard(old, CANON).card, 'same');
+  assert.equal(syncCard(old, NEXT).card, 'rewritten');
   const bare = mkdtempSync(join(tmpdir(), 'persona-'));
-  assert.deepEqual(migrateCanon(bare, { storyDefaults: { characterName: 'dot' } }), { card: true, checks: false });
+  assert.deepEqual(syncCard(bare, { storyDefaults: { characterName: 'dot' } }), { card: 'written', checks: 'none' });
   assert.ok(!existsSync(join(bare, 'persona.checks.txt')));
   assert.equal(checksText({}), '');
   assert.equal(readCard(mkdtempSync(join(tmpdir(), 'persona-'))), '');

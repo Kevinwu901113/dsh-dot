@@ -8,7 +8,8 @@
 // What a card used to forbid in words (the blacklist) is checked in code instead (parseBlacklist,
 // checkReply): a phrase list she never reads cannot teach her the phrase, and a rule about brackets is
 // kept by taking the brackets out. Length and form are code's; who she is stays in the card.
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
+import { readFileSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export const CARD_FILE = 'persona.md';
@@ -125,16 +126,47 @@ export function readChecks(home) {
   try { return parseBlacklist(readFileSync(join(home, CHECKS_FILE), 'utf8')); } catch { return []; }
 }
 
+const SOURCE_FILE = 'persona.source.json';
+const sha = (text) => createHash('sha256').update(String(text)).digest('hex').slice(0, 16);
+/** What of a canon the card and the checks are made from, as one string (key order does not matter). */
+const canonKey = (canon) => { const sd = canon?.storyDefaults ?? canon ?? {}; return sha(JSON.stringify([Object.keys(sd).sort().map((k) => [k, sd[k]]), canon?.replyRules ?? null, canon?.examples ?? null, canon?.blacklist ?? null])); };
+const readRaw = (file) => { try { return readFileSync(file, 'utf8'); } catch { return null; } };
+
 /**
- * Once: a home that has a canon and no card gets its card and its checks file written from the canon.
- * A card that is there is never touched; a checks file that is there is never touched.
- * → { card: bool, checks: bool } (what was written).
+ * Keep the card and the checks file in step with the canon — without ever writing over what the user wrote.
+ * <home>/persona.source.json remembers which canon they were made from and what was written (hashes):
+ *   - a home with a canon and no card (and no record of one): both are written;
+ *   - the canon changed (another canon.json put in its place) and the file is still exactly what was written
+ *     from the old one: it is written again from the new canon, the old one kept beside it (.bak-<time>);
+ *   - the file was edited, or deleted, since it was written: it is left alone (`kept`), whatever the canon says.
+ * `force` (a persona imported on purpose) writes both whatever is there, keeping the old ones beside them.
+ * → { card, checks: 'written' | 'rewritten' | 'kept' | 'same' | 'none' }.
  */
-export function migrateCanon(home, canon) {
-  const out = { card: false, checks: false };
+export function syncCard(home, canon, { force = false, now = new Date() } = {}) {
+  const out = { card: 'none', checks: 'none' };
   if (!canon) return out;
-  const cardFile = join(home, CARD_FILE), checksFile = join(home, CHECKS_FILE);
-  if (!existsSync(cardFile)) { const card = canonToCard(canon); if (card) { writeFileSync(cardFile, card); out.card = true; } }
-  if (!existsSync(checksFile)) { const checks = checksText(canon); if (checks) { writeFileSync(checksFile, checks); out.checks = true; } }
+  const sourceFile = join(home, SOURCE_FILE);
+  let source = null;
+  try { source = JSON.parse(readFileSync(sourceFile, 'utf8')); } catch { source = null; }
+  const key = canonKey(canon);
+  const tag = now.toISOString().replace(/[-:T]/g, '').slice(0, 14);
+  const next = { canon: key, card: source?.card ?? null, checks: source?.checks ?? null };
+  for (const [name, file, body] of [['card', CARD_FILE, canonToCard(canon)], ['checks', CHECKS_FILE, checksText(canon)]]) {
+    const path = join(home, file), have = readRaw(path), was = source?.[name] ?? null;
+    const write = (how) => {
+      if (have !== null) writeFileSync(`${path}.bak-${tag}`, have);
+      if (body) { writeFileSync(path, body); next[name] = sha(body); out[name] = how; } else { next[name] = null; out[name] = 'none'; }
+    };
+    if (force) { write(have === null ? 'written' : 'rewritten'); continue; }
+    if (have === null) { if (was === null && !source) write('written'); else out[name] = was === null ? 'none' : 'kept'; continue; }
+    if (was === null) { // a file nobody recorded: taken as written from this canon only when it is exactly that
+      if (body && have === body) { next[name] = sha(body); out[name] = 'same'; } else out[name] = 'kept';
+      continue;
+    }
+    if (sha(have) !== was) { out[name] = 'kept'; continue; } // edited since it was written
+    if (source.canon === key) { out[name] = 'same'; continue; }
+    write('rewritten');
+  }
+  if (!source || JSON.stringify(source) !== JSON.stringify(next)) { try { writeFileSync(sourceFile, `${JSON.stringify(next, null, 2)}\n`); } catch { /* read-only home: nothing is remembered */ } }
   return out;
 }

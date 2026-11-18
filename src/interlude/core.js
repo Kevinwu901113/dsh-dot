@@ -28,7 +28,7 @@ import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
 import { createGrowth, growthTool } from './growth.js';
-import { CARD_FILE, CHECKS_FILE, canonToCard, checksText, migrateCanon, readCard, readChecks } from '../persona/card.js';
+import { readCard, readChecks, syncCard } from '../persona/card.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -238,14 +238,7 @@ export function apply(ctx, config = {}) {
   };
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
   /** A persona imported on purpose replaces her card and checks; what was there is kept beside them (.bak-<time>). */
-  const writeCard = () => {
-    const tag = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
-    for (const [file, body] of [[CARD_FILE, canonToCard(canon)], [CHECKS_FILE, checksText(canon)]]) {
-      const path = join(home, file);
-      try { writeFileSync(`${path}.bak-${tag}`, readFileSync(path)); } catch (error) { void error; }
-      if (body) writeFileSync(path, body);
-    }
-  };
+  const writeCard = () => { audit('card-synced', syncCard(home, canon, { force: true })); };
   const doings = createDoings(files.doings);
   // Outside her own folder: only the weekly review changes her portrait (she could rewrite a file in <home>/her).
   const growth = cfg.growth ? createGrowth({ dir: join(dir, 'growth'), at: cfg.growthAt, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
@@ -258,10 +251,10 @@ export function apply(ctx, config = {}) {
   const meta = { day: dayOf(), dayContacts: 0, ...readJson(files.meta, {}) };
   const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayContacts = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
-  // Once per home: the canon becomes her card and the checks file (src/persona/card.js). Deleting the card later
-  // falls back to the canon; it is not written again.
-  if (canon && !meta.cardMigrated) {
-    try { const w = migrateCanon(home, canon); meta.cardMigrated = true; saveMeta(); if (w.card || w.checks) { logger.info(`persona: ${[w.card && CARD_FILE, w.checks && CHECKS_FILE].filter(Boolean).join(' and ')} written from canon.json`); audit('card-migrated', w); } }
+  // Her card and checks file follow the canon (src/persona/card.js): written when there are none, written again when
+  // another canon.json took its place — never over a file the user edited.
+  if (canon) {
+    try { const w = syncCard(home, canon); if (Object.values(w).some((v) => v === 'written' || v === 'rewritten')) { logger.info(`persona: card ${w.card}, checks ${w.checks} (from canon.json)`); audit('card-synced', w); } else if (w.card === 'kept') logger.info('persona: persona.md was edited by hand or is not from this canon.json; left as it is'); }
     catch (error) { logger.warn(`persona card not written: ${error.message}`); }
   }
 

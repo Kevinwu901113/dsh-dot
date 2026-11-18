@@ -377,7 +377,7 @@ test('her card: a home with a canon gets persona.md and persona.checks.txt once;
   assert.match(card, /^# 你是 林夏\n\n## 你是谁\n22岁的女大学生。\n\n## 怎么说话\n一条一行。\n$/);
   assert.equal(h.canonText(), card.trim());
   assert.ok(!existsSync(join(h.home, 'persona.checks.txt')), 'no blacklist in the canon: no checks file');
-  assert.ok(h.audits.some((e) => e.event === 'card-migrated' && e.card === true));
+  assert.ok(h.audits.some((e) => e.event === 'card-synced' && e.card === 'written'));
   writeFileSync(join(h.home, 'persona.md'), '# 你是 小夏\n自己写的卡\n');
   assert.equal(h.canonText(), '# 你是 小夏\n自己写的卡');
   // the next start does not write it again, and a deleted card falls back to the canon as rendered before
