@@ -6,7 +6,7 @@
 // watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { deny } from '../refusals.js';
 import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
-import { KEYBOARD, createTyping, dumpUi, screenLines } from './typing.js';
+import { KEYBOARD, createTyping, dumpUi, itemsFromElements, screenLines } from './typing.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -478,9 +478,22 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   /** The resumed activity, "pkg/.Activity" ('' when unknown). */
   phone.foreground = async () => { try { return /([\w.]+\/[\w.$]+)/.exec(await phone.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity|mResumedActivity'"))?.[1] ?? ''; } catch { return ''; } };
+  // What is on the screen, as items (typing.js): the phone server's own reader first — mobilecli `dump ui`, the one
+  // behind mobile_list_elements_on_screen, which reads web pages and apps uiautomator gives up on — else uiautomator.
+  let cli = '';
+  phone.screenItems = async () => {
+    try {
+      cli ||= new (createRequire(import.meta.url)('@mobilenext/mobile-mcp/lib/mobilecli.js').Mobilecli)().getPath();
+      const { stdout } = await exec(cli, ['dump', 'ui', '--device', mcpDevice()], { env: env(), timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
+      const items = itemsFromElements(JSON.parse(String(stdout)).data?.elements);
+      if (items.length) return items;
+    } catch (err) { logger.debug?.(`dump ui: ${err.message}`); }
+    return dumpUi((cmd) => phone.shell(cmd));
+  };
   // Typing (typing.js): through the input method, installed on her phone the first time it is needed.
   const typing = createTyping({
     shell: (cmd) => phone.shell(cmd),
+    read: () => phone.screenItems(),
     install: async () => {
       const file = join(home, 'adb-keyboard.apk');
       if (!existsSync(file)) {
@@ -983,7 +996,7 @@ export function apply(ctx, config = {}, deps = {}) {
     const d = await next();
     try {
       await new Promise((r) => setTimeout(r, cfg.screenAfterMs));
-      const lines = screenLines(await dumpUi((cmd) => phone.shell(cmd)));
+      const lines = screenLines(await phone.screenItems());
       // Not read (the page never comes to rest, or the dump fails): said in the log once per run, so it is not a silent nothing.
       if (!lines) { if (!screenUnread) { screenUnread = true; audit({ kind: 'screen-unread', after: name.split('__').pop() }); } return d; }
       audit({ kind: 'screen-read', after: name.split('__').pop(), lines: lines.split('\n').length });

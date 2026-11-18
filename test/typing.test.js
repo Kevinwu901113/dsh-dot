@@ -1,14 +1,14 @@
 // dsh-dot/phone typing: through the input method, a few characters at a time, read back.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { createTyping, chunks, focusedField, screenLines, KEYBOARD } from '../src/phone/typing.js';
+import { createTyping, chunks, itemsFromXml, itemsFromElements, screenLines, KEYBOARD } from '../src/phone/typing.js';
 
 const dump = (text, { password = false } = {}) => `<?xml version='1.0'?><hierarchy><node index="0" text="百度一下" class="android.widget.Button" focused="false" password="false" /><node index="1" text="${text}" class="android.widget.EditText" focused="true" password="${password}" /></hierarchy>UI hierchary dumped to: /dev/tty`;
 
 test('typing: installs the keyboard once, sends the text in pieces through it, and says whether it arrived', async () => {
   assert.deepEqual(chunks('鲸鱼娘 贴吧😀x', 3), ['鲸鱼娘', ' 贴吧', '😀x']);
-  assert.deepEqual(focusedField(dump('a &amp; b')), { text: 'a & b', password: false });
-  assert.equal(focusedField('<hierarchy><node focused="false" text="x" /></hierarchy>'), null);
+  assert.deepEqual(itemsFromXml(dump('a &amp; b')).find((i) => i.focused), { words: 'a & b', x: 0, y: 0, focused: true, password: false });
+  assert.deepEqual(itemsFromElements([{ type: 'View', children: [{ type: 'EditText', text: '鲸鱼娘', focused: true, rect: { x: 100, y: 300, width: 400, height: 100 }, children: [] }, { label: '百度一下', rect: { x: 800, y: 300, width: 200, height: 100 } }] }]), [{ words: '鲸鱼娘', x: 300, y: 350, focused: true, password: false }, { words: '百度一下', x: 900, y: 350, focused: false, password: false }]);
   const cmds = []; let field = '', installed = 0, hasPkg = false, ime = 'com.google.android.inputmethod.latin/.LatinIME', works = true;
   const shell = async (cmd) => {
     cmds.push(cmd);
@@ -57,9 +57,9 @@ test('typing: no focused field in the dump (a web page) — the text newly on th
 
 test('screenLines: the words on the screen and where to tap them, top to bottom, once each', () => {
   const xml = '<hierarchy><node text="" content-desc="" bounds="[0,0][1080,2400]" /><node text="百度一下" bounds="[800,300][1000,400]" focused="false" /><node text="" content-desc="语音搜索" bounds="[600,300][700,400]" /><node text="鲸鱼娘" class="android.widget.EditText" bounds="[100,300][500,400]" focused="true" /><node text="鲸鱼娘" bounds="[100,300][500,400]" /><node text="新闻" bounds="[0,900][200,1000]" /></hierarchy>';
-  assert.equal(screenLines(xml), '「鲸鱼娘」(300, 350) ←光标在这\n「语音搜索」(650, 350)\n「百度一下」(900, 350)\n「新闻」(100, 950)');
-  assert.equal(screenLines(''), '');
-  assert.equal(screenLines(xml, { max: 1 }).split('\n').length, 1);
+  assert.equal(screenLines(itemsFromXml(xml)), '「鲸鱼娘」(300, 350) ←光标在这\n「语音搜索」(650, 350)\n「百度一下」(900, 350)\n「新闻」(100, 950)');
+  assert.equal(screenLines([]), '');
+  assert.equal(screenLines(itemsFromXml(xml), { max: 1 }).split('\n').length, 1);
 });
 
 test('computer gate: > | ; inside quotes are text — a script handed to a tool is not a redirect into a shared folder', async () => {
