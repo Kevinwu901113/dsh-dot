@@ -270,7 +270,6 @@ export const defaults = {
 /** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
 export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
 /** The note a stalled errand leaves in her conversation: what it was doing when it was given up. */
-export const errandStalledText = (doing, minutes) => prompt('dot.errand-stalled', { doing, minutes });
 /** The owner's one message per turn for the approvals she is waiting on (the first one's details). */
 export function approvalNotice({ tool, reason = '', link = '', minutes = 0, count = 1 }) {
   const r = String(reason ?? '').trim();
@@ -292,8 +291,6 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
   return { state: 'running', idleMs };
 }
 
-/** Errand turns whose conclusion is noted in her conversation (observations hand theirs to the interlude). */
-const NOTED = ['phone-check', 'phone-notification', 'play', 'try'];
 /** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
@@ -488,36 +485,14 @@ export function apply(ctx, config = {}) {
   // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers, whatever the scope says.
   const isDotSession = (id, cwd) => !BRIDGE_ID_RE.test(String(id ?? '')) && (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id)));
 
-  // Her errand session (see defaults.errands). Created on first use in <home>, remembered across
-  // restarts, archived and replaced once it grows past errandMaxTokens.
-  let errandId = cfg.errands ? (store.get('errandSession') || '') : '';
-  let errandCreating = null;
-  // Errands that were rotated away stay errands: their last turn/end must not make one of them her
-  // "latest session" (his QQ message then goes into an archived errand and he never gets an answer).
-  const pastErrands = new Set(store.get('pastErrands') ?? []);
   // Conversations a reset retired (src/reset.js): a turn ending in one of them does not make it hers again.
   const pastConversations = new Set(store.get('pastConversations') ?? []);
-  const isErrand = (id) => Boolean(id) && (id === errandId || pastErrands.has(id));
-  // Her model requests share his provider key: errand steps are background and wait behind his (src/llm-gate.js).
-  const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: isErrand });
-  // Her errands think at llm.workEffort whatever the model selector was last set to for a chat (src/llm-gate.js).
-  // The host fixes a step's model selection before the step runs and refuses a different effort from the
-  // `agent/request` waterfall (0.2.2: "use agent.model.select() before step preparation" — the turn fails), so the
-  // errand's own selection is set before anything is sent into it: agent.model.select records it for that session
-  // only, durably, and is a no-op when the session already says so. A host without it: her errands follow the selector.
-  let effortSeen = '';
-  const thinkAtWork = async (agent) => {
-    try {
-      const m = agent?.model;
-      const can = typeof m?.select === 'function' && typeof m?.current === 'function';
-      const cur = can ? m.current() : undefined;
-      const { effort, why } = cur?.provider && cur?.model ? await effortFor(ctx, cur) : { effort: cur?.reasoningEffort, why: can ? 'no model selected yet' : 'host has no agent.model.select' };
-      // In the activity log whenever the outcome changes (not per wake): what the session said, what it is set to, why.
-      const seen = `${cur?.reasoningEffort ?? 'default'}→${effort ?? 'default'} ${why}`;
-      if (seen !== effortSeen) { effortSeen = seen; audit('errand-effort', { ...(cur ? { model: `${cur.provider}/${cur.model}` } : {}), was: cur?.reasoningEffort ?? 'default', effort: effort ?? 'default', why }); }
-      if (cur && effort && effort !== cur.reasoningEffort) m.select({ provider: cur.provider, model: cur.model, reasoningEffort: effort });
-    } catch (err) { logger.debug?.(`errand effort not set: ${err.message}`); }
-  };
+  // Sessions that were her errands, from before there was one of her (dot/hands.js): never her conversation, whatever
+  // ends in them. Nothing is added to the list any more.
+  const pastErrands = new Set([...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
+  const isErrand = (id) => Boolean(id) && pastErrands.has(id);
+  // Her model requests share his provider key: her hands' steps are background and wait behind his (src/llm-gate.js).
+  const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) });
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at an errand or at a session archived since (11-03: his QQ messages went into an
   // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -538,41 +513,7 @@ export function apply(ctx, config = {}) {
   selfCheck();
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
-  async function ensureErrand() {
-    if (!cfg.errands) return '';
-    if (errandId) return errandId;
-    if (errandCreating) return errandCreating;
-    const controller = ctx.get('sessionController');
-    if (typeof controller?.create !== 'function') return '';
-    errandCreating = (async () => {
-      try {
-        const { sessionId } = await controller.create({ cwd: home });
-        try { await controller.rename?.({ sessionId, title: 'dot · 跑腿' }); } catch (error) { void error; }
-        errandId = sessionId; store.set('errandSession', sessionId);
-        audit('errand-created', { session: sessionId });
-        return sessionId;
-      } catch (err) { logger.warn(`errand session not created: ${err.message}`); return ''; } finally { errandCreating = null; }
-    })();
-    return errandCreating;
-  }
-  /** This errand takes no new work (the next one gets a fresh session); it stays an errand. */
-  const retire = (id) => {
-    if (errandId === id) { errandId = ''; store.set('errandSession', ''); }
-    pastErrands.add(id); store.set('pastErrands', [...pastErrands].slice(-20));
-  };
-  async function rotateErrandIfLarge(id) {
-    const agent = ctx.get('agents')?.get?.(id);
-    const meter = ctx.get('tokenMeter');
-    if (!agent || typeof meter?.measure !== 'function') return;
-    let tokens = 0;
-    try { tokens = Number(meter.measure(agent.session)?.totalTokens ?? 0); } catch (error) { void error; return; }
-    if (tokens < cfg.errandMaxTokens) return;
-    retire(id);
-    if (lastSession === id) setLast('');
-    try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.warn(`errand archive failed: ${err.message}`); }
-    audit('errand-rotated', { session: id, tokens });
-  }
-  /** Leave what an errand found (or `note`) in her conversation, without waking it; true when it got there. */
+  /** Leave a note in her conversation, without waking it; true when it got there. */
   async function noteToConversation(origin, text, note = errandNote(origin, text)) {
     const id = lastSession;
     const controller = ctx.get('sessionController');
@@ -600,7 +541,6 @@ export function apply(ctx, config = {}) {
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
-  const flight = new Map(); // errand id → app notifications delivered to it, until its turn ends (what is in flight, per thread)
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
@@ -650,31 +590,19 @@ export function apply(ctx, config = {}) {
       return;
     }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
+    // What woke this turn besides him (a notification, her own time) and what the turn cost: a task of hers that ran
+    // in it (dshDot.task) gets its result and its cost back when the turn ends.
+    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind)) t.origin ??= event.data.source.form;
+    if (event.type === 'assistant/message') {
+      const u = event.data?.usage;
+      if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
+      if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
+    }
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
-      flight.delete(id);
-      // After this event settles, so the followup starts a fresh turn; held work first, then an interlude task.
-      if (id === lastSession || isErrand(id)) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
-    }
-    // An errand turn: its conclusion (unless DOT_SILENT) goes to her conversation as a note.
-    if (isErrand(id)) {
-      if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot') { t.origin = event.data.source.form; return; }
-      if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-interlude') { t.origin = event.data.source.form; return; }
-      if (event.type === 'assistant/message') {
-        // What the turn cost, step by step: an interlude task hands it back with its result.
-        const u = event.data?.usage;
-        if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
-        if (!event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) t.text = text; }
-        return;
-      }
-      if (ended) {
-        const text = stripSilent(t.text.trim());
-        // What she did there is left in her conversation as a note.
-        if (text && !isSilent(t.text.trim()) && NOTED.includes(t.origin)) void noteToConversation(t.origin === 'phone-notification' ? 'notification' : t.origin, text);
-        if (taskRunning?.session === id) finishTask(taskRunning, 'done', text, t.cost);
-        void rotateErrandIfLarge(id);
-      }
-      return;
+      if (taskRunning?.session === id && t.origin === taskRunning.source?.form) finishTask(taskRunning, 'done', stripSilent(String(t.last ?? '').trim()), t.cost);
+      // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
+      if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
     if (!t.scheduled && !t.fromQq) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
@@ -877,30 +805,10 @@ export function apply(ctx, config = {}) {
       order: 900,
       text: (c) => (turns.get(c.agent?.session?.id)?.scheduled ? scheduledRule() : ''),
     });
-    // One voice: an errand turn reports back (it never talks to him); her conversation knows what is still in flight.
-    scope.systemPrompt.context({
-      name: 'dot:errand',
-      order: 901,
-      text: (c) => {
-        const id = c.agent?.session?.id;
-        if (isErrand(id)) return NOTED.includes(turns.get(id)?.origin) ? prompt('dot.errand-report', { silent: SILENT }) : '';
-        return id && id === lastSession ? inFlightText() : '';
-      },
-    });
   });
 
-  /** One line for her conversation: what her errands are doing right now, per thread (they have not reported yet). */
-  const errandsDoing = () => {
-    const t = table('dot.errand-inflight');
-    return [...turns.keys()].filter(isErrand).map((id) => {
-      const threads = Map.groupBy(flight.get(id) ?? [], threadOf);
-      if (!threads.size) return t.other;
-      return [...threads.values()].map((ns) => fill(t.thread, { app: appName(ns[0].pkg), source: sourceOf(ns[0]) ? `《${sourceOf(ns[0])}》` : '', count: ns.length })).join('、');
-    }).join('；');
-  };
-  const inFlightText = () => { const doing = errandsDoing(); return doing ? fill(table('dot.errand-inflight').line, { doing }) : ''; };
   /** What she is busy with right now (an interlude task records it when it has to wait). */
-  const busyWith = () => [errandsDoing(), turns.has(lastSession) ? table('dot.errand-inflight').chat : ''].filter(Boolean).join('；');
+  const busyWith = () => (turns.has(lastSession) ? prompt('dot.busy.chat') : '');
 
   // 3. Budget.
   let blocked = store.get('blocked') ?? []; // persisted so a standing block is not re-announced after a restart
@@ -951,7 +859,6 @@ export function apply(ctx, config = {}) {
   const resolveLive = async (id) => {
     const live = ctx.get('agents')?.get?.(id);
     const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
-    if (found?.agent && isErrand(id)) await thinkAtWork(found.agent); // before anything is sent into her errand
     return found;
   };
   /** A new conversation of hers in her home; '' when dsh cannot make one. */
@@ -1125,12 +1032,9 @@ export function apply(ctx, config = {}) {
     deliverTracked(items, false, id);
   };
   const flush = () => { const items = batch; batch = []; batchTimer = null; send(lastSession, items); };
-  // One batch per thread at a time: to the errand already handling that thread while its turn runs
-  // (held there), else to the errand (her conversation when there is none).
-  const handler = (k) => [...flight].find(([id, ns]) => turns.has(id) && ns.some((n) => threadOf(n) === k))?.[0];
   const flushThread = async (k) => {
     const { items } = threads.get(k); threads.delete(k);
-    send(handler(k) ?? ((await ensureErrand()) || lastSession), items);
+    send(lastSession, items);
   };
   const queueThread = (n, ms) => {
     const k = threadOf(n), th = threads.get(k) ?? { items: [] }, due = Date.now() + ms;
@@ -1139,27 +1043,11 @@ export function apply(ctx, config = {}) {
     clearTimeout(th.timer); th.due = due;
     th.timer = setTimeout(() => { void flushThread(k).catch((err) => logger.warn(`thread wake failed: ${err.message}`)); }, ms); th.timer.unref?.();
   };
-  // Held too long for a busy errand (an approval nobody answers, a long turn): a fresh errand takes them,
-  // except what belongs to a thread that errand is handling (never two errands on one thread).
-  const rerouteHeld = async (now = Date.now()) => {
-    for (const [id, items] of [...held]) {
-      if (!isErrand(id) || !turns.has(id) || !(cfg.heldMaxMs > 0)) continue;
-      const mine = new Set((flight.get(id) ?? []).map(threadOf));
-      const late = items.filter((n) => now - n.heldAt >= cfg.heldMaxMs && !mine.has(threadOf(n)));
-      if (!late.length) continue;
-      held.set(id, items.filter((n) => !late.includes(n)));
-      retire(id);
-      const e = (await ensureErrand()) || lastSession;
-      audit('notification-rerouted', { from: id, to: e, count: late.length, heldMs: now - late[0].heldAt });
-      deliverTracked(late, true, e);
-    }
-  };
-  // Items held for an errand that was rotated meanwhile go to the current errand, not the archived one.
-  const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, pastErrands.has(id) ? (await ensureErrand()) || lastSession : id); };
-  // Interlude tasks (dshDot.task): the lowest priority, one at a time, in an errand that has nothing else to do.
+  // What arrived while her conversation was in a turn goes in when the turn ends.
+  const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
+  // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
   const taskQueue = []; let taskRunning = null;
-  const errandsBusy = () => Boolean(taskRunning) || threads.size > 0 || [...turns.keys()].some(isErrand)
-    || [...held].some(([id, ns]) => isErrand(id) && ns.length) || Boolean(flight.get(errandId)?.length); // delivered, turn not started yet
+  const somethingGoingOn = () => Boolean(taskRunning) || threads.size > 0 || turns.has(lastSession) || [...held.values()].some((ns) => ns.length);
   const finishTask = (t, status, report = '', cost = null) => {
     if (t === taskRunning) taskRunning = null; else taskQueue.splice(taskQueue.indexOf(t), 1);
     audit(`task-${status}`, { kind: t.kind, key: t.key, session: t.session, waitedMs: (t.startedAt ?? Date.now()) - t.queuedAt });
@@ -1168,7 +1056,7 @@ export function apply(ctx, config = {}) {
   const nextTask = async () => {
     const now = Date.now();
     for (const t of taskQueue.filter((x) => x.expiresAt <= now)) finishTask(t, 'expired');
-    if (!taskQueue.length || errandsBusy()) return;
+    if (!taskQueue.length || somethingGoingOn()) return;
     const t = taskRunning = taskQueue.shift();
     t.startedAt = now;
     try {
@@ -1324,7 +1212,6 @@ export function apply(ctx, config = {}) {
     const spoken = spokenOf(exec.name, args);
     if (!spoken) return next();
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
-    if (toOwner && isErrand(id)) { audit('errand-owner-refused', { session: id, tool: exec.name }); return deny(prompt('dot.errand-no-owner')); }
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
     if (cfg.replyCheck && t && !t.replyChecked && spoken.text) {
@@ -1351,14 +1238,12 @@ export function apply(ctx, config = {}) {
   const wakeOriginal = deliver;
   deliverTracked = (items, whileBusy, id) => {
     lastWakeAt = Date.now();
-    if (isErrand(id)) flight.set(id, [...(flight.get(id) ?? []), ...items]);
     wakeOriginal(items, whileBusy, id);
   };
   const phoneCheck = () => {
     const every = cfg.phoneCheckEveryMinutes * 60000;
     // The phone is one device: not while her conversation is running a turn (she may be using it).
     if (!every || !phone()?.isReady || !lastSession || turns.has(lastSession)) return;
-    if ([...turns.keys()].some(isErrand)) return; // never beside another errand turn
     if (frozen) return;
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
     if (Date.now() - lastWakeAt < every) return;
@@ -1369,34 +1254,15 @@ export function apply(ctx, config = {}) {
       const main = await resolveLive(lastSession);
       // She is on a long task: the goal driver brings her back round after round; don't cut in.
       if (main && !('error' in main) && goalActive(main.agent)) { audit('phone-check-skipped', { why: 'goal active' }); return; }
-      const target = (await ensureErrand()) || lastSession;
-      const found = target === lastSession ? main : await resolveLive(target);
-      if (!found || 'error' in found) return;
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: phoneCheckText() }], source: PHONE_CHECK_SOURCE }));
-      audit('phone-check', { session: target, errand: target !== lastSession });
+      if (!main || 'error' in main) return;
+      main.agent.followup(createUserMessage({ content: [{ type: 'text', text: phoneCheckText() }], source: PHONE_CHECK_SOURCE }));
+      audit('phone-check', { session: lastSession });
     }).catch((err) => logger.warn(`phone check failed: ${err.message}`));
   };
   // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
-  // A stalled errand is given up after errandStallMs — cancelled keeping its inbox, what was held for it
-  // released, a note in her conversation, and the next errand gets a fresh session. Her conversation
-  // is never cancelled: he is told once per turn (unless he was already told about its approval).
+  // Her conversation is never cancelled: he is told once per turn (unless he was already told about its approval).
   const pendingApproval = (id) => { let first; for (const a of approvals.values()) if (a.session === id && (!first || a.since < first.since)) first = a; return first; };
   const doingOf = (t, a) => (a ? `等 ${shortTool(a.tool)} 的审批` : t.doing || (t.said ? t.said.replace(/\s+/g, ' ').slice(0, 60) : '') || '（不清楚）');
-  const noteOrigin = (o) => (o === 'phone-notification' ? 'notification' : o || 'other');
-  const abandonErrand = (id, t, idle) => {
-    const doing = doingOf(t, pendingApproval(id));
-    let cancelled = false;
-    try {
-      const agent = ctx.get('agents')?.get?.(id);
-      if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'hook', reason: 'dot-watchdog' }, { keepInbox: true }); cancelled = true; }
-    } catch (err) { logger.warn(`errand cancel failed: ${err.message}`); }
-    turns.delete(id);
-    retire(id);
-    audit('errand-cancelled', { session: id, idleMs: idle, cancelled, doing });
-    const r = setTimeout(() => { void releaseHeld(id); }, 50); r.unref?.();
-    void noteToConversation(noteOrigin(t.origin), errandStalledText(doing, Math.round(idle / 60000)));
-    if (taskRunning?.session === id) finishTask(taskRunning, 'stalled', errandStalledText(doing, Math.round(idle / 60000)), t.cost);
-  };
   const turnInfo = (id, now = Date.now()) => {
     const t = turns.get(id);
     if (!t) return null;
@@ -1410,18 +1276,12 @@ export function apply(ctx, config = {}) {
       if (idle < cfg.turnStallMs) continue;
       const a = pendingApproval(id);
       if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, errand: isErrand(id), idleMs: idle, doing: doingOf(t, a), ...(a ? { approval: a.tool } : {}) }); }
-      if (isErrand(id)) {
-        // An approval still inside its own wait is left to expire first.
-        const approvalDone = !a || (cfg.approvalWaitMs > 0 && now - a.since >= cfg.approvalWaitMs);
-        if (cfg.errandStallMs > 0 && idle >= cfg.errandStallMs && approvalDone) abandonErrand(id, t, idle);
-        continue;
-      }
       if (id !== lastSession || t.ownerTold || a?.notified) continue;
       t.ownerTold = true;
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); void rerouteHeld(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
   phoneCheckNow = phoneCheck;
   // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
   // something still has to be installed, and when a device fails; problems go to the log and his IM.
@@ -1526,7 +1386,7 @@ export function apply(ctx, config = {}) {
           ...(lastDoctor && (lastDoctor.bad || lastDoctor.warn) ? [`doctor: ${lastDoctor.bad} problem(s), ${lastDoctor.warn} warning(s) — /dot doctor`] : []),
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           // Where his next message goes: when she "does not answer", look here first.
-          `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'} · errand: ${errandId || '(none)'}`,
+          `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
           `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · qq_send to him held ≤${cfg.ownerDenyMax}×/turn while unread${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
           ...statusLiveness(),
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
@@ -1550,8 +1410,6 @@ export function apply(ctx, config = {}) {
       pastConversations.delete(id);
       setLast(id);
     },
-    errand: ensureErrand,
-    errandId: () => errandId,
     /**
      * Post an interlude task ({ kind: 'play'|'look'|'try', key, text, source, readOnly, ttlMs, onStart(sessionId), onDone(result) }):
      * run in an errand when nothing else is (see defaults.interludeQueueMax); `onDone` gets
