@@ -660,11 +660,11 @@ test('words: 词：意思 kept only with a quote that is in the records and cont
   assert.match(seenRefusalText('full', { perDay: 30 }), /30 句/);
 });
 
-test('keep_line end to end: a line her errand\'s tools showed her becomes a 我看到的 line of the transcript; anything else is refused before it runs', async () => {
+test('keep_line end to end: a line her hands showed her (in her conversation) becomes a 我看到的 line of the transcript; anything else is refused before it runs', async () => {
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], hooks = [], tools = {}, audits = [];
-  const services = { dshDot: { session: () => 's1', isErrand: (id) => id === 'errand-1', isIm: () => false }, dshComputer: { audit: (e) => audits.push(e) } };
+  const services = { dshDot: { session: () => 's1', isErrand: () => false, isIm: () => false }, dshComputer: { audit: (e) => audits.push(e) } };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'tools/pre-execute') hooks.push(fn); },
@@ -679,16 +679,16 @@ test('keep_line end to end: a line her errand\'s tools showed her becomes a 我�
     return out;
   };
   assert.match(tools.keep_line.description, /照抄，一次一句，不超过 80 字/);
-  emit('errand-1', 'tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: '[{"text":"这把纯纯坐牢","x":12},{"text":"队友在逛街"},{"text":"第三句也不错"}]' }] } });
-  emit('s1', 'tool/result', { message: { toolCallId: 'c2', content: [{ type: 'text', text: '对话里的工具结果不算' }] } });
-  assert.deepEqual(await call('errand-1', { text: '这把纯纯坐牢', from: '小黑盒' }), { ok: true });
-  assert.equal((await call('errand-1', { text: '这把纯纯坐牢' })).kind, 'deny', 'not twice');
-  assert.match((await call('errand-1', { text: '我自己编的' })).reason, /不在你刚才看到的/);
-  assert.match((await call('s1', { text: '对话里的工具结果不算' })).reason, /只在你自己去逛的时候用/);
-  assert.deepEqual(await call('errand-1', { text: '队友在逛街' }), { ok: true });
-  assert.match((await call('errand-1', { text: '第三句也不错' })).reason, /今天记得够多了（2 句）/);
+  emit('s1', 'tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: '[{"text":"这把纯纯坐牢","x":12},{"text":"队友在逛街"},{"text":"第三句也不错"}]' }] } });
+  
+  assert.deepEqual(await call('s1', { text: '这把纯纯坐牢', from: '小黑盒' }), { ok: true });
+  assert.equal((await call('s1', { text: '这把纯纯坐牢' })).kind, 'deny', 'not twice');
+  assert.match((await call('s1', { text: '我自己编的' })).reason, /不在你刚才看到的/);
+  assert.match((await call('x9', { text: '这把纯纯坐牢' })).reason, /只在你自己去逛的时候用/);
+  assert.deepEqual(await call('s1', { text: '队友在逛街' }), { ok: true });
+  assert.match((await call('s1', { text: '第三句也不错' })).reason, /今天记得够多了（2 句）/);
   const lines = readFileSync(join(home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
-  assert.deepEqual(lines.map((l) => [l.who, l.session, l.text, l.from ?? '']), [['seen', 'errand-1', '这把纯纯坐牢', '小黑盒'], ['seen', 'errand-1', '队友在逛街', '']]);
+  assert.deepEqual(lines.map((l) => [l.who, l.session, l.text, l.from ?? '']), [['seen', 's1', '这把纯纯坐牢', '小黑盒'], ['seen', 's1', '队友在逛街', '']]);
   assert.equal(services.dotMemory.status().seen, 2);
   assert.deepEqual(audits.filter((e) => e.event === 'seen-refused').map((e) => e.why), ['again', 'not-shown', 'elsewhere', 'full']);
   assert.equal(services.dotMemory.lastSaidAt(), 0, 'a kept line is not something said in her conversation');

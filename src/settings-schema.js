@@ -67,8 +67,6 @@ export const SCHEMA = [
   // dot
   e('dot', 'phoneCheckEveryMinutes', 'dot', 'int', 'restart-dsh', '隔多久拿起手机看一眼（分钟，0 = 不看）', { min: 0, max: 1440 }),
   e('dot', 'notifyHours', 'dot', 'text', 'restart-dsh', '只在这个时段被通知叫醒（如 08:00-23:00；空 = 一直）'),
-  e('dot', 'handOff', 'dot', 'bool', 'restart-dsh', '你让她在手机 / 电脑上做的事交给跑腿：她先回你一句，跑腿办完带着结果叫醒她再告诉你；你说话的那一轮里她不自己动设备'),
-  e('dot', 'hands', 'dot', 'bool', 'restart-dsh', '她的手机和电脑由「手」来操作：她在对话里说一步，手做一步、回报屏幕上是什么（开了以后不再交给跑腿）'),
   e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；用 qq_send 发的话里有 persona.checks.txt 列的说法时退回让她改一次'),
   e('dot', 'manuals', 'dot', 'bool', 'restart-dsh', '手机、电脑说明书在第一次用时才给（省 token）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),

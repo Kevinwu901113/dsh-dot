@@ -242,11 +242,11 @@ export const defaults = {
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
   // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
   replyCheck: true,
-  handOff: true,
+  handOff: false,
   // Her devices are operated by her hands (hands.js), a round at a time, from her conversation: she says what to do,
   // the hands do it and say what is on the screen, she decides the next step. With this on she does not hand things
   // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
-  hands: false,
+  hands: true,
   handsMaxMs: 150000,
   handOffTtlMs: 7200000,       // not started within this long: given up, and she is told so
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -491,6 +491,9 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot');
   runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const cfg = { ...defaults, ...setValues(config, { keepEmpty: ['notifyHours'] }), ...sectionOf('dot', (m) => logger.warn(m)) };
+  // One of her, and her hands (hands.js): there is no errand session and nothing is handed off any more. What is
+  // left below of the errand's machinery is not reached and goes with the next clean-up.
+  cfg.errands = false; cfg.handOff = false; cfg.hands = true;
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
   const phone = () => ctx.get('dshPhone');
@@ -1210,9 +1213,10 @@ export function apply(ctx, config = {}) {
     const t = taskRunning = taskQueue.shift();
     t.startedAt = now;
     try {
-      const id = await ensureErrand();
+      // Her own time and what her phone shows her come to her conversation: there is one of her.
+      const id = lastSession;
       const found = id && await resolveLive(id);
-      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'no errand session');
+      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'no conversation of hers yet');
       t.session = id;
       t.onStart?.(id);
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: t.text }], source: t.source }));
@@ -1329,16 +1333,6 @@ export function apply(ctx, config = {}) {
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (cfg.hands && hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
   });
-  ctx.inject(['tools'], (scope) => {
-    if (!cfg.handOff || !cfg.errands) return;
-    scope.effect(() => scope.tools.register({
-      name: 'hand_off',
-      description: prompt('dot.hand-off-tool'),
-      parameters: { type: 'object', properties: { what: { type: 'string', description: '要做的事，一句话：照他说的写，他没要的别加' }, why: { type: 'string', description: '可不填：他为什么要这个' } }, required: ['what'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt('dot.hand-off-tool.done', { what: v?.what ?? '' }) }] },
-      async execute(args) { const a = handOff(args ?? {}); return { id: a.id, what: a.what, status: a.status }; },
-    }), 'dsh-dot: hand_off tool');
-  });
 
   // His messages wait for him to stop typing (see defaults.ownerQuietMs): their own buffer and timer,
   // separate from everyone else's notifications.
@@ -1441,8 +1435,6 @@ export function apply(ctx, config = {}) {
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
-    // With hands: her conversation says what to do and the hands do it — no errand to hand to, no device tool here.
-    if (cfg.hands && id === lastSession && (exec.name === 'hand_off' || exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX) || exec.name === PHONE_ZOOM_TOOL)) return deny(prompt('dot.hands.instead'));
     if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
     if (exec.name === 'hand_off' && id !== lastSession) return deny(prompt('dot.hand-off-tool.elsewhere'));
     if (cfg.handOff && cfg.errands && t?.his && id === lastSession && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX))) {

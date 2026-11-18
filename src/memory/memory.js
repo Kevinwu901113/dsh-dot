@@ -451,7 +451,7 @@ export function apply(ctx, config = {}) {
   const seenCalls = []; // sessions of keep_line calls let through, in order: execute() has no session of its own
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
-    if (!id || event?.type !== 'tool/result' || !dot()?.isErrand?.(id)) return;
+    if (!id || event?.type !== 'tool/result' || !isConversation(id, session?.header?.cwd)) return;
     const content = event.data?.message?.content;
     let text = contentText(content);
     if (!text && content && typeof content === 'object') { try { text = JSON.stringify(content); } catch { text = ''; } }
@@ -465,7 +465,7 @@ export function apply(ctx, config = {}) {
     const id = exec.agent?.session?.id ?? '';
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
     const today = lines.filter((l) => l.who === 'seen' && l.at >= startOfToday());
-    const why = seenRefusal({ text: args?.text, errand: Boolean(dot()?.isErrand?.(id)), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
+    const why = seenRefusal({ text: args?.text, errand: isConversation(id, exec.agent?.session?.header?.cwd), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
     if (why) { audit('seen-refused', { session: id, why }); return deny(seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay })); }
     seenCalls.push(id);
     return next();

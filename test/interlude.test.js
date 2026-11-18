@@ -267,7 +267,7 @@ test('growth: the weekly review reads her week (never writes memory), keeps her 
   h.stop();
 });
 
-test('free time: her own time goes to her errands with a budget; QQ and the ledger refused, typing in a social app asks, tell_him only there; past the budget the turn is stopped', async () => {
+test('free time: her own time comes to her with a budget; QQ is hers as always, typing in a social app asks; past the budget the turn is stopped', async () => {
   const { FREE_SOURCE } = await import('../src/interlude/core.js');
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000, freeDailyTokens: 30000 } });
   const tasks = [], cancelled = [];
@@ -285,16 +285,10 @@ test('free time: her own time goes to her errands with a budget; QQ and the ledg
   // before it starts, nothing is a free session
   assert.equal((await h.gate('e1', 'qq_send')).via, 'next');
   tasks[0].onStart('e1');
-  assert.equal((await h.gate('e1', 'qq_send')).kind, 'deny');
-  assert.equal((await h.gate('e1', 'doings')).kind, 'deny');
-  assert.equal((await h.gate('e1', 'tell_him')).via, 'next');
-  assert.equal((await h.gate('s1', 'tell_him')).kind, 'deny');
+  assert.equal((await h.gate('e1', 'qq_send')).via, 'next', 'her own time: she may still write to anyone');
   assert.equal((await h.gate('e1', `${PHONE_TOOL_PREFIX}mobile_type_keys`)).kind, 'ask');
   fg = 'com.android.chrome/.Main';
   assert.equal((await h.gate('e1', `${PHONE_TOOL_PREFIX}mobile_type_keys`)).via, 'next', 'typing elsewhere passes to the phone gate');
-  // tell_him with speak off: kept, not sent
-  const said = await h.tool('tell_him').execute({ text: '我画了只猫', why: '想给他看' });
-  assert.equal(said.handed, false);
   // the budget: 9000 tokens → warned; 11000 → stopped
   h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 8000, outputTokens: 1000 } });
   assert.deepEqual(cancelled, []);
@@ -304,7 +298,7 @@ test('free time: her own time goes to her errands with a budget; QQ and the ledg
   tasks[0].onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '画了一只猫，存在 her/画/猫.png', cost: { in: 10000, cached: 0, out: 1000 } });
   assert.equal((await h.gate('e1', 'qq_send')).via, 'next', 'over');
   const list = JSON.parse(readFileSync(join(h.home, 'interlude', 'doings.json'), 'utf8'));
-  assert.deepEqual(list.map((d) => [d.kind, d.status]), [['free', 'stopped'], ['say', 'kept']], 'stopped by the budget, said so');
+  assert.deepEqual(list.map((d) => [d.kind, d.status]), [['free', 'stopped']], 'stopped by the budget, said so');
   assert.match((await h.cmd().handler({ rawInput: '' })).text, /free time: 1\/2 today, 11000\/30000 tokens/);
   // the daily budget: 11000 of 30000 used; one more would be capped at what is left
   assert.match((await h.cmd().handler({ rawInput: 'free' })).text, /budget 10000 tokens/);

@@ -177,7 +177,8 @@ export const isBridgeTool = (n) => BRIDGE_TOOL_PREFIXES.some((p) => n.startsWith
 export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools = true } = {}) {
   const out = [];
   for (const n of names) {
-    if (owner === 'dot') { if (hideBridgeTools && isBridgeTool(n)) out.push(n); continue; }
+    // Her conversation: she does not touch the devices herself — her hands do (dot/hands.js) — so their tools are not there to call.
+    if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n)) out.push(n); continue; }
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
     if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }

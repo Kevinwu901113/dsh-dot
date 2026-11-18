@@ -430,13 +430,10 @@ export function apply(ctx, config = {}) {
   // In her own time: no QQ (he is reached through tell_him), no ledger tool, and typing in a social app asks first.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
-    if (exec.name === 'tell_him') return sessionId && free.has(sessionId) ? next() : deny(prompt('interlude.tell-him.elsewhere'));
-    if (!sessionId || !free.has(sessionId)) return next();
-    if (free.get(sessionId).stopped) return deny(prompt('interlude.free.over'));
-    if (exec.name === 'qq_send' || exec.name.startsWith(QQ_TOOL_PREFIX) || exec.name === 'doings') {
-      audit('free-refused', { session: sessionId, tool: exec.name });
-      return deny(prompt('interlude.free.refused', { tool: exec.name }));
-    }
+    // Her own time runs in her conversation; her hands (dsh-dot/hands) do the typing, so the rule about typing looks at them too.
+    const hands = Boolean(free.size && dshDot()?.isHands?.(sessionId, exec.agent?.session?.header?.cwd));
+    if (!sessionId || !(free.has(sessionId) || hands)) return next();
+    if (free.get(sessionId)?.stopped) return deny(prompt('interlude.free.over'));
     const tool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     const input = exec.input ?? exec.args ?? exec.arguments;
     if (tool && typesText(tool, input)) {
@@ -561,31 +558,6 @@ export function apply(ctx, config = {}) {
   // 4b. Her own hands on the ledger: in her conversation, when he reacts to something she did on her own.
   const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;
   ctx.inject(['tools'], (scope) => {
-    scope.effect(() => scope.tools.register({
-      name: 'doings',
-      description: prompt('interlude.doings-tool'),
-      parameters: { type: 'object', properties: { action: { type: 'string', enum: ['list', 'feedback'] }, about: { type: 'string' }, text: { type: 'string' }, from: { type: 'string', enum: ['owner', 'her'] } }, required: ['action'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? (v.list ?? `doings: ${v.note ?? 'ok'}`) : `doings error: ${v?.error}` }] },
-      async execute(args) {
-        if (args.action === 'list') return { ok: true, list: doings.all().slice(-10).map(doingsLine).join('\n') || '（还没有）' };
-        const d = doings.feedback(args.about, args.text, args.from === 'her' ? 'her' : 'owner');
-        if (!d) return { ok: false, error: args.text ? `没找到「${args.about ?? ''}」` : 'text is empty' };
-        audit('feedback', { id: d.id, from: args.from === 'her' ? 'her' : 'owner' });
-        return { ok: true, note: `记在 #${d.id}（${d.what}）` };
-      },
-    }), 'dsh-interlude: doings tool');
-    scope.effect(() => scope.tools.register({
-      name: 'tell_him',
-      description: prompt('interlude.tell-him'),
-      parameters: { type: 'object', properties: { text: { type: 'string' }, why: { type: 'string' } }, required: ['text'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.note ?? '' }] },
-      async execute({ text, why = '' }) {
-        const said = await contact({ text: String(text ?? ''), willingness: 1, reason: String(why) }, 'free');
-        const id = doings.add({ kind: 'say', what: String(text ?? ''), why });
-        doings.settle(id, { status: said ? 'handed' : 'kept' });
-        return { ok: true, handed: Boolean(said), note: said ? '交给和他的对话了，说不说由那边的你决定。' : '记下了，这会儿不发（主动联系关着、今天次数到了或者不在活跃时间）。' };
-      },
-    }), 'dsh-interlude: tell_him tool');
   });
 
   // 5. /interlude
