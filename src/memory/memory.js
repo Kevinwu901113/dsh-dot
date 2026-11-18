@@ -490,6 +490,8 @@ export function apply(ctx, config = {}) {
         else if (src.kind === 'schedule') { record({ who: 'schedule', session: id, text }); t.scheduled = true; turns.set(id, t); }
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
+        // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
+        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); }
         // What woke her is the query; the result is in front of her before the model is called.
         if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) void recall.prepare(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;

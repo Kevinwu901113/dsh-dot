@@ -51,10 +51,10 @@ export const UI_DUMP = 'uiautomator dump /data/local/tmp/dot-ui.xml >/dev/null 2
 export async function dumpUi(shell) { try { const xml = String(await shell(UI_DUMP)); return xml.includes('<hierarchy') ? itemsFromXml(xml) : []; } catch { return []; } }
 
 /** The screen as lines for her hands: 「words」(x, y), top to bottom, the same words at the same place once, at most `max`. */
-export function screenLines(items, { max = 70, chars = 60 } = {}) {
+export function screenLines(items, { max = 70, chars = 60, top = 100 } = {}) {
   const out = [], seen = new Set();
   for (const it of items ?? []) {
-    if (!it.words) continue;
+    if (!it.words || it.y < top) continue; // the status bar (signal, battery, clock) is not what she is looking at
     const key = `${it.words}@${Math.round(it.x / 20)},${Math.round(it.y / 20)}`;
     if (seen.has(key)) continue;
     seen.add(key);

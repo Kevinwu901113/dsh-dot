@@ -552,6 +552,8 @@ export function apply(ctx, config = {}) {
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   let hands = null; // her hands (hands.js), set once sessions can be made
+  /** What her hands are on right now, as a line for her conversation ('' when they are free). */
+  const handsLine = () => { const d = hands?.doing?.(); return d ? prompt('dot.hands.doing', { task: d.task, secs: Math.round((Date.now() - d.startedAt) / 1000), said: d.said ? `，刚说：${d.said}` : '' }).trim() : ''; };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
   const saveReaches = () => { reaches = reaches.slice(-40); store.set('reaches', reaches); };
@@ -611,7 +613,8 @@ export function apply(ctx, config = {}) {
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
     if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
       t.fromQq = true;
-      if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
+      if (event.data?.source?.form === 'hands-result') t.handsResult = true; // her own turn, though its answer goes to him
+      else if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
         const said = contentText(event.data?.content).replace(/^\[[^\]]*\]\s*/, '').trim();
         if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
@@ -629,7 +632,13 @@ export function apply(ctx, config = {}) {
     }
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
-      if (taskRunning?.session === id && t.origin === taskRunning.source?.form) finishTask(taskRunning, 'done', stripSilent(String(t.last ?? '').trim()), t.cost);
+      // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
+      // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
+      if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.fromQq))) {
+        const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
+        if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
+        if (!hands?.busy()) finishTask(taskRunning, 'done', stripSilent(String(t.last ?? '').trim()), c);
+      }
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
@@ -656,7 +665,8 @@ export function apply(ctx, config = {}) {
         const q = ctx.get('dshQq');
         if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
         if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
-        sayToOwner(id, stripSilent(text));
+        // A turn her hands came back to: memory records this turn itself (it is not a turn of his QQ words to it).
+        sayToOwner(id, stripSilent(text), { record: !t.handsResult });
         return;
       }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
@@ -834,7 +844,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         if (!inHome(c)) return '';
         const started = turns.get(c.agent?.session?.id)?.startedAt ?? Date.now();
-        return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), c.agent?.session?.id === lastSession ? reachText(reaches) : ''].filter(Boolean).join('\n');
+        return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), c.agent?.session?.id === lastSession ? reachText(reaches) : '', c.agent?.session?.id === lastSession ? handsLine() : ''].filter(Boolean).join('\n');
       },
     });
     // First install / boot: her phone and computer take minutes to come up; she talks meanwhile.
@@ -937,6 +947,25 @@ export function apply(ctx, config = {}) {
     store,
     tokensOf: (id) => { try { return Number(ctx.get('tokenMeter')?.measure?.(ctx.get('agents')?.get?.(id)?.session)?.totalTokens ?? 0); } catch { return 0; } },
     audit, maxMs: cfg.handsMaxMs,
+    // The round is over: what the hands said, and the screen as it is now for her own eyes, come to her conversation
+    // and wake her. A round that was his business comes back as a turn whose answer goes to him (the rpcId is how
+    // a QQ turn is told, as for his own words); one of her own time is hers to speak of or not.
+    onDone: async (r, job) => {
+      try {
+        const found = lastSession && await resolveLive(lastSession);
+        if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
+        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, text: r.text || '（没说什么）', cut: r.status === 'done' ? '' : `\n${prompt('dot.hands.cut', { why: r.why || r.status }).trim()}` }).trim() }];
+        if (r.status !== 'failed') {
+          try {
+            const images = ctx.get('attachments');
+            const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
+            if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
+          } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
+        }
+        found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { rpcId: `qq-dot-hands-${Date.now().toString(36)}` } : {}) } }));
+        audit('hands-result', { session: lastSession, status: r.status, forHim: Boolean(job.forHim), steps: r.steps });
+      } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
+    },
   });
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
@@ -1136,20 +1165,14 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' } }, required: ['device', 'do'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }, ...(v?.image ? [{ type: 'text', text: prompt(v.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen') }, { type: 'image', attachment: v.image }] : [])] },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' }, stop: { type: 'boolean', description: '让正在做的那一步停下' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'busy' ? prompt('dot.hands.busy', { task: v.doing?.task ?? '', secs: Math.round((Date.now() - (v.doing?.startedAt ?? Date.now())) / 1000) }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
+        if (args?.stop) return { status: hands.stop('她叫停了') ? 'stopped' : 'idle' };
         const device = args?.device === 'computer' ? 'computer' : 'phone';
-        const r = await hands.run({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}` });
-        // What the screen shows now, for her own eyes: the hands say what they did, she sees whether it is so.
-        if (r.status !== 'failed') {
-          try {
-            const images = ctx.get('attachments');
-            const png = typeof images?.saveImages !== 'function' ? null : device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
-            if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${device}-screen` }]); if (image) { r.image = image; r.device = device; } }
-          } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
-        }
-        return r;
+        // Whose business this round is: his (a turn his words opened, or one a round for him came back to) or her own.
+        const t = turns.get(lastSession);
+        return hands.start({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}`, forHim: Boolean(t && !t.scheduled && (t.fromQq || t.his)) });
       },
     }), 'dsh-dot: hands tool');
   });
@@ -1218,7 +1241,6 @@ export function apply(ctx, config = {}) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
       ownerBatch.push(n); ownerTyping = false; lastWakeAt = Date.now(); // he pressed send
       answerReaches();
-      if (cfg.hands) hands?.interrupt('他说话了');
       armOwner();
       return;
     }

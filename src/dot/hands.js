@@ -6,9 +6,10 @@
 // session with the device tools and nothing else of hers — no card, no memory, no QQ — that does one thing she
 // asks and says back, briefly, what it did and what is on the screen. What to do next is hers to decide, so a
 // longer thing (reading a forum, signing in somewhere) is several rounds between her and her hands.
-//   run({ device, task })  one round: the task goes to the hands session, the round ends when its turn ends,
-//                          when it took too long (cut, with what it had said so far), or when he speaks
-//                          (interrupt() — she reads him first).
+//   start({ device, task })  one round, not waited for: the task goes to the hands session and she goes on with her
+//                            turn (she can answer him meanwhile); when the hands' turn ends, or it took too long,
+//                            or she stopped it, onDone gets what they said — and her conversation is told.
+//   One pair of hands: a second round while one is under way is not started (she is told what they are on).
 // The hands session lives outside her home (so nothing that goes by "a session in her home" takes it for her),
 // is kept across rounds (the hands remember the screen they left), and is replaced when it has grown large.
 import { mkdirSync } from 'node:fs';
@@ -28,26 +29,56 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  * @param deps.store      { get(key), set(key, value) } — remembered across restarts
  * @param deps.tokensOf   (id) => tokens in that session so far (0 when unknown)
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, tokensOf = () => 0, audit = () => {}, maxMs = 360000, maxTokens = 120000, maxChars = 450, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, onDone = () => {}, tokensOf = () => 0, audit = () => {}, maxMs = 360000, maxTokens = 60000, maxChars = 450, now = () => Date.now() }) {
   let current = String(store.get('handsSession') ?? '');
   const past = new Set(store.get('handsPast') ?? []);
-  const rounds = new Map(); // session id → the round in flight
-  let chain = Promise.resolve(); // one round at a time: she has one pair of hands
+  let job = null; // the round under way: { device, task, startedAt, said, steps, finish, … }
   const api = {
     dir,
     /** Is this session her hands (by id, or by where it lives — known before the id is)? */
     isHands: (id, cwd) => Boolean((id && (id === current || past.has(id))) || (cwd && inside(dir, cwd))),
-    busy: () => rounds.size > 0,
-    /** He spoke (or the round is otherwise not wanted any more): the round in flight ends now, as cut. */
-    interrupt(why = 'interrupted') { for (const r of rounds.values()) r.finish('cut', why); },
+    busy: () => Boolean(job),
+    /** What her hands are on right now: { device, task, startedAt, said, steps } or null. */
+    doing: () => (job ? { device: job.device, task: job.task, startedAt: job.startedAt, said: clip(job.said, 120), steps: job.steps } : null),
+    /** The round under way ends now, as cut (she said stop, or it is not wanted any more). False when there is none. */
+    stop(why = 'stopped') { if (!job) return false; job.finish('cut', why); return true; },
     /**
-     * One round. → { status: 'done' | 'cut' | 'failed', text, steps, ms, why? } — text is what the hands said last,
-     * at most maxChars.
+     * Start a round. → { status: 'started' } at once, or { status: 'busy', doing } when her hands are on something,
+     * or { status: 'failed', why }. The round's end goes to onDone(result, { device, task, ...extra }) with
+     * result = { status: 'done' | 'cut' | 'failed', text, steps, ms, why? }.
      */
-    run({ device = '', task = '' } = {}) {
-      const job = chain.then(() => round(device, String(task).trim()));
-      chain = job.catch(() => {});
-      return job;
+    start({ device = '', task = '', ...extra } = {}) {
+      const what = String(task).trim();
+      if (!what) return { status: 'failed', why: 'no task' };
+      if (job) return { status: 'busy', doing: api.doing() };
+      const mine = job = { device, task: what, extra, startedAt: now(), said: '', steps: 0, over: false, finish: () => {} };
+      const settle = (status, why) => {
+        if (mine.over) return; mine.over = true;
+        clearTimeout(mine.timer); try { mine.off?.(); } catch (error) { void error; }
+        if (job === mine) job = null;
+        if (status === 'cut') { try { mine.agent?.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }); } catch (error) { void error; } }
+        const out = { status, text: clip(mine.said, maxChars), steps: mine.steps, ms: now() - mine.startedAt, ...(why ? { why } : {}) };
+        audit('hands-round', { session: mine.id, device, status, steps: mine.steps, ms: out.ms, ...(why ? { why } : {}) });
+        try { Promise.resolve(onDone(out, { device, task: what, ...extra })).catch(() => {}); } catch (error) { void error; }
+      };
+      mine.finish = settle;
+      void (async () => {
+        try {
+          const id = mine.id = await ensure();
+          const agent = mine.agent = id ? await agentFor(id) : null;
+          if (mine.over) return;
+          if (!agent || typeof agent.followup !== 'function') { settle('failed', 'no hands session'); return; }
+          mine.off = onEvent((session, event) => {
+            if (session?.id !== id || mine.over) return;
+            if (event?.type === 'tool/call') mine.steps++;
+            else if (event?.type === 'assistant/message' && !event.data?.interrupted) { const t = textOf(event.data?.message?.content); if (String(t ?? '').trim()) mine.said = t; }
+            else if (event?.type === 'turn/end') settle('done');
+          }) ?? (() => {});
+          mine.timer = setTimeout(() => settle('cut', 'took too long'), maxMs); mine.timer.unref?.();
+          agent.followup(message(what));
+        } catch (err) { settle('failed', err.message); }
+      })();
+      return { status: 'started' };
     },
   };
   async function ensure() {
@@ -57,34 +88,6 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     const id = await create(dir);
     if (id) { if (current) { past.add(current); store.set('handsPast', [...past].slice(-20)); } current = id; store.set('handsSession', id); audit('hands-opened', { session: id }); }
     return id;
-  }
-  async function round(device, task) {
-    const started = now();
-    if (!task) return { status: 'failed', text: '', steps: 0, ms: 0, why: 'no task' };
-    const id = await ensure();
-    const agent = id ? await agentFor(id) : null;
-    if (!agent || typeof agent.followup !== 'function') return { status: 'failed', text: '', steps: 0, ms: now() - started, why: 'no hands session' };
-    return new Promise((done) => {
-      let said = '', steps = 0, over = false, off = () => {}, timer = null;
-      const finish = (status, why) => {
-        if (over) return; over = true;
-        clearTimeout(timer); try { off(); } catch (error) { void error; }
-        rounds.delete(id);
-        if (status === 'cut') { try { agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }); } catch (error) { void error; } }
-        const out = { status, text: clip(said, maxChars), steps, ms: now() - started, ...(why ? { why } : {}) };
-        audit('hands-round', { session: id, device, status, steps, ms: out.ms, ...(why ? { why } : {}) });
-        done(out);
-      };
-      rounds.set(id, { finish });
-      off = onEvent((session, event) => {
-        if (session?.id !== id || over) return;
-        if (event?.type === 'tool/call') steps++;
-        else if (event?.type === 'assistant/message' && !event.data?.interrupted) { const t = textOf(event.data?.message?.content); if (String(t ?? '').trim()) said = t; }
-        else if (event?.type === 'turn/end') finish('done');
-      }) ?? (() => {});
-      timer = setTimeout(() => finish('cut', 'took too long'), maxMs); timer.unref?.();
-      try { agent.followup(message(task)); } catch (err) { finish('failed', err.message); }
-    });
   }
   return api;
 }
