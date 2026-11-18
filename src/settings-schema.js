@@ -67,7 +67,7 @@ export const SCHEMA = [
   // dot
   e('dot', 'phoneCheckEveryMinutes', 'dot', 'int', 'restart-dsh', '隔多久拿起手机看一眼（分钟，0 = 不看）', { min: 0, max: 1440 }),
   e('dot', 'notifyHours', 'dot', 'text', 'restart-dsh', '只在这个时段被通知叫醒（如 08:00-23:00；空 = 一直）'),
-  e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；用 qq_send 发的话里有 persona.checks.txt 列的说法时退回让她改一次'),
+  e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；话里有 persona.checks.txt 列的说法时退回让她改一次（直接写的和用 qq_send 发的都一样）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)

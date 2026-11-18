@@ -473,6 +473,7 @@ export function apply(ctx, config = {}) {
   };
   // What her errand's tools showed her, per errand session: the only place a line she keeps (keep_line) may come from.
   const shown = new Map(); // errand session → the text of its tool results (the last few hundred thousand characters)
+  const sawText = (id, text) => { const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); if (shown.size > 6) shown.delete(shown.keys().next().value); };
   const seenCalls = []; // sessions of keep_line calls let through, in order: execute() has no session of its own
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
@@ -481,9 +482,7 @@ export function apply(ctx, config = {}) {
     let text = contentText(content);
     if (!text && content && typeof content === 'object') { try { text = JSON.stringify(content); } catch { text = ''; } }
     if (!text) return;
-    const all = `${shown.get(id) ?? ''}\n${text}`;
-    shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all);
-    if (shown.size > 6) shown.delete(shown.keys().next().value);
+    sawText(id, text);
   });
   ctx.on('tools/pre-execute', async (exec, next) => {
     if (exec.name !== 'keep_line') return next();
@@ -523,7 +522,7 @@ export function apply(ctx, config = {}) {
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
-        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); }
+        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); sawText(id, text); }
         // What woke her is the query; the result is in front of her before the model is called.
         if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
         return;
@@ -879,6 +878,8 @@ export function apply(ctx, config = {}) {
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
     /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
+    /** What her hands' tools showed them in a round that came back to this conversation: the screen she was sent a picture of. */
+    shownTo(session, text) { if (session && text) sawText(String(session), String(text)); },
     herSaid({ session, text, at, to }) {
       if (!String(text ?? '').trim()) return;
       record({ ...(at ? { at } : {}), who: 'her', session, ...(to ? { to: String(to) } : {}), text: String(text) });

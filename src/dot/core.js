@@ -636,7 +636,7 @@ export function apply(ctx, config = {}) {
         // step: it is kept as a draft and shown to her with his next words.
         if (t.cancelled) keepUnsent(say.split('\n').map((l) => l.trim()).filter(Boolean));
         else if (!ctx.get('dshQq')?.connected) herSaid(id, say);
-        else sayToOwner(id, say);
+        else sayOrHandBack(id, say);
       }
       return;
     }
@@ -929,6 +929,7 @@ export function apply(ctx, config = {}) {
       try {
         const found = lastSession && await resolveLive(lastSession);
         if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
+        if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
         const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, text: r.text || '（没说什么）', cut: r.status === 'done' ? '' : `\n${prompt('dot.hands.cut', { why: r.why || r.status }).trim()}` }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
         if (r.status !== 'failed') {
           try {
@@ -989,9 +990,31 @@ export function apply(ctx, config = {}) {
    * bubbles when he speaks, and what was left is kept the same way.
    */
   const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
+  // What she writes to him is checked like what she sends with qq_send: a piece with a phrase of the list in it is
+  // not sent and is handed back to her once (into the turn when it is still going, else as a turn of its own whose
+  // answer goes to him); what she writes next goes out as it is, so a list that is wrong costs one call.
+  const handedBack = new Map(); // session → when a piece was handed back
+  const HANDED_BACK_MS = 120000;
+  const sayOrHandBack = (id, said) => {
+    const hits = cfg.replyCheck ? checkReply(said, replyChecks()).hits : [];
+    const again = Date.now() - (handedBack.get(id) ?? 0) < HANDED_BACK_MS;
+    handedBack.delete(id);
+    if (!hits.length || again) return sayToOwner(id, said);
+    handedBack.set(id, Date.now());
+    audit('reply-check', { session: id, via: 'answer', handedBack: true, hits });
+    void (async () => {
+      try {
+        const found = await resolveLive(id);
+        if (!found || 'error' in found) throw new Error('no conversation');
+        const message = createUserMessage({ content: [{ type: 'text', text: replyCheckText({ hits }) }], source: { kind: 'dsh-dot', form: 'reply-check', rpcId: `qq-dot-check-${Date.now().toString(36)}` } });
+        const agent = found.agent, busy = turns.has(id);
+        if (busy && typeof agent.steer === 'function') agent.steer(message); else if (busy && typeof agent.send === 'function') agent.send(message, 'next-step', true); else agent.followup(message);
+      } catch (err) { logger.warn(`reply check: not handed back (${err.message}); sent as written`); handedBack.delete(id); sayToOwner(id, said); }
+    })();
+  };
   const sayToOwner = (id, said) => {
-    // The turn is over: nothing can be asked of her again here, so this way out only takes the stage directions out
-    // and records which phrases went through (the rate tells whether the card and the list need work).
+    // Stage directions are taken out here; which phrases went through is recorded (the rate tells whether the card
+    // and the list need work).
     const checked = cfg.replyCheck ? checkReply(said, replyChecks()) : null;
     if (checked && (checked.stripped || checked.hits.length)) audit('reply-check', { session: id, via: 'answer', stripped: checked.stripped, hits: checked.hits });
     const text = checked ? checked.text : String(said);

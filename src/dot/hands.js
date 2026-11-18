@@ -16,6 +16,7 @@ import { mkdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
+const SHOWN_MAX = 200000; // characters of screen text a round keeps for keep_line's check (the newest)
 const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
 const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(p || sep)); return b === a || b.startsWith(a + sep); };
 
@@ -45,19 +46,20 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     /**
      * Start a round. → { status: 'started' } at once, or { status: 'busy', doing } when her hands are on something,
      * or { status: 'failed', why }. The round's end goes to onDone(result, { device, task, ...extra }) with
-     * result = { status: 'done' | 'cut' | 'failed', text, steps, ms, why? }.
+     * result = { status: 'done' | 'cut' | 'failed', text, shown, steps, ms, why? } — `shown` is the text of what the
+     * hands' tools showed them (the screen), never put in front of her: it is what a line she keeps is checked against.
      */
     start({ device = '', task = '', ...extra } = {}) {
       const what = String(task).trim();
       if (!what) return { status: 'failed', why: 'no task' };
       if (job) return { status: 'busy', doing: api.doing() };
-      const mine = job = { device, task: what, extra, startedAt: now(), said: '', steps: 0, over: false, finish: () => {} };
+      const mine = job = { device, task: what, extra, startedAt: now(), said: '', shown: '', steps: 0, over: false, finish: () => {} };
       const settle = (status, why) => {
         if (mine.over) return; mine.over = true;
         clearTimeout(mine.timer); try { mine.off?.(); } catch (error) { void error; }
         if (job === mine) job = null;
         if (status === 'cut') { try { mine.agent?.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }); } catch (error) { void error; } }
-        const out = { status, text: clip(mine.said, maxChars), steps: mine.steps, ms: now() - mine.startedAt, ...(why ? { why } : {}) };
+        const out = { status, text: clip(mine.said, maxChars), shown: mine.shown, steps: mine.steps, ms: now() - mine.startedAt, ...(why ? { why } : {}) };
         audit('hands-round', { session: mine.id, device, status, steps: mine.steps, ms: out.ms, ...(why ? { why } : {}) });
         try { Promise.resolve(onDone(out, { device, task: what, ...extra })).catch(() => {}); } catch (error) { void error; }
       };
@@ -71,6 +73,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
           mine.off = onEvent((session, event) => {
             if (session?.id !== id || mine.over) return;
             if (event?.type === 'tool/call') mine.steps++;
+            // What the screen showed them this round, as text: she sees the picture, and a line she keeps from it (keep_line) is checked against this.
+            else if (event?.type === 'tool/result') { const c = event.data?.message?.content; let s = textOf(c); if ((!s || typeof s !== 'string') && c && typeof c === 'object') { try { s = JSON.stringify(c); } catch (error) { void error; s = ''; } } if (s) mine.shown = `${mine.shown}\n${s}`.slice(-SHOWN_MAX); }
             else if (event?.type === 'assistant/message' && !event.data?.interrupted) { const t = textOf(event.data?.message?.content); if (String(t ?? '').trim()) mine.said = t; }
             else if (event?.type === 'turn/end') settle('done');
           }) ?? (() => {});

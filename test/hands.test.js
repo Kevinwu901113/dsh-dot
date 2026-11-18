@@ -33,6 +33,7 @@ test('hands: a round starts at once and is not waited for; its end brings what t
   assert.deepEqual(h.sent, [['h1', '打开贴吧，说说首页有什么']]);
   assert.ok(h.hands.busy() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
   h.emit('h1', 'tool/call'); h.emit('h1', 'tool/call');
+  h.emit('h1', 'tool/result', { message: { content: '显卡又涨价了，纯纯坐牢' } }); h.emit('h1', 'tool/result', { message: { content: [{ text: '猫把杯子推下去了' }] } });
   h.emit('h1', 'assistant/message', { message: { content: '我先看看' } });
   assert.deepEqual([h.hands.doing().task, h.hands.doing().said, h.hands.doing().steps], ['打开贴吧，说说首页有什么', '我先看看', 2]);
   // one pair of hands: a second round is not started
@@ -43,6 +44,7 @@ test('hands: a round starts at once and is not waited for; its end brings what t
   h.emit('h1', 'turn/end');
   const [r, j] = h.done[0];
   assert.deepEqual([r.status, r.steps, r.text], ['done', 2, '首页有三个帖子：第一个讲…']);
+  assert.match(r.shown, /纯纯坐牢[\s\S]*猫把杯子推下去了/, 'what the screen showed them, in full: what a line she keeps is checked against');
   assert.deepEqual(j, { device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
   assert.ok(!h.hands.busy() && h.hands.doing() === null && h.listeners.size === 0);
   assert.equal(h.hands.start({ device: 'phone', task: '点开第一个' }).status, 'started');

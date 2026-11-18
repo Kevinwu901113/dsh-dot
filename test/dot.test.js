@@ -1128,14 +1128,19 @@ test('no conversation yet (first run, or after a reset): his words open one in h
   } finally { mock.timers.reset(); }
 });
 
-test('what she says to him is checked in code: brackets out of a relayed answer; a listed phrase hands her own qq_send back once a turn', async () => {
+test('what she says to him is checked in code: brackets out of what she writes; a listed phrase hands it back to her once, written or sent with qq_send', async () => {
   const { parseBlacklist } = await import('../src/persona/card.js');
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     const o = talkHarness();
     o.services.dshInterlude = { checks: () => parseBlacklist('综上所述\n不是……而是……') };
-    // the turn's answer (no qq_send): stage directions go, the phrase goes through and is recorded
+    // what she writes to him (no qq_send): a listed phrase → not sent, handed back to her once, the phrase named
     await qqTurn(o, 1, { answer: '（挠头）\n综上所述你去睡\n我那个号（旧的）还在' }); await settle();
+    assert.equal(o.sends.length, 0, 'the piece with the phrase did not go out');
+    assert.match(o.calls.at(-1).text, /这条没发出去：里面有.*综上所述/);
+    assert.ok(o.h.audit.some((e) => e.event === 'reply-check' && e.via === 'answer' && e.handedBack && e.hits.join() === '综上所述'));
+    // her next piece goes out as it is, whatever it says: stage directions out, the phrase recorded
+    await qqTurn(o, 11, { answer: '（挠头）\n综上所述你去睡\n我那个号（旧的）还在' }); await settle();
     assert.equal(o.sends.length, 1);
     assert.deepEqual(o.sends[0].lines, ['综上所述你去睡', '我那个号（旧的）还在']);
     assert.ok(o.h.audit.some((e) => e.event === 'reply-check' && e.via === 'answer' && e.stripped === 1 && e.hits.join() === '综上所述'));
