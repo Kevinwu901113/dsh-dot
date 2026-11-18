@@ -29,7 +29,6 @@ import { prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
-import { createGrowth, growthTool } from './growth.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
 
 export const name = 'dot-interlude';
@@ -67,15 +66,6 @@ export const defaults = {
   freeTimesPerDay: 2,         // 0 = off; needs dsh-dot (her errands)
   freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
   freeDailyTokens: 300000,    // all free time in a day
-  // 成长: once a week she rewrites her own portrait ("她现在的样子", a system-prompt section after the
-  // Canon), changing at most portraitMaxChange of it; every version kept in <home>/interlude/growth.
-  growth: true,
-  growthAt: 'Sun 21:00',
-  portraitMaxChars: 900,
-  portraitMaxChange: 0.35,
-  speak: false,               // tell_him (in her own time) really reaches him; off: it is only noted on the ledger
-  maxContactsPerDay: 2,
-  willingnessThreshold: 0.6,
   imBot: '',
   imTarget: '',
 };
@@ -110,11 +100,10 @@ export function listPlace(root, { max = 60, depth = 3 } = {}) {
 }
 
 /** The message that opens her own time. */
-export function freePrompt({ budget, left, place, listing = [], tidy = [], context = {} }, now = Date.now()) {
+export function freePrompt({ budget, left, place, listing = [], context = {} }, now = Date.now()) {
   return prompt('interlude.free', {
     stamp: stamp(now, now), budget, left, place,
     listing: listing.length ? listing.map((l) => `- ${l}`).join('\n') : '（空的）',
-    tidy: tidy.length ? `${prompt('interlude.free.tidy', { items: tidy.map((t) => `「${t}」`).join('、') })}\n` : '',
     context: JSON.stringify(context, null, 1),
   });
 }
@@ -240,16 +229,13 @@ export function apply(ctx, config = {}) {
   /** A persona imported on purpose replaces her card and checks; what was there is kept beside them (.bak-<time>). */
   const writeCard = () => { audit('card-synced', syncCard(home, canon, { force: true })); };
   const doings = createDoings(files.doings);
-  // Outside her own folder: only the weekly review changes her portrait (she could rewrite a file in <home>/her).
-  const growth = cfg.growth ? createGrowth({ dir: join(dir, 'growth'), at: cfg.growthAt, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
-  const portraitSection = () => { const p = growth?.portrait(); return p ? prompt('interlude.growth.section', { portrait: p }) : ''; };
   const herPlace = join(home, 'her');
   mkdirSync(herPlace, { recursive: true });
   // Today's model calls of this component (the weekly review) as a cost record: dayTokensIn counts the cached reads too.
   const roundCost = () => ({ in: Math.max(0, (meta.dayTokensIn ?? 0) - (meta.dayTokensCached ?? 0)), cached: meta.dayTokensCached ?? 0, out: meta.dayTokensOut ?? 0 });
 
-  const meta = { day: dayOf(), dayContacts: 0, ...readJson(files.meta, {}) };
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayContacts = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
+  const meta = { day: dayOf(), ...readJson(files.meta, {}) };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   // Her card and checks file follow the canon (src/persona/card.js): written when there are none, written again when
   // another canon.json took its place — never over a file the user edited.
@@ -287,57 +273,6 @@ export function apply(ctx, config = {}) {
   /** A task queued now expires when her active hours end (or at dot's own TTL, whichever is first). */
   const ttlInHours = () => { const left = msLeftInHours(cfg.activeHours); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
-  // The ledger takes his reactions in her conversation with him only: not an errand, not a chat with someone else.
-  ctx.on('tools/pre-execute', async (exec, next) => {
-    const sessionId = exec.agent?.session?.id;
-    if (exec.name === 'doings' && sessionId && dshDot() && (dshDot().isErrand?.(sessionId) || (dshDot().session?.() && dshDot().session() !== sessionId))) {
-      return deny(prompt('interlude.doings-tool.elsewhere'));
-    }
-    return next();
-  });
-
-  // 成长: the weekly review (growth.js). One call; a portrait that changed too much is asked for again once.
-  let reviewing = false;
-  async function reviewGrowth({ force = false } = {}) {
-    if (!growth) return { skipped: 'growth off' };
-    if (reviewing) return { skipped: 'busy' };
-    reviewing = true;
-    try {
-      const mem = ctx.get('dotMemory');
-      let diaryText = '';
-      try { diaryText = readFileSync(join(home, 'memory', 'diary.md'), 'utf8'); } catch (error) { void error; }
-      const input = growth.input({ canon: canonText(), herLife: mem?.herLife?.() ?? [], owner: mem?.forInterlude?.() ?? [], diaryText, doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 20 }) });
-      if (!input.diaryThisWeek.length && !input.yourDoings.last7Days.length) { growth.skip('nothing this week'); audit('growth-skipped', { why: 'nothing this week' }); return { skipped: 'nothing this week' }; }
-      const sel = ctx.agentDefaultModel.currentSelection();
-      const system = prompt('interlude.growth.system', { name: canon?.storyDefaults?.characterName ?? 'dot', maxChars: cfg.portraitMaxChars, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
-      const messages = [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-interlude' } })];
-      const effort = await workEffort(ctx, sel);
-      const call = async (msgs) => {
-        const r = await collectReply(ctx.llm.stream(background({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, tools: [growthTool()], maxTokens: cfg.maxTokens, messages: msgs })));
-        const u = usageOf(r.usage);
-        if (u) { meta.dayTokensIn = (meta.dayTokensIn ?? 0) + u.in + u.cached; meta.dayTokensCached = (meta.dayTokensCached ?? 0) + u.cached; meta.dayTokensOut = (meta.dayTokensOut ?? 0) + u.out; saveMeta(); }
-        try { appendFileSync(files.calls, `${JSON.stringify({ ts: new Date().toISOString(), phase: 'growth', effort: effort ?? 'default', usage: u, reply: clip(r.args || r.text, 3000) })}\n`); } catch (error) { void error; }
-        try { return JSON.parse(r.args || r.text.slice(r.text.indexOf('{'), r.text.lastIndexOf('}') + 1)); } catch (error) { void error; return null; }
-      };
-      let out = await call(messages);
-      let kept = growth.keep(out ?? {}, { force });
-      if (!kept.ok && ['changed too much', 'too long'].includes(kept.why)) {
-        const again = kept.why === 'too long'
-          ? prompt('interlude.growth.too-long', { length: kept.length, maxChars: cfg.portraitMaxChars })
-          : prompt('interlude.growth.too-much', { ratio: `${Math.round(kept.ratio * 100)}%`, change: `${Math.round(cfg.portraitMaxChange * 100)}%` });
-        out = await call([...messages, createUserMessage({ content: [{ type: 'text', text: again }], source: { kind: 'dsh-interlude' } })]);
-        kept = growth.keep(out ?? {}, { force });
-      }
-      if (!kept.ok) { growth.skip(kept.why); audit('growth-refused', { why: kept.why, ratio: kept.ratio }); return { error: kept.why }; }
-      audit('growth', { week: kept.week, ratio: Math.round(kept.ratio * 100) / 100, tidy: growth.tidy().length });
-      logger.info(`growth ${kept.week}: portrait rewritten (${Math.round(kept.ratio * 100)}% changed)`);
-      return { ok: true, week: kept.week, changes: String(out?.changes ?? '') };
-    } catch (error) {
-      // Model down: try again in an hour, not every minute.
-      meta.growthFailedAt = Date.now(); saveMeta();
-      logger.warn(`growth review failed: ${error.message}`); audit('growth-failed', { error: clip(error.message, 200) }); return { error: error.message };
-    } finally { reviewing = false; }
-  }
 
   // 自己的时间: a few times a day, at random moments in her active hours, her errand self gets time of her own.
   const free = new Map(); // session id → { cost, budget, warned, stopped }
@@ -368,7 +303,7 @@ export function apply(ctx, config = {}) {
       yourDoings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 10 }),
     };
     let doing = '', sid = '', f = null;
-    const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), tidy: growth?.tidy() ?? [], context });
+    const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), context });
     const r = dshDot().task({
       kind: 'free', key: `free|${dayOf()}|${meta.dayFrees ?? 0}`, text, source: FREE_SOURCE, ttlMs: ttlInHours(),
       onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false }; free.set(id, f); },
@@ -384,7 +319,6 @@ export function apply(ctx, config = {}) {
     freeQueued = true;
     doing = doings.add({ kind: 'free', what: '自己的时间' });
     meta.dayFrees = (meta.dayFrees ?? 0) + 1; saveMeta();
-    growth?.clearTidy();
     audit('free-queued', { phase, budget });
     return { ok: true, budget };
   }
@@ -457,54 +391,12 @@ export function apply(ctx, config = {}) {
     return next();
   }, { prepend: true });
 
-  // Agency: speak enabled, active hours, willingness, daily cap.
-  async function contact(c, phase) {
-    if (!cfg.speak) return false;
-    if (!inHours(cfg.activeHours)) { audit('contact-held', { phase, why: 'outside active hours' }); return false; }
-    if (c.willingness < cfg.willingnessThreshold) { audit('contact-held', { phase, why: 'willingness' }); return false; }
-    if (meta.dayContacts >= cfg.maxContactsPerDay) { audit('contact-held', { phase, why: 'daily cap' }); return false; }
-    // One voice: with dsh-dot her conversation says it (or not), in its own words.
-    if (dshDot()?.say) {
-      const handed = await dshDot().say(c.text.replace(/<sep\s*\/>/gi, '\n'));
-      if (handed) { meta.dayContacts++; saveMeta(); }
-      audit(handed ? 'contact-handed' : 'contact-held', { phase, ...(handed ? {} : { why: 'not handed over' }) });
-      return handed ? 'handed' : false;
-    }
-    const q = ctx.get('dshQq');
-    if (q?.connected && q.owner) {
-      try {
-        const r = await q.send('owner', c.text);
-        if (r.sent) { meta.dayContacts++; saveMeta(); }
-        return r.sent > 0;
-      } catch (error) { logger.warn(`contact via qq failed: ${error.message}`); return false; }
-    }
-    const im = ctx.get('dshIm');
-    if (!im?.send) return false;
-    try {
-      let bot = cfg.imBot, target = cfg.imTarget;
-      if (!bot || !target) {
-        for (const b of await im.listBots()) {
-          const id = typeof b === 'string' ? b : b?.botId;
-          const t = (await im.listTargets(id))[0];
-          if (t) { bot = id; target = t.targetId; break; }
-        }
-      }
-      if (!bot || !target) return false;
-      // <sep/> marks separate sends of the same moment; deliver them as separate messages.
-      const parts = c.text.split(/<sep\s*\/>/i).map((t) => t.trim()).filter(Boolean);
-      let ok = false;
-      for (const part of parts) ok = (await im.send(bot, target, part, { format: 'plain' }))?.sent === true || ok;
-      if (ok) { meta.dayContacts++; saveMeta(); }
-      return ok;
-    } catch (error) { logger.warn(`contact failed: ${error.message}`); return false; }
-  }
 
   // 3. Scheduling: the weekly review and her own time.
   function tick() {
     if (running > 0) return;
     const now = Date.now();
     rollDay();
-    if (growth && !reviewing && growth.due(now) && now - (meta.growthFailedAt ?? 0) >= 3600000) void reviewGrowth();
     if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
       if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
       if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(cfg.activeHours) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
@@ -527,15 +419,9 @@ export function apply(ctx, config = {}) {
       order: scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1,
       text: (c) => (inHome(c) ? canonText() : ''),
     }), 'dsh-interlude: canon section');
-    // Who she is now, in her own words (growth.js): right after the Canon; it changes once a week, so the cached prefix holds.
-    scope.effect(() => scope.systemPrompt.section({
-      name: 'interlude:growth',
-      order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') + 1 || 1) + 0.5,
-      text: (c) => (inHome(c) ? portraitSection() : ''),
-    }), 'dsh-interlude: growth section');
     // Drop dsh's own openers for the character's sessions so the Canon is the first thing the model
     // reads; other sessions are untouched. (A `complete` section cannot do this per session.)
-    const keep = (name) => name === 'interlude:canon' || name === 'interlude:growth' || name === 'dot:rules' || name.startsWith('mcp:');
+    const keep = (name) => name === 'interlude:canon' || name === 'dot:rules' || name.startsWith('mcp:');
     scope.effect(() => scope.on('system-prompt/assemble', async (_assembly, c, next) => {
       const assembly = await next();
       if (!inHome(c)) return assembly;
@@ -565,7 +451,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
       description: 'Her persona and her own doings: status; "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one, "free" gives her some time of her own now, "growth" shows her portrait ("growth now" reviews it, "growth rollback <week>" goes back).',
-      input: { hint: '[preset <code> | canon | doings | feedback [#id] <text> | free | growth [now | <week> | rollback <week>]]' },
+      input: { hint: '[preset <code> | canon | doings | feedback [#id] <text> | free]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
         let result = '';
@@ -577,13 +463,6 @@ export function apply(ctx, config = {}) {
             audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
             result = `\nimported: ${canon.source.title} by @${canon.source.author} (${canon.source.license}) → ${files.canon}`;
           } catch (error) { result = `\nimport failed: ${error.message}`; }
-        } else if (/^growth(\s|$)/.test(arg)) {
-          const [, sub = '', week = ''] = arg.split(/\s+/);
-          if (!growth) result = '\ngrowth is off (interlude.growth = false)';
-          else if (sub === 'now') { const r = await reviewGrowth({ force: true }); result = r.ok ? `\nreviewed ${r.week}: ${r.changes}` : `\nnot reviewed: ${r.skipped ?? r.error}`; }
-          else if (sub === 'rollback') result = growth.rollback(week) ? `\nportrait is ${week}'s again` : `\nno portrait for ${week || '(week?)'}`;
-          else if (/^\d{4}-W\d{2}$/.test(sub)) { const h = growth.history().find((x) => x.week === sub); result = h ? `\n${sub}\n${h.portrait}\n\n这周变了什么：${h.changes}` : `\nno portrait for ${sub}`; }
-          else result = `\n${growth.portrait() || '(no portrait yet: the first review writes one; /interlude growth now)'}\n\n${growth.history().map((h) => `${h.week}：${clip(h.changes.replace(/\s+/g, ' '), 120)}`).join('\n') || '(no history yet)'}`;
         } else if (arg === 'free') {
           const r = await freeTime('command');
           result = r.ok ? `\nher own time is queued (budget ${r.budget} tokens)` : `\nnot queued: ${r.skipped}`;
@@ -602,8 +481,7 @@ export function apply(ctx, config = {}) {
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
           `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min · active ${cfg.activeHours}`,
-          `doings: ${doings.all().length} on the ledger · tell_him: ${cfg.speak ? `on (${meta.dayContacts}/${cfg.maxContactsPerDay} today)` : 'off (interlude.speak)'}`,
-          `growth: ${growth ? (growth.lastWeek() ? `last review ${growth.lastWeek()}` : 'no review yet') : 'off'} · today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
+          `doings: ${doings.all().length} on the ledger`, `today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
       },
@@ -632,11 +510,10 @@ export function apply(ctx, config = {}) {
       rollDay();
       return {
         name: canon?.storyDefaults?.characterName ?? 'dot',
-        today: { contacts: meta.dayContacts, tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
+        today: { tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
         doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8 }),
         free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: (meta.freeAt ?? [])[0] ?? null },
-        growth: growth ? { portrait: growth.portrait(), week: growth.lastWeek(), history: growth.history().map((h) => ({ week: h.week, changes: h.changes })) } : null,
-        speak: cfg.speak, activeHours: cfg.activeHours,
+        activeHours: cfg.activeHours,
       };
     },
   });

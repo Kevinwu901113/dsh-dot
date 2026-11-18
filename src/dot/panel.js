@@ -170,7 +170,7 @@ function render(s){
     $('now').innerHTML=h;
   } else $('now').innerHTML='<span class="mute">人设组件未加载</span>';
   let t='';
-  if(it){t+=tile((it.doings&&it.doings.today?it.doings.today.doings:0),'自己做的事')+tile(it.today.contacts,'找你');}
+  if(it){t+=tile((it.doings&&it.doings.today?it.doings.today.doings:0),'自己做的事');}
   if(dot&&dot.today){t+=tile(dot.today.woke,'通知叫醒')+tile(dot.today.owner,'你的消息');}
   const tin=(it?it.today.tokensIn:0)+(m?m.ledger.in:0), tout=(it?it.today.tokensOut:0)+(m?m.ledger.out:0);
   t+=tile(fmt(tin),'token 入')+tile(fmt(tout),'token 出');
