@@ -70,10 +70,8 @@ export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消�
 export const entries = [
   { id: 'rules', group: 'system', name: '工作方式', note: '定时任务（先看已有的）、问一次就放下、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
     render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
-  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；通知叫醒她那句要 dot 组件在；设了手机号（/phone number）才有那一句；表情包段要 qq 组件在，最后"记到 self"要 memory 在', files: ['phone.device', 'phone.device.wake', 'phone.device.no-wake', 'phone.device.number', 'phone.stickers', 'phone.stickers.learned'],
-    render: () => variant([['设了手机号', deviceText('dot', '13800138000')], ['没设手机号', deviceText('dot')], ['只装手机（没有 dot、qq、memory）', deviceText('dot', '', { dot: false, qq: false, memory: false })]]) },
-  { id: 'manuals', group: 'system', name: '说明书（第一次用时才给）', note: '她的会话里，「手机」那段和手机、电脑的 MCP 说明不放进系统提示词，换成一行（.hint）；这个会话第一次用手机或电脑工具时，那一下照常执行，整份说明书跟着结果一起给她（.given）。dot.manuals = false 恢复成每轮都带着', files: ['dot.manuals.hint', 'dot.manuals.what', 'dot.manuals.given'],
-    render: () => variant([['系统提示词里的那一行（手机）', P.table('dot.manuals.hint', { serial: 'dot' }).phone], ['系统提示词里的那一行（电脑）', P.table('dot.manuals.hint', { serial: 'dot' }).computer], ['第一次用手机时（跟在结果后面）', P.prompt('dot.manuals.given', { what: '手机', manual: '（这里是「手机」那段的全文）' })]]) },
+  { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；通知叫醒她那句要 dot 组件在；设了手机号（/phone number）才有那一句；表情包段要 qq 组件在，最后"记到 self"要 memory 在', files: ['phone.device', 'phone.hers', 'phone.device.wake', 'phone.device.no-wake', 'phone.device.number', 'phone.stickers', 'phone.stickers.learned', 'dot.computer.hers'],
+    render: () => variant([['她的对话里（工具在手那边）', deviceText('dot', '13800138000', { tools: false })], ['她对话里电脑那一行', P.prompt('dot.computer.hers')], ['手的会话里', deviceText('dot', '13800138000', { dot: false, qq: false, memory: false, hands: true })], ['设了手机号', deviceText('dot', '13800138000')], ['没设手机号', deviceText('dot')], ['只装手机（没有 dot、qq、memory）', deviceText('dot', '', { dot: false, qq: false, memory: false })]]) },
   { id: 'howto', group: 'system', name: '她自己的经验（进 App 时给）', note: '她用手机的每一轮都按 App 记步数（<home>/her/howto/_log.jsonl）；一个会话里第一次打开某个 App，她以前记下的这个 App 的经验和最近几次的步数跟着结果给她（.given；还没有经验时 .no-notes）。整理这些经验的那次调用在「独立模型调用」里', files: ['dot.howto.given', 'dot.howto.no-notes'],
     render: () => variant([['有经验时', P.prompt('dot.howto.given', { app: '小黑盒', recent: '11-07 23 步、错 2 次；11-08 9 步', notes: '## 教训\n- 详情页点图片会跳到旁边的商品，要点标题\n## 捷径\n- 搜游戏（在首页时）：点右上角搜索 → 输入 {游戏名} → 回车 → 点第一个结果' })], ['只有步数、还没经验', P.prompt('dot.howto.given', { app: '小黑盒', recent: '11-08 15 步', notes: P.prompt('dot.howto.no-notes') })]]) },
   { id: 'qq', group: 'system', name: '电脑上的 QQ', note: 'QQ 连上时才有', files: ['qq.channel', 'qq.channel.owner', 'qq.channel.score', 'qq.stickers', 'qq.channel.no-stickers', 'qq.faces'],
@@ -113,7 +111,7 @@ export const entries = [
     render: () => M.renderHandoff(LINES.slice(-2), 3) },
   { id: 'free', group: 'wake', name: '自己的时间', note: '每天 interlude.freeTimesPerDay 次（默认 2），随机时刻叫醒跑腿的她，什么任务都不给；预算到 80% 提醒一句（.budget），到 100% 停下；这段时间里 QQ 和账本工具被拒（.refused），在社交 App 里打字要他批准（.typing）；想找他用 tell_him（只在这里能用，别处是 .elsewhere）', files: ['interlude.free', 'interlude.free.budget', 'interlude.free.over', 'interlude.free.typing'],
     render: () => variant([['开头', I.freePrompt({ budget: 150000, left: 300000, place: '~/dot/her', listing: ['notes/', 'notes/想学的.md · 412 B · 11-7', 'growth/'], context: { now: '2026-11-08 15:20 星期日 下午', portrait: '我最近迷上了画画……', yourNotes: ['装了小黑盒'], yourDoings: { today: { doings: 2, tokens: 30100, livingTokens: 20000 } } } })], ['预算快用完', P.prompt('interlude.free.budget', { stamp: '[11-08 15:40]', used: 121000, budget: 150000 })], ['预算用完之后', P.prompt('interlude.free.over')], ['社交 App 里打字', P.prompt('interlude.free.typing', { app: '小黑盒' })]]) },
-  { id: 'hands', group: 'system', name: '她的手', note: 'dot.hands 打开后：她的手机和电脑由另一个会话（手）操作——没有人设、记忆、QQ，只有设备工具和账号。她在对话里用 hands 工具说一步，手做一步、回报屏幕上是什么；他说话时这一步先停（.cut）。对话里不再直接碰设备工具，也不交给跑腿（.instead）', files: ['dot.hands.system', 'dot.hands-tool', 'dot.hands.instead', 'dot.hands.cut', 'dot.hands.screen', 'dot.hands.screen.computer', 'dot.hands.started', 'dot.hands.busy', 'dot.hands.stopped', 'dot.hands.idle', 'dot.hands.doing', 'dot.hands.result'],
+  { id: 'hands', group: 'system', name: '她的手', note: 'dot.hands 打开后：她的手机和电脑由另一个会话（手）操作——没有人设、记忆、QQ，只有设备工具和账号。她在对话里用 hands 工具说一步，手做一步、回报屏幕上是什么；他说话时这一步先停（.cut）。对话里不再直接碰设备工具，也不交给跑腿（.instead）', files: ['dot.hands.system', 'dot.hands-tool', 'dot.hands.instead', 'dot.hands.cut', 'dot.hands.screen', 'dot.hands.screen.computer', 'dot.hands.started', 'dot.hands.busy', 'dot.hands.stopped', 'dot.hands.idle', 'dot.hands.doing', 'dot.hands.result', 'dot.hands.result.his'],
     render: () => variant([['手的系统提示词', P.prompt('dot.hands.system')], ['hands 工具说明', P.prompt('dot.hands-tool')], ['没做完', P.prompt('dot.hands.cut', { why: '他说话了' })], ['别处', P.prompt('dot.hands.instead')]]) },
   { id: 'howto-reflect', group: 'call', name: '整理 App 经验', note: '她某一轮在一个 App 里走了 dot.howtoMinSteps（默认 12）步以上、或出过错：轮结束后一次小调用读她这轮的操作（只有操作和报错，不带屏幕上的文字）、这个 App 现有的笔记和最近几次的步数，重写笔记（≤ dot.howtoMaxChars，默认 800 字）：教训、捷径（只写做成过的），并给这次做的事起个短名（同一件事的步数就能排在一起看）；被规则拦下的那几步（⊘）不写成教训。分清这两样之前记下的旧笔记，再给她之前先翻一遍（.review）', files: ['dot.howto.reflect', 'dot.howto.review'],
     render: () => variant([['整理', P.prompt('dot.howto.reflect', { maxChars: 800 })], ['翻旧笔记', P.prompt('dot.howto.review', { maxChars: 800 })]]) },
@@ -151,8 +149,7 @@ export async function full() {
   const parts = [
     ['人设（Canon）', I.renderCanon(readCanon() ?? CANON)],
     ['工作方式', D.workingRules({ computer: true, phone: true })],
-    // dot.manuals: the phone section (and the phone's / computer's MCP instructions) stand as one line each; the manual comes on first use.
-    ['手机、电脑（说明书第一次用时才给）', [P.table('dot.manuals.hint', { serial: 'dot' }).phone, P.table('dot.manuals.hint', { serial: 'dot' }).computer].join('\n')],
+    ['手机、电脑', [deviceText('dot', '', { tools: false }), P.prompt('dot.computer.hers')].join('\n')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
     ['—— 以下在对话历史之后 ——', ''],
     ['现在几点', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)],

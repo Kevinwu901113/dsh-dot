@@ -19,7 +19,6 @@ import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
-import { createManuals, defaultManuals } from './manuals.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
@@ -263,9 +262,6 @@ export const defaults = {
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
-  // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
-  // session (manuals.js), instead of riding along in every system prompt between the Canon and her words.
-  manuals: true,
   // What she learns using her phone (howto.js): each turn's steps per app are logged; a turn of
   // howtoMinSteps steps or more, or with errors, is reflected on once (a small call) and her notes for
   // that app rewritten (≤ howtoMaxChars); the first time she opens the app in a session they come along.
@@ -549,7 +545,6 @@ export function apply(ctx, config = {}) {
   // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
   const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
   const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
-  let manualFor = () => null; // set where the manuals are (below)
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   let hands = null; // her hands (hands.js), set once sessions can be made
@@ -724,7 +719,6 @@ export function apply(ctx, config = {}) {
     }
   }, { prepend: true });
   // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
-  // And the first call of her phone or computer tools in a session brings their manual along (manuals.js).
   ctx.on('tools/post-execute', async (exec, result, next) => {
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
     if (exec?.name === 'qq_send' && !result?.isError && isOwnerTarget((exec.input ?? exec.args ?? exec.arguments)?.to, ctx.get('dshQq')?.owner)) {
@@ -741,7 +735,7 @@ export function apply(ctx, config = {}) {
       } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
     }
     const minutes = expiredCalls.get(exec?.callId);
-    const notes = [cfg.manuals && exec?.name ? manualFor(exec) : null, cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
+    const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
     if (minutes === undefined && !note) return next();
     if (minutes !== undefined) expiredCalls.delete(exec.callId);
@@ -756,11 +750,6 @@ export function apply(ctx, config = {}) {
   // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
   // schedule wakes, as a dynamic context; only those turns get it.
   const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
-  const manuals = createManuals({
-    routes: cfg.manuals ? defaultManuals({ phonePrefix: PHONE_TOOL_PREFIX, vmPrefix: VM_TOOL_PREFIX, phoneZoom: PHONE_ZOOM_TOOL }) : [],
-    hint: (key) => table('dot.manuals.hint', { serial: phone()?.status?.()?.device ?? 'dot' })[key] ?? '',
-    given: (key, manual) => prompt('dot.manuals.given', { what: table('dot.manuals.what')[key] ?? key, manual }),
-  });
   // Her phone notes (howto.js): every phone call of her sessions is a step of this turn's run; the first
   // time she is in an app in a session, her notes for it come along (in the post-execute hook above).
   const appLabels = { ...Object.fromEntries(Object.entries(KNOWN_APPS.labels).map(([label, pkg]) => [pkg, label])), 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信' };
@@ -823,17 +812,17 @@ export function apply(ctx, config = {}) {
       if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked), ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
     } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
   }
-  // The manual rides along with the first call's result, for her next step (in the post-execute hook above).
-  manualFor = (exec) => {
-    const note = manuals.take(exec.name, exec.agent?.session?.id);
-    if (note) audit('manual-handed', { session: exec.agent?.session?.id, tool: exec.name });
-    return note;
-  };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.on('system-prompt/assemble', async (_a, c, next) => {
       const assembly = await next();
-      return cfg.manuals && inHome(c) ? manuals.assemble(assembly, c.agent?.session?.id) : assembly;
-    }), 'dsh-dot: manuals on first use');
+      // Her conversation when her hands hold the device tools: the tools' own instructions (the MCP servers')
+      // are for whoever presses the screen. The phone says what it is to her itself (phone:device); the computer gets one line.
+      let held = true;
+      try { held = !ctx.get('dshDotCompat')?.hiddenFor?.('dot', [`${VM_TOOL_PREFIX}browser_click`])?.length; } catch { /* no compat */ }
+      if (held || !inHome(c) || hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd)) return assembly;
+      const sections = assembly.sections.flatMap((sec) => (sec.name === 'mcp:dot-phone' ? [] : sec.name === 'mcp:dot-vm' ? (String(sec.text ?? '').trim() ? [{ ...sec, text: prompt('dot.computer.hers').trim() }] : []) : [sec]));
+      return { ...assembly, sections };
+    }), 'dsh-dot: device instructions go to the hands');
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
@@ -957,7 +946,7 @@ export function apply(ctx, config = {}) {
       try {
         const found = lastSession && await resolveLive(lastSession);
         if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
-        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, text: r.text || '（没说什么）', cut: r.status === 'done' ? '' : `\n${prompt('dot.hands.cut', { why: r.why || r.status }).trim()}` }).trim() }];
+        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, text: r.text || '（没说什么）', cut: r.status === 'done' ? '' : `\n${prompt('dot.hands.cut', { why: r.why || r.status }).trim()}` }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
         if (r.status !== 'failed') {
           try {
             const images = ctx.get('attachments');

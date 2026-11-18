@@ -208,7 +208,6 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉联系人层 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
-| `manuals` | `true` | 她的会话里，手机那段和手机、电脑的 MCP 说明不每轮都带：换成一行，第一次用手机 / 电脑工具时那一下照常执行，说明书跟着结果一起给她（`dot.manuals.*` 提示词）；`false` 恢复每轮都带 |
 | `handOffTtlMs` | `7200000` | 交出去的事多久没轮到就算没办（并告诉她）；重启后没过期的会重新排上 |
 | `handsMaxMs` | `360000` | 她的手做一步最长多久；超过就停，带着已经说的回来 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 她自己的 App 经验（`~/dot/her/howto/`）：每轮按 App 记步数；走了 `howtoMinSteps` 步以上或出过错的那轮，结束后一次小调用整理这个 App 的笔记（教训、捷径）；之后一个会话里第一次打开这个 App 时笔记跟着给她。`/dot howto` 看每个 App 的步数变化 |

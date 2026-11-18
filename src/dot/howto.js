@@ -1,6 +1,6 @@
 // dsh-dot/howto: what she learns from using her phone, written by her, read back when she opens the app again.
 //
-// The manual (manuals.js) only says how the phone works. How to get things done in each app she learns
+// The phone section only says how the phone works. How to get things done in each app she learns
 // herself, the way Mobile-Agent-E keeps Tips and Shortcuts and Agent Workflow Memory keeps the routines
 // that worked:
 //   record   every turn that used her phone: which apps (the app in front after each call), how many

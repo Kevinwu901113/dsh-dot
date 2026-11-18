@@ -377,14 +377,15 @@ export async function screencapRetry(grab, { waitMs = 400, wait = sleep } = {}) 
  * through dot, the sticker album is fed by qq, and "remember it" needs memory. Defaults: all on.
  */
 export const deviceText = (serial, number = '', has = {}) => {
-  const { dot = true, qq = true, memory = true } = has;
-  return prompt('phone.device', {
-    serial,
-    phonePrefix: PHONE_TOOL_PREFIX,
-    notify: prompt(dot ? 'phone.device.wake' : 'phone.device.no-wake'),
+  const { dot = true, qq = true, memory = true, tools = true, hands = false } = has;
+  const parts = {
     number: number ? prompt('phone.device.number', { number }) : '',
     stickers: qq ? prompt('phone.stickers', { learned: memory ? prompt('phone.stickers.learned') : '' }) : '',
-  });
+  };
+  // Her conversation when her hands hold the phone's tools: what the phone is to her, not how to press it.
+  if (!tools) return prompt('phone.hers', parts);
+  // How to operate it, for whoever holds the tools. Her hands are not woken by anything and go where she says.
+  return prompt('phone.device', { serial, phonePrefix: PHONE_TOOL_PREFIX, notify: hands ? '' : prompt(dot ? 'phone.device.wake' : 'phone.device.no-wake'), ...parts });
 };
 
 /** A phone number as typed (spaces, dashes allowed); '' clears it. Throws on anything else. */
@@ -1019,7 +1020,9 @@ export function apply(ctx, config = {}, deps = {}) {
         const o = ownerOf(c);
         if (o === 'qqb-sandbox') return '';
         const hers = o === 'dot';
-        return deviceText(mcpDevice(), cfg.number, { dot: hers && Boolean(ctx.get?.('dshDot')), qq: hers && Boolean(ctx.get?.('dshQq')), memory: hers && Boolean(ctx.get?.('dotMemory')) });
+        let tools = true; // does this session hold the phone's tools (compat hides them from her conversation: her hands hold them)
+        try { tools = !ctx.get?.('dshDotCompat')?.hiddenFor?.(o, [`${PHONE_TOOL_PREFIX}mobile_click_on_screen_at_coordinates`])?.length; } catch { /* no compat: every session holds them */ }
+        return deviceText(mcpDevice(), cfg.number, { dot: hers && Boolean(ctx.get?.('dshDot')), qq: hers && Boolean(ctx.get?.('dshQq')), memory: hers && Boolean(ctx.get?.('dotMemory')), tools, hands: o === 'hands' });
       },
     }), 'dsh-dot/phone: device section');
   });

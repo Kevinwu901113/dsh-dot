@@ -29,7 +29,7 @@ test('prompts page: lists every file exactly once, and every entry renders', asy
     assert.ok(r && !r.startsWith('（没拼出来'), `${e.id}: ${r.slice(0, 200)}`);
     assert.doesNotMatch(r, /\{(?:silent|phonePrefix|vmPrefix|rules|apps|canon|length|phase|contactRule|agency|browsing|herLife|play|playRules|playApps|playActions|collect|style|seed|playIntents|contact)\}/, e.id);
   }
-  assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机（Android，设备 dot，工具 mcp__dot-phone__\*）[\s\S]*<memory>[\s\S]*说话提醒（最后一段）[\s\S]*小点在 IM 里回他/);
+  assert.match(await full(), /# dot 的工作方式[\s\S]*你有一部自己的手机（Android）：App 都在上面。你不直接碰屏幕[\s\S]*你有一台自己的电脑（虚拟机）[\s\S]*<memory>[\s\S]*说话提醒（最后一段）[\s\S]*小点在 IM 里回他/);
 });
 
 test('prompts loader: an override in <home>/prompts wins, edits show without a restart, removing it brings the built-in back', () => {
@@ -139,6 +139,17 @@ test('prompts render: phone.device — the number sentence only when she has a n
   assert.ok(without.includes(prompt('phone.device.wake')), 'with dot: notifications wake her');
   assert.equal(without.split('\n')[1], '账号密码不要自己编、也不要记在记忆里：注册或登录前先 `account get <app>`，拿到手机号和密码；注册成功、或 App 逼你改了密码，马上 `account set` 记下来。');
   assert.equal(deviceText('emulator-5554', '13800138000').split('\n')[1], '你的手机号是 13800138000：注册默认用它；已有账号按 account get 的记录登录，验证码会发到用户那里——点了发送就停下来问他要。');
+});
+
+test('prompts render: the phone in her conversation (her hands hold the tools) says what it is to her, not how to press it; her hands get how, without what wakes her', async () => {
+  const { deviceText } = await import('../src/phone/phone.js');
+  const hers = deviceText('emulator-5554', '13800138000', { tools: false });
+  assert.match(hers, /^你有一部自己的手机（Android）[^\n]*交给你的手（hands）[^\n]*会直接叫醒你/);
+  assert.doesNotMatch(hers, /mobile_|mcp__|emulator-5554|\{\w+\}/, 'no tool names: she does not hold them');
+  assert.match(hers, /你的手机号是 13800138000/); assert.match(hers, /account get/); assert.match(hers, /dot-stickers/);
+  const hands = deviceText('emulator-5554', '', { dot: false, qq: false, memory: false, hands: true });
+  assert.match(hands, /工具 mcp__dot-phone__\*）。用法：先 mobile_list_elements_on_screen/);
+  assert.doesNotMatch(hands, /叫醒|dot-stickers/);
 });
 
 test('prompts render: phone.device alone — nothing that needs dot, qq or memory', async () => {
