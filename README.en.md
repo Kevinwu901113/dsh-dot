@@ -96,13 +96,13 @@ Every personal setting lives in **one file**: `~/.dsh/dsh-dot.json` (Windows: `%
 {
   "phone":     { "dataGb": 32 },
   "computer":  { "rootDisk": "32G", "memory": "6G" },
-  "interlude": { "activeHours": "09:00-01:00", "speak": true }
+  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 }
 }
 ```
 
 Every key, which ones only apply to a newly created phone / VM, and rules for agents editing the file: **[docs/SETTINGS.md](docs/SETTINGS.md)** (Chinese). Or just ask dsh: "follow docs/SETTINGS.md and set dsh-dot's phone storage to 32 GB".
 
-The model requests of her background life (interlude, memory consolidation, errands) wait behind your ongoing conversation so they do not use up its requests-per-minute budget; if a chat still gets a 429, lower `llm.backgroundRpm`.
+The model requests of her background life (memory consolidation, her hands operating the phone and computer) wait behind your ongoing conversation so they do not use up its requests-per-minute budget; if a chat still gets a 429, lower `llm.backgroundRpm`.
 
 ## 🧩 Architecture
 
@@ -113,9 +113,9 @@ flowchart LR
     you(["👤 You<br/>QQ / WeChat / Feishu"])
     subgraph self["her"]
         direction TB
-        interlude["interlude<br/>persona · life · growth"]
+        interlude["interlude<br/>persona · her own time"]
         memory["memory<br/>transcript · notes · diary"]
-        contact["dot<br/>wake · errands · notices"]
+        contact["dot<br/>wake · her hands · notices"]
     end
     session(["dot's session<br/>run by dsh"])
     subgraph things["her things"]
@@ -140,9 +140,9 @@ flowchart LR
 
 | | Component | What it is | Off switch |
 |---|---|---|---|
-| her | **`interlude`** | Canon persona and voice; the interlude: script, continuity, intents, read-only looking, play, tries, her own time, weekly growth, optional proactive contact · [docs](docs/interlude.md) | `DSH_DOT_INTERLUDE=off` |
+| her | **`interlude`** | Canon persona, the persona card and the checks on what she says, a voice reminder at the end of each turn; her own time; the ledger of what she did on her own · [docs](docs/interlude.md) | `DSH_DOT_INTERLUDE=off` |
 | her | **`memory`** | Transcript + auto-recall (local multilingual-e5-small + bge-reranker-base; SiliconFlow / DashScope optional), three notes (about you / herself / not over yet), people cards, diary, handoff · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
-| her | **`dot`** | The contact layer: notifications and schedules wake her, the errand session, scheduled results → IM, approval and device notices, working rules, her per-app notes, sidebar status panel | `DSH_DOT_CONTACT=off` |
+| her | **`dot`** | The contact layer: notifications and schedules wake her, her hands (a separate session that operates the phone and computer a step at a time), scheduled results → IM, approval and device notices, working rules, her per-app notes, sidebar status panel | `DSH_DOT_CONTACT=off` |
 | her things | **`phone`** | Android emulator exposed as `mcp__dot-phone__*` via [mobile-mcp](https://github.com/mobile-next/mobile-mcp) · [docs](docs/phone.md) | `DSH_DOT_PHONE=off` |
 | her things | **`computer`** | Bundled microVM ([microsandbox](https://github.com/zerocore-ai/microsandbox)) or Docker, exposed as `mcp__dot-vm__*` · [docs](docs/computer.md) | `DSH_DOT_COMPUTER=off` |
 | her things | **`qq`** | Her QQ inside the computer VM, same account as her phone · [docs](docs/qq.md) | `DSH_DOT_QQ=off` |
@@ -154,7 +154,7 @@ flowchart LR
 /dot [doctor|test|check|prompts [stop]|howto [app]]
 /dot memory [now|diary|handoff|recall …]
 /dot people [approve <id>|merge <a> <b>|forget <name>]
-/interlude [now|advance|seed|preset <code>|canon|doings|feedback [#id] <text>|free|growth [now|<week>|rollback <week>]]
+/interlude [preset <code>|canon|doings|feedback [#id] <text>|free]
 /phone [on|off|doctor [fix <id>]|accept [GB]|size <GB>|number <digits>|restart|retry|screenshot|notifications|notify [mute|wake <pkg>]]
 /computer [on|off]
 /qq [install [snowluma]|backend|account|owner|start|stop|qr|log|clean [napcat]|stickers [sync]|group <mention|all|none|score>]

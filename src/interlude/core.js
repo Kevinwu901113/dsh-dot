@@ -6,10 +6,8 @@
 // into her conversation as fact. What is left is what does not need a narrator:
 //   - the Canon (her persona) as the first section of her prompt, dsh's own openers trimmed, her voice
 //     as the last thing before she answers;
-//   - 成长: once a week she rewrites her portrait from her diary, her notes and the ledger (growth.js);
-//   - 自己的时间: a few times a day her errand self has time of her own, inside a token budget;
-//   - the ledger of what she did on her own, what it cost and what he said about it (doings.js),
-//     and tell_him.
+//   - 自己的时间: a few times a day she has time of her own, in her conversation, inside a token budget;
+//   - the ledger of what she did on her own, what it cost and what he said about it (doings.js).
 // Her life is what she really did. The component, service, settings section, folder and prompt ids keep
 // the name "interlude" so that nothing an installed copy has (canon.json, dsh-dot.json, prompt
 // overrides) stops working.
@@ -55,15 +53,15 @@ export const defaults = {
   voice: true,
   identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // her own time does not start within this long of her last turn
-  activeHours: '08:00-23:00', // outside this, no time of her own and no tell_him
+  activeHours: '08:00-23:00', // outside this, no time of her own
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
   price: null,
-  // 自己的时间: a few times a day her errand self is woken with nothing to do but her own time — all her
+  // 自己的时间: a few times a day she is woken with nothing to do but her own time — all her
   // tools, her own folder (<home>/her), no list of what to do. Limits live in the gates (approvals, QQ
   // refused, typing in social apps asks) and in the token budget, which ends the turn when it runs out.
-  freeTimesPerDay: 2,         // 0 = off; needs dsh-dot (her errands)
+  freeTimesPerDay: 2,         // 0 = off; needs dsh-dot
   freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
   freeDailyTokens: 300000,    // all free time in a day
   imBot: '',

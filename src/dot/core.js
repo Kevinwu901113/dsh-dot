@@ -233,30 +233,16 @@ export const defaults = {
   ownerPreemptMax: 2,
   phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
   notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
-  // Her errand session: phone checks, app notifications, interlude observations and plays run here,
-  // so screenshots and element dumps never enter the conversation she has with you. Only the
-  // conclusion of an errand reaches her conversation, as context for her next turn there.
-  errands: true,
-  errandMaxTokens: 60000, // the errand session is archived and a fresh one started past this
-  // Notifications from these apps are conversations: they wake her conversation, not the errand.
+  // Notifications from these apps are conversations (told to her as someone speaking, not as an app's news).
   conversationApps: ['qq', 'com.tencent.mobileqq', 'com.tencent.mm'],
   notifyRules: NOTIFY_RULES, // every other app's notifications: ignore / direct / batch (see notifyAction)
-  threadBatchMs: 20000, // 'batch' notifications of one thread arriving within this window wake her errand once
-  heldMaxMs: 600000,    // held this long for a busy errand: delivered to a fresh errand instead
+  threadBatchMs: 20000, // 'batch' notifications of one thread arriving within this window wake her once
   loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
-  // Interlude tasks (her own plays and looks) wait behind real work: one at a time, only while no
-  // notification is queued or held for an errand and no errand turn runs.
-  // What he asks her to do on her phone or computer while they talk: she hands it to her errands (hand_off)
-  // and answers him; the errand does it; the report wakes her conversation, and she tells him. In a turn of
-  // his words she does not operate the devices herself (false: as before — she may, and may also just say "等下").
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
   // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
   replyCheck: true,
-  handOff: false,
   // Her devices are operated by her hands (hands.js), a round at a time, from her conversation: she says what to do,
-  // the hands do it and say what is on the screen, she decides the next step. With this on she does not hand things
-  // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
-  hands: true,
+  // the hands do it and say what is on the screen, she decides the next step. A round is cut after handsMaxMs.
   handsMaxMs: 360000,
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
@@ -270,11 +256,9 @@ export const defaults = {
   howtoMaxChars: 800,
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
-  // (0 = wait for ever). A turn with no session event for turnStallMs is stalled; an errand stalled
-  // for errandStallMs is cancelled (her conversation never is: he is told once).
+  // (0 = wait for ever). A turn with no session event for turnStallMs is stalled (he is told once).
   approvalWaitMs: 600000,
   turnStallMs: 300000,
-  errandStallMs: 600000,
 };
 
 /** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
@@ -466,9 +450,6 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot');
   runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const cfg = { ...defaults, ...setValues(config, { keepEmpty: ['notifyHours'] }), ...sectionOf('dot', (m) => logger.warn(m)) };
-  // One of her, and her hands (hands.js): there is no errand session and nothing is handed off any more. What is
-  // left below of the errand's machinery is not reached and goes with the next clean-up.
-  cfg.errands = false; cfg.handOff = false; cfg.hands = true;
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
   const phone = () => ctx.get('dshPhone');
@@ -678,7 +659,7 @@ export function apply(ctx, config = {}) {
     const vm = (String(toolName ?? '').startsWith(PHONE_TOOL_PREFIX) ? phone()?.status?.() : computer()?.status?.()) ?? {};
     return vm.publicLiveViewUrl || vm.liveViewUrl || '';
   };
-  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id) || Boolean(cfg.hands && hands?.isHands(s.id, s.header?.cwd))); };
+  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id) || Boolean(hands?.isHands(s.id, s.header?.cwd))); };
   const EXPIRED = Symbol('expired'), WITHDRAWN = Symbol('withdrawn');
   ctx.on('approval/request', async (req, next) => {
     if (!hers(req.agent)) return next();
@@ -756,7 +737,7 @@ export function apply(ctx, config = {}) {
   const LAUNCHERS = /launcher|\.home$|^com\.android\.systemui$/i;
   const labelOf = (pkg) => (!pkg || LAUNCHERS.test(pkg) ? 'phone' : appLabels[pkg] ?? pkg);
   const howto = createHowto({ dir: join(home, 'her', 'howto'), minSteps: cfg.howtoMinSteps, maxChars: cfg.howtoMaxChars });
-  const herSession = (s) => Boolean(s?.id && (isDotSession(s.id, s.header?.cwd) || turns.has(s.id) || (cfg.hands && hands?.isHands(s.id, s.header?.cwd))));
+  const herSession = (s) => Boolean(s?.id && (isDotSession(s.id, s.header?.cwd) || turns.has(s.id) || (hands?.isHands(s.id, s.header?.cwd))));
   howtoFor = async (exec, result) => {
     if (!exec.name.startsWith(PHONE_TOOL_PREFIX)) return null;
     const s = exec.agent?.session;
@@ -1152,7 +1133,6 @@ export function apply(ctx, config = {}) {
     return out.length > 100 ? Buffer.from(out, 'base64') : null;
   };
   ctx.inject(['tools'], (scope) => {
-    if (!cfg.hands) return;
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
@@ -1168,7 +1148,7 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot: hands tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
-    scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (cfg.hands && hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
+    scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
   });
 
   // His messages wait for him to stop typing (see defaults.ownerQuietMs): their own buffer and timer,
@@ -1409,7 +1389,7 @@ export function apply(ctx, config = {}) {
       const t = turnInfo(id, now);
       if (t && (t.state === 'stalled' || t.state === 'timed-out')) out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · ${t.state === 'timed-out' ? 'after an approval timed out · ' : ''}last: ${t.doing}${t.errand ? ` · given up at ${mins(cfg.errandStallMs)}` : ' · not cancelled'}`);
     }
-    return out.length ? out : [`liveness: no approval waiting, no stalled turn (approval wait ${cfg.approvalWaitMs > 0 ? mins(cfg.approvalWaitMs) : 'unlimited'}, stalled after ${mins(cfg.turnStallMs)}, errand given up after ${mins(cfg.errandStallMs)})`];
+    return out.length ? out : [`liveness: no approval waiting, no stalled turn (approval wait ${cfg.approvalWaitMs > 0 ? mins(cfg.approvalWaitMs) : 'unlimited'}, stalled after ${mins(cfg.turnStallMs)})`];
   };
 
   // /dot
@@ -1490,7 +1470,7 @@ export function apply(ctx, config = {}) {
     /** Is this session hers (her conversation, an IM-opened one, her errand): what compat asks before letting it see her tools. */
     hers: (id, cwd) => isDotSession(id, cwd) || isErrand(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
-    isHands: (id, cwd) => Boolean(cfg.hands && hands?.isHands(id, cwd)),
+    isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
     busy: (id) => turns.has(id),
     /** One open turn as the watchdog sees it (turnState + who and what), or null. */
     turn: (id) => turnInfo(id),

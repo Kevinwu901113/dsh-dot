@@ -760,7 +760,7 @@ test('visible: dshDot.turn says approval → timed-out → running; /dot lists t
     h.emit(h.home, 'assistant/message', msg('好了'));
     assert.equal(dot.turn('s1').state, 'running');
     h.emit(h.home, 'turn/end', { turn: 2 });
-    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: no approval waiting, no stalled turn \(approval wait 10 min, stalled after 5 min, errand given up after 10 min\)/);
+    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: no approval waiting, no stalled turn \(approval wait 10 min, stalled after 5 min\)/);
     stop(h);
   } finally { mock.timers.reset(); }
 });
@@ -1112,41 +1112,6 @@ test('no conversation yet (first run, or after a reset): his words open one in h
     assert.equal(created.length, 1, 'the conversation it opened is hers from then on');
     stop(o.h);
   } finally { mock.timers.reset(); }
-});
-
-// ── what he asked her to do has an owner: handed off, done by her errand, reported back to him ──
-function handOffHarness(config = {}, { carry } = {}) {
-  const h = harness();
-  const followups = [], tools = {}, sends = [], carried = [];
-  let n = 0;
-  const agentFor = (id) => ({ session: { id }, followup: (m) => followups.push({ id, m }), inject: () => {} });
-  const services = {
-    dshPhone: { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) },
-    sessionController: { create: async () => ({ sessionId: `errand-${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) },
-    tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
-    dshQq: { connected: true, owner: '20002', sentToOwnerAt: 0, onMessage: () => () => {}, onTyping: () => () => {}, send: async (to, text) => { sends.push(text); return { sent: 1, said: text.split('\n') }; } },
-    ...(carry ? { agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) }, llm: { stream: (o) => { carried.push(o); return (async function* () { yield { type: 'text-delta', text: carry }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } } } : {}),
-  };
-  h.ctx.get = ((orig) => (name) => services[name] ?? orig(name))(h.ctx.get);
-  let dot;
-  h.ctx.provide = (name, svc) => { if (name === 'dshDot') dot = svc; };
-  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0, ...config });
-  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
-  const gate = (id, name) => h.hooks['tools/pre-execute']({ name, arguments: {}, agent: { session: { id } } }, async () => ({ kind: 'allow' }));
-  const asksContext = () => h.ctx.prompts.find((p) => p.name === 'dot:asks').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
-  return { h, dot, followups, tools, sends, carried, gate, asksContext };
-}
-
-test('hand_off off (dot.handOff = false): no tool, no rule, and she may use her phone in a turn of his words, as before', async () => {
-  const { ownerSource } = await import('../src/dot/core.js');
-  const { PHONE_TOOL_PREFIX } = await import('../src/tool-prefixes.js');
-  const o = handOffHarness({ handOff: false });
-  assert.equal(o.tools.hand_off, undefined);
-  assert.doesNotMatch(o.h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: o.h.home } } } }), /hand_off/);
-  o.h.emit(o.h.home, 'turn/start', { turn: 2 });
-  o.h.emit(o.h.home, 'user/message', { source: ownerSource() });
-  assert.equal((await o.gate('s1', `${PHONE_TOOL_PREFIX}mobile_launch_app`)).kind, 'allow');
-  stop(o.h);
 });
 
 test('what she says to him is checked in code: brackets out of a relayed answer; a listed phrase hands her own qq_send back once a turn', async () => {

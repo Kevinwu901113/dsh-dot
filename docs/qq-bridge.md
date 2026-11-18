@@ -24,7 +24,7 @@
 
 | 判定 | 条件 |
 |---|---|
-| `dot` | 她的：工作目录在 `~/dot` 下，或 dsh-im 开的会话，或她的跑腿 |
+| `dot` | 她的：工作目录在 `~/dot` 下，或 dsh-im 开的会话 |
 | `qqb-sandbox` | `qqb-g-*`；`qqb-p-*` 且会话 preset 是 `qq-chat*`（dsh 记在会话头里；没记的看它的 `state/mode.json`，不是 closed-agent 就算沙箱）；工作目录在它 `state/` 下的其他会话 |
 | `qqb-owner` | `qqb-p-*` 且 preset 不是 `qq-chat*`（或模式是 closed-agent） |
 | `other` | 其他所有会话 |
@@ -36,8 +36,8 @@
 | 会话 | 藏掉 |
 |---|---|
 | `dot` | qq-bridge 的 `mcp__snowluma__*`、`mcp__snowluma-host__*`、`mcp__web-search-safe__*`（`compat.hideBridgeTools`） |
-| `qqb-sandbox` | dsh-dot 的全部：`memory` `recall` `account` `doings` `tell_him` `qq_send` `qq_sticker_keep` `phone_zoom`、`mcp__dot-phone__*`、`mcp__dot-vm__*`、`mcp__dot-qq__*` |
-| `qqb-owner` | 她自己的：`memory` `recall` `account` `doings` `tell_him` `qq_send` `qq_sticker_keep`、`mcp__dot-qq__*`；手机和电脑给（`compat.ownerDevices`） |
+| `qqb-sandbox` | dsh-dot 的全部：`memory` `recall` `account` `hands` `keep_line` `qq_send` `qq_sticker_keep` `phone_zoom` `phone_type`、`mcp__dot-phone__*`、`mcp__dot-vm__*`、`mcp__dot-qq__*` |
+| `qqb-owner` | 她自己的：`memory` `recall` `account` `hands` `keep_line` `qq_send` `qq_sticker_keep`、`mcp__dot-qq__*`；手机和电脑给（`compat.ownerDevices`） |
 | `other` | 她自己的那些（`account` 里存着她 App 的密码，不给任何第三方会话）；手机电脑照旧 |
 
 名单在 `src/tool-prefixes.js`（`DOT_TOOLS` / `DEVICE_TOOL_PREFIXES`），测试会把它和源码里所有 `tools.register` 对账，加工具忘了归类会直接红。

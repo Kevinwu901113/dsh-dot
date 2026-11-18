@@ -40,7 +40,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
   "computer": { "rootDisk": "32G", "memory": "6G", "cpus": 4 },
   "qq": { "githubProxy": "https://ghfast.top/", "groupPolicy": "score" },
   "memory": { "dailyAt": "01:30" },
-  "interlude": { "activeHours": "09:00-01:00", "speak": true },
+  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 },
   "dot": { "phoneCheckEveryMinutes": 60 }
 }
 ```
@@ -59,9 +59,9 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 共享文件夹给电脑 | `computer.mounts: ["/Users/你/Projects/a"]` | |
 | 国内网络下载慢 | QQ 安装：`qq.githubProxy`；召回模型：`/dot memory recall mirror <url>`（默认已走 hf-mirror）；虚拟机镜像：`computer.image` 换镜像源 | |
 | 召回换云端 / 关掉 | `/dot memory recall backend siliconflow`，再 `/dot memory recall key siliconflow <key>` | 命令即时生效，不用重启，也不用改这个文件 |
-| **她的作息** | `interlude.activeHours`（如 `"09:00-01:00"`，可跨午夜）、`interlude.advanceEveryMinutes`（自己过日子的间隔，0 关）、`interlude.maxRoundsPerDay` | 活跃时段外不跑幕间、不主动找你 |
+| **她的作息** | `interlude.activeHours`（如 `"09:00-01:00"`，可跨午夜）、`interlude.freeTimesPerDay`（每天几次「自己的时间」，0 关） | 活跃时段外不开自己的时间 |
 | 日记时间 | `memory.dailyAt`（默认 `"23:30"`） | |
-| **让她主动找你** | `interlude.speak: true`，`interlude.maxContactsPerDay`、`interlude.willingnessThreshold`（0–1，越低越爱找你） | 默认关 |
+| 她主动找你 | 没有开关，也没有次数上限：她在自己的时间里想说就说。她眼前有今天主动了几次、你回了几次、上一条回没回（`dot.reachUnansweredMs` 过了多久算没回，默认 2 小时） | 找不找、多频繁由她自己从你的反应里学 |
 | 拿手机看的频率 | `dot.phoneCheckEveryMinutes`（默认 30，0 关） | |
 | 夜里通知不叫醒她 | `dot.notifyHours: "08:00-23:00"`（只有这个时段内通知才叫醒） | 默认空 = 任何时候都叫醒 |
 | 某个 App 的通知别叫醒她 | `/phone notify mute <包名>` | 命令即时生效 |
@@ -189,14 +189,7 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `activeHours` | `"08:00-23:00"` | 活跃时段 |
-| `idleMinutes` | `10` | 聊天安静多久后跑一轮 |
-| `advanceEveryMinutes` | `90` | 自己过日子的间隔，0 关 |
-| `maxRoundsPerDay` | `20` | 每天最多几轮 |
-| `browseDailyCap` / `vmDailyCap` | `6` / `2` | 每天「去看」上限 |
-| `vmSites` | `[]` | 用电脑浏览器看的网站（她登录过的） |
-| `phoneApps` / `playApps` | 内置表 | 逛 / 玩的 App |
-| `play` | `true` | 「玩」（点赞、评论、关注、发帖）；`playActions` 去掉 `post` 就不发帖，`postDailyCap`（默认 1）是每天发帖上限 |
-| `tries` / `tryDailyCap` | `true` / `3` | 「试点新的」：她想做没做过的事，交给跑腿真去做（不花钱、不改账号、要审批的等批准） |
+| `idleMinutes` | `10` | 她上一轮结束后这么久之内不开「自己的时间」 |
 | `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
 | `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天几次、每次和每天的 token 上限；`0` 次关 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
@@ -208,8 +201,9 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉联系人层 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
-| `handOffTtlMs` | `7200000` | 交出去的事多久没轮到就算没办（并告诉她）；重启后没过期的会重新排上 |
 | `handsMaxMs` | `360000` | 她的手做一步最长多久；超过就停，带着已经说的回来 |
+| `reachUnansweredMs` | `7200000` | 她主动发给你的一条过了这么久你没回，在她对话里留一句事实「那条他没回」；0 = 不留 |
+| `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉，命中清单的句子每轮打回一次让她重说 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 她自己的 App 经验（`~/dot/her/howto/`）：每轮按 App 记步数；走了 `howtoMinSteps` 步以上或出过错的那轮，结束后一次小调用整理这个 App 的笔记（教训、捷径）；之后一个会话里第一次打开这个 App 时笔记跟着给她。`/dot howto` 看每个 App 的步数变化 |
 | `promptsPort` | `7870` | `/dot prompts` 提示词页面的端口（只监听 127.0.0.1） |
 | `notifyHours` | `""` | 只在这个时段内通知叫醒她；空 = 一直 |
@@ -220,27 +214,24 @@ setx DSH_DOT_COMPUTER off
 | `ownerDenyMax` | `2` | 你有她没看的话时，她发给你的 `qq_send` 每轮最多被拦几次 |
 | `ownerPreemptMax` | `2` | 她的话还没到你那、你又说了话时，她连着最多让几次（重写这一轮，或把写好的回答留作草稿）；之后先发出去。有一条气泡到了你那就清零 |
 | `notifyRules` | 见下 | 非聊天 App 的通知先过这张表（按顺序，第一条命中的算）：每条 `{ "pkg": 包名（可省）, "title": 正则, "text": 正则（可省）, "action": "ignore" / "direct" }`。`ignore` 只记一笔 `notification-ignored`，不叫醒她；`direct`（@、回复、私信、关注她的）`notifyBatchMs` 后就叫醒；都没命中的按话题合并（见下一项）。默认：小黑盒的「黑盒今日热点订阅」「签到提醒」「今日未签到」和正文是「来自《…》，点击查看>>」的推广、资讯忽略，标题含「@了你 / 回复了你 / 关注了你 / 私信」的算 `direct`。写了就整张替换默认 |
-| `threadBatchMs` | `20000` | 同一话题（App + 通知里引用的帖子「来自“…”」，没有就只按 App）这么多毫秒内来的通知合并成一次叫醒；跑腿正在处理某个话题时，这个话题新来的都留给同一个跑腿，不另开 |
-| `heldMaxMs` | `600000` | 通知等忙着的跑腿等了这么久，就交给一个新的跑腿会话（记 `notification-rerouted`）；那个跑腿正在处理的话题除外 |
+| `threadBatchMs` | `20000` | 同一话题（App + 通知里引用的帖子「来自“…”」，没有就只按 App）这么多毫秒内来的通知合并成一次叫醒；她正忙时来的攒到那一轮结束 |
 | `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |
-| `errandMaxTokens` | `60000` | 跑腿会话多长换新 |
-| `interludeQueueMax` | `3` | 幕间想做的事（玩、用手机 / 电脑去看）不自己动手，排队交给跑腿：优先级最低，没有通知在排、在等，也没有跑腿在跑时才做，一次一件；同一件事再来只刷新过期时间；排满这么多件，最早的作废（`dropped`） |
-| `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`）。做完、过期、作废都回给幕间：她当时想做什么、那会儿在忙什么、拖到几点才做（或没做成），下一轮写进剧情 |
+| `interludeQueueMax` | `3` | 她自己时间里的事（`interlude` 交来的）一次一件，在她的对话里做，只在没有别的事时开始；排满这么多件，最早的作废（`dropped`） |
+| `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`） |
 | `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
-| `errandStallMs` | `600000` | 跑腿会话卡住这么久就放弃：取消这一轮（保留收件箱），扣着的通知放出去交给新的跑腿会话，她对话里留一句「做到一半卡住了，放弃了：…」 |
 | `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 
 ### `llm`（模型请求闸门，`src/llm-gate.js`）
 
-她后台的模型请求（幕间、整理记忆和日记、跑腿会话、群聊评分、App 经验整理）和你们的对话共用同一个 provider 的 key。这道闸门在每个请求前面：只压后台的，你们的对话（以及认不出来的请求）照常发。每个 provider 分开算。`/dot` 和 dot 页面「状态」里能看到近一分钟的请求数、后台上限、是否在冷却。
+她后台的模型请求（整理记忆和日记、手的会话、群聊评分、App 经验整理）和你们的对话共用同一个 provider 的 key。这道闸门在每个请求前面：只压后台的，你们的对话（以及认不出来的请求）照常发。每个 provider 分开算。`/dot` 和 dot 页面「状态」里能看到近一分钟的请求数、后台上限、是否在冷却。
 
 | 键 | 默认 | 作用 |
 |---|---|---|
-| `workEffort` | `high` | 她后台干活的思考强度：幕间叙述、记忆整理和日记、成长回顾、用法笔记的回顾、跑腿会话。和对话分开——dsh 只有一个模型选择器，在任何对话里改思考强度都会变成全局默认；以前这些后台请求读的就是那个默认，把聊天的思考关掉等于把它们的也关了。可选 `off` / `low` / `high` / `max`，`''` = 跟随选择器。模型不支持所选强度时（问宿主一次）也跟随，不会发出被拒的请求。QQ 群聊评分固定 `off`。实际发出的强度在 `/dot` 的 model requests 一行（`thinking: chat …, background …`）和幕间 `calls.jsonl` 的 `effort` 里 |
+| `workEffort` | `high` | 她后台干活的思考强度：记忆整理和日记、用法笔记的回顾、手的会话。和对话分开——dsh 只有一个模型选择器，在任何对话里改思考强度都会变成全局默认；以前这些后台请求读的就是那个默认，把聊天的思考关掉等于把它们的也关了。可选 `off` / `low` / `high` / `max`，`''` = 跟随选择器。模型不支持所选强度时（问宿主一次）也跟随，不会发出被拒的请求。QQ 群聊评分固定 `off`。实际发出的强度在 `/dot` 的 model requests 一行（`thinking: chat …, background …`）和幕间 `calls.jsonl` 的 `effort` 里 |
 | `backgroundRpm` | `20` | 后台请求每分钟最多几次（近 60 秒内所有请求都算进去，但只压后台的；间隔至少 60/上限 秒，一次放一个）。`0` = 不限速（只计数） |
 | `foregroundQuietSeconds` | `15` | 你们的对话有请求在发时后台不发（一个请求开着超过 10 分钟就当它已经被丢下）；发完后再等这么多秒（她一轮有好几步） |
-| `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行。最多 270（比 `dot.turnStallMs` 的 300 秒短，跑腿不会被当成卡住；填更大也按 270） |
+| `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行。最多 270（比 `dot.turnStallMs` 的 300 秒短，手不会被当成卡住；填更大也按 270） |
 | `holdRetries` | `true` | 你们的对话被限流（429）后，dsh 自己的快速重试（几秒内连试 5 次，都在同一分钟里）先等到这一分钟有余量（或 provider 给的 retry-after）再发 |
 | `retryHoldMaxSeconds` | `30` | 上一项最多等多久 |
 

@@ -166,13 +166,13 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 {
   "phone":     { "dataGb": 32 },
   "computer":  { "rootDisk": "32G", "memory": "6G" },
-  "interlude": { "activeHours": "09:00-01:00", "speak": true }
+  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 }
 }
 ```
 
 存储、作息、主动联系、群聊规则、省 token、网络镜像、后台请求限速……每一项怎么改、哪些只在新建手机 / 虚拟机时生效，都在 **[docs/SETTINGS.md](docs/SETTINGS.md)**。
 
-她在后台过日子（幕间、整理记忆、跑腿）发出的模型请求，都排在你正在进行的对话后面，不抢你的每分钟请求额度；聊天时还是报 429，就调 `llm.backgroundRpm`。
+她在后台（整理记忆、她的手在操作手机和电脑）发出的模型请求，都排在你正在进行的对话后面，不抢你的每分钟请求额度；聊天时还是报 429，就调 `llm.backgroundRpm`。
 
 > [!TIP]
 > 懒得自己改？直接对 dsh 说「按 docs/SETTINGS.md 把 dsh-dot 的手机存储改成 32 GB」。文档里有写给 agent 的规则，dsh 或其他 agent 照着就能改对。
@@ -186,9 +186,9 @@ flowchart LR
     you(["👤 你<br/>QQ / 微信 / 飞书"])
     subgraph self["她自己"]
         direction TB
-        interlude["interlude<br/>人设 · 幕间 · 成长"]
+        interlude["interlude<br/>人设 · 自己的时间"]
         memory["memory<br/>原话 · 笔记 · 日记"]
-        contact["dot<br/>叫醒 · 跑腿 · 提醒"]
+        contact["dot<br/>叫醒 · 她的手 · 提醒"]
     end
     session(["dot 的会话<br/>dsh 跑对话"])
     subgraph things["她的东西"]
@@ -203,8 +203,11 @@ flowchart LR
     interlude -->|人设 + 这段日子| session
     memory -->|笔记 + 召回| session
     contact -->|叫醒 · 规则| session
-    session -->|mcp__dot-phone__*| phone
-    session -->|mcp__dot-vm__*| computer
+    hands(["她的手<br/>另一个会话，只管操作"])
+    session -->|hands：说一步| hands
+    hands -->|结果 + 画面| session
+    hands -->|mcp__dot-phone__*| phone
+    hands -->|mcp__dot-vm__*| computer
     session -->|qq_send| qq
     phone -->|通知叫醒| session
     qq -->|1–2 s 叫醒| session
@@ -215,9 +218,9 @@ flowchart LR
 
 | 组件 | 是什么 | 依赖 | 关掉 |
 |---|---|---|---|
-| **`interlude`** 🌙 | 人设（Canon）和说话方式；幕间：剧本、连续性、打算、只读的「去看」、玩、试新的、自己的时间、每周成长、可选的主动联系 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
+| **`interlude`** 🌙 | 人设（Canon）、人设卡和说话检查表、每轮最后的说话提醒；自己的时间；她自己做过的事的账 · [文档](docs/interlude.md) | — | `DSH_DOT_INTERLUDE=off` |
 | **`memory`** 🧠 | 原话库 + 自动召回（本机 multilingual-e5-small + bge-reranker-base，可切 SiliconFlow / DashScope）；三栏笔记（关于你 / 她自己 / 还没了的事）；人物卡；日记；15 万 token 交班 · [文档](docs/memory.md) | — | `DSH_DOT_MEMORY=off` |
-| **`dot`** ◎ | 联系人层：通知和定时把她叫醒、跑腿会话、定时结果 → IM、审批与设备提醒、工作规则、她在每个 App 里攒的用法笔记、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
+| **`dot`** ◎ | 联系人层：通知和定时把她叫醒、她的手（操作手机和电脑的另一个会话）、定时结果 → IM、审批与设备提醒、工作规则、她在每个 App 里攒的用法笔记、右侧栏状态面板 | [dsh-im](https://github.com/xmanrui/dsh-im) | `DSH_DOT_CONTACT=off` |
 
 **她的东西**
 
@@ -253,7 +256,7 @@ flowchart LR
 /dot [doctor|test|check|prompts [stop]|howto [app]]
 /dot memory [now|diary|handoff|recall …]
 /dot people [approve <id>|merge <a> <b>|forget <名字>]
-/interlude [now|advance|seed|preset <code>|canon|doings|feedback [#id] <一句话>|free|growth [now|<周>|rollback <周>]]
+/interlude [preset <code>|canon|doings|feedback [#id] <一句话>|free]
 /phone [on|off|doctor [fix <id>]|accept [GB]|size <GB>|number <号码>|restart|retry|screenshot|notifications|notify [mute|wake <包名>]]
 /computer [on|off]
 /qq [install [snowluma]|backend|account|owner|start|stop|qr|log|clean [napcat]|stickers [sync]|group <mention|all|none|score>]
@@ -268,7 +271,7 @@ flowchart LR
 
 | 路径 | 内容 |
 |---|---|
-| `~/dot/interlude/` | 人设 `canon.json`、剧本 `script.md`、连续性 `state.json`、打算 `intents.json`、她的账 `doings.json`、每周的「她现在的样子」`growth/`、看到的东西、每轮原始回复与 token |
+| `~/dot/interlude/` | 人设 `canon.json`、她的账 `doings.json`、每天的用量 `meta.json` |
 | `~/dot/memory/` | `memory.md`（给你看的）、`diary.md`、`transcript.jsonl`、召回索引 `recall/`、交班记录 |
 | `~/dot/her/` | 她自己的地方：自己的时间里放的东西、每个 App 的用法笔记 |
 | `~/dot/prompts/` | 你改过的提示词，覆盖内置版本 |
@@ -305,7 +308,7 @@ flowchart LR
   |---|---|
   | `{ kind: 'dsh-dot', form: 'phone-notification' }` | 手机通知叫醒 |
   | `{ kind: 'dsh-dot', form: 'phone-check' }` | 定时看手机 |
-  | `{ kind: 'dsh-dot', form: 'errand-note' }` | 跑腿结果回写 |
+  | `{ kind: 'dsh-dot', form: 'hands-result' }` | 手做完一步，结果和当时的画面回到她的对话 |
   | `{ kind: 'dsh-interlude', form: 'observation' \| 'play' }` | 幕间观察 / 玩 |
   | `{ kind: 'handoff', generation }` | 记忆交班 |
   | `{ kind: 'user', rpcId: 'qq-…' }` | 主人的 QQ 消息（普通用户消息） |
