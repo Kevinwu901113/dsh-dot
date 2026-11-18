@@ -616,3 +616,80 @@ test('a QQ turn\'s answer is recorded by what reached him (dot reports it), not 
   const got = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((l) => `${l.who}:${l.text}`);
   assert.deepEqual(got, ['owner:困', 'her:那就去睡一会', 'owner:在吗', 'her:在']);
 });
+
+test('words: 词：意思 kept only with a quote that is in the records and contains it; one entry per 词; shown with her notes', async () => {
+  const { wordOp, quoteIn, emptyMemory, renderStanding, normalizeMemory, DEFAULT_LIMITS } = await import('../src/memory/store.js');
+  const { seenRefusal, seenRefusalText } = await import('../src/memory/memory.js');
+  assert.ok(quoteIn('这把纯纯坐牢', '[11-18 15:02] [我看到的]（小黑盒）：这把，纯纯 坐牢'));
+  assert.ok(!quoteIn('牢', '坐牢') && !quoteIn('上分', '这把纯纯坐牢'));
+  const evidence = '[11-18 15:00] 他：今晚固排吗\n[11-18 15:02] [我看到的]（小黑盒）：这把纯纯坐牢';
+  const m = emptyMemory();
+  const out = { words: [
+    { action: 'add', content: '固排: 固定一起排位的队友', quote: '今晚固排吗' },
+    { action: 'add', content: '坐牢：一局打得很憋屈', quote: '这把纯纯坐牢' },
+    { action: 'add', content: '上分：赢了加分', quote: '他说要上分' },          // nobody wrote that
+    { action: 'add', content: '破防：情绪崩了', quote: '今晚固排吗' },          // the quote does not contain the 词
+    { action: 'add', content: '没有意思', quote: '今晚固排吗' },
+  ] };
+  const r = applyExtraction(m, out, { evidence });
+  assert.deepEqual(m.words, ['固排：固定一起排位的队友', '坐牢：一局打得很憋屈']);
+  assert.equal(r.words, 2);
+  assert.equal(r.errors.filter((e) => e.startsWith('words:')).length, 3);
+  // the same 词 again: what it means is replaced, not listed twice
+  applyExtraction(m, { words: [{ action: 'add', content: '坐牢：这局没法玩', quote: '这把纯纯坐牢' }] }, { evidence });
+  assert.deepEqual(m.words, ['固排：固定一起排位的队友', '坐牢：这局没法玩']);
+  assert.equal(applyExtraction(m, { words: [{ action: 'remove', oldText: '固排' }] }, { evidence }).words, 1);
+  assert.deepEqual(m.words, ['坐牢：这局没法玩']);
+  assert.ok(!wordOp(['坐牢：这局没法玩'], { action: 'add', content: `长词：${'很'.repeat(DEFAULT_LIMITS.words)}` }, DEFAULT_LIMITS.words).ok, 'bounded like the other notes');
+  assert.match(renderStanding(m), /## 你知道的说法（别人这么用过；意思不一定准）\n- 坐牢：这局没法玩/);
+  assert.deepEqual(normalizeMemory({ version: 2, owner: ['a'] }).words, [], 'a memory from before has none');
+  assert.equal(transcriptLine({ at: Date.now(), who: 'seen', text: '这把纯纯坐牢', from: '小黑盒' }).replace(/^\[[^\]]*\] /, ''), '[我看到的]（小黑盒）：这把纯纯坐牢');
+  assert.match(extractPrompt({ text: 'x', words: m.words }), /=== 已有：她知道的说法 ===\n- 坐牢：这局没法玩\n/);
+  // keep_line: only her errand, only what her tools showed her, one short line, not twice, not a secret or a link
+  const base = { errand: true, shown: '{"text":"这把纯纯坐牢"} 回复 12', today: 0, perDay: 30, maxChars: 80, known: [] };
+  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢' }), '');
+  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', errand: false }), 'elsewhere');
+  assert.equal(seenRefusal({ ...base, text: '我编的一句话' }), 'not-shown');
+  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', known: ['这把，纯纯坐牢'] }), 'again');
+  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', today: 30 }), 'full');
+  assert.equal(seenRefusal({ ...base, text: '这把\n纯纯坐牢' }), 'long');
+  assert.equal(seenRefusal({ ...base, text: 'x'.repeat(81) }), 'long');
+  assert.equal(seenRefusal({ ...base, text: '看这个 https://a.b/c' }), 'not-words');
+  assert.equal(seenRefusal({ ...base, text: ' ' }), 'empty');
+  assert.match(seenRefusalText('long', { max: 80 }), /不超过 80 字/);
+  assert.match(seenRefusalText('full', { perDay: 30 }), /30 句/);
+});
+
+test('keep_line end to end: a line her errand\'s tools showed her becomes a 我看到的 line of the transcript; anything else is refused before it runs', async () => {
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
+  const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
+  const listeners = [], hooks = [], tools = {}, audits = [];
+  const services = { dshDot: { session: () => 's1', isErrand: (id) => id === 'errand-1', isIm: () => false }, dshComputer: { audit: (e) => audits.push(e) } };
+  const ctx = {
+    logger: () => ({ info() {}, warn() {}, error() {} }),
+    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'tools/pre-execute') hooks.push(fn); },
+    effect() {}, get: (n) => services[n], provide(n, v) { services[n] = v; },
+    inject(_d, fn) { fn({ systemPrompt: { context() {} }, tools: { register: (t) => { tools[t.name] = t; return () => {}; } }, effect: (f) => f(), on: ctx.on }); },
+  };
+  apply(ctx, { home, consolidateEveryLines: 1000, recallBackend: 'off', seenPerDay: 2 });
+  const emit = (id, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data }));
+  const call = async (id, args) => {
+    let out = null;
+    for (const h of hooks) { out = await h({ name: 'keep_line', arguments: args, agent: { session: { id } } }, async () => tools.keep_line.execute(args)); }
+    return out;
+  };
+  assert.match(tools.keep_line.description, /照抄，一次一句，不超过 80 字/);
+  emit('errand-1', 'tool/result', { message: { toolCallId: 'c1', content: [{ type: 'text', text: '[{"text":"这把纯纯坐牢","x":12},{"text":"队友在逛街"},{"text":"第三句也不错"}]' }] } });
+  emit('s1', 'tool/result', { message: { toolCallId: 'c2', content: [{ type: 'text', text: '对话里的工具结果不算' }] } });
+  assert.deepEqual(await call('errand-1', { text: '这把纯纯坐牢', from: '小黑盒' }), { ok: true });
+  assert.equal((await call('errand-1', { text: '这把纯纯坐牢' })).kind, 'deny', 'not twice');
+  assert.match((await call('errand-1', { text: '我自己编的' })).reason, /不在你刚才看到的/);
+  assert.match((await call('s1', { text: '对话里的工具结果不算' })).reason, /只在你自己去逛的时候用/);
+  assert.deepEqual(await call('errand-1', { text: '队友在逛街' }), { ok: true });
+  assert.match((await call('errand-1', { text: '第三句也不错' })).reason, /今天记得够多了（2 句）/);
+  const lines = readFileSync(join(home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  assert.deepEqual(lines.map((l) => [l.who, l.session, l.text, l.from ?? '']), [['seen', 'errand-1', '这把纯纯坐牢', '小黑盒'], ['seen', 'errand-1', '队友在逛街', '']]);
+  assert.equal(services.dotMemory.status().seen, 2);
+  assert.deepEqual(audits.filter((e) => e.event === 'seen-refused').map((e) => e.why), ['again', 'not-shown', 'elsewhere', 'full']);
+  assert.equal(services.dotMemory.lastSaidAt(), 0, 'a kept line is not something said in her conversation');
+});

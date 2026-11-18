@@ -21,7 +21,7 @@ import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, bankOp, bankUsage, emptyMemory, findPerson, normalizeMemory, openOp, fitOpen, renderItem, setImpression,
-  handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason,
+  handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp, quoteIn,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 import { createRecall } from './recall.js';
@@ -67,6 +67,14 @@ export const defaults = {
   recallTopK: 10,               // at most this many turns injected per wake — fewer when fewer are relevant
   recallMaxTokens: 1500,        // …and at most this many tokens of them (the weakest are dropped first)
   recallRerankMin: 0,           // a reranked turn needs at least this score (0–1); 0 = the reranker's order alone decides
+  // Lines she kept while browsing (who: 'seen', the keep_line tool): chosen apart from the turns, so they never take a
+  // turn's place. At most recallSeenMax of them per wake (0 = never shown), each above recallSeenMin with a reranker,
+  // inside recallSeenMaxTokens.
+  recallSeenMax: 2,
+  recallSeenMin: 0.3,
+  recallSeenMaxTokens: 200,
+  seenPerDay: 30,               // lines she may keep in a day (keep_line); 0 = the tool refuses
+  seenMaxChars: 80,             // one kept line is at most this long: a saying, not a passage
   recallMinQueryLength: 4,      // a waking message with fewer distinct content tokens (CJK characters, other words) recalls nothing: 好的 / 哈哈哈哈 / ok thanks. 0 = off
   // Without a reranker (none set, or still downloading): a hit must stand out from the whole index —
   // score ≥ median + k·(best − median), per channel, scale-free. 0 = off.
@@ -84,6 +92,23 @@ export const defaults = {
 const RECALL_WAKES = (src) => src.kind === 'user' || src.kind === 'schedule' || (src.kind === 'dsh-dot' && src.form === 'phone-notification');
 
 export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
+/** Why keep_line did not keep a line, as she reads it (memory.seen: one reason a line). */
+export const seenRefusalText = (code, vars = {}) => table('memory.seen', vars)[code] ?? code;
+/**
+ * May this line be kept? '' when it may; else the reason's code. `shown` is what her errand's tools showed her
+ * this session — the only place a kept line may come from — and `today` how many she kept today.
+ */
+export function seenRefusal({ text, errand, shown = '', today = 0, perDay = 30, maxChars = 80, known = [] }) {
+  const t = String(text ?? '').trim();
+  if (!errand) return 'elsewhere';
+  if (!t) return 'empty';
+  if (/\n/.test(t) || t.length > maxChars) return 'long';
+  if (rejectReason(t) === 'secret' || /https?:\/\//i.test(t)) return 'not-words';
+  if (today >= perDay) return 'full';
+  if (known.some((k) => quoteIn(t, k) && quoteIn(k, t))) return 'again';
+  if (!quoteIn(t, shown)) return 'not-shown';
+  return '';
+}
 
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const contentText = (content) => (typeof content === 'string' ? content : (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join(''));
@@ -98,8 +123,8 @@ export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); re
  * another year), with 明天 / 下周三 given their date by code (when.js).
  */
 export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
-  const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]' }[l.who] ?? l.who;
-  const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : '';
+  const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]', seen: '[我看到的]' }[l.who] ?? l.who;
+  const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : l.who === 'seen' && l.from ? `（${l.from}）` : '';
   return `[${stamp(l.at, now)}] ${who}${to}：${annotate(l.text, l.at, now)}`;
 }
 
@@ -125,14 +150,14 @@ export const extractRules = () => prompt('memory.extract');
  * The whole consolidation prompt. The rules come first and never change, so every call shares that
  * prefix (the provider's cache); what she already has comes next; the new records last.
  */
-export function extractPrompt({ text = '', bankless = false, owner = [], self = [], known = '', open = '', shelved = '' }) {
+export function extractPrompt({ text = '', bankless = false, owner = [], self = [], words = [], known = '', open = '', shelved = '' }) {
   return [
     extractRules(),
     '',
     prompt('memory.extract.input', {
       records: text || '（这段时间没有新记录）',
       banks: bankless ? prompt('memory.extract.banks.off') : prompt('memory.extract.banks', { owner: owner.map((e) => `- ${e}`).join('\n') || '（空）', self: self.map((e) => `- ${e}`).join('\n') || '（空）' }),
-      people: known || '（还没有）', open: open || '（没有）', shelved: shelved || '（没有）',
+      people: known || '（还没有）', open: open || '（没有）', shelved: shelved || '（没有）', words: words.map((e) => `- ${e}`).join('\n') || '（还没有）',
     }),
   ].join('\n');
 }
@@ -153,8 +178,14 @@ export function parseLooseJson(raw) {
 }
 
 /** Apply one consolidation result to the memory. Returns what changed (for the audit and /dot memory). */
-export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now() } = {}) {
-  const report = { owner: 0, self: 0, open: 0, done: 0, shelved: 0, people: 0, errors: [] };
+export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Date.now(), evidence } = {}) {
+  const report = { owner: 0, self: 0, words: 0, open: 0, done: 0, shelved: 0, people: 0, errors: [] };
+  // 词 and 梗: each kept only with a quote that is in the records just read (`evidence`) and contains it.
+  for (const op of [].concat(out?.words ?? [])) {
+    if (!op || typeof op !== 'object') continue;
+    const r = wordOp(memory.words ?? [], op, limits.words ?? DEFAULT_LIMITS.words, { evidence });
+    if (r.ok) { if (!r.note) report.words++; memory.words = r.entries; } else report.errors.push(`words: ${r.error}`);
+  }
   for (const bank of ['owner', 'self']) {
     for (const op of [].concat(out?.[bank] ?? [])) {
       const r = bankOp(memory[bank], op, limits[bank]);
@@ -414,6 +445,30 @@ export function apply(ctx, config = {}) {
     if (d?.isErrand?.(id)) return false;
     return (cwd && inside(home, cwd)) || id === d?.session?.();
   };
+  // What her errand's tools showed her, per errand session: the only place a line she keeps (keep_line) may come from.
+  const shown = new Map(); // errand session → the text of its tool results (the last few hundred thousand characters)
+  const seenCalls = []; // sessions of keep_line calls let through, in order: execute() has no session of its own
+  ctx.on('session/event', (session, event) => {
+    const id = session?.id;
+    if (!id || event?.type !== 'tool/result' || !dot()?.isErrand?.(id)) return;
+    const content = event.data?.message?.content;
+    let text = contentText(content);
+    if (!text && content && typeof content === 'object') { try { text = JSON.stringify(content); } catch { text = ''; } }
+    if (!text) return;
+    const all = `${shown.get(id) ?? ''}\n${text}`;
+    shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all);
+    if (shown.size > 6) shown.delete(shown.keys().next().value);
+  });
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.name !== 'keep_line') return next();
+    const id = exec.agent?.session?.id ?? '';
+    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
+    const today = lines.filter((l) => l.who === 'seen' && l.at >= startOfToday());
+    const why = seenRefusal({ text: args?.text, errand: Boolean(dot()?.isErrand?.(id)), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
+    if (why) { audit('seen-refused', { session: id, why }); return { kind: 'deny', reason: seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay }) }; }
+    seenCalls.push(id);
+    return next();
+  });
   const turns = new Map(); // session → { sentViaQq, last }
   const qqCalls = new Map(); // qq_send callId → { at, args }, until its tool/result
   ctx.on('session/event', (session, event) => {
@@ -540,7 +595,7 @@ export function apply(ctx, config = {}) {
     const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
     const item = (x) => `- ${renderItem(x)}${x.owed ? '（答应过）' : ''}`;
     const ask = extractPrompt({
-      text, bankless, owner: memory.owner, self: memory.self, known,
+      text, bankless, owner: memory.owner, self: memory.self, words: memory.words ?? [], known,
       open: memory.open.map(item).join('\n'),
       shelved: memory.shelved.slice(-30).map(item).join('\n'),
     });
@@ -550,12 +605,12 @@ export function apply(ctx, config = {}) {
     const out = parseLooseJson(r.raw);
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
     if (bankless) { delete out.owner; delete out.self; }
-    const report = applyExtraction(memory, out, { limits: cfg.limits });
+    const report = applyExtraction(memory, out, { limits: cfg.limits, evidence: text });
     memory.cursor = fresh.at(-1)?.at ?? memory.cursor;
     memory.consolidations++;
     save();
     audit('consolidated', { reason, lines: fresh.length, ...report, errors: report.errors.length });
-    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, open +${report.open} / done ${report.done} / shelved ${report.shelved}, people ${report.people}`);
+    logger.info(`consolidated ${fresh.length} line(s): owner ${report.owner}, self ${report.self}, words ${report.words}, open +${report.open} / done ${report.done} / shelved ${report.shelved}, people ${report.people}`);
     return { ok: true, report };
   }
 
@@ -725,6 +780,20 @@ export function apply(ctx, config = {}) {
         return { found: found || '没翻到。' };
       },
     }), 'dsh-dot/memory: recall tool');
+    scope.effect(() => scope.tools.register({
+      name: 'keep_line',
+      description: prompt('memory.seen.tool', { max: cfg.seenMaxChars }),
+      parameters: { type: 'object', properties: { text: { type: 'string' }, from: { type: 'string' } }, required: ['text'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? '记下了' : '没记下' }] },
+      // Whether it may be kept was decided before this ran (tools/pre-execute above: her errand, shown on her screen, short, not a repeat).
+      async execute(args) {
+        const session = seenCalls.shift() ?? '';
+        const from = clip(String(args?.from ?? '').replace(/\s+/g, ' ').trim(), 30);
+        record({ who: 'seen', session, text: String(args?.text ?? '').trim(), ...(from ? { from } : {}) });
+        audit('seen-kept', { session, from });
+        return { ok: true };
+      },
+    }), 'dsh-dot/memory: keep_line tool');
   });
 
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
@@ -753,7 +822,7 @@ export function apply(ctx, config = {}) {
     /** For the interlude: her own notes — what she does these days and has learned. Her life is built around these. */
     herLife() { return [...memory.self]; },
     recall,
-    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, open: memory.open.length, shelved: memory.shelved.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    consolidate, diary, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, words: (memory.words ?? []).length, seen: lines.filter((l) => l.who === 'seen').length, open: memory.open.length, shelved: memory.shelved.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();

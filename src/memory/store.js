@@ -21,7 +21,7 @@ import { dayMark } from '../clock.js';
 export const MEMORY_VERSION = 2;
 
 // Characters per bank; `open` is 还没了的事, `impression` one person's line; `shelved` is a count.
-export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200 });
+export const DEFAULT_LIMITS = Object.freeze({ owner: 1375, self: 2200, open: 800, impression: 80, shelved: 200, words: 600 });
 
 // ── text ─────────────────────────────────────────────────────────────────────
 
@@ -110,6 +110,39 @@ export function bankOp(entries, op, limit) {
 }
 
 export const bankUsage = (entries, limit) => `${bankSize(entries ?? [])}/${limit} chars`;
+
+// ── words: 词 and 梗 she has met, each with what it means ────────────────────
+
+/** Is `quote` in `text`, as written (whitespace and punctuation aside)? At least two characters of it. */
+export function quoteIn(quote, text) {
+  const q = normText(quote);
+  return q.length >= 2 && normText(text).includes(q);
+}
+
+const termOf = (entry) => String(entry).split(/[：:]/)[0].trim();
+
+/**
+ * One operation on the words bank. An entry is `词：意思`; one entry per 词 (adding a 词 she has
+ * replaces what it meant). A new or changed entry needs its `quote` to be in `evidence` — the records
+ * the consolidation just read — and to contain the 词: a word nobody wrote is not kept. `evidence`
+ * undefined (her own tool, a test) skips that check.
+ */
+export function wordOp(entries, op, limit, { evidence } = {}) {
+  const list = [...(entries ?? [])];
+  if (op?.action === 'add' || op?.action === 'replace') {
+    const content = String(op?.content ?? '').trim().replace(/^([^：:]{1,20})[:：]\s*/, '$1：');
+    const term = termOf(content);
+    if (!term || !content.includes('：') || !content.slice(term.length + 1).trim()) return { ok: false, error: 'content must be 词：意思' };
+    if (evidence !== undefined) {
+      if (!quoteIn(op?.quote, evidence)) return { ok: false, error: `quote is not in the records ("${String(op?.quote ?? '').slice(0, 30)}")` };
+      if (!normText(op.quote).includes(normText(term))) return { ok: false, error: `quote does not contain "${term}"` };
+    }
+    const i = list.findIndex((e) => normText(termOf(e)) === normText(term));
+    if (i >= 0) { if (list[i] === content) return { ok: true, entries: list, note: 'already there' }; list.splice(i, 1); }
+    return bankOp(list, { action: 'add', content }, limit);
+  }
+  return bankOp(list, op, limit);
+}
 
 // ── people: one registry for everyone she meets, in any app ────────────────────
 //
@@ -439,7 +472,7 @@ export const shelfTitle = (x) => { const t = x.text.replace(/\s+/g, ' '); return
 // ── the whole thing ───────────────────────────────────────────────────────────
 
 export function emptyMemory() {
-  return { version: MEMORY_VERSION, gen: 1, seq: 0, oseq: 0, owner: [], self: [], open: [], shelved: [], people: {}, merges: [], cursor: 0, consolidations: 0, useq: 0 };
+  return { version: MEMORY_VERSION, gen: 1, seq: 0, oseq: 0, owner: [], self: [], words: [], open: [], shelved: [], people: {}, merges: [], cursor: 0, consolidations: 0, useq: 0 };
 }
 
 /**
@@ -489,7 +522,7 @@ export function normalizeMemory(m, { limits = DEFAULT_LIMITS, now = Date.now() }
     m = r.memory;
     migration = { archive: r.archive, report: r.report };
   }
-  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])], people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
+  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], words: [...(m.words ?? [])], open: [...(m.open ?? [])], shelved: [...(m.shelved ?? [])], people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
   if (migration) out.migration = migration;
   return out;
 }
@@ -507,6 +540,7 @@ export function renderStanding(memory, { banks = true, now = Date.now() } = {}) 
   // banks: false when another memory plugin narrates the owner/self memories (coexist people-only).
   if (banks && memory.owner.length) parts.push(`${t.owner}\n${memory.owner.map((e) => `- ${e}`).join('\n')}`);
   if (banks && memory.self.length) parts.push(`${t.self}\n${memory.self.map((e) => `- ${e}`).join('\n')}`);
+  if (memory.words?.length) parts.push(`${t.words}\n${memory.words.map((e) => `- ${e}`).join('\n')}`);
   if (open.length || shelf.length) {
     const lines = open.map((x) => `- ${renderItem(x, now)}`);
     if (shelf.length) lines.push(t.shelved);
