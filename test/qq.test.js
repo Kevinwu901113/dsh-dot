@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, selfMessage, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, latinLeak, echoOpener, asksSomething, plainOf, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
+import { apply, selfMessage, segmentsToText, groupWanted, parseTarget, onebotConfig, imageSource, publicHttpUrl, urlRefusal, assertSafeQQ, assertSafePort, scorePrompt, parseScore, markerOf, typedImages, imageMarker, sentRef, imageType, sendGate, sendReport, inputStatus, parseIgnore, createLoopBreaker } from '../src/qq/qq.js';
 
 test('segmentsToText, groupWanted, parseTarget, onebotConfig', () => {
   assert.equal(segmentsToText([{ type: 'at', data: { qq: '111' } }, { type: 'text', data: { text: ' 在吗' } }, { type: 'image', data: {} }], '111'), '@我 在吗[图片]');
@@ -213,15 +213,6 @@ test('gateway auth fallback: a 401 from nginx moves the OneBot token to the quer
   h.stop();
 });
 
-test('tidyVoice: chat punctuation goes, URLs, clock times and line structure stay', async () => {
-  const { tidyVoice } = await import('../src/qq/qq.js');
-  assert.equal(tidyVoice('“行吧”——那就 8:30 见。'), '行吧 那就 8:30 见');
-  assert.equal(tidyVoice('看这个：https://a.b/c?x=1#top 别点错。'), '看这个 https://a.b/c?x=1#top 别点错');
-  assert.equal(tidyVoice('**重点**：#1 算了。'), '重点 1 算了');
-  assert.equal(tidyVoice('哈哈\n草 别逗我笑了。\n你觉得可能吗？'), '哈哈\n草 别逗我笑了\n你觉得可能吗？');
-  assert.equal(tidyVoice('28到34度，晴天。'), '28到34度，晴天');
-});
-
 test('qq_send: images resolve before anything goes out; an image QQ refuses after the text is a partial result, not an error', async () => {
   const h = harness();
   h.ctx.dshQq.setOwner('20002');
@@ -249,27 +240,6 @@ test('qq_send: images resolve before anything goes out; an image QQ refuses afte
   await assert.rejects(tool.execute({ to: 'owner', images: ['https://example.com/bad.png'] }), /upload failed/);
   // all ok: the plain result
   assert.deepEqual(await tool.execute({ to: 'owner', text: '好', images: ['https://example.com/ok.png'] }), { sent: 2, said: ['好'], imagesSent: 1, images: ['https://example.com/ok.png'] });
-  h.stop();
-});
-
-test('dropLatinLeaks: an English-prose bubble (her reasoning) is dropped and logged; short English and Chinese pass', async () => {
-  assert.equal(latinLeak("hmm, actually don't over-explain. Let's just be brief"), true);
-  assert.equal(latinLeak('ok'), false);
-  assert.equal(latinLeak('GG'), false);
-  assert.equal(latinLeak('lol that is so true haha'), false, 'under 30 characters');
-  assert.equal(latinLeak('看这个 https://example.com/a/very/long/path/that/is/ascii?x=1'), false, 'URLs do not count');
-  assert.equal(latinLeak('今天去了 Costco 买了好多东西，累死了 but worth it 真的'), false);
-  const h = harness();
-  h.ctx.dshQq.setOwner('20002');
-  h.ready(); await tick(30);
-  const sock = FakeSocket.last;
-  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
-  const tool = h.tools.find((t) => t.name === 'qq_send');
-  const r = await tool.execute({ to: 'owner', text: 'hmm, actually don\'t over-explain. Let\'s just be brief: "知道啦"\n知道啦\nok' });
-  assert.deepEqual(sock.sent.map((m) => m.params.message[0].data.text), ['知道啦', 'ok']);
-  assert.equal(r.sent, 2); assert.equal(r.dropped, 1);
-  assert.ok(h.warns.some((w) => /dropped an English-prose bubble.*hmm, actually don't over-explain\. Let's just be/.test(w)), 'logged with its start');
-  await assert.rejects(tool.execute({ to: 'owner', text: 'Okay so the user wants a short answer here, keep it light' }), /English prose/);
   h.stop();
 });
 
@@ -728,57 +698,6 @@ test('a send that fails after some bubbles went out says which reached them and 
   // nothing delivered at all: an ordinary failure
   n = 1;
   await assert.rejects(tool.execute({ to: 'owner', text: '在吗' }), /发送超时/);
-  h.stop();
-});
-
-test('dropEchoOpeners / dropChainedQuestions: an opener that says his words back, and asking again the turn after asking, are held back', async () => {
-  assert.equal(plainOf('六点多。'), '6点多');
-  assert.equal(echoOpener('六点多', '6点多吧'), true);
-  assert.equal(echoOpener('九点多还运动', '今天？今天9点多起来运动了一下'), false, 'a word of her own in it (还): not just his words back');
-  assert.equal(echoOpener('九点多运动', '今天9点多起来运动了一下'), true, 'only his words, in his order');
-  assert.equal(echoOpener('不是六点多', '6点多吧'), false, 'a correction is not an echo');
-  assert.equal(echoOpener('我也六点多', '6点多吧'), false, 'about herself');
-  assert.equal(echoOpener('你六点多才睡', '6点多吧'), false, 'about him, with more than he said');
-  assert.equal(echoOpener('好的', '好的'), false, 'too short to tell from an ordinary reply');
-  assert.equal(echoOpener('嗯嗯好', '嗯嗯好'), false, 'his whole short message said back is an agreement, not an echo');
-  assert.equal(echoOpener('九点多还运动', '你今天几点起来运动的？'), false, 'he asked something: its words come back in an answer');
-  assert.equal(echoOpener('六点多？', '6点多吧'), false, 'a surprised question is hers to ask');
-  assert.equal(echoOpener('晚安', '晚安'), false);
-  assert.equal(echoOpener('晚上好', '晚上好呀'), false, 'a greeting said back');
-  assert.equal(echoOpener('要红色的', '你要红色的还是蓝色的'), false, 'an answer to a choice');
-  assert.equal(echoOpener('红烧牛肉面，加了个蛋', '吃的什么面'), false);
-  assert.equal(echoOpener('三点你真熬住了', '看啦，blg打得真好。终于拿冠军了'), false);
-  assert.ok(asksSomething('那你今天几点起的') && asksSomething('吃了吗') && asksSomething('哪把最悬，我补回放的时候好重点看') && asksSomething('真的？'));
-  assert.ok(!asksSomething('在上课呢') && !asksSomething('没什么大事') && !asksSomething('谁都行') && !asksSomething('比我还能熬'));
-  const h = harness({}, { dropChainedQuestions: true });
-  h.ctx.dshQq.setOwner('20002');
-  h.ready(); await tick(30);
-  const sock = FakeSocket.last;
-  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
-  const says = (text) => sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text } }], sender: { nickname: '宽' } }));
-  const texts = () => sock.sent.filter((m) => m.action === 'send_private_msg').map((m) => m.params.message[0].data.text);
-  const tool = h.tools.find((t) => t.name === 'qq_send');
-  // something he volunteered, said back: how people talk — it stays
-  says('今天又要加班到十点'); await tick(10);
-  let r = await tool.execute({ to: 'owner', text: '又要加班\n心疼' });
-  assert.deepEqual(texts(), ['又要加班', '心疼']); assert.equal(r.trimmed, undefined);
-  // she asks; he answers; her reply opens by reading his answer back: that opener is held back
-  await tool.execute({ to: 'owner', text: '那你昨晚几点睡的' });
-  says('6点多吧'); await tick(10);
-  r = await tool.execute({ to: 'owner', text: '六点多\n比我还能熬\n那你今天几点起的？' });
-  assert.deepEqual(texts().slice(3), ['比我还能熬'], 'the echo is held back, and so is asking again right after asking');
-  assert.deepEqual(r.trimmed, ['六点多', '那你今天几点起的？']); assert.match(r.note, /没发：六点多/);
-  r = await tool.execute({ to: 'owner', text: '那你今天几点起的？' });
-  assert.deepEqual(texts().slice(4), ['那你今天几点起的？'], 'a question on its own always goes out');
-  says('9点多起来运动了一下'); await tick(10);
-  r = await tool.execute({ to: 'owner', text: '挺早的\n那你吃了吗' });
-  assert.deepEqual(texts().slice(5), ['挺早的']);
-  assert.deepEqual(r.trimmed, ['那你吃了吗']);
-  await tool.execute({ to: 'owner', text: '那你吃了吗' });
-  says('6点多吧'); await tick(10);
-  r = await tool.execute({ to: 'owner', text: '六点多' });
-  assert.deepEqual(texts().slice(7), ['六点多']);
-  assert.equal(r.trimmed, undefined, 'a lone bubble is never held back');
   h.stop();
 });
 

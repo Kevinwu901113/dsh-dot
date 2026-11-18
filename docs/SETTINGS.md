@@ -158,10 +158,6 @@ setx DSH_DOT_COMPUTER off
 | `replyWindowMinutes` | `30` | `reply` 模式下多久内算"对方找过她" |
 | `imageSeeMax` | `4` | 别人发来的图和表情包，每条消息最多给她看几张；0 只给文字 |
 | `typingMsPerChar` | `60` | 分条发送的打字停顿，0 一次发完 |
-| `tidy` | `true` | 去掉句号、引号、破折号等书面符号 |
-| `dropLatinLeaks` | `true` | 不发整条都是英文的气泡（思考漏出来），短英文照发 |
-| `dropEchoOpeners` | `true` | 私聊：不发只是重复对方上一句的开头气泡（后面还有别的气泡时） |
-| `dropChainedQuestions` | `false` | 私聊：上一轮刚问过对方时，不发这一轮里的问句（整条回复只有问句时照发）；办事时要问的话也可能被拦，所以默认关 |
 | `ignore` | `""` | 不回复的 QQ 号（别的机器人），逗号或空格分开；qq-bridge 的机器人号自动认出，不用填 |
 | `loopMax` | `4` | 防互刷（只管群聊）：一个群里和同一个号一来一回这么多轮、中间没别人说话，就暂停理它；0 关 |
 | `loopCooldownMinutes` | `10` | 防互刷暂停多久 |

@@ -56,21 +56,6 @@ export const defaults = {
   // is never anybody else, a friend talking to her is not a loop. 0 = off.
   loopMax: 4,
   loopCooldownMinutes: 10,
-  // Outgoing text is tidied to her chat voice: no 。at line ends, no quotes/dashes/colons/asterisks/
-  // hashes (times and URLs keep theirs). Off = send exactly what the model wrote.
-  tidy: true,
-  // With tidy: a bubble of 30+ characters that is essentially English prose (≥ 80% ASCII letters,
-  // punctuation, spaces; URLs not counted) is her reasoning leaking into the reply — dropped, with a
-  // warning in the log. Short English ("ok", "lol", "GG") passes.
-  dropLatinLeaks: true,
-  // With tidy, in a private chat: an opening bubble that only says his last message back to him
-  // ("6点多吧" → "六点多") is dropped when other bubbles follow it — the rest is the reply.
-  dropEchoOpeners: true,
-  // With tidy, in a private chat: when her previous reply to the same person asked him something, the
-  // bubbles of this reply that ask again are dropped as long as another bubble remains, so not every
-  // turn asks. A reply that is only questions goes out whole. Off by default: a question she needs
-  // answered to get on with a task would be held back too.
-  dropChainedQuestions: false,
   // Each line of qq_send's text is its own bubble, sent after a pause that grows with its length
   // (ms per character, capped at 2.5 s) — the way a person types. 0 = all at once.
   typingMsPerChar: 60,
@@ -264,22 +249,6 @@ export function sendGate({ to, text = '', images = [] }, { owner, policy = 'repl
 }
 
 /**
- * Her chat voice, enforced where it matters: the text that leaves for QQ. Removes the punctuation a
- * real chat never types (full stops at line ends, quotes, dashes, colons, asterisks, hashes), keeps
- * URLs and clock times intact, collapses the gaps left behind. Line structure is kept.
- */
-export function tidyVoice(text) {
-  return String(text ?? '').split('\n').map((line) => {
-    const keep = [];
-    let t = line.replace(/https?:\/\/\S+|\b\d{1,2}:\d{2}(:\d{2})?\b/g, (m) => { keep.push(m); return `\u0000${keep.length - 1}\u0000`; });
-    t = t.replace(/[“”"‘’「」『』]/g, '').replace(/[—–]+|--+/g, ' ').replace(/[：:]/g, ' ').replace(/[*#]/g, '');
-    t = t.replace(/[。．]+(?=\s|$)/g, '').replace(/[。．]/g, ' ');
-    t = t.replace(/[ \t]{2,}/g, ' ').trim();
-    return t.replace(/\u0000(\d+)\u0000/g, (_, i) => keep[Number(i)]);
-  }).join('\n').replace(/\n{3,}/g, '\n\n').trim();
-}
-
-/**
  * A whole bubble that is transcript notation: `[图片]`, `[图片×3]`, `[表情包 sticker:<id>]`, `[表情 …]`,
  * or what her transcript records for an image she sent — `[图 <ref>]` (phone:screen, phone:latest, a
  * URL, face:<n>, a path) — and `[图片 <url>]`, a picture someone sent her. `image` is the ref it stands for ('' = a bare picture marker, nothing to send).
@@ -315,64 +284,11 @@ export function imageType(buf) {
   return '';
 }
 
-/**
- * A bubble that is English prose, not chat: 30+ characters (URLs aside) of which ≥ 80% are ASCII
- * letters, punctuation or spaces. That is the model thinking aloud ("hmm, actually don't over-explain…").
- */
-export function latinLeak(text) {
-  const t = String(text ?? '').replace(/https?:\/\/\S+/g, '');
-  if (t.length < 30) return false;
-  const latin = t.match(/[A-Za-z\s!-/:-@[-`{-~]/g)?.length ?? 0;
-  return latin / t.length >= 0.8;
-}
-
-const CN_DIGITS = { 零: '0', 〇: '0', 一: '1', 二: '2', 两: '2', 三: '3', 四: '4', 五: '5', 六: '6', 七: '7', 八: '8', 九: '9' };
-/** A line reduced to what it says: no URLs, bracket markers, punctuation or sentence-final particles; 六 and 6 are the same. */
-export function plainOf(text) {
-  return String(text ?? '').replace(/https?:\/\/\S+|\[[^\]]*\]/g, '').replace(/[零〇一二两三四五六七八九]/g, (c) => CN_DIGITS[c])
-    .replace(/[^\p{L}\p{N}]/gu, '').replace(/[吧啊呀呢嘛哦噢哈嗯啦诶欸耶]/g, '').toLowerCase();
-}
-function lcsLength(a, b) {
-  let prev = new Array(b.length + 1).fill(0);
-  for (const ca of a) { const row = [0]; for (let j = 1; j <= b.length; j++) row[j] = ca === b[j - 1] ? prev[j - 1] + 1 : Math.max(prev[j], row[j - 1]); prev = row; }
-  return prev[b.length];
-}
-const ECHO_WINDOW_MS = 10 * 60_000; // his answer counts as "just said" this long
-/**
- * An opening bubble that only says his words back: short (3–12 characters once reduced) and made of
- * nothing but his words, in his order — every character of it is in his message. One added or changed
- * character (不 / 别, another number or day) makes it a reply, not an echo. Never an echo: a question;
- * a line with 我 or 你 in it (said back, those words point the other way); an answer to something he
- * asked (the words of a question come back in its answer); a greeting or thanks said back (his
- * message is ≤ 4 characters and has no digit in it as he typed it).
- */
-export function echoOpener(first, his) {
-  const f = String(first ?? '').trim(), h = String(his ?? '');
-  if (/[?？]$/.test(f) || /[我你]/.test(f)) return false;
-  if (/[?？]\s*$|吗|还是|哪|什么|几|谁|怎么|多少|是不是|要不要|好不好|有没有/.test(h)) return false;
-  const a = plainOf(f), b = plainOf(h).slice(0, 200);
-  if (a.length < 3 || a.length > 12) return false;
-  if (b.length <= 4 && !/[0-9０-９]/.test(h)) return false;
-  return lcsLength(a, b) === a.length;
-}
-/**
- * A bubble that asks him something: it ends on a question mark or 吗, or carries a question word (she
- * often leaves the mark out: "那你今天几点起的"). Question words used as statements (没什么, 谁都, 不怎么) do not count.
- */
-export function asksSomething(line) {
-  const t = String(line ?? '').trim();
-  if (/([?？]|吗)$/.test(t)) return true;
-  return /哪|什么|啥|谁|怎么|怎样|多少|多久|多大|几点|几号|几岁|几个|干嘛|是不是|有没有|要不要|好不好|能不能|会不会/
-    .test(t.replace(/没什么|没啥|不怎么|什么[都也]|谁[都也]|哪[都也怕]|怎么[都也]|哪里哪里/g, ''));
-}
-
 /** What qq_send tells her: the count, and — when images failed after the text went out — that the text is already there. */
 export function sendReport(v) {
   const lines = [`sent ${v?.sent ?? 0} message(s)`];
   if (v?.interrupted && v.error) lines.push(`发了 ${v.sent ?? 0} 条，后面的没发出去（${v.error}）：${(v.unsent ?? []).join(' / ')}（已发出的别再发一遍）`);
   else if (v?.interrupted) lines.push(prompt('qq.send-interrupted', { sent: v.sent ?? 0, unsent: (v.unsent ?? []).join(' / ') }));
-  if (v?.dropped) lines.push(`${v.dropped} 行是英文的自言自语，没发`);
-  if (v?.trimmed?.length) lines.push(`没发：${v.trimmed.join(' / ')}（开头只是重复他的话，或者上一轮刚问过他；要紧的问题单独发一条）`);
   const before = v?.textSent === 0 ? '前面的图已发出' : '文字已发出';
   for (const f of v?.failed ?? []) lines.push(`${before}；图片 ${f.image} 没发成：${f.error}（已发出的别再发一遍）`);
   return lines.join('\n');
@@ -1054,7 +970,6 @@ export function apply(ctx, config = {}, deps = {}) {
   /** Conversations that wrote to her lately: "user:<n>" / "group:<n>" → last message time (sendGate). */
   const recent = new Map();
   // Per private chat: what they last said (an echo is measured against it) and whether her last reply closed on a question.
-  const lastIn = new Map(), askedLast = new Map();
   function onEvent(ev) {
     // NapCat refusing the token while the key sits in Authorization: send the key in its own header only.
     if (ev.retcode === 1403 && authMode === 'query') { authMode = 'query-only'; logger.info('NapCat rejected the Authorization header; keeping the token in the query string only'); }
@@ -1119,7 +1034,6 @@ export function apply(ctx, config = {}, deps = {}) {
     const msg = { kind: isGroup ? 'group' : 'private', userId: String(ev.user_id), groupId: isGroup ? String(ev.group_id) : '', who, text, fromOwner, at: new Date().toISOString(), messageId: ev.message_id };
     if (fromOwner) lastOwnerAt = Date.now();
     recent.set(isGroup ? `group:${msg.groupId}` : `user:${msg.userId}`, Date.now());
-    if (!isGroup) { lastIn.delete(`user:${msg.userId}`); lastIn.set(`user:${msg.userId}`, { text, at: Date.now() }); if (lastIn.size > 500) lastIn.delete(lastIn.keys().next().value); }
     if (recent.size > 500) recent.delete(recent.keys().next().value);
     if (wanted === 'score') { void scoreAndDeliver(msg, seen); return; }
     deliver(msg, seen);
@@ -1318,31 +1232,17 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   const sendNow = async (target, to, text, images) => {
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
-    let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => (cfg.tidy ? tidyVoice(t) : t.trim())).filter(Boolean);
-    let dropped = 0;
+    // What she wrote goes out as she wrote it, a line a bubble: how she sounds is her card's business, not this file's.
+    let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => t.trim()).filter(Boolean);
     // Transcript notation typed as words ("[图片]", "[图片×2]", "[表情包 sticker:ab12]", "[图 phone:latest]"):
     // not chat. A marker that names an image becomes that image; a bare picture marker is dropped.
     const markers = parts.map(markerOf).filter(Boolean);
     if (markers.length) { parts = parts.filter((p) => !markerOf(p)); images = [...[].concat(images ?? []), ...markers.map((m) => m.image).filter(Boolean)]; }
-    if (cfg.tidy && cfg.dropLatinLeaks !== false) {
-      parts = parts.filter((p) => { if (!latinLeak(p)) return true; dropped++; logger.warn(`dropped an English-prose bubble (reasoning leak?): ${p.slice(0, 60)}`); return false; });
-    }
-    const trimmed = [];
-    const peer = target.group_id ? '' : `user:${target.user_id}`;
-    if (cfg.tidy && peer && parts.length) {
-      // Reading his answer back to him: she asked last time, he has just answered, and her reply opens with his own
-      // words. Saying something back that he volunteered (a greeting, a wish, 「又要加班」) is how people talk, and stays.
-      const his = lastIn.get(peer);
-      if (cfg.dropEchoOpeners !== false && parts.length > 1 && askedLast.get(peer) && his && Date.now() - his.at < ECHO_WINDOW_MS && echoOpener(parts[0], his.text)) trimmed.push(parts.shift());
-      if (cfg.dropChainedQuestions === true && askedLast.get(peer) && parts.some(asksSomething) && !parts.every(asksSomething)) { trimmed.push(...parts.filter(asksSomething)); parts = parts.filter((p) => !asksSomething(p)); }
-      if (trimmed.length) logger.info(`held back ${trimmed.length} bubble(s) (echo opener / asking again): ${trimmed.join(' / ').slice(0, 80)}`);
-      askedLast.delete(peer); askedLast.set(peer, parts.some(asksSomething)); if (askedLast.size > 500) askedLast.delete(askedLast.keys().next().value);
-    }
     const refs = [].concat(images ?? []).filter(Boolean);
     const segments = [];
     for (const ref of refs) segments.push(await imageSegment(ref));
     if (!parts.length && !segments.length && markers.length) return { sent: 0, messageIds: [], said: [], imagesSent: 0, images: [], note: '只有 [图片] 这种记录标记，没有要发的内容；发图用 images' };
-    if (!parts.length && !segments.length) throw new Error(dropped ? `nothing to send: ${dropped} line(s) were English prose, not chat, and were dropped — write what you mean to say to them` : 'nothing to send (text and images both empty)');
+    if (!parts.length && !segments.length) throw new Error('nothing to send (text and images both empty)');
     const ids = [], failed = [];
     const started = Date.now();
     const toOwner = Boolean(qq.owner) && target.user_id === Number(qq.owner);
@@ -1370,8 +1270,8 @@ export function apply(ctx, config = {}, deps = {}) {
       }
     }
     const n = ids.length;
-    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}), ...(dropped ? { dropped } : {}), ...(trimmed.length ? { trimmed } : {}) });
-    return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}), ...(dropped ? { dropped } : {}), ...(trimmed.length ? { trimmed } : {}) };
+    audit({ kind: 'sent', to: target, text: parts.join(' / ').slice(0, 200), images: refs.map((r) => (String(r).startsWith('http') ? r : String(r).slice(0, 80))), ...(failed.length ? { failed } : {}) });
+    return { sent: n, messageIds: ids, said: parts, imagesSent: went.length, images: went, ...(failed.length ? { failed, textSent: parts.length } : {}) };
   };
   /** Her friend list: [{ uid, nickname, remark }] (OneBot get_friend_list). */
   /** The groups she is in: [{ gid, name }] (OneBot get_group_list). */
@@ -1436,8 +1336,8 @@ export function apply(ctx, config = {}, deps = {}) {
         // sets it: dot's own sends through qq.send (relaying her answer, notices) must not, or a relay still typing its bubbles
         // out when his next message starts a turn makes that turn look answered and its reply is never sent.
         if (r.sent > 0 && qq.owner && parseTarget(args.to, qq.owner)?.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
-        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.dropped ? { dropped: r.dropped } : {}), ...(r.trimmed ? { trimmed: r.trimmed } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent, ...(r.error ? { error: r.error } : {}) } : {}) };
-        return r.failed || r.dropped || r.trimmed || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
+        const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent, ...(r.error ? { error: r.error } : {}) } : {}) };
+        return r.failed || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({
