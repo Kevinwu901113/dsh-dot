@@ -39,3 +39,18 @@ test('typing: a field that cannot be read back (a password) claims nothing', asy
   const r = await createTyping({ shell, install: async () => { throw new Error('not needed'); }, sleep: async () => {} }).type('hunter2');
   assert.deepEqual(r, { typed: 7, verified: null });
 });
+
+test('typing: no focused field in the dump (a web page) — the text newly on the screen counts; its absence claims nothing', async () => {
+  let page = '<hierarchy><node text="百度一下" focused="false" /><node text="" class="android.widget.EditText" focused="false" /></hierarchy>';
+  let lands = true;
+  const shell = async (cmd) => {
+    if (cmd.startsWith('pm list')) return `package:${KEYBOARD.pkg}`;
+    if (cmd.startsWith('settings get')) return KEYBOARD.ime;
+    if (cmd.startsWith('am broadcast') && lands) page = page.replace('text="" class', 'text="鲸鱼娘" class');
+    return cmd.startsWith('uiautomator') ? page : '';
+  };
+  const typing = createTyping({ shell, install: async () => {}, sleep: async () => {}, chunkSize: 10 });
+  assert.equal((await typing.type('鲸鱼娘')).verified, true);
+  lands = false;
+  assert.equal((await typing.type('别的字')).verified, null);
+});

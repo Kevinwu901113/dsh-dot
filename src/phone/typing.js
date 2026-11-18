@@ -50,14 +50,19 @@ export function createTyping({ shell, install, sleep = (ms) => new Promise((r) =
       const t = String(text ?? '');
       if (!t) return { typed: 0, verified: null };
       await ensure();
-      const before = focusedField(await shell('uiautomator dump /dev/tty').catch(() => ''));
+      const dumpBefore = await shell('uiautomator dump /dev/tty').catch(() => '');
+      const before = focusedField(dumpBefore);
       for (const part of chunks(t, chunkSize)) {
         await shell(`am broadcast -a ADB_INPUT_B64 --es msg ${Buffer.from(part, 'utf8').toString('base64')}`);
         await sleep(msPerChunk);
       }
       await sleep(250);
-      const after = focusedField(await shell('uiautomator dump /dev/tty').catch(() => ''));
-      const verified = !after || after.password ? null : squash(after.text).includes(squash(t)) ? true : (before && squash(before.text) === squash(after.text)) ? false : squash(after.text).length > squash(before?.text).length ? true : false;
+      const dumpAfter = await shell('uiautomator dump /dev/tty').catch(() => '');
+      const after = focusedField(dumpAfter);
+      // No focused field in the dump (a web page's box often is not one): the text showing up on the screen where it
+      // was not before is as good; its not showing up proves nothing (a password box shows dots).
+      const times = (xml) => squash(String(xml).replace(/&[a-z#0-9]+;/g, '')).split(squash(t)).length - 1;
+      const verified = !after ? (times(dumpAfter) > times(dumpBefore) ? true : null) : after.password ? null : squash(after.text).includes(squash(t)) ? true : (before && squash(before.text) === squash(after.text)) ? false : squash(after.text).length > squash(before?.text).length ? true : false;
       if (submit && verified !== false) await shell('input keyevent 66');
       audit({ kind: 'typed', chars: [...t].length, verified, submit: Boolean(submit && verified !== false) });
       return { typed: [...t].length, verified, ...(after && !after.password ? { field: after.text.slice(0, 200) } : {}), ...(submit ? { submitted: verified !== false } : {}) };
