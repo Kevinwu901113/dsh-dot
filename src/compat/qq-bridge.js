@@ -140,6 +140,7 @@ export function readBridge(root, env = process.env) {
  */
 export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
   const m = BRIDGE_ID_RE.exec(String(id));
+  if (!m && hers?.hands?.(id, cwd)) return 'hands';
   if (!m && hers?.(id, cwd)) return 'dot';
   if (m) {
     if (m[1] !== 'p') return 'qqb-sandbox';
@@ -177,6 +178,8 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
   const out = [];
   for (const n of names) {
     if (owner === 'dot') { if (hideBridgeTools && isBridgeTool(n)) out.push(n); continue; }
+    // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
+    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }
     if (isDeviceTool(n) && (owner === 'qqb-sandbox' || (owner === 'qqb-owner' && !ownerDevices))) out.push(n);
   }
@@ -197,6 +200,7 @@ export function apply(ctx, config = {}) {
   const logger = ctx.logger('dsh-dot/compat');
   const cfg = { ...defaults, ...config, ...sectionOf('compat', (m) => logger.warn(m)) };
   const hers = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.hers?.(id, cwd)); } catch { return false; } };
+  hers.hands = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.isHands?.(id, cwd)); } catch { return false; } };
 
   let cached = null, cachedAt = 0, root = '', announced = false;
   const bridge = () => {

@@ -93,6 +93,10 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
   assert.equal(classify({ id: 'qqb-g-1', cwd: '/x' }, null, hers), 'qqb-sandbox');
   assert.equal(classify({ id: 'qqb-p-1', cwd: '/x', preset: 'standard' }, null, hers), 'qqb-owner');
   assert.equal(classify({ id: 's3', cwd: '/x' }, null, hers), 'other');
+  // her hands: told apart before anything else of hers
+  const withHands = Object.assign((id, cwd) => hers(id, cwd), { hands: (id) => id === 'h1' });
+  assert.equal(classify({ id: 'h1', cwd: '/x' }, null, withHands), 'hands');
+  assert.deepEqual(hiddenFor('hands', ['memory', 'recall', 'account', 'qq_send', 'hand_off', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hand_off', 'hands', 'mcp__dot-qq__invoke_action']);
 });
 
 test('hiddenFor: what each kind of session does not see', () => {

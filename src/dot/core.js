@@ -21,6 +21,7 @@ import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
+import { HANDS_SOURCE, createHands } from './hands.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -242,6 +243,11 @@ export const defaults = {
   // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
   replyCheck: true,
   handOff: true,
+  // Her devices are operated by her hands (hands.js), a round at a time, from her conversation: she says what to do,
+  // the hands do it and say what is on the screen, she decides the next step. With this on she does not hand things
+  // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
+  hands: false,
+  handsMaxMs: 150000,
   handOffTtlMs: 7200000,       // not started within this long: given up, and she is told so
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
@@ -620,6 +626,7 @@ export function apply(ctx, config = {}) {
   let manualFor = () => null; // set where the manuals are (below)
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
+  let hands = null; // her hands (hands.js), set once sessions can be made
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
@@ -738,7 +745,7 @@ export function apply(ctx, config = {}) {
     const vm = (String(toolName ?? '').startsWith(PHONE_TOOL_PREFIX) ? phone()?.status?.() : computer()?.status?.()) ?? {};
     return vm.publicLiveViewUrl || vm.liveViewUrl || '';
   };
-  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id)); };
+  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id) || Boolean(cfg.hands && hands?.isHands(s.id, s.header?.cwd))); };
   const EXPIRED = Symbol('expired'), WITHDRAWN = Symbol('withdrawn');
   ctx.on('approval/request', async (req, next) => {
     if (!hers(req.agent)) return next();
@@ -808,7 +815,7 @@ export function apply(ctx, config = {}) {
   const LAUNCHERS = /launcher|\.home$|^com\.android\.systemui$/i;
   const labelOf = (pkg) => (!pkg || LAUNCHERS.test(pkg) ? 'phone' : appLabels[pkg] ?? pkg);
   const howto = createHowto({ dir: join(home, 'her', 'howto'), minSteps: cfg.howtoMinSteps, maxChars: cfg.howtoMaxChars });
-  const herSession = (s) => Boolean(s?.id && (isDotSession(s.id, s.header?.cwd) || turns.has(s.id)));
+  const herSession = (s) => Boolean(s?.id && (isDotSession(s.id, s.header?.cwd) || turns.has(s.id) || (cfg.hands && hands?.isHands(s.id, s.header?.cwd))));
   howtoFor = async (exec, result) => {
     if (!exec.name.startsWith(PHONE_TOOL_PREFIX)) return null;
     const s = exec.agent?.session;
@@ -994,6 +1001,31 @@ export function apply(ctx, config = {}) {
       return sessionId;
     } catch (err) { logger.warn(`could not open a conversation for her: ${err.message}`); return ''; }
   };
+  // Her hands (hands.js): their own session, outside her home, with the device tools and nothing else of hers.
+  const handsAgent = async (id) => {
+    try {
+      const live = ctx.get('agents')?.get?.(id);
+      if (typeof live?.followup === 'function') return live;
+      const found = await ctx.get('sessionController')?.resolveAgent(id);
+      return found && !('error' in found) ? found.agent : null;
+    } catch (error) { void error; return null; }
+  };
+  hands = createHands({
+    dir: join(dshHome(), 'dsh-dot-hands'),
+    create: async (cwd) => {
+      const controller = ctx.get('sessionController');
+      if (!controller) return '';
+      try { const { sessionId } = await controller.create({ cwd }); try { await controller.rename?.({ sessionId, title: 'dot · 手' }); } catch (error) { void error; } return sessionId; }
+      catch (err) { logger.warn(`hands session not created: ${err.message}`); return ''; }
+    },
+    agentFor: handsAgent,
+    onEvent: (fn) => ctx.on('session/event', fn),
+    message: (text) => createUserMessage({ content: [{ type: 'text', text }], source: HANDS_SOURCE }),
+    textOf: contentText,
+    store,
+    tokensOf: (id) => { try { return Number(ctx.get('tokenMeter')?.measure?.(ctx.get('agents')?.get?.(id)?.session)?.totalTokens ?? 0); } catch { return 0; } },
+    audit, maxMs: cfg.handsMaxMs,
+  });
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
     const pkgs = [...new Set(all.map((n) => n.pkg))];
@@ -1274,6 +1306,22 @@ export function apply(ctx, config = {}) {
     return () => clearTimeout(timer);
   }, 'dsh-dot: asks left over from before the restart');
   ctx.inject(['tools'], (scope) => {
+    if (!cfg.hands) return;
+    scope.effect(() => scope.tools.register({
+      name: 'hands',
+      description: prompt('dot.hands-tool'),
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' } }, required: ['device', 'do'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: [v?.text || '', v?.status === 'done' ? '' : prompt('dot.hands.cut', { why: v?.why || v?.status || '' })].filter(Boolean).join('\n') || '（手没说什么。）' }] },
+      async execute(args) {
+        const device = args?.device === 'computer' ? 'computer' : 'phone';
+        return hands.run({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}` });
+      },
+    }), 'dsh-dot: hands tool');
+  });
+  ctx.inject(['systemPrompt'], (scope) => {
+    scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (cfg.hands && hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
+  });
+  ctx.inject(['tools'], (scope) => {
     if (!cfg.handOff || !cfg.errands) return;
     scope.effect(() => scope.tools.register({
       name: 'hand_off',
@@ -1344,6 +1392,7 @@ export function apply(ctx, config = {}) {
     if (n.fromOwner) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
       ownerBatch.push(n); ownerTyping = false; lastWakeAt = Date.now(); // he pressed send
+      if (cfg.hands) hands?.interrupt('他说话了');
       armOwner();
       return;
     }
@@ -1384,6 +1433,9 @@ export function apply(ctx, config = {}) {
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
+    // With hands: her conversation says what to do and the hands do it — no errand to hand to, no device tool here.
+    if (cfg.hands && id === lastSession && (exec.name === 'hand_off' || exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX) || exec.name === PHONE_ZOOM_TOOL)) return deny(prompt('dot.hands.instead'));
+    if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
     if (exec.name === 'hand_off' && id !== lastSession) return deny(prompt('dot.hand-off-tool.elsewhere'));
     if (cfg.handOff && cfg.errands && t?.his && id === lastSession && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX))) {
       audit('device-tool-in-his-turn', { session: id, tool: exec.name });
@@ -1635,6 +1687,8 @@ export function apply(ctx, config = {}) {
     isErrand,
     /** Is this session hers (her conversation, an IM-opened one, her errand): what compat asks before letting it see her tools. */
     hers: (id, cwd) => isDotSession(id, cwd) || isErrand(id),
+    /** Her hands' session (hands.js): the device tools, nothing else of hers. */
+    isHands: (id, cwd) => Boolean(cfg.hands && hands?.isHands(id, cwd)),
     busy: (id) => turns.has(id),
     /** One open turn as the watchdog sees it (turnState + who and what), or null. */
     turn: (id) => turnInfo(id),
