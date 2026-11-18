@@ -881,9 +881,9 @@ test('words: 词：意思 kept only with a quote that is in the records and cont
   assert.equal(transcriptLine({ at: Date.now(), who: 'seen', text: '这把纯纯坐牢', from: '小黑盒' }).replace(/^\[[^\]]*\] /, ''), '[我看到的]（小黑盒）：这把纯纯坐牢');
   assert.match(extractPrompt({ text: 'x', words: m.words }), /=== 已有：她知道的说法 ===\n- 坐牢：这局没法玩\n/);
   // keep_line: only her errand, only what her tools showed her, one short line, not twice, not a secret or a link
-  const base = { errand: true, shown: '{"text":"这把纯纯坐牢"} 回复 12', today: 0, perDay: 30, maxChars: 80, known: [] };
+  const base = { hers: true, shown: '{"text":"这把纯纯坐牢"} 回复 12', today: 0, perDay: 30, maxChars: 80, known: [] };
   assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢' }), '');
-  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', errand: false }), 'elsewhere');
+  assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', hers: false }), 'elsewhere');
   assert.equal(seenRefusal({ ...base, text: '我编的一句话' }), 'not-shown');
   assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', known: ['这把，纯纯坐牢'] }), 'again');
   assert.equal(seenRefusal({ ...base, text: '这把纯纯坐牢', today: 30 }), 'full');

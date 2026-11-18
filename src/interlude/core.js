@@ -250,7 +250,7 @@ export function apply(ctx, config = {}) {
   let running = 0;
   const dshDot = () => ctx.get('dshDot');
   const at = (ms) => (ms ? describeNow(new Date(ms)) : null);
-  /** A task came back from her errands: settled in the ledger. */
+  /** A task of her own came back: settled in the ledger. */
   const remember = (kind, r, doing = '') => {
     if (doing) doings.settle(doing, { status: r.status, result: r.report, usage: r.cost, doneAt: r.doneAt });
     audit('task-returned', { kind, status: r.status });
@@ -272,7 +272,7 @@ export function apply(ctx, config = {}) {
   const ttlInHours = () => { const left = msLeftInHours(cfg.activeHours); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
 
-  // 自己的时间: a few times a day, at random moments in her active hours, her errand self gets time of her own.
+  // 自己的时间: a few times a day, at random moments in her active hours, she gets time of her own, in her conversation.
   const free = new Map(); // session id → { cost, budget, warned, stopped }
   let freeQueued = false; // one free time at a time, from queued to done
   const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
@@ -290,7 +290,7 @@ export function apply(ctx, config = {}) {
   async function freeTime(phase = 'free') {
     rollDay();
     const held = (why) => { audit('free-held', { phase, why }); return { skipped: why }; };
-    if (!dshDot()?.task) return held('needs her errands (dsh-dot)');
+    if (!dshDot()?.task) return held('needs dot (dsh-dot)');
     if (free.size || freeQueued) return held('already running');
     if (freeLeft() < Math.min(cfg.freeTokenCap, 20000)) return held('daily budget used');
     const budget = Math.min(cfg.freeTokenCap, freeLeft());
@@ -404,8 +404,7 @@ export function apply(ctx, config = {}) {
     }
   }
   ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
-  // Model requests (src/llm-gate.js): the growth review is marked above; her own time runs in dot's errand
-  // (dot registers that as background).
+  // Model requests (src/llm-gate.js): her own time runs in her conversation and her hands' session (dot registers those).
   installLlmGate(ctx, { name: 'dot-interlude' });
 
   // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
@@ -428,7 +427,7 @@ export function apply(ctx, config = {}) {
     }), 'dsh-interlude: prompt trim');
     // How she talks, as the very last thing before she answers (after the history, the memory and the
     // interlude): what is read last weighs most (cf. SillyTavern's Author's Note at depth 0, Character
-    // Card V2 post_history_instructions). Her conversation only: errands report, they do not chat.
+    // Card V2 post_history_instructions). Her conversation only: her hands do not chat.
     scope.systemPrompt.context({
       name: 'interlude:voice',
       order: 990,

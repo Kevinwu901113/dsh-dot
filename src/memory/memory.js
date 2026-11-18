@@ -2,7 +2,7 @@
 // her conversation is handed over to a fresh session long before it gets heavy.
 //
 //   transcript  <home>/memory/transcript.jsonl — what really happened in her conversation: what you
-//               said, what she actually sent (qq_send), what her phone showed her, what her errands
+//               said, what she actually sent (qq_send), what her phone showed her, what her hands
 //               found. The evidence: recall finds in it, consolidation reads it.
 //   recall      before each turn, the old turns that bear on the message that woke her (recall.js):
 //               vector + BM25 candidates, reranked, shown by day with exact dates.
@@ -109,12 +109,12 @@ export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
 /** Why keep_line did not keep a line, as she reads it (memory.seen: one reason a line). */
 export const seenRefusalText = (code, vars = {}) => table('memory.seen', vars)[code] ?? code;
 /**
- * May this line be kept? '' when it may; else the reason's code. `shown` is what her errand's tools showed her
+ * May this line be kept? '' when it may; else the reason's code. `shown` is what her hands' tools showed (dot/hands.js)
  * this session — the only place a kept line may come from — and `today` how many she kept today.
  */
-export function seenRefusal({ text, errand, shown = '', today = 0, perDay = 30, maxChars = 80, known = [] }) {
+export function seenRefusal({ text, hers, shown = '', today = 0, perDay = 30, maxChars = 80, known = [] }) {
   const t = String(text ?? '').trim();
-  if (!errand) return 'elsewhere';
+  if (!hers) return 'elsewhere';
   if (!t) return 'empty';
   if (/\n/.test(t) || t.length > maxChars) return 'long';
   if (rejectReason(t) === 'secret' || /https?:\/\//i.test(t)) return 'not-words';
@@ -471,8 +471,8 @@ export function apply(ctx, config = {}) {
     if (d?.isErrand?.(id)) return false;
     return (cwd && inside(home, cwd)) || id === d?.session?.();
   };
-  // What her errand's tools showed her, per errand session: the only place a line she keeps (keep_line) may come from.
-  const shown = new Map(); // errand session → the text of its tool results (the last few hundred thousand characters)
+  // What her hands' tools showed, per conversation: the only place a line she keeps (keep_line) may come from.
+  const shown = new Map(); // her conversation → the text her hands' rounds (and her own tools) showed (the last few hundred thousand characters)
   const sawText = (id, text) => { const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); if (shown.size > 6) shown.delete(shown.keys().next().value); };
   const seenCalls = []; // sessions of keep_line calls let through, in order: execute() has no session of its own
   ctx.on('session/event', (session, event) => {
@@ -489,7 +489,7 @@ export function apply(ctx, config = {}) {
     const id = exec.agent?.session?.id ?? '';
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
     const today = lines.filter((l) => l.who === 'seen' && l.at >= startOfToday());
-    const why = seenRefusal({ text: args?.text, errand: isConversation(id, exec.agent?.session?.header?.cwd), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
+    const why = seenRefusal({ text: args?.text, hers: isConversation(id, exec.agent?.session?.header?.cwd), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
     if (why) { audit('seen-refused', { session: id, why }); return deny(seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay })); }
     seenCalls.push(id);
     return next();
@@ -765,7 +765,7 @@ export function apply(ctx, config = {}) {
 
   // ── what every turn of hers sees ──
   ctx.inject(['systemPrompt'], (scope) => {
-    // Her notes: her conversation only — errands do a job and report, they are not her remembering.
+    // Her notes: her conversation only — her hands do a job and report, they are not her remembering.
     scope.systemPrompt.context({
       name: 'dot:memory',
       order: 904,
@@ -864,7 +864,7 @@ export function apply(ctx, config = {}) {
       description: prompt('memory.seen.tool', { max: cfg.seenMaxChars }),
       parameters: { type: 'object', properties: { text: { type: 'string' }, from: { type: 'string' } }, required: ['text'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? '记下了' : '没记下' }] },
-      // Whether it may be kept was decided before this ran (tools/pre-execute above: her errand, shown on her screen, short, not a repeat).
+      // Whether it may be kept was decided before this ran (tools/pre-execute above: her conversation, shown on her screen, short, not a repeat).
       async execute(args) {
         const session = seenCalls.shift() ?? '';
         const from = clip(String(args?.from ?? '').replace(/\s+/g, ' ').trim(), 30);

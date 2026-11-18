@@ -263,7 +263,6 @@ export const defaults = {
 
 /** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
 export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
-/** The note a stalled errand leaves in her conversation: what it was doing when it was given up. */
 /** The owner's one message per turn for the approvals she is waiting on (the first one's details). */
 export function approvalNotice({ tool, reason = '', link = '', minutes = 0, count = 1 }) {
   const r = String(reason ?? '').trim();
@@ -285,9 +284,9 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
   return { state: 'running', idleMs };
 }
 
-/** Source of the note an errand leaves in her conversation (injected; it does not wake her). */
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
+/** Source of a note left in her conversation (injected; it does not wake her). The form and the prompt ids keep the name they had when errands left them: installed overrides go by it. */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
@@ -308,7 +307,7 @@ export function setupText(phoneStatus, computerStatus) {
   }
   return lines.length ? prompt('dot.setup', { devices: lines.join('\n') }) : '';
 }
-/** The note an errand leaves in her conversation: what she did on her phone, in her own words. */
+/** A note left in her conversation: something for her to know that nobody said to her. */
 export function errandNote(origin, text, now = Date.now()) {
   const what = table('dot.errand-note.what');
   return prompt('dot.errand-note', { stamp: stamp(now, now), what: what[Object.hasOwn(what, origin) ? origin : 'other'], text: String(text).trim() });
