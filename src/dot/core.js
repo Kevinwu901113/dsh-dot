@@ -196,11 +196,10 @@ export function wakeText(items, { whileBusy = false, cards = '', now = Date.now(
 export const scheduledRule = () => prompt('dot.scheduled', { silent: SILENT });
 
 /** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
-export function workingRules({ computer = true, phone = false, handOff = false } = {}) {
+export function workingRules({ computer = true, phone = false } = {}) {
   const [computerIntro, computerRule] = computer ? prompt('dot.rules.computer', { vmPrefix: VM_TOOL_PREFIX }).split('\n') : ['', ''];
   const [phoneIntro, phoneRule] = phone ? prompt('dot.rules.phone', { phonePrefix: PHONE_TOOL_PREFIX }).split('\n') : ['', ''];
-  // Its own file, after the rules: a copy of dot.rules.txt someone overrode still gets it.
-  return `${prompt('dot.rules', { computer: computerIntro, phone: phoneIntro, computerRule: computerRule ?? '', phoneRule: phoneRule ?? '', silent: SILENT })}${handOff ? `\n${prompt('dot.rules.hand-off')}` : ''}`;
+  return `${prompt('dot.rules', { computer: computerIntro, phone: phoneIntro, computerRule: computerRule ?? '', phoneRule: phoneRule ?? '', silent: SILENT })}`;
 }
 
 export const defaults = {
@@ -248,7 +247,6 @@ export const defaults = {
   // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
   hands: true,
   handsMaxMs: 150000,
-  handOffTtlMs: 7200000,       // not started within this long: given up, and she is told so
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
   // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
@@ -300,37 +298,6 @@ const NOTED = ['phone-check', 'phone-notification', 'play', 'try'];
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
-/** The message that carries something he asked for to her errand, and the one that brings the report back to her conversation. */
-export const ASK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'ask' });
-export const askResultSource = () => ({ kind: 'dsh-dot', form: 'ask-result', rpcId: `qq-dot-ask-${Date.now().toString(36)}` });
-/** The list her conversation sees: what she handed off and where each stands — written by code from what really happened. */
-export function asksText(asks, now = Date.now()) {
-  const recent = asks.filter((a) => now - a.at < 24 * 3600000).slice(-6);
-  if (!recent.length) return '';
-  const status = table('dot.asks.status');
-  const hhmm = (ms) => { const t = new Date(ms); return `${String(t.getHours()).padStart(2, '0')}:${String(t.getMinutes()).padStart(2, '0')}`; };
-  return prompt('dot.asks', { lines: recent.map((a) => `- ${hhmm(a.at)} ${askAbout(a)} —— ${status[Object.hasOwn(status, a.status) ? a.status : 'queued']}`).join('\n') });
-}
-/** What an ask is about, in the fewest words there are: what he said when he has said it, else what she wrote for her errand. */
-export const askAbout = (a) => (a.said ? `他说「${a.said}」` : a.what);
-/**
- * What an errand's report may bring into her conversation. Her replies take their length from what is in front of
- * her: a full report (model, resolution, every icon) came out as a list in 7 of 8 replays, two sentences came out
- * as chat in 8 of 8, and no wording of the instructions around it changed that (11-17). So the size is set here,
- * in code: at most CARRY_MAX characters of text, cut at a sentence end, plus its "图：…" lines as written.
- */
-export const CARRY_MAX = 120;
-export function clipCarry(text, max = CARRY_MAX) {
-  const lines = String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean);
-  const images = lines.filter((l) => /^图[：:]/.test(l));
-  let body = lines.filter((l) => !/^图[：:]/.test(l)).join(' ');
-  if (body.length > max) {
-    const head = body.slice(0, max);
-    const end = Math.max(head.lastIndexOf('。'), head.lastIndexOf('！'), head.lastIndexOf('？'), head.lastIndexOf('；'));
-    body = end >= max / 3 ? head.slice(0, end + 1) : `${head}…`;
-  }
-  return [body, ...images].filter(Boolean).join('\n');
-}
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
 const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
@@ -675,9 +642,7 @@ export function apply(ctx, config = {}) {
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
     if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
       t.fromQq = true;
-      // Her errand's report on something he asked for: its answer goes to him like any answer; memory records this turn itself.
-      if (event.data?.source?.form === 'ask-result') t.askResult = true;
-      else if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
+      if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
         const said = contentText(event.data?.content).replace(/^\[[^\]]*\]\s*/, '').trim();
         if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
@@ -734,7 +699,7 @@ export function apply(ctx, config = {}) {
         const q = ctx.get('dshQq');
         if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
         if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
-        sayToOwner(id, stripSilent(text), { record: !t.askResult });
+        sayToOwner(id, stripSilent(text));
         return;
       }
       void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
@@ -888,7 +853,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
-      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()), handOff: Boolean(cfg.handOff && cfg.errands) }) : ''),
+      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()) }) : ''),
     }), 'dsh-dot: working rules section');
     // Her clock: after the history (like dot:memory), on her conversation and her errands. "Since the
     // last message" counts from the last line said before this turn began, so it holds for the turn.
@@ -921,12 +886,6 @@ export function apply(ctx, config = {}) {
         if (isErrand(id)) return NOTED.includes(turns.get(id)?.origin) ? prompt('dot.errand-report', { silent: SILENT }) : '';
         return id && id === lastSession ? inFlightText() : '';
       },
-    });
-    // What she handed to her errands for him, and where each stands: data from what really happened.
-    scope.systemPrompt.context({
-      name: 'dot:asks',
-      order: 902,
-      text: (c) => (c.agent?.session?.id && c.agent.session.id === lastSession ? asksText(asks) : ''),
     });
   });
 
@@ -1234,81 +1193,6 @@ export function apply(ctx, config = {}) {
     void nextTask();
     return 'queued';
   };
-  // ── what he asked her to do ──
-  // A thing she agreed to do had no owner: the turn ended on "等下我看看" and nothing followed (11-17). Now it
-  // has one. She hands it off (the hand_off tool, her conversation only); it is kept in dot's state, so a restart
-  // does not lose it; her errand does it before anything of her own; the errand's closing report is stored as it
-  // was written and wakes her conversation, whose answer goes to him. Where each one stands is given to her
-  // conversation as data (dot:asks) — "done" there means the errand came back, and what it says is its own report.
-  let asks = (store.get('asks') ?? []).filter((a) => a && a.id && a.what);
-  const saveAsks = () => { asks = asks.slice(-30); store.set('asks', asks); };
-  const askTask = (a) => enqueueTask({
-    kind: 'ask', key: `ask|${a.id}`, ttlMs: Math.max(60000, a.at + cfg.handOffTtlMs - Date.now()), source: ASK_SOURCE,
-    text: prompt('dot.ask', { stamp: stamp(Date.now(), Date.now()), what: a.what, why: a.why ? `（${a.why}）` : '' }),
-    onStart: () => { a.status = 'doing'; a.startedAt = Date.now(); saveAsks(); },
-    onDone: (r) => {
-      a.status = r.status === 'done' ? 'back' : r.status; // expired / dropped / stalled: it did not get done
-      a.report = String(r.report ?? '').trim().slice(0, 600); a.doneAt = Date.now(); saveAsks();
-      audit('ask-returned', { id: a.id, status: a.status, waitedMs: a.doneAt - a.at });
-      void carryBack(a).then(() => tellAskResult(a));
-    },
-  });
-  /**
-   * The errand's report stays where it is (the ask's record, his page); what goes into her conversation is one
-   * or two sentences of it (see clipCarry). One small call without tools writes them; when it cannot, the
-   * report's own opening is cut to the same size. Either way the size is the code's, not the model's.
-   */
-  const carryBack = async (a) => {
-    if (!a.report) { a.say = ''; return; }
-    let say = '';
-    try {
-      const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
-      const llm = ctx.get('llm');
-      if (sel && llm?.stream) {
-        const { effort } = await effortFor(ctx, sel, 'off');
-        const reply = await collectReply(llm.stream(background({
-          provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: 400,
-          system: prompt('dot.ask-carry'),
-          messages: [createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-carry.input', { said: a.said || '（没有原话）', what: a.what, report: a.report }) }], source: { kind: 'dsh-dot', form: 'ask-carry' } })],
-        })));
-        say = String(reply.text ?? '').trim();
-      }
-    } catch (err) { logger.warn(`ask carry-back failed: ${err.message}`); audit('ask-carry-failed', { id: a.id, error: String(err.message).slice(0, 200) }); }
-    a.say = clipCarry(say || a.report);
-    saveAsks();
-    audit('ask-carried', { id: a.id, chars: a.say.length, from: a.report.length, by: say ? 'model' : 'cut' });
-  };
-  /** The report on something he asked for wakes her conversation: a turn whose answer goes to him. */
-  const tellAskResult = async (a) => {
-    try {
-      const found = lastSession && await resolveLive(lastSession);
-      if (!found || 'error' in found) { audit('ask-result-dropped', { id: a.id, why: 'no conversation' }); return; }
-      const status = table('dot.asks.status');
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.ask-result', { stamp: stamp(Date.now(), Date.now()), about: askAbout(a), status: status[Object.hasOwn(status, a.status) ? a.status : 'back'], say: a.say || '（没有带回话）' }) }], source: askResultSource() }));
-      audit('ask-result-woke', { id: a.id, session: lastSession, status: a.status });
-    } catch (err) { logger.warn(`ask result not delivered: ${err.message}`); audit('ask-result-dropped', { id: a.id, why: err.message }); }
-  };
-  const handOff = ({ what, why = '' }) => {
-    const text = String(what ?? '').trim();
-    if (!text) throw new Error('what: 要做什么？用一句话写清楚');
-    const a = { id: `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 5)}`, at: Date.now(), what: text.slice(0, 400), why: String(why ?? '').trim().slice(0, 200), said: turns.get(lastSession)?.said ?? '', status: 'queued' };
-    asks.push(a); saveAsks();
-    audit('ask-handed-off', { id: a.id, what: a.what.slice(0, 80) });
-    askTask(a);
-    return a;
-  };
-  // What was still waiting or under way when dsh stopped: the queue is in memory, the promise is not. Taken up again
-  // while it is fresh; past handOffTtlMs it is closed as not done.
-  ctx.effect(() => {
-    const timer = setTimeout(() => {
-      for (const a of asks.filter((x) => ['queued', 'doing'].includes(x.status))) {
-        if (Date.now() - a.at < cfg.handOffTtlMs) { a.status = 'queued'; askTask(a); } else { a.status = 'expired'; a.doneAt = Date.now(); }
-      }
-      saveAsks();
-    }, 30000);
-    timer.unref?.();
-    return () => clearTimeout(timer);
-  }, 'dsh-dot: asks left over from before the restart');
   ctx.inject(['tools'], (scope) => {
     if (!cfg.hands) return;
     scope.effect(() => scope.tools.register({
@@ -1436,11 +1320,6 @@ export function apply(ctx, config = {}) {
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
     if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
-    if (exec.name === 'hand_off' && id !== lastSession) return deny(prompt('dot.hand-off-tool.elsewhere'));
-    if (cfg.handOff && cfg.errands && t?.his && id === lastSession && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name.startsWith(VM_TOOL_PREFIX))) {
-      audit('device-tool-in-his-turn', { session: id, tool: exec.name });
-      return deny(prompt('dot.hand-off-tool.instead'));
-    }
     // From here on it is about what she is saying, whichever way it goes out (spokenOf).
     const spoken = spokenOf(exec.name, args);
     if (!spoken) return next();
