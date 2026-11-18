@@ -115,6 +115,7 @@ function harness({ llmReply = '{}', recall = false } = {}) {
   writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: recall ? 'local' : 'off' } }));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], contexts = [], tools = {}, effects = [], injected = [], archived = [], audit = [];
+  const qqSent = new Set(), pendingSends = new Map(), turn = new Map(); // stand-ins for dsh-dot/qq and dsh-dot/dot, who say what went out
   let session = 's1'; let tokens = 1000; let frozen = 0, released = 0;
   const agents = new Map();
   const agentFor = (id) => agents.get(id) ?? agents.set(id, { session: { id }, inject: (m) => injected.push({ id, m }) }).get(id);
@@ -124,7 +125,7 @@ function harness({ llmReply = '{}', recall = false } = {}) {
     workspaceRegistry: { archiveSession: async (id) => { archived.push(id); } },
     agents: { get: (id) => agentFor(id) },
     tokenMeter: { measure: () => ({ totalTokens: tokens }) },
-    dshQq: { owner: '7' },
+    dshQq: { owner: '7', onSent: (fn) => { qqSent.add(fn); return () => qqSent.delete(fn); } },
     dshComputer: { audit: (e) => audit.push(e) },
   };
   const calls = [];
@@ -138,7 +139,25 @@ function harness({ llmReply = '{}', recall = false } = {}) {
     llm: { stream: (opts) => { calls.push(opts); return (async function* () { yield { type: 'text-delta', text: reply(opts) }; yield { type: 'finish', reason: { kind: 'stop' } }; })(); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'deepseek-v4-flash' }) },
   };
-  const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
+  const emit = (id, type, data, extra = {}) => {
+    listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
+    // What the other components do in the product: dsh-dot/qq tells what a qq_send put out; dsh-dot/dot reports the
+    // answer of a turn he opened on the desktop (a QQ turn's answer goes out through QQ, and is told there).
+    const st = turn.get(id) ?? {};
+    if (type === 'turn/start') turn.set(id, {});
+    if (type === 'user/message' && data?.source?.kind === 'user') turn.set(id, { ...st, desktop: !String(data.source.rpcId ?? '').startsWith('qq-') });
+    if (type === 'user/message' && data?.source?.kind === 'schedule') turn.set(id, { ...st, scheduled: true });
+    if (type === 'tool/call' && data?.name === 'qq_send') pendingSends.set(data.callId, { ...JSON.parse(data.arguments ?? '{}'), __at: Date.now() });
+    if (type === 'tool/result' && pendingSends.has(data?.message?.toolCallId)) {
+      const args = pendingSends.get(data.message.toolCallId); pendingSends.delete(data.message.toolCallId);
+      const failed = data.isError || data.message?.isError;
+      const said = Array.isArray(data.meta?.said) ? data.meta.said : String(args.text ?? '').split(/<sep\s*\/>|\n/i).map((x) => x.trim()).filter(Boolean).slice(0, Number(/^sent (\d+)/.exec(data.message?.content?.[0]?.text ?? '')?.[1] ?? 99));
+      const images = Array.isArray(data.meta?.images) ? data.meta.images : [].concat(args.images ?? []).slice(0, Number(data.meta?.imagesSent ?? 99));
+      if (!failed && (said.length || images.length)) { turn.set(id, { ...st, sent: true }); qqSent.forEach((fn) => fn({ to: args.to === 'owner' ? 'user:7' : String(args.to), toOwner: args.to === 'owner', said, images, at: args.__at })); }
+    }
+    if (type === 'assistant/message') turn.set(id, { ...st, last: data?.message?.content?.[0]?.text ?? '' });
+    if (type === 'turn/end') { turn.delete(id); if (st.desktop && !st.sent && st.last && !/^DOT_SILENT/.test(st.last) && id !== 'errand') services.dotMemory?.herSaid?.({ session: id, text: st.last }); }
+  };
   return { ctx, home, services, contexts, tools, injected, archived, audit, calls, emit, effects, recallEmbedder: charEmbedder, get session() { return session; }, set tokens(n) { tokens = n; }, get frozen() { return [frozen, released]; } };
 }
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -564,20 +583,6 @@ test('a failed consolidation (empty reply) is not retried every turn: the next w
   assert.equal(records(h.calls[2]), 10, 'halved again after the second failure');
   assert.equal(records(h.calls[3]), 20, 'success: the rest of the backlog follows at full size');
   assert.equal(h.services.dotMemory.status().sinceCursor, 0);
-});
-
-test('a scheduled turn his QQ words were steered into: dot sends its answer by the IM bridge and reports nothing, so memory records it at turn end', async () => {
-  const h = harness();
-  h.services.dshDot.reportsSaid = true;
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
-  h.emit('s1', 'turn/start', {});
-  h.emit('s1', 'user/message', { source: { kind: 'schedule' }, content: [{ type: 'text', text: '早上八点叫他起床' }] }, { surfaceOp: 'append' });
-  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-2' }, content: [{ type: 'text', text: '我醒了' }] }, { surfaceOp: 'append' });
-  h.emit('s1', 'assistant/message', msg('那快去洗漱'));
-  h.emit('s1', 'turn/end', {});
-  await wait(10);
-  const got = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).map((l) => `${l.who}:${l.text}`);
-  assert.equal(got.at(-1), 'her:那快去洗漱');
 });
 
 test('after a reset her memory stays empty: the note it left keeps the old conversation from being read back in', async () => {

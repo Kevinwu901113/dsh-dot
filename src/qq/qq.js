@@ -1232,13 +1232,25 @@ export function apply(ctx, config = {}, deps = {}) {
    */
   // Sends to one conversation go out one after another: the bubbles of two sends never interleave.
   const lanes = new Map(); // "user:<n>" / "group:<n>" → the last send to it
-  qq.send = (to, text = '', images = []) => {
+  // What she said on QQ is on record from here, the moment it has gone out — whoever called: her qq_send, the relay
+  // of a turn's answer. A notice of the plugin's own (an approval waiting, a device down) is sent with hers: false.
+  const sentListeners = new Set();
+  qq.onSent = (fn) => { sentListeners.add(fn); return () => sentListeners.delete(fn); };
+  qq.send = (to, text = '', images = [], { hers = true } = {}) => {
     const target = parseTarget(to, qq.owner);
     if (!target) return Promise.reject(new Error(`bad target "${to}" (user:<number> | group:<number> | owner)`));
     const key = target.group_id ? `group:${target.group_id}` : `user:${target.user_id}`;
+    const began = Date.now(); // when she started saying it: what he says meanwhile comes after it in her record
     sendingTo.set(`${key}`, (sendingTo.get(key) ?? 0) + 1);
     const done = () => { const t = setTimeout(() => { const n = (sendingTo.get(key) ?? 1) - 1; if (n > 0) sendingTo.set(key, n); else sendingTo.delete(key); }, 3000); t.unref?.(); };
-    const mine = (lanes.get(key) ?? Promise.resolve()).then(() => sendNow(target, to, text, images)).then((r) => { for (const id of r?.messageIds ?? []) own(id); return r; }).finally(done);
+    const mine = (lanes.get(key) ?? Promise.resolve()).then(() => sendNow(target, to, text, images)).then((r) => {
+      for (const id of r?.messageIds ?? []) own(id);
+      if (hers && ((r?.said?.length ?? 0) || (r?.images?.length ?? 0))) {
+        const m = { to: key, toOwner: Boolean(qq.owner) && target.user_id === Number(qq.owner), said: r.said ?? [], images: r.images ?? [], at: began };
+        for (const fn of sentListeners) { try { fn(m); } catch (err) { logger.warn(`qq sent listener: ${err.message}`); } }
+      }
+      return r;
+    }).finally(done);
     const tail = mine.catch(() => {}); lanes.set(key, tail);
     void tail.then(() => { if (lanes.get(key) === tail) lanes.delete(key); });
     return mine;

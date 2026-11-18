@@ -98,6 +98,7 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
   const withHands = Object.assign((id, cwd) => hers(id, cwd), { hands: (id) => id === 'h1' });
   assert.equal(classify({ id: 'h1', cwd: '/x' }, null, withHands), 'hands');
   assert.deepEqual(hiddenFor('hands', ['memory', 'recall', 'account', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-qq__invoke_action'], 'her hands type with phone_type: the paste-based typing is not offered');
+  assert.deepEqual(hiddenFor('hands', ['mcp__dot-phone__mobile_take_screenshot', 'phone_zoom', 'mcp__dot-phone__mobile_list_elements_on_screen', 'phone_type']), ['mcp__dot-phone__mobile_take_screenshot'], 'the screen comes back as text after each action; a part of it is looked at with phone_zoom, not a whole-screen picture every step');
 });
 
 test('hiddenFor: what each kind of session does not see', () => {

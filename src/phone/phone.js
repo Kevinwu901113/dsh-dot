@@ -1069,7 +1069,7 @@ export function apply(ctx, config = {}, deps = {}) {
       async execute(args) {
         if (!phone.isReady) return { error: `手机还没就绪（${phone.state}）` };
         const store = ctx.get?.('attachments');
-        if (typeof store?.saveImages !== 'function') return { error: '没有附件仓库（ctx.attachments），图传不过去；用 mobile_take_screenshot' };
+        if (typeof store?.saveImages !== 'function') return { error: '没有附件仓库（ctx.attachments），图传不过去' };
         try {
           const z = zoomPng(await phone.screenshot(), args);
           if (z.error) return { error: z.error };

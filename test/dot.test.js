@@ -890,15 +890,14 @@ test('dot: a qq-bridge session (qqb-…) is never hers, whatever the scope; dshD
 // ── her side of the conversation with him: writing / sending; what has not reached him gives way ──
 function talkHarness(cfg = {}) {
   const o = ownerHarness(cfg);
-  const sends = [], said = [], cancels = [];
+  const sends = [], cancels = [];
   // The host's handle (dsh-agent-loop): cancel aborts the running turn; waking input sent after it is held for the next turn.
   o.agent.cancel = (cause, opts) => { cancels.push({ cause, opts }); o.calls.push({ via: 'cancel' }); };
   o.agent.send = (m, target, wake) => { o.calls.push({ via: `send:${target}`, wake, text: m.content[0].text, m }); (target === 'next-turn' ? o.agent.inbox.nextTurn : o.agent.inbox.nextStep).push(m); };
   o.services.dshQq.send = (to, text) => { const d = Promise.withResolvers(); sends.push({ to, text, lines: text.split('\n').filter(Boolean), done: (r) => d.resolve(r), fail: (e) => d.reject(e) }); return d.promise; };
   o.services.dshQq.sentToOwnerAt = 0;
-  o.services.dotMemory = { herSaid: (l) => said.push(l.text) };
   o.turn.start(90); o.turn.end(90); // she has a conversation, and is idle
-  return { ...o, sends, said, cancels };
+  return { ...o, sends, cancels };
 }
 const qqTurn = async (o, n, { answer, tool = false, end = true } = {}) => {
   const { ownerSource } = await import('../src/dot/core.js');
@@ -909,7 +908,7 @@ const qqTurn = async (o, n, { answer, tool = false, end = true } = {}) => {
   if (end) o.turn.end(n);
 };
 
-test('sending counts as busy: his words wait for her bubbles to stop; what was left unsent comes with them, once; her transcript gets what reached him', async () => {
+test('sending counts as busy: his words wait for her bubbles to stop; what was left unsent comes with them, once', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     const o = talkHarness();
@@ -922,7 +921,6 @@ test('sending counts as busy: his words wait for her bubbles to stop; what was l
     // qq.send stopped after the first bubble, because he spoke
     o.sends[0].done({ sent: 1, said: ['那就去睡一会'], interrupted: true, unsent: ['你昨天六点才睡', '回放的事我自己想办法'] });
     await settle(); await settle();
-    assert.deepEqual(o.said, ['那就去睡一会'], 'recorded: the bubble that reached him, not what she wrote');
     assert.equal(o.calls.length, 1);
     assert.equal(o.calls[0].via, 'followup');
     assert.deepEqual(lines(o.calls[0]), ['你中午吃什么', '（你上一条里这几句没发出去，他没看到：', '你昨天六点才睡', '回放的事我自己想办法', '看完他说的再回；这几句想说就重新说，不合适了就放下，不用提没发出去这回事。）']);
@@ -931,7 +929,6 @@ test('sending counts as busy: his words wait for her bubbles to stop; what was l
     await qqTurn(o, 2, { answer: '刚才煎了个蛋夹吐司' }); await settle();
     assert.equal(o.sends.length, 2);
     o.sends[1].done({ sent: 1, said: ['刚才煎了个蛋夹吐司'] }); await settle(); await settle();
-    assert.deepEqual(o.said, ['那就去睡一会', '刚才煎了个蛋夹吐司']);
     assert.equal(o.services.dshDot.sending(), false);
     o.say('好'); mock.timers.tick(1500); await settle();
     assert.deepEqual(lines(o.calls[1]), ['好'], 'the unsent lines were given to her once');
@@ -947,7 +944,6 @@ test('read before send, without qq_send: an answer written while he has unread w
     o.say('算了'); // still in the buffer when her turn ends
     o.turn.end(1); await settle();
     assert.equal(o.sends.length, 0, 'not sent: he has said something she has not read');
-    assert.deepEqual(o.said, [], 'and not recorded as said');
     assert.ok(o.h.audit.some((e) => e.event === 'owner-reply-held' && e.lines === 1 && e.preempts === 1));
     mock.timers.tick(1500); await settle();
     assert.equal(o.calls[0].via, 'followup');
@@ -1040,13 +1036,12 @@ test('ownerPreemptMax counts replies in a row that did not reach him: a turn she
   } finally { mock.timers.reset(); }
 });
 
-test('a send that fails after some bubbles: what reached him is recorded, the rest is kept as a draft; a failed send never blocks the next one', async () => {
+test('a send that fails after some bubbles: the rest is kept as a draft; a failed send never blocks the next one', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     const o = talkHarness();
     await qqTurn(o, 1, { answer: '到家了\n今天好累' }); await settle();
     o.sends[0].done({ sent: 1, said: ['到家了'], interrupted: true, unsent: ['今天好累'], error: '发送超时' }); await settle(); await settle();
-    assert.deepEqual(o.said, ['到家了']);
     assert.ok(o.h.audit.some((e) => e.event === 'qq-relayed' && e.sent === 1 && e.unsent === 1 && e.error === '发送超时'));
     o.say('怎么了'); mock.timers.tick(1500); await settle();
     assert.deepEqual(lines(o.calls.at(-1)).slice(0, 3), ['怎么了', '（你上一条里这几句没发出去，他没看到：', '今天好累']);
@@ -1058,7 +1053,6 @@ test('a send that fails after some bubbles: what reached him is recorded, the re
     await qqTurn(o, 3, { answer: '刚才网不好' }); await settle();
     assert.equal(o.sends.length, 3, 'the next answer still goes out');
     o.sends[2].done({ sent: 1, said: ['刚才网不好'] }); await settle(); await settle();
-    assert.deepEqual(o.said, ['到家了', '刚才网不好']);
     stop(o.h);
   } finally { mock.timers.reset(); }
 });

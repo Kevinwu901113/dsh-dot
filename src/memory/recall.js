@@ -25,7 +25,7 @@
 //              off.
 // Passwords and keys never reach the index, the cloud, or her prompt (store.js's filter).
 import { spawn } from 'node:child_process';
-import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, truncateSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -213,6 +213,17 @@ export function openIndex(dir) {
       appendFileSync(f.vec, Buffer.from(all.buffer));
       appendFileSync(f.meta, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
       meta.push(...rows); vecs.push(...vs);
+    },
+    /** Take the last chunk back out (its turn got another line after it was indexed): returns it, or null. */
+    dropLast() {
+      const last = meta.pop();
+      if (!last) return null;
+      vecs.pop();
+      try {
+        truncateSync(f.vec, vecs.length * dim * 4);
+        truncateSync(f.meta, Math.max(0, statSync(f.meta).size - Buffer.byteLength(JSON.stringify(last)) - 1));
+      } catch { rewrite(); }
+      return last;
     },
     clear() { meta = []; vecs = []; dim = 0; rmSync(f.meta, { force: true }); rmSync(f.vec, { force: true }); },
   };
@@ -442,7 +453,14 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
       let src = lines();
       // The in-memory transcript is trimmed; a new or rebuilt index reads the whole file.
       if (!src.length || ix.end < src[0].at) { try { src = readFileSync(transcriptFile, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { /* none yet */ } }
-      const chunks = chunkTurns(src.filter((l) => l.at > ix.end && l.at <= completeThrough), cfg.recallChunkChars);
+      // What she said reaches the transcript when it has gone out, which can be after her turn ended and was indexed
+      // (a desktop answer, bubbles still being typed to him): a line of hers that continues the last indexed turn
+      // takes that turn back out, and it goes in again whole.
+      const first = src.find((l) => l.at > ix.end && l.at <= completeThrough);
+      const tail = ix.meta().at(-1);
+      let from = ix.end;
+      if (first?.who === 'her' && tail && tail.kind !== 'seen' && tail.session === (first.session ?? '')) { ix.dropLast(); lexCache = null; from = tail.at - 1; }
+      const chunks = chunkTurns(src.filter((l) => l.at > from && l.at <= completeThrough), cfg.recallChunkChars);
       for (let i = 0; i < chunks.length; i += 32) {
         const part = chunks.slice(i, i + 32);
         ix.add(part, await e.impl.embed(part.map((c) => c.text), 'passage'));
@@ -662,6 +680,8 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     async warm() { const impl = await ready(); if (impl?.rerankReady) await impl.rerankReady; await sync(); return Boolean(impl); },
     /** A turn of hers ended: every transcript line so far belongs to a finished turn. */
     turnEnded() { completeThrough = Date.now(); void sync(); },
+    /** She said something outside a running turn (the answer of a turn that has ended, going out): it is complete too. */
+    said() { completeThrough = Date.now(); void sync(); },
     /** What her prompt shows now for `session` ('' when nothing or not ready yet). */
     textFor: (session) => results.get(session)?.text ?? '',
     /** The in-flight query for `session`, if any (prompt assembly waits for it, bounded). */

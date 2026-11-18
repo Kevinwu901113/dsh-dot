@@ -717,6 +717,34 @@ test('only her own qq_send counts as having written to him: a send by dot (relay
   h.stop();
 });
 
+test('what she said is told once, when it has gone out — her tool and a relay alike, only the bubbles that arrived; a notice of the plugin is not her words', async () => {
+  const h = harness();
+  h.ctx.dshQq.setOwner('20002');
+  h.ready(); await tick(30);
+  const sock = FakeSocket.last;
+  let fail = 0, n = 0;
+  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); const ok = !(fail && ++n >= fail); setTimeout(() => sock.emit('message', JSON.stringify(ok ? { status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo } : { status: 'failed', retcode: 120, message: '发送超时', echo: m.echo })), 0); };
+  const sent = [];
+  const off = h.ctx.dshQq.onSent((m) => sent.push(m));
+  const t0 = Date.now();
+  await h.ctx.dshQq.send('owner', '那就去睡一会');
+  const tool = h.tools.find((t) => t.name === 'qq_send');
+  await tool.execute({ to: 'user:30003', text: '在的' });
+  await h.ctx.dshQq.send('owner', '有个操作等你确认', [], { hers: false });
+  assert.deepEqual(sent.map((m) => [m.toOwner, m.said]), [[true, ['那就去睡一会']], [false, ['在的']]]);
+  assert.ok(sent[0].at >= t0 && sent[0].at <= sent[1].at, 'stamped when she began saying it');
+  fail = 2; n = 0;
+  await tool.execute({ to: 'owner', text: '到家了\n今天好累' });
+  assert.deepEqual(sent[2].said, ['到家了'], 'the bubble that reached him, not what she wrote');
+  n = 1;
+  await assert.rejects(tool.execute({ to: 'owner', text: '在吗' }));
+  assert.equal(sent.length, 3, 'nothing went out: nothing said');
+  off(); fail = 0;
+  await h.ctx.dshQq.send('owner', '晚安');
+  assert.equal(sent.length, 3);
+  h.stop();
+});
+
 test('sends to one conversation go out one after another: the bubbles of two sends never interleave', async () => {
   const h = harness({}, { typingMsPerChar: 3 });
   h.ctx.dshQq.setOwner('20002');

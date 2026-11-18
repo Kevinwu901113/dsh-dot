@@ -462,7 +462,7 @@ test('phone_zoom tool: a part of the screen, enlarged, through the attachment st
   assert.deepEqual(tool.output.render({}, v), [{ type: 'text', text: '屏幕 (0, 0) 起 4×4，放大 2 倍：' }, { type: 'image', attachment: { id: 'att-1', mediaType: 'image/png' } }]);
   assert.equal(JSON.stringify(v).includes('"png"'), false, 'the bytes are not in the value');
   assert.match(readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8'), /"kind":"phone-zoom"/);
-  assert.match(h.sections[0].text(), /phone_zoom 放大截图的一块，不用去电脑里裁图/);
+  assert.match(h.sections[0].text(), /用 phone_zoom 看那一块，不用去电脑里裁图/);
   h.stop();
 });
 

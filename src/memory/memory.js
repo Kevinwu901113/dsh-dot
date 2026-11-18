@@ -387,6 +387,8 @@ export function apply(ctx, config = {}) {
   let lines = [];
   try { lines = readFileSync(files.transcript, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).sort(byTime); } catch (error) { void error; }
   let lastLineAt = lines.at(-1)?.at ?? 0;
+  // Her sessions with a turn running now: what she says outside one (a turn's answer going out after it ended) is complete at once.
+  const running = new Set();
   const record = (l) => {
     const line = { at: Date.now(), ...l, text: clip(String(l.text ?? '').trim(), 2000) };
     if (!line.text) return;
@@ -470,14 +472,23 @@ export function apply(ctx, config = {}) {
     seenCalls.push(id);
     return next();
   });
-  const turns = new Map(); // session → { sentViaQq, last }
-  const qqCalls = new Map(); // qq_send callId → { at, args }, until its tool/result
+  // What she says is on record where it goes out, never worked out from what kind of turn it was: QQ at the moment
+  // it has been sent (dshQq.onSent — her qq_send and the relayed answer of a turn alike), every other way out by
+  // whoever sends it (api.herSaid: the desktop, another IM, her phone's QQ).
+  ctx.inject?.(['dshQq'], (c) => c.effect(() => (c.dshQq ?? ctx.get('dshQq'))?.onSent?.((m) => {
+    const text = [(m.said ?? []).join(' / '), ...(m.images ?? []).map(sentImage)].filter(Boolean).join(' ');
+    if (!text) return;
+    const session = dot()?.session?.() ?? '';
+    record({ at: m.at, who: 'her', session, to: m.toOwner ? 'owner' : m.to, text });
+    if (!running.has(session)) recall.said();
+    const n = /^user:(\d+)$/.exec(String(m.to ?? ''));
+    if (n) { touchPerson(memory, { handles: [`qq:${n[1]}`], platform: 'qq', tier: 'talked', kind: 'sent' }); save(); }
+  }) ?? (() => {}), 'dsh-dot/memory: her qq words'));
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     if (!id || !event || !isConversation(id, session?.header?.cwd)) return;
-    const t = turns.get(id) ?? { sentViaQq: false, last: '' };
     switch (event.type) {
-      case 'turn/start': turns.set(id, { sentViaQq: false, last: '' }); return;
+      case 'turn/start': running.add(id); return;
       case 'user/message': {
         if (event.surfaceOp && event.surfaceOp !== 'append') return;
         const src = event.data?.source ?? {};
@@ -485,9 +496,7 @@ export function apply(ctx, config = {}) {
         const said = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
         const text = src.kind === 'user' ? ownerSaid(said) : said;
         if (src.kind === 'user') record({ who: 'owner', session: id, text });
-        // A turn of his QQ words: its answer is recorded by what reached him (api.herSaid, from dot), not at turn end.
-        if (src.kind === 'user' && String(src.rpcId ?? '').startsWith('qq-')) { t.fromQq = true; turns.set(id, t); }
-        else if (src.kind === 'schedule') { record({ who: 'schedule', session: id, text }); t.scheduled = true; turns.set(id, t); }
+        if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
@@ -496,36 +505,8 @@ export function apply(ctx, config = {}) {
         if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) void recall.prepare(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;
       }
-      case 'tool/call': {
-        // Only qq_send's text is her words; no tool's result is ever recorded (the `account` tool's passwords included).
-        // It is recorded when its result says what went out (a denied or cut-off send is not what he got).
-        if (event.data?.name !== 'qq_send') return;
-        qqCalls.set(event.data.callId, { at: Date.now(), args: parseArgs(event.data.arguments) });
-        if (qqCalls.size > 50) qqCalls.delete(qqCalls.keys().next().value);
-        t.sentViaQq = true; turns.set(id, t);
-        return;
-      }
-      case 'tool/result': {
-        const call = qqCalls.get(event.data?.message?.toolCallId);
-        if (!call) return;
-        qqCalls.delete(event.data.message.toolCallId);
-        const { args } = call;
-        const text = qqSentText(args, event.data);
-        if (!text) return;
-        record({ at: call.at, who: 'her', session: id, to: String(args.to ?? ''), text });
-        const m = /^user:(\d+)$/.exec(String(args.to ?? ''));
-        const owner = ctx.get('dshQq')?.owner;
-        const target = m ? `qq:${m[1]}` : args.to === 'owner' ? (owner ? `qq:${owner}` : ownerOf(memory.people)?.handles[0]) : '';
-        if (target) { touchPerson(memory, { handles: [target], platform: 'qq', tier: 'talked', kind: 'sent' }); save(); }
-        return;
-      }
-      case 'assistant/message': if (!event.data?.interrupted) { const text = contentText(event.data?.message?.content); if (text.trim()) { t.last = text; turns.set(id, t); } } return;
       case 'turn/end': {
-        turns.delete(id);
-        // Her final words count as said only when they were not a QQ turn (desktop / IM bot replies).
-        // dot reports what reached him for a turn of his QQ words (not for a scheduled turn he spoke into: that one is answered through im.send).
-        if (!t.sentViaQq && !(t.fromQq && !t.scheduled && dot()?.reportsSaid) && t.last && !isSilent(t.last)) record({ who: 'her', session: id, text: t.last });
-        recall.clear(id); recall.turnEnded();
+        running.delete(id); recall.clear(id); recall.turnEnded();
         void afterTurn(id);
         return;
       }
@@ -805,6 +786,7 @@ export function apply(ctx, config = {}) {
     herSaid({ session, text, at, to }) {
       if (!String(text ?? '').trim()) return;
       record({ ...(at ? { at } : {}), who: 'her', session, ...(to ? { to: String(to) } : {}), text: String(text) });
+      if (!running.has(session)) recall.said();
       const m = /^user:(\d+)$/.exec(String(to ?? ''));
       if (m) { touchPerson(memory, { handles: [`qq:${m[1]}`], platform: 'qq', tier: 'talked', kind: 'sent' }); save(); }
     },

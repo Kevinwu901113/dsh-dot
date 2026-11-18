@@ -167,6 +167,9 @@ export const isDotTool = (n) => DOT_TOOLS.includes(n) || DOT_TOOL_PREFIXES.some(
 export const isDeviceTool = (n) => n === PHONE_ZOOM_TOOL || n === PHONE_TYPE_TOOL || DEVICE_TOOL_PREFIXES.some((p) => n.startsWith(p));
 /** The phone server's own ways of putting text in (clipboard and paste under the hood): not offered, phone_type is the one way. */
 const PASTE_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_type_keys`, `${PHONE_TOOL_PREFIX}mobile_clipboard`];
+/** Not for the hands: after each action the screen comes back as text, and a picture of the whole screen every step is
+ * what made them slow. To look at a picture or a layout they enlarge the part they mean (phone_zoom). */
+const WHOLE_SCREEN_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_take_screenshot`];
 /** Is this tool qq-bridge's? */
 export const isBridgeTool = (n) => BRIDGE_TOOL_PREFIXES.some((p) => n.startsWith(p));
 
@@ -183,7 +186,7 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
     // (`bash` is the host's shell tool, which runs in her computer: operating the computer all the same.)
     if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n) || n === 'bash') out.push(n); continue; }
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
-    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n) || PASTE_TOOLS.includes(n)) out.push(n); continue; }
+    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n) || PASTE_TOOLS.includes(n) || WHOLE_SCREEN_TOOLS.includes(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }
     if (isDeviceTool(n) && (owner === 'qqb-sandbox' || (owner === 'qqb-owner' && !ownerDevices))) out.push(n);
   }

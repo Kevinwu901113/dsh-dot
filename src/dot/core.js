@@ -449,7 +449,8 @@ export function createNotifier(getIm, cfg, logger, getQq = () => undefined) {
   async function send(text, format = 'markdown') {
     const t = await target();
     if (t.error) { logger.warn(`not delivered (${t.error}): ${text.slice(0, 80)}`); return false; }
-    if (t.qq) { try { return (await t.qq.send('owner', text)).sent > 0; } catch (err) { logger.warn(`qq send failed: ${err.message}`); return false; } }
+    // format 'plain' is how the plugin's own notices are sent: not her words.
+    if (t.qq) { try { return (await t.qq.send('owner', text, [], { hers: format !== 'plain' })).sent > 0; } catch (err) { logger.warn(`qq send failed: ${err.message}`); return false; } }
     try {
       // "<sep/>" (several sends in one moment) becomes separate messages.
       const parts = text.split(/<sep\s*\/>/i).map((p) => p.trim()).filter(Boolean);
@@ -613,8 +614,7 @@ export function apply(ctx, config = {}) {
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
     if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
       t.fromQq = true;
-      if (event.data?.source?.form === 'hands-result') t.handsResult = true; // her own turn, though its answer goes to him
-      else if (!t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
+      if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
         const said = contentText(event.data?.content).replace(/^\[[^\]]*\]\s*/, '').trim();
         if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
@@ -642,6 +642,9 @@ export function apply(ctx, config = {}) {
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
+    // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && !/^qq-/.test(String(event.data?.source?.rpcId ?? ''))) t.elsewhere = true;
+    if (ended && t.elsewhere && !t.fromQq && !t.scheduled) { const last = String(t.last ?? '').trim(); if (last && !isSilent(last)) herSaid(id, stripSilent(last)); }
     if (!t.scheduled && !t.fromQq) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
       const text = contentText(event.data?.message?.content);
@@ -665,11 +668,11 @@ export function apply(ctx, config = {}) {
         const q = ctx.get('dshQq');
         if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
         if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
-        // A turn her hands came back to: memory records this turn itself (it is not a turn of his QQ words to it).
-        sayToOwner(id, stripSilent(text), { record: !t.handsResult });
+        sayToOwner(id, stripSilent(text));
         return;
       }
-      void im.send(stripSilent(text)).then((sent) => audit('delivered', { session: id, sent }));
+      // Over QQ this is on record where it goes out (dshQq.onSent); over another IM, here.
+      void im.send(stripSilent(text)).then((sent) => { audit('delivered', { session: id, sent }); if (sent && !ctx.get('dshQq')?.connected) herSaid(id, stripSilent(text)); });
     }
   });
 
@@ -1014,7 +1017,7 @@ export function apply(ctx, config = {}) {
    * bubbles when he speaks, and what was left is kept the same way.
    */
   const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
-  const sayToOwner = (id, said, { record = true } = {}) => {
+  const sayToOwner = (id, said) => {
     // The turn is over: nothing can be asked of her again here, so this way out only takes the stage directions out
     // and records which phrases went through (the rate tells whether the card and the list need work).
     const checked = cfg.replyCheck ? checkReply(said, replyChecks()) : null;
@@ -1035,7 +1038,6 @@ export function apply(ctx, config = {}) {
     sending = sending.then(async () => {
       const r = await ctx.get('dshQq').send('owner', text);
       if (r.sent > 0) preempts = 0;
-      if (record) herSaid(id, (r.said ?? []).join('\n'));
       const left = r.interrupted ? (r.unsent ?? []).map(String) : [];
       keepUnsent(left);
       audit('qq-relayed', { session: id, sent: r.sent, ...(left.length ? { unsent: left.length } : {}), ...(r.error ? { error: r.error } : {}) });
@@ -1172,7 +1174,7 @@ export function apply(ctx, config = {}) {
         const device = args?.device === 'computer' ? 'computer' : 'phone';
         // Whose business this round is: his (a turn his words opened, or one a round for him came back to) or her own.
         const t = turns.get(lastSession);
-        return hands.start({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}`, forHim: Boolean(t && !t.scheduled && (t.fromQq || t.his)) });
+        return hands.start({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}`, forHim: Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere)) });
       },
     }), 'dsh-dot: hands tool');
   });
@@ -1511,8 +1513,6 @@ export function apply(ctx, config = {}) {
     ownerPending: () => ownerBatch.length,
     /** Her bubbles to him are going out right now. */
     sending: () => sendingCount > 0,
-    /** dot reports what reached him (memory.herSaid): memory does not record a QQ turn's answer on its own. */
-    reportsSaid: true,
     flushOwner: () => flushOwner(),
     isIm: (id) => imSessions.has(id),
     /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */

@@ -57,6 +57,7 @@ function harness(config = {}, emb = fakeEmbedders(), over = null) {
       emit(id, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: user }] }, { surfaceOp: 'append' });
       emit(id, 'assistant/message', { message: { content: [{ type: 'text', text: reply }] } });
       emit(id, 'turn/end', {});
+      services.dotMemory.herSaid({ session: id, text: reply }); // dot: what she said goes on record when it has gone out — here, after the turn
     } finally { Date.now = realNow; }
   };
   const recallCtx = contexts.find((c) => c.name === 'dot:recall');
@@ -100,6 +101,27 @@ test('index: built per turn at turn end, incrementally, survives a restart witho
   apply({ logger: () => ({ info() {}, warn() {} }), on: (n, f) => { if (n === 'session/event') listeners.push(f); }, effect() {}, get: () => undefined, provide() {}, inject() {} }, { home: h.home, recallEmbedder: emb2.factory });
   assert.equal(openIndex(h.recall().status().dir).size, 3);
   assert.equal(emb2.calls.length, 0);
+});
+
+test('index: what she said after her turn was indexed (bubbles still going out) joins that turn instead of standing alone', async () => {
+  const h = harness();
+  h.turn('s0', '我家猫叫团子，橘色的', '团子好可爱');
+  h.emit('s0', 'turn/start', {});
+  h.emit('s0', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '下个月去成都出差' }] }, { surfaceOp: 'append' });
+  h.emit('s0', 'turn/end', {});
+  await h.recall().sync();
+  const dir = h.recall().status().dir;
+  assert.equal(openIndex(dir).size, 2);
+  assert.doesNotMatch(openIndex(dir).meta()[1].text, /我：/);
+  await wait(5);
+  h.api().herSaid({ session: 's0', text: '记得带伞' });
+  await h.recall().sync();
+  const ix = openIndex(dir);
+  assert.equal(ix.size, 2, 'the turn was taken back out and went in whole');
+  assert.match(ix.meta()[1].text, /他：下个月去成都出差\n我：记得带伞/);
+  assert.equal(statSync(join(dir, 'vectors.f32')).size, 2 * 512 * 4);
+  const r = await h.recall().query('成都', { session: 's1' });
+  assert.ok(r.hits.some((x) => /记得带伞/.test(x.text)));
 });
 
 test('query: the waking message → top-k older turns in time order, minus her current session; only her conversation sees it', async () => {
