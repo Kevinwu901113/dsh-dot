@@ -217,6 +217,8 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
 | `manuals` | `true` | 她的会话里，手机那段和手机、电脑的 MCP 说明不每轮都带：换成一行，第一次用手机 / 电脑工具时那一下照常执行，说明书跟着结果一起给她（`dot.manuals.*` 提示词）；`false` 恢复每轮都带 |
+| `handOff` | `true` | 他在对话里让她去手机 / 电脑上做的事交给跑腿：她用 `hand_off` 交出去并回他一句，跑腿在她自己的事之前去办，汇报原样存下；进她对话、叫醒她的是压成一两句的那份（代码按 120 字截），那一轮的回答发到他的 QQ；她对话里每轮都有一段真实状态（`dot:asks`，只有他说的话和状态）。他的话开的那一轮里她不能自己动手机和电脑（调用被拦下并提示改用 `hand_off`）。`false` = 和以前一样 |
+| `handOffTtlMs` | `7200000` | 交出去的事多久没轮到就算没办（并告诉她）；重启后没过期的会重新排上 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 她自己的 App 经验（`~/dot/her/howto/`）：每轮按 App 记步数；走了 `howtoMinSteps` 步以上或出过错的那轮，结束后一次小调用整理这个 App 的笔记（教训、捷径）；之后一个会话里第一次打开这个 App 时笔记跟着给她。`/dot howto` 看每个 App 的步数变化 |
 | `promptsPort` | `7870` | `/dot prompts` 提示词页面的端口（只监听 127.0.0.1） |
 | `notifyHours` | `""` | 只在这个时段内通知叫醒她；空 = 一直 |

@@ -1,0 +1,6 @@
+queued=排着，还没开始
+doing=正在办
+back=回来了
+expired=一直没轮到，没办
+dropped=没办，被别的事挤掉了
+stalled=办到一半卡住了

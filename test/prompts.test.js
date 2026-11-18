@@ -131,23 +131,6 @@ test('prompts render: separate model calls (group score, memory consolidation)',
   assert.match(diaryPrompt({ day: '2026-11-03 周二', text: '他：在吗' }), /^今天是 2026-11-03 周二。[\s\S]*=== 今天的记录 ===\n他：在吗$/);
 });
 
-test('prompts render: the interlude round is one file; an override of it replaces the whole system prompt', async () => {
-  const { buildPrompt } = await import('../src/interlude/core.js');
-  const text = raw('interlude.round');
-  for (const k of ['canon', 'length', 'phase', 'herLife', 'contactRule', 'browsing', 'agency', 'play', 'style', 'seed', 'playIntents', 'contact']) assert.ok(text.includes(`{${k}}`), k);
-  const args = { phase: 'advance', identity: '# 你是 小点', speak: true, model: 'deepseek-chat', browser: 'deferred', play: true, playApps: ['小黑盒'], playActions: ['like'], herLife: ['x'], now: Date.now() };
-  const sys = buildPrompt(args).system;
-  assert.match(sys, /^故事设定（Canon）：\n# 你是 小点\n【你在写什么】\n这是她两次聊天之间的日子/);
-  assert.match(sys, /\nplayIntents：\[\{"app":"小黑盒 之一","action":"like"[\s\S]*\ncontact：她这一刻真要发给他的话，\{"content"[\s\S]*都不算发，留在 script 里。$/);
-  assert.doesNotMatch(sys, /\{[A-Za-z]\w*\}/);
-  mkdirSync(join(HOME, 'prompts'), { recursive: true });
-  writeFileSync(overridePath('interlude.round'), '只有这一行。{phase}\n{agency}\n');
-  try {
-    assert.equal(buildPrompt(args).system, `只有这一行。${prompt('interlude.round.phase.advance')}\n${prompt('interlude.round.agency')}`);
-    assert.equal(buildPrompt({ ...args, speak: false }).system, `只有这一行。${prompt('interlude.round.phase.advance')}`, 'an empty variant drops its line');
-  } finally { rmSync(overridePath('interlude.round')); }
-});
-
 test('prompts render: phone.device — the number sentence only when she has a number', async () => {
   const { deviceText } = await import('../src/phone/phone.js');
   const without = deviceText('emulator-5554');
@@ -186,5 +169,4 @@ test('prompts render: stickers — where they really are, and how each phone app
     assert.match(t, /相册的 dot-stickers 里，任何 App 都能从相册选图发/, id);
     assert.match(t, /手机 QQ 的"收藏"栏本来是空的，想让它们出现在那要自己添加，见手机那段/, id);
   }
-  assert.match(raw('interlude.play.collect'), /qq_sticker_keep（image: "phone:latest"[\s\S]*存下的会自己回到手机相册的 dot-stickers 里/);
 });

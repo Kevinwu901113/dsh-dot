@@ -72,6 +72,7 @@ export const SCHEMA = [
   // dot
   e('dot', 'phoneCheckEveryMinutes', 'dot', 'int', 'restart-dsh', '隔多久拿起手机看一眼（分钟，0 = 不看）', { min: 0, max: 1440 }),
   e('dot', 'notifyHours', 'dot', 'text', 'restart-dsh', '只在这个时段被通知叫醒（如 08:00-23:00；空 = 一直）'),
+  e('dot', 'handOff', 'dot', 'bool', 'restart-dsh', '你让她在手机 / 电脑上做的事交给跑腿：她先回你一句，跑腿办完带着结果叫醒她再告诉你；你说话的那一轮里她不自己动设备'),
   e('dot', 'manuals', 'dot', 'bool', 'restart-dsh', '手机、电脑说明书在第一次用时才给（省 token）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),

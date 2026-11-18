@@ -1,1 +1,0 @@
-她想查什么、想看哪个页面，写进 browserIntents，最多一个，timing 写 deferred；这一段写完才会去看，看到的内容下一段才有。
