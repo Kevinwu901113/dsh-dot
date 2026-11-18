@@ -28,7 +28,7 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  * @param deps.store      { get(key), set(key, value) } — remembered across restarts
  * @param deps.tokensOf   (id) => tokens in that session so far (0 when unknown)
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, tokensOf = () => 0, audit = () => {}, maxMs = 150000, maxTokens = 120000, maxChars = 700, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, tokensOf = () => 0, audit = () => {}, maxMs = 150000, maxTokens = 120000, maxChars = 450, now = () => Date.now() }) {
   let current = String(store.get('handsSession') ?? '');
   const past = new Set(store.get('handsPast') ?? []);
   const rounds = new Map(); // session id → the round in flight

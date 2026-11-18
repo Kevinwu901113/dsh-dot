@@ -31,8 +31,16 @@ const squash = (s) => String(s ?? '').replace(/\s+/g, '');
  * @param deps.shell     async (cmd) => stdout of `adb shell cmd`
  * @param deps.install   async () => void — gets the keyboard's apk onto the phone (download + adb install)
  */
+/**
+ * The screen as the accessibility layer has it (uiautomator's XML), '' when it cannot be had. Written to a file on
+ * the phone and read back: `adb shell` has no terminal, so dumping to /dev/tty gives nothing there.
+ */
+export const UI_DUMP = 'uiautomator dump /data/local/tmp/dot-ui.xml >/dev/null 2>&1; cat /data/local/tmp/dot-ui.xml 2>/dev/null; rm -f /data/local/tmp/dot-ui.xml';
+export async function dumpUi(shell) { try { const xml = String(await shell(UI_DUMP)); return xml.includes('<hierarchy') ? xml : ''; } catch { return ''; } }
+
 export function createTyping({ shell, install, sleep = (ms) => new Promise((r) => setTimeout(r, ms)), audit = () => {}, msPerChunk = 110, chunkSize = 3 }) {
   let ready = false;
+  const dump = () => dumpUi(shell);
   async function ensure() {
     if (ready) return;
     if (!String(await shell(`pm list packages ${KEYBOARD.pkg}`)).includes(KEYBOARD.pkg)) { await install(); audit({ kind: 'keyboard-installed' }); }
@@ -50,14 +58,14 @@ export function createTyping({ shell, install, sleep = (ms) => new Promise((r) =
       const t = String(text ?? '');
       if (!t) return { typed: 0, verified: null };
       await ensure();
-      const dumpBefore = await shell('uiautomator dump /dev/tty').catch(() => '');
+      const dumpBefore = await dump();
       const before = focusedField(dumpBefore);
       for (const part of chunks(t, chunkSize)) {
         await shell(`am broadcast -a ADB_INPUT_B64 --es msg ${Buffer.from(part, 'utf8').toString('base64')}`);
         await sleep(msPerChunk);
       }
       await sleep(250);
-      const dumpAfter = await shell('uiautomator dump /dev/tty').catch(() => '');
+      const dumpAfter = await dump();
       const after = focusedField(dumpAfter);
       // No focused field in the dump (a web page's box often is not one): the text showing up on the screen where it
       // was not before is as good; its not showing up proves nothing (a password box shows dots).

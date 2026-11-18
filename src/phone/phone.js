@@ -6,7 +6,7 @@
 // watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { deny } from '../refusals.js';
 import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
-import { KEYBOARD, createTyping, screenLines } from './typing.js';
+import { KEYBOARD, createTyping, dumpUi, screenLines } from './typing.js';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
@@ -975,6 +975,7 @@ export function apply(ctx, config = {}, deps = {}) {
 
   // After a call that changes the screen, what the screen shows now comes along with the result: the words on it and
   // where to tap them. Looking again after every tap was half of all phone calls (11-18: 6 of 11, 442 of 1500).
+  let screenUnread = false;
   const ACTS = /mobile_(click_on_screen_at_coordinates|double_tap_on_screen|long_press_on_screen_at_coordinates|swipe_on_screen|press_button|launch_app|open_url|batch_commands)$/;
   ctx.on('tools/post-execute', async (exec_, result, next) => {
     const name = String(exec_?.name ?? '');
@@ -982,8 +983,10 @@ export function apply(ctx, config = {}, deps = {}) {
     const d = await next();
     try {
       await new Promise((r) => setTimeout(r, cfg.screenAfterMs));
-      const lines = screenLines(await phone.shell('uiautomator dump /dev/tty'));
-      if (!lines) return d;
+      const lines = screenLines(await dumpUi((cmd) => phone.shell(cmd)));
+      // Not read (the page never comes to rest, or the dump fails): said in the log once per run, so it is not a silent nothing.
+      if (!lines) { if (!screenUnread) { screenUnread = true; audit({ kind: 'screen-unread', after: name.split('__').pop() }); } return d; }
+      audit({ kind: 'screen-read', after: name.split('__').pop(), lines: lines.split('\n').length });
       const note = createUserMessage({ content: [{ type: 'text', text: `（屏幕上现在有这些，括号里是点它的位置；看不出布局或图片时再截图）\n${lines}` }], source: { kind: 'dsh-dot', form: 'phone-screen' } });
       return { ...d, additionalContexts: [...(d?.additionalContexts ?? []), note] };
     } catch (err) { logger.debug?.(`screen not read: ${err.message}`); return d; }

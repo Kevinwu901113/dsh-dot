@@ -16,7 +16,7 @@ test('typing: installs the keyboard once, sends the text in pieces through it, a
     if (cmd.startsWith('settings get secure default_input_method')) return ime;
     if (cmd.startsWith('ime set')) { ime = KEYBOARD.ime; return ''; }
     if (cmd.startsWith('am broadcast -a ADB_INPUT_B64')) { if (works) field += Buffer.from(cmd.split(' ').pop(), 'base64').toString('utf8'); return ''; }
-    if (cmd.startsWith('uiautomator dump')) return dump(field);
+    if (cmd.startsWith('uiautomator')) return dump(field);
     return '';
   };
   const audits = [];
