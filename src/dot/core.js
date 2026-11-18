@@ -117,6 +117,18 @@ export function isOwnerTarget(to, owner) {
 export function ownerUnread(agent) {
   try { return (agent?.inbox?.nextStep ?? []).some((m) => String(m?.source?.rpcId ?? '').startsWith('qq-dot-')); } catch { return false; }
 }
+/**
+ * What happened when she wrote to him unasked, as facts: `reaches` is [{ at, answeredAt? }] of today, oldest first.
+ * → "今天你主动找过他 3 次，他回了 1 次；上一次是 14:20，他还没回。", or '' when she has not today. How often to write
+ * to him is hers to learn from this — there is no cap.
+ */
+export function reachText(reaches = [], now = Date.now()) {
+  const day = new Date(now).toDateString();
+  const today = reaches.filter((r) => new Date(r.at).toDateString() === day);
+  if (!today.length) return '';
+  const last = today.at(-1), hhmm = (t) => new Date(t).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+  return prompt('dot.reach', { n: today.length, answered: today.filter((r) => r.answeredAt).length, last: hhmm(last.at), waiting: last.answeredAt ? '' : prompt('dot.reach.waiting').trim() }).trim();
+}
 /** The one line that tells her what time it is, and how long since the last thing said in her conversation. */
 export function nowText(now = Date.now(), lastAt = 0) {
   const t = table('dot.now');
@@ -247,6 +259,8 @@ export const defaults = {
   // to an errand (hand_off) and does not touch the device tools herself in her conversation. false: as before.
   hands: true,
   handsMaxMs: 150000,
+  // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
+  reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
   // Her phone's and computer's manuals are handed over the first time she reaches for those tools in a
@@ -538,6 +552,21 @@ export function apply(ctx, config = {}) {
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   let hands = null; // her hands (hands.js), set once sessions can be made
+  // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
+  let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
+  const saveReaches = () => { reaches = reaches.slice(-40); store.set('reaches', reaches); };
+  const answerReaches = () => { let n = 0; for (const r of reaches) if (!r.answeredAt) { r.answeredAt = Date.now(); n++; } if (n) saveReaches(); };
+  // One she wrote and he has left unanswered for reachUnansweredMs: said once, as a note in her conversation — her
+  // record then holds what came of it, and what she makes of that is hers.
+  const noteUnanswered = (now = Date.now()) => {
+    for (const r of reaches) {
+      if (r.answeredAt || r.noted || !(cfg.reachUnansweredMs > 0) || now - r.at < cfg.reachUnansweredMs) continue;
+      r.noted = true; saveReaches();
+      const time = new Date(r.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
+      audit('reach-unanswered', { at: r.at });
+      void noteToConversation('other', '', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
+    }
+  };
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
@@ -684,6 +713,11 @@ export function apply(ctx, config = {}) {
   // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
   // And the first call of her phone or computer tools in a session brings their manual along (manuals.js).
   ctx.on('tools/post-execute', async (exec, result, next) => {
+    // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
+    if (exec?.name === 'qq_send' && !result?.isError && isOwnerTarget((exec.input ?? exec.args ?? exec.arguments)?.to, ctx.get('dshQq')?.owner)) {
+      const t = turns.get(exec.agent?.session?.id);
+      if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: exec.agent?.session?.id, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
+    }
     const minutes = expiredCalls.get(exec?.callId);
     const notes = [cfg.manuals && exec?.name ? manualFor(exec) : null, cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
@@ -791,7 +825,7 @@ export function apply(ctx, config = {}) {
       text: (c) => {
         if (!inHome(c)) return '';
         const started = turns.get(c.agent?.session?.id)?.startedAt ?? Date.now();
-        return nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0);
+        return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), c.agent?.session?.id === lastSession ? reachText(reaches) : ''].filter(Boolean).join('\n');
       },
     });
     // First install / boot: her phone and computer take minutes to come up; she talks meanwhile.
@@ -1166,6 +1200,7 @@ export function apply(ctx, config = {}) {
     if (n.fromOwner) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
       ownerBatch.push(n); ownerTyping = false; lastWakeAt = Date.now(); // he pressed send
+      answerReaches();
       if (cfg.hands) hands?.interrupt('他说话了');
       armOwner();
       return;
@@ -1281,7 +1316,7 @@ export function apply(ctx, config = {}) {
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
   phoneCheckNow = phoneCheck;
   // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
   // something still has to be installed, and when a device fails; problems go to the log and his IM.

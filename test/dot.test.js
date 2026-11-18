@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, isSilent, stripSilent, contentText, spokenOf } from '../src/dot/core.js';
+import { apply, isSilent, stripSilent, contentText, spokenOf, reachText } from '../src/dot/core.js';
 import { unstamp } from '../src/clock.js';
 
 const STAMP = /^\[\d{2}-\d{2} \d{2}:\d{2}[\] ]/; // every message that wakes her starts with one
@@ -1206,4 +1206,12 @@ test('what she says to him is checked in code: brackets out of a relayed answer;
     assert.deepEqual(off.sends[0].lines, ['（挠头）综上所述']);
     stop(o.h); stop(off.h);
   } finally { mock.timers.reset(); }
+});
+
+test('reachText: what came of writing to him unasked, as facts of today', () => {
+  const now = new Date(2026, 10, 18, 15, 0).getTime(), h = 3600000;
+  assert.equal(reachText([], now), '');
+  assert.equal(reachText([{ at: now - 30 * h }], now), '', 'yesterday is not today');
+  assert.equal(reachText([{ at: now - 4 * h, answeredAt: now - 3 * h }, { at: now - h }], now), '今天你主动找过他 2 次，他回了 1 次；上一次是 14:00，他还没回。');
+  assert.equal(reachText([{ at: now - h, answeredAt: now }], now), '今天你主动找过他 1 次，他回了 1 次；上一次是 14:00。');
 });

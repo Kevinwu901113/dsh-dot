@@ -105,6 +105,8 @@ export const entries = [
   { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
   { id: 'errand', group: 'wake', name: '跑腿回来', note: '手机上的事办完后，留在她对话里的一句；跑腿卡住 dot.errandStallMs（默认 10 分钟）被放弃时是 dot.errand-stalled；幕间里她想跟他说的话也这样留进对话（dot.interlude-say），说不说由对话里的她定', files: ['dot.errand-note', 'dot.errand-note.what', 'dot.interlude-say'],
     render: () => variant([...['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')]), ['幕间想跟他说的', P.prompt('dot.interlude-say', { text: '降温了，你那边冷不冷' })]]) },
+  { id: 'reach', group: 'system', name: '主动找他：发生了什么', note: '她在不是他开的那一轮里给他发了消息，算一次主动。「现在」那行下面多一行今天的数（几次、他回了几次、上一次什么时候）；一条过了 dot.reachUnansweredMs（默认 2 小时）他没回，在她对话里留一句。只给事实，没有次数上限：什么时候找他是她自己从这些里学的', files: ['dot.reach', 'dot.reach.waiting', 'dot.reach.unanswered'],
+    render: () => variant([['现在那行下面', D.reachText([{ at: Date.now() - 7200000, answeredAt: Date.now() - 7000000 }, { at: Date.now() - 600000 }])], ['没回', P.prompt('dot.reach.unanswered', { time: '14:20', hours: 2 })]]) },
   { id: 'loop', group: 'wake', name: '重复调用', note: '一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果；她正在聊天时，自己的事记下的「在忙什么」', files: ['dot.loop-stopped', 'dot.busy.chat'],
     render: () => variant([['重复调用被拦', P.prompt('dot.loop-stopped', { times: 5 })], ['在忙什么', P.prompt('dot.busy.chat')]]) },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],

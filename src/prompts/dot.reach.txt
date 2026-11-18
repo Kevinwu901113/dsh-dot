@@ -1,0 +1,1 @@
+今天你主动找过他 {n} 次，他回了 {answered} 次；上一次是 {last}{waiting}。
