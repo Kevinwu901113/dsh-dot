@@ -25,7 +25,7 @@ function fakeBridge({ mode = 'reserved2', ownerQQ = 20002, groups = [111, 222], 
   return { root, dsh };
 }
 
-const TOOLS = ['bash', 'read', 'memory', 'recall', 'account', 'doings', 'tell_him', 'qq_send', 'qq_sticker_keep', 'phone_zoom',
+const TOOLS = ['bash', 'read', 'memory', 'recall', 'account', 'qq_send', 'qq_sticker_keep', 'phone_zoom',
   'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__dot-qq__send_group_msg',
   'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search', 'todo_write'];
 
@@ -34,6 +34,7 @@ test('tool-prefixes: every tool src/ registers is classified as dot\'s own or a 
   const walk = (dir) => { for (const f of readdirSync(dir, { withFileTypes: true })) { const p = join(dir, f.name); if (f.isDirectory()) walk(p); else if (f.name.endsWith('.js')) for (const m of readFileSync(p, 'utf8').matchAll(/tools\.register\(\{\s*name:\s*(?:'([^']+)'|([A-Z_]+))/g)) names.add(m[1] ?? m[2]); } };
   walk('src');
   names.delete('PHONE_ZOOM_TOOL'); names.add(PHONE_ZOOM_TOOL);
+  names.delete('PHONE_TYPE_TOOL'); names.add('phone_type');
   assert.ok(names.size >= 8, `found ${[...names]}`);
   for (const n of names) assert.ok(isDotTool(n) || isDeviceTool(n) || n === PHONE_ZOOM_TOOL, `${n} is in neither DOT_TOOLS nor a device prefix (src/tool-prefixes.js)`);
   for (const n of DOT_TOOLS) assert.ok(names.has(n), `DOT_TOOLS lists ${n}, which nothing registers any more`);
@@ -96,7 +97,7 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
   // her hands: told apart before anything else of hers
   const withHands = Object.assign((id, cwd) => hers(id, cwd), { hands: (id) => id === 'h1' });
   assert.equal(classify({ id: 'h1', cwd: '/x' }, null, withHands), 'hands');
-  assert.deepEqual(hiddenFor('hands', ['memory', 'recall', 'account', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hands', 'mcp__dot-qq__invoke_action']);
+  assert.deepEqual(hiddenFor('hands', ['memory', 'recall', 'account', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-qq__invoke_action'], 'her hands type with phone_type: the paste-based typing is not offered');
 });
 
 test('hiddenFor: what each kind of session does not see', () => {

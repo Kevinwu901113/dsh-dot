@@ -14,7 +14,7 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { deny } from '../refusals.js';
-import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
@@ -102,8 +102,8 @@ export const replyCheckText = ({ hits = [] } = {}) => prompt('dot.reply-check', 
 export function spokenOf(name, args) {
   const q = qqSpoken(name, args);
   if (q) return { via: 'qq', ...q };
-  if (!String(name ?? '').startsWith(PHONE_TOOL_PREFIX)) return null;
-  const text = typedText(String(name).slice(PHONE_TOOL_PREFIX.length), args);
+  if (name !== PHONE_TYPE_TOOL && !String(name ?? '').startsWith(PHONE_TOOL_PREFIX)) return null;
+  const text = typedText(name === PHONE_TYPE_TOOL ? name : String(name).slice(PHONE_TOOL_PREFIX.length), args);
   return text ? { via: 'phone', to: '', text } : null;
 }
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */

@@ -17,7 +17,7 @@
 // The Canon file keeps HDS-Interlude's `storyDefaults` field names
 // (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
 import { deny } from '../refusals.js';
-import { PHONE_TOOL_PREFIX, QQ_TOOL_PREFIX } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 import { typesText } from '../phone/phone.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -434,7 +434,7 @@ export function apply(ctx, config = {}) {
     const hands = Boolean(free.size && dshDot()?.isHands?.(sessionId, exec.agent?.session?.header?.cwd));
     if (!sessionId || !(free.has(sessionId) || hands)) return next();
     if (free.get(sessionId)?.stopped) return deny(prompt('interlude.free.over'));
-    const tool = exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
+    const tool = exec.name === PHONE_TYPE_TOOL ? exec.name : exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     const input = exec.input ?? exec.args ?? exec.arguments;
     if (tool && typesText(tool, input)) {
       const phone = ctx.get('dshPhone');

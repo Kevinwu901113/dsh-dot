@@ -11,6 +11,8 @@ export const QQ_SERVER = 'dot-qq';
 export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
 // dot's own phone tool (phone.js): a part of the screen, enlarged. Read-only, so observation turns allow it.
 export const PHONE_ZOOM_TOOL = 'phone_zoom';
+/** Typing on her phone, through the input method (src/phone/typing.js): the one way text goes in. */
+export const PHONE_TYPE_TOOL = 'phone_type';
 
 // Every model-facing tool this plugin registers, by who may use it (src/compat/qq-bridge.js hides the
 // rest per session; test/compat.test.js checks the list against the register() calls in src/).

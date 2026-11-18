@@ -5,7 +5,8 @@
 // sdkmanager), boots it, and mounts the MCP server once the phone answers. She runs headless and is
 // watched (and operated by hand) on dsh's own pages; state (apps, logins) lives in the AVD's data partition and survives dsh restarts.
 import { deny } from '../refusals.js';
-import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
+import { PHONE_SERVER, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
+import { KEYBOARD, createTyping } from './typing.js';
 import { spawn, execFile } from 'node:child_process';
 import { chmodSync, closeSync, readdirSync, createWriteStream, existsSync, openSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, appendFileSync } from 'node:fs';
 import { homedir, platform, arch as osArch } from 'node:os';
@@ -206,11 +207,11 @@ export function phoneGate(exec, cfg) {
 }
 
 /** A phone call that would type or send in the foreground app: typing, Enter (alone or in a batch). */
-export const typesText = (tool, input) => tool === 'mobile_type_keys' || (['mobile_press_button', 'mobile_batch_commands'].includes(tool) && /ENTER|type_keys/i.test(JSON.stringify(input ?? '')));
+export const typesText = (tool, input) => tool === 'mobile_type_keys' || tool === PHONE_TYPE_TOOL || (['mobile_press_button', 'mobile_batch_commands'].includes(tool) && /ENTER|type_keys/i.test(JSON.stringify(input ?? '')));
 /** The text a phone call types (mobile_type_keys, alone or as steps of a batch), '' when it types none. */
 export function typedText(tool, input) {
   const a = input && typeof input === 'object' ? input : {};
-  if (tool === 'mobile_type_keys') return String(a.text ?? '');
+  if (tool === 'mobile_type_keys' || tool === PHONE_TYPE_TOOL) return String(a.text ?? '');
   if (tool !== 'mobile_batch_commands') return '';
   const steps = Array.isArray(a.steps) ? a.steps : Array.isArray(a.commands) ? a.commands : [];
   return steps.filter((st) => /type_keys$/.test(String(st?.name ?? st?.tool ?? ''))).map((st) => String((st.arguments ?? st.args ?? st)?.text ?? '')).filter(Boolean).join('\n');
@@ -474,6 +475,22 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   /** The resumed activity, "pkg/.Activity" ('' when unknown). */
   phone.foreground = async () => { try { return /([\w.]+\/[\w.$]+)/.exec(await phone.shell("dumpsys activity activities | grep -m1 -E 'topResumedActivity|mResumedActivity'"))?.[1] ?? ''; } catch { return ''; } };
+  // Typing (typing.js): through the input method, installed on her phone the first time it is needed.
+  const typing = createTyping({
+    shell: (cmd) => phone.shell(cmd),
+    install: async () => {
+      const file = join(home, 'adb-keyboard.apk');
+      if (!existsSync(file)) {
+        let last;
+        for (const url of KEYBOARD.urls) { try { await (deps.fetch ? download(url, file, fetchImpl, () => {}) : curlDownload(url, file, () => {})); last = null; break; } catch (err) { last = err; try { rmSync(file, { force: true }); } catch {} } }
+        if (last) throw new Error(`could not download the keyboard: ${last.message}`);
+      }
+      await phone.adbExec(['install', '-r', file], { timeout: 120_000 });
+      logger.info('keyboard installed on her phone (ADB Keyboard): text goes in through the input method');
+    },
+    audit,
+  });
+  phone.type = (text, opts) => typing.type(text, opts);
   /** PNG of the screen right now (a blank frame — mid-transition, screen waking — is retaken once). */
   phone.screenshot = () => screencapRetry(async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout));
   /**
@@ -909,7 +926,7 @@ export function apply(ctx, config = {}, deps = {}) {
 
   // Approval gate for phone tools: installs/uninstalls, and typing that looks like a secret or a payment.
   ctx.on('tools/pre-execute', async (exec_, next) => {
-    if (off && (exec_.name?.startsWith(PHONE_TOOL_PREFIX) || exec_.name === PHONE_ZOOM_TOOL)) return deny('手机关着（他关的）。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /phone on');
+    if (off && (exec_.name?.startsWith(PHONE_TOOL_PREFIX) || exec_.name === PHONE_ZOOM_TOOL || exec_.name === PHONE_TYPE_TOOL)) return deny('手机关着（他关的）。不用等，也别自己去开；要用就请他在左侧栏 dot 页面打开，或发 /phone on');
     const reason = phoneGate(exec_, cfg);
     if (!reason) return next();
     audit({ kind: 'approval-asked', tool: exec_.name, session: exec_.agent?.session?.id, reason });
@@ -945,7 +962,7 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.on('session/event', (session, event) => { if (event?.type === 'turn/end' && session?.id && session.id === lease.holder) lapse(); });
   // Prepended: a listener ahead of it that answers without next() (interlude's observation `allow`) would skip it.
   ctx.on('tools/pre-execute', async (exec_, next) => {
-    const tool = exec_.name.startsWith(PHONE_TOOL_PREFIX) ? exec_.name.slice(PHONE_TOOL_PREFIX.length) : exec_.name === PHONE_ZOOM_TOOL ? exec_.name : '';
+    const tool = exec_.name.startsWith(PHONE_TOOL_PREFIX) ? exec_.name.slice(PHONE_TOOL_PREFIX.length) : exec_.name === PHONE_ZOOM_TOOL || exec_.name === PHONE_TYPE_TOOL ? exec_.name : '';
     const id = exec_.agent?.session?.id;
     if (!tool) return next();
     const refused = id ? await takeLease(id, tool) : null;
@@ -996,6 +1013,16 @@ export function apply(ctx, config = {}, deps = {}) {
   // so small text and details were cropped in the computer instead. The image goes through the
   // attachment store, like mobile_take_screenshot's (dsh-mcp-client); without one, no zoom.
   ctx.inject(['tools'], (scope) => {
+    scope.effect(() => scope.tools.register({
+      name: PHONE_TYPE_TOOL,
+      description: '在手机上打字：把 text 打进当前有光标的输入框（先点一下输入框）。字是一个一个出现的，打完会读一遍输入框核对。submit: true 打完按回车（搜索、发送）。打字只用这个。',
+      parameters: { type: 'object', properties: { text: { type: 'string' }, submit: { type: 'boolean' } }, required: ['text'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { typed: { type: 'number' } }, additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.error ? `没打成：${v.error}` : v?.verified === false ? `没打进去：输入框里现在是「${v.field ?? ''}」。先点一下要打字的输入框，再打。` : v?.verified === true ? `打进去了，输入框里现在是「${v.field ?? ''}」${v.submitted ? '，已按回车' : ''}。` : `打了 ${v?.typed ?? 0} 个字${v?.submitted ? '，已按回车' : ''}；这个输入框读不出来，没法核对，自己看一眼屏幕。` }] },
+      async execute(args) {
+        if (!phone.isReady) return { error: `手机还没就绪（${phone.state}）` };
+        try { return await typing.type(String(args?.text ?? ''), { submit: Boolean(args?.submit) }); } catch (err) { return { error: err.message }; }
+      },
+    }), 'dsh-dot/phone: type tool');
     scope.effect(() => scope.tools.register({
       name: PHONE_ZOOM_TOOL,
       description: '把手机屏幕的一块放大来看（现截一张）。x、y 是那块的左上角，w、h 是宽和高，单位是屏幕像素（和 mobile_list_elements_on_screen 的坐标一样）；scale 是放大倍数，最多 3，不填就放到看得清的大小。小字、图里的细节看不清时用。',

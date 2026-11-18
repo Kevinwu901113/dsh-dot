@@ -35,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { sectionOf, dshHome } from '../settings.js';
-import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
+import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL } from '../tool-prefixes.js';
 
 export const name = 'dsh-dot/compat';
 export const inject = [];
@@ -164,7 +164,9 @@ export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
 /** Is this tool one of dot's own (hers to use, nobody else's): memory, account, qq_send, her SnowLuma actions …? */
 export const isDotTool = (n) => DOT_TOOLS.includes(n) || DOT_TOOL_PREFIXES.some((p) => n.startsWith(p));
 /** Is this tool her phone's or her computer's (mcp__dot-phone__*, mcp__dot-vm__*, phone_zoom)? */
-export const isDeviceTool = (n) => n === PHONE_ZOOM_TOOL || DEVICE_TOOL_PREFIXES.some((p) => n.startsWith(p));
+export const isDeviceTool = (n) => n === PHONE_ZOOM_TOOL || n === PHONE_TYPE_TOOL || DEVICE_TOOL_PREFIXES.some((p) => n.startsWith(p));
+/** The phone server's own ways of putting text in (clipboard and paste under the hood): not offered, phone_type is the one way. */
+const PASTE_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_type_keys`, `${PHONE_TOOL_PREFIX}mobile_clipboard`];
 /** Is this tool qq-bridge's? */
 export const isBridgeTool = (n) => BRIDGE_TOOL_PREFIXES.some((p) => n.startsWith(p));
 
@@ -180,7 +182,7 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
     // Her conversation: she does not touch the devices herself — her hands do (dot/hands.js) — so their tools are not there to call.
     if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n)) out.push(n); continue; }
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
-    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n)) out.push(n); continue; }
+    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n) || PASTE_TOOLS.includes(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }
     if (isDeviceTool(n) && (owner === 'qqb-sandbox' || (owner === 'qqb-owner' && !ownerDevices))) out.push(n);
   }

@@ -1,0 +1,41 @@
+// dsh-dot/phone typing: through the input method, a few characters at a time, read back.
+import { test } from 'node:test';
+import assert from 'node:assert/strict';
+import { createTyping, chunks, focusedField, KEYBOARD } from '../src/phone/typing.js';
+
+const dump = (text, { password = false } = {}) => `<?xml version='1.0'?><hierarchy><node index="0" text="百度一下" class="android.widget.Button" focused="false" password="false" /><node index="1" text="${text}" class="android.widget.EditText" focused="true" password="${password}" /></hierarchy>UI hierchary dumped to: /dev/tty`;
+
+test('typing: installs the keyboard once, sends the text in pieces through it, and says whether it arrived', async () => {
+  assert.deepEqual(chunks('鲸鱼娘 贴吧😀x', 3), ['鲸鱼娘', ' 贴吧', '😀x']);
+  assert.deepEqual(focusedField(dump('a &amp; b')), { text: 'a & b', password: false });
+  assert.equal(focusedField('<hierarchy><node focused="false" text="x" /></hierarchy>'), null);
+  const cmds = []; let field = '', installed = 0, hasPkg = false, ime = 'com.google.android.inputmethod.latin/.LatinIME', works = true;
+  const shell = async (cmd) => {
+    cmds.push(cmd);
+    if (cmd.startsWith('pm list packages')) return hasPkg ? `package:${KEYBOARD.pkg}\n` : '';
+    if (cmd.startsWith('settings get secure default_input_method')) return ime;
+    if (cmd.startsWith('ime set')) { ime = KEYBOARD.ime; return ''; }
+    if (cmd.startsWith('am broadcast -a ADB_INPUT_B64')) { if (works) field += Buffer.from(cmd.split(' ').pop(), 'base64').toString('utf8'); return ''; }
+    if (cmd.startsWith('uiautomator dump')) return dump(field);
+    return '';
+  };
+  const audits = [];
+  const typing = createTyping({ shell, install: async () => { installed++; hasPkg = true; }, sleep: async () => {}, audit: (e) => audits.push(e) });
+  const r = await typing.type('鲸鱼娘 贴吧', { submit: true });
+  assert.deepEqual(r, { typed: 6, verified: true, field: '鲸鱼娘 贴吧', submitted: true });
+  assert.equal(installed, 1);
+  assert.ok(cmds.includes(`ime set ${KEYBOARD.ime}`) && cmds.at(-1) === 'input keyevent 66');
+  assert.equal(cmds.filter((c) => c.startsWith('am broadcast')).length, 2, 'two pieces');
+  // nothing arrives: said so, and Enter is not pressed
+  works = false; cmds.length = 0;
+  const bad = await typing.type('再来一句', { submit: true });
+  assert.deepEqual([bad.verified, bad.submitted], [false, false]);
+  assert.ok(!cmds.includes('input keyevent 66') && !cmds.some((c) => c.startsWith('pm list')), 'the keyboard is checked once');
+  assert.deepEqual(audits.map((e) => e.kind), ['keyboard-installed', 'typed', 'typed']);
+});
+
+test('typing: a field that cannot be read back (a password) claims nothing', async () => {
+  const shell = async (cmd) => (cmd.startsWith('pm list') ? `package:${KEYBOARD.pkg}` : cmd.startsWith('settings get') ? KEYBOARD.ime : cmd.startsWith('uiautomator') ? dump('••••', { password: true }) : '');
+  const r = await createTyping({ shell, install: async () => { throw new Error('not needed'); }, sleep: async () => {} }).type('hunter2');
+  assert.deepEqual(r, { typed: 7, verified: null });
+});
