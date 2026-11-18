@@ -14,6 +14,7 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { PHONE_TOOL_PREFIX, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { checkReply } from '../persona/card.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
@@ -87,6 +88,8 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 }
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
+/** The model-facing reason a qq_send to him is handed back by the reply check: listed phrases, or bracketed stage directions. */
+export const replyCheckText = ({ hits = [] } = {}) => prompt('dot.reply-check', { why: hits.length ? prompt('dot.reply-check.phrases', { phrases: hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') });
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
 export function isOwnerTarget(to, owner) {
   const s = String(to ?? '').trim();
@@ -220,6 +223,9 @@ export const defaults = {
   // What he asks her to do on her phone or computer while they talk: she hands it to her errands (hand_off)
   // and answers him; the errand does it; the report wakes her conversation, and she tells him. In a turn of
   // his words she does not operate the devices herself (false: as before — she may, and may also just say "等下").
+  // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
+  // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
+  replyCheck: true,
   handOff: true,
   handOffTtlMs: 7200000,       // not started within this long: given up, and she is told so
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -1016,8 +1022,15 @@ export function apply(ctx, config = {}) {
    * handed to her with his words. Otherwise its bubbles go out one after another; qq.send stops between
    * bubbles when he speaks, and what was left is kept the same way.
    */
-  const sayToOwner = (id, text, { record = true } = {}) => {
+  const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
+  const sayToOwner = (id, said, { record = true } = {}) => {
+    // The turn is over: nothing can be asked of her again here, so this way out only takes the stage directions out
+    // and records which phrases went through (the rate tells whether the card and the list need work).
+    const checked = cfg.replyCheck ? checkReply(said, replyChecks()) : null;
+    if (checked && (checked.stripped || checked.hits.length)) audit('reply-check', { session: id, via: 'answer', stripped: checked.stripped, hits: checked.hits });
+    const text = checked ? checked.text : String(said);
     const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
+    if (!lines.length) return;
     // His unread words: in the buffer, or held while her conversation is being handed over (frozenQueue).
     const waiting = ownerBatch.length + frozenQueue.filter((n) => n.fromOwner).length;
     if (waiting && preempts < cfg.ownerPreemptMax) {
@@ -1355,6 +1368,16 @@ export function apply(ctx, config = {}) {
     }
     if (exec.name !== 'qq_send' || !isOwnerTarget(args?.to, ctx.get('dshQq')?.owner)) return next();
     if (isErrand(id)) { audit('errand-owner-refused', { session: id }); return { kind: 'deny', reason: prompt('dot.errand-no-owner') }; }
+    // Her own send: it can still be handed back. Once a turn — a second draft goes out as it is, so a phrase list
+    // that is wrong costs one call, not her answer.
+    if (cfg.replyCheck && t && !t.replyChecked && typeof args?.text === 'string') {
+      const c = checkReply(args.text, replyChecks());
+      if (c.hits.length || c.stripped) {
+        t.replyChecked = true;
+        audit('reply-check', { session: id, via: 'qq_send', stripped: c.stripped, hits: c.hits, denied: true });
+        return { kind: 'deny', reason: replyCheckText(c) };
+      }
+    }
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return next();
     const n = ownerDenies.get(id) ?? 0;

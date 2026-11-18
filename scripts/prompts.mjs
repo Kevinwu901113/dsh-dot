@@ -90,6 +90,8 @@ export const entries = [
     render: () => variant([['她空闲', D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }])], ['她这轮进行中', D.ownerWords([{ text: '算了' }, { text: '先别弄了' }], Date.now(), { whileBusy: true })], ['她有话没发出去', D.ownerWords([{ text: '你中午吃什么' }], Date.now(), { unsent: ['回放的事我自己想办法', '你醒了再聊也行'] })]]) },
   { id: 'interrupt', group: 'wake', name: '他插话了', note: '她要 qq_send 给他时他还有没看的话：这次发送被拦下（工具返回的理由，每轮最多 2 次）；气泡发到一半他又说话：剩下的不发（qq_send 的结果）', files: ['dot.owner-interrupt', 'qq.send-interrupted'],
     render: () => variant([['发送被拦下', D.ownerInterruptText()], ['发到一半', Q.sendReport({ sent: 1, interrupted: true, unsent: ['那家店我去过', '还挺好吃的'] })]]) },
+  { id: 'reply-check', group: 'wake', name: '这句话被代码拦下', note: '她用 qq_send 发给他的话里有 <home>/persona.checks.txt 列的说法，或者括号写的动作：这次发送被退回一次（工具返回的理由，每轮最多 1 次，第二稿照发）。她直接写的回复不退回，只去掉括号动作', files: ['dot.reply-check', 'dot.reply-check.phrases', 'dot.reply-check.stage'],
+    render: () => variant([['有列出的说法', D.replyCheckText({ hits: ['不是……而是……', '综上所述'] })], ['有括号动作', D.replyCheckText()]]) },
   { id: 'approval', group: 'wake', name: '审批过期', note: '她那步要审批、dot.approvalWaitMs（默认 10 分钟）没人点：当拒绝处理，这句替换 dsh 的「the user rejected tool」作为工具结果', files: ['dot.approval-timeout'],
     render: () => D.approvalTimeoutText(10) },
   { id: 'notification', group: 'wake', name: '手机通知', note: '通知把她叫醒时收到的那条', files: ['dot.notification', 'dot.notification.many', 'dot.notification.busy', 'dot.notification.how-qq', 'dot.notification.how-mixed', 'dot.notification.how-app', 'dot.notification.cards', 'dot.notification.unverified'],

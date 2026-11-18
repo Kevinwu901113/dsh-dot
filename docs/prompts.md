@@ -32,6 +32,7 @@
 | | 说话提醒（最后一段） | `interlude.voice`（人设里的「说话提醒」优先） |
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`；她上一条有话没发出去时附 `dot.owner-words.unsent`） |
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
+| | 这句话被代码拦下 | `dot.reply-check` `.phrases` `.stage`（她的 `qq_send` 里有 `persona.checks.txt` 列的说法或括号动作时退回的理由，每轮一次） |
 | | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
 | | 拿起手机 / 跑腿回来 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what`（跑腿卡住被放弃：`dot.errand-stalled`） |

@@ -369,3 +369,19 @@ test('voice: how she talks is the last thing in her conversation (after the memo
   assert.equal(off.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', off.home)), '');
   off.stop();
 });
+
+test('her card: a home with a canon gets persona.md and persona.checks.txt once; the card is what her prompt opens with; a card she (the user) wrote is never replaced', () => {
+  const canon = { characterName: '林夏', characterProfile: '22岁的女大学生。', replyRules: '一条一行。' };
+  const h = harness({ canon });
+  const card = readFileSync(join(h.home, 'persona.md'), 'utf8');
+  assert.match(card, /^# 你是 林夏\n\n## 你是谁\n22岁的女大学生。\n\n## 怎么说话\n一条一行。\n$/);
+  assert.equal(h.canonText(), card.trim());
+  assert.ok(!existsSync(join(h.home, 'persona.checks.txt')), 'no blacklist in the canon: no checks file');
+  assert.ok(h.audits.some((e) => e.event === 'card-migrated' && e.card === true));
+  writeFileSync(join(h.home, 'persona.md'), '# 你是 小夏\n自己写的卡\n');
+  assert.equal(h.canonText(), '# 你是 小夏\n自己写的卡');
+  // the next start does not write it again, and a deleted card falls back to the canon as rendered before
+  const again = harness({ canon });
+  writeFileSync(join(again.home, 'persona.md'), '');
+  assert.match(again.canonText(), /## 角色设定\n22岁的女大学生。/);
+});

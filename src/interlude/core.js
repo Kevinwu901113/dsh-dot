@@ -28,6 +28,7 @@ import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
 import { createDoings, tokensOf } from './doings.js';
 import { createGrowth, growthTool } from './growth.js';
+import { CARD_FILE, CHECKS_FILE, canonToCard, checksText, migrateCanon, readCard, readChecks } from '../persona/card.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -225,7 +226,8 @@ export function apply(ctx, config = {}) {
   const canonText = (opts) => {
     let extra = '';
     if (cfg.identityFile) { try { extra = readFileSync(cfg.identityFile, 'utf8'); } catch (error) { void error; } }
-    return [renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
+    // Her card (<home>/persona.md) is what she reads; a home without one still gets the canon rendered as before.
+    return [readCard(home) || renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
   };
   /** The reminder of how she talks: the Canon's own (`voice`) when it has one, else the built-in from her name. */
   const voiceText = () => {
@@ -235,6 +237,15 @@ export function apply(ctx, config = {}) {
     return name || canon?.storyDefaults?.characterProfile ? prompt('interlude.voice', { name: name || '你自己' }) : '';
   };
   const audit = (event, data = {}) => ctx.get('dshComputer')?.audit?.({ kind: 'interlude', event, ...data });
+  /** A persona imported on purpose replaces her card and checks; what was there is kept beside them (.bak-<time>). */
+  const writeCard = () => {
+    const tag = new Date().toISOString().replace(/[-:T]/g, '').slice(0, 14);
+    for (const [file, body] of [[CARD_FILE, canonToCard(canon)], [CHECKS_FILE, checksText(canon)]]) {
+      const path = join(home, file);
+      try { writeFileSync(`${path}.bak-${tag}`, readFileSync(path)); } catch (error) { void error; }
+      if (body) writeFileSync(path, body);
+    }
+  };
   const doings = createDoings(files.doings);
   // Outside her own folder: only the weekly review changes her portrait (she could rewrite a file in <home>/her).
   const growth = cfg.growth ? createGrowth({ dir: join(dir, 'growth'), at: cfg.growthAt, maxChars: cfg.portraitMaxChars, maxChange: cfg.portraitMaxChange }) : null;
@@ -247,6 +258,12 @@ export function apply(ctx, config = {}) {
   const meta = { day: dayOf(), dayContacts: 0, ...readJson(files.meta, {}) };
   const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayContacts = 0; meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
+  // Once per home: the canon becomes her card and the checks file (src/persona/card.js). Deleting the card later
+  // falls back to the canon; it is not written again.
+  if (canon && !meta.cardMigrated) {
+    try { const w = migrateCanon(home, canon); meta.cardMigrated = true; saveMeta(); if (w.card || w.checks) { logger.info(`persona: ${[w.card && CARD_FILE, w.checks && CHECKS_FILE].filter(Boolean).join(' and ')} written from canon.json`); audit('card-migrated', w); } }
+    catch (error) { logger.warn(`persona card not written: ${error.message}`); }
+  }
 
   // 1. Her sessions: which ones are hers, whether a turn is running, when she was last busy.
   const homeSessions = new Set(); // sessions that are acts: cwd inside home, or opened from an IM bot
@@ -591,6 +608,7 @@ export function apply(ctx, config = {}) {
           try {
             canon = await fetchPreset(cfg.presetHub, arg.split(/\s+/)[1]);
             writeFileSync(files.canon, JSON.stringify(canon, null, 2));
+            writeCard();
             audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
             result = `\nimported: ${canon.source.title} by @${canon.source.author} (${canon.source.license}) → ${files.canon}`;
           } catch (error) { result = `\nimport failed: ${error.message}`; }
@@ -633,9 +651,14 @@ export function apply(ctx, config = {}) {
     async importPreset(code) {
       canon = await fetchPreset(cfg.presetHub, code);
       writeFileSync(files.canon, JSON.stringify(canon, null, 2));
+      writeCard();
       audit('canon-imported', { title: canon.source.title, shareCode: canon.source.shareCode });
       return { name: canon.storyDefaults.characterName, title: canon.source.title, author: canon.source.author, license: canon.source.license };
     },
+    /** What code checks in what she says to him: the phrases of <home>/persona.checks.txt, as patterns. */
+    checks() { return readChecks(home); },
+    /** Her card as she reads it ('' when the home has none and the canon is rendered instead). */
+    card() { return readCard(home); },
     /** The imported persona, or null while she runs on the built-in one. */
     canon() { return canon?.source ? { name: canon.storyDefaults?.characterName, title: canon.source.title, author: canon.source.author } : null; },
     /** One line on who she is (for the QQ group scorer): name + the character profile. */

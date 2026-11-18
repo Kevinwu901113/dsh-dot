@@ -708,7 +708,7 @@ function ownerHarness(cfg = {}) {
   const say = (text) => onMessage({ kind: 'private', userId: '20002', who: '宽', text, fromOwner: true, at: new Date().toISOString() });
   const turn = { start: (n = 1) => h.emit(h.home, 'turn/start', { turn: n }), end: (n = 1) => h.emit(h.home, 'turn/end', { turn: n }) };
   const gate = (to = 'owner') => hooks['tools/pre-execute']({ name: 'qq_send', arguments: { to, text: '好' }, agent }, async () => 'ran');
-  return { h, agent, calls, say, typing: (t) => onTyping({ userId: '20002', fromOwner: true, typing: t }), turn, gate, services };
+  return { h, agent, calls, say, typing: (t) => onTyping({ userId: '20002', fromOwner: true, typing: t }), turn, gate, services, pre: (exec, next) => hooks['tools/pre-execute'](exec, next) };
 }
 const lines = (c) => unstamp(c.text).split('\n');
 
@@ -1524,4 +1524,42 @@ test('hand_off off (dot.handOff = false): no tool, no rule, and she may use her 
   o.h.emit(o.h.home, 'user/message', { source: ownerSource() });
   assert.equal((await o.gate('s1', `${PHONE_TOOL_PREFIX}mobile_launch_app`)).kind, 'allow');
   stop(o.h);
+});
+
+test('what she says to him is checked in code: brackets out of a relayed answer; a listed phrase hands her own qq_send back once a turn', async () => {
+  const { parseBlacklist } = await import('../src/persona/card.js');
+  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
+  try {
+    const o = talkHarness();
+    o.services.dshInterlude = { checks: () => parseBlacklist('综上所述\n不是……而是……') };
+    // the turn's answer (no qq_send): stage directions go, the phrase goes through and is recorded
+    await qqTurn(o, 1, { answer: '（挠头）\n综上所述你去睡\n我那个号（旧的）还在' }); await settle();
+    assert.equal(o.sends.length, 1);
+    assert.deepEqual(o.sends[0].lines, ['综上所述你去睡', '我那个号（旧的）还在']);
+    assert.ok(o.h.audit.some((e) => e.event === 'reply-check' && e.via === 'answer' && e.stripped === 1 && e.hits.join() === '综上所述'));
+    o.sends[0].done({ sent: 2, said: o.sends[0].lines }); await settle(); await settle();
+    // an answer that was only a stage direction: nothing is sent
+    await qqTurn(o, 2, { answer: '（静静看着屏幕）' }); await settle();
+    assert.equal(o.sends.length, 1);
+    // her own qq_send: handed back once, with the phrase named; the second draft goes out whatever it says
+    o.turn.start(3);
+    const call = (text, to = 'owner') => o.pre({ name: 'qq_send', arguments: { to, text }, agent: o.agent }, async () => 'ran');
+    const d = await call('这不是偷懒而是战略休息');
+    assert.equal(d.kind, 'deny');
+    assert.match(d.reason, /「不是……而是……」/);
+    assert.equal(await call('这不是偷懒而是战略休息'), 'ran');
+    o.turn.end(3);
+    o.turn.start(4);
+    assert.equal(await call('综上所述', 'user:30003'), 'ran', 'to someone else: not checked');
+    assert.match((await call('好 (笑)')).reason, /括号/);
+    assert.equal(await call('刚醒\n嗓子好干'), 'ran');
+    o.turn.end(4);
+    assert.equal(o.h.audit.filter((e) => e.event === 'reply-check' && e.denied).length, 2);
+    // off: nothing is checked
+    const off = talkHarness({ replyCheck: false });
+    off.services.dshInterlude = { checks: () => parseBlacklist('综上所述') };
+    await qqTurn(off, 1, { answer: '（挠头）综上所述' }); await settle();
+    assert.deepEqual(off.sends[0].lines, ['（挠头）综上所述']);
+    stop(o.h); stop(off.h);
+  } finally { mock.timers.reset(); }
 });
