@@ -16,7 +16,7 @@
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
-import { VM_DISPLAY, qqSpoken } from '../qq/qq.js';
+import { VM_SCREENSHOT, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { createManuals, defaultManuals } from './manuals.js';
@@ -1128,9 +1128,7 @@ export function apply(ctx, config = {}) {
   const computerScreen = async () => {
     const sh = computer()?.backend?.rootShell;
     if (typeof sh !== 'function') return null;
-    const out = String(await sh([VM_DISPLAY, 'f=/tmp/dot-hands-screen.png; rm -f $f',
-      'if command -v import >/dev/null; then DISPLAY=$D import -window root $f 2>/dev/null; elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D 2>/dev/null | convert xwd:- $f 2>/dev/null; elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f 2>/dev/null; fi',
-      '[ -s $f ] && base64 -w0 $f; rm -f $f'].join('\n'))).trim().split('\n').pop() ?? '';
+    const out = String(await sh([VM_SCREENSHOT, '[ -s $f ] && base64 -w0 $f; rm -f $f'].join('\n'))).trim().split('\n').pop() ?? '';
     return out.length > 100 ? Buffer.from(out, 'base64') : null;
   };
   ctx.inject(['tools'], (scope) => {

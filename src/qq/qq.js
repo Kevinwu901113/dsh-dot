@@ -114,6 +114,9 @@ const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
 /** Shell that sets $D to her computer's desktop display (for anything that looks at or draws on that screen). */
 export const VM_DISPLAY = SL_DISPLAY;
+/** Shell that leaves a PNG of her computer's desktop in $f (nothing there when the computer has no tool for it). */
+export const VM_SCREENSHOT = [SL_DISPLAY, 'f=/tmp/dot-screen-now.png; rm -f $f',
+  'if command -v import >/dev/null; then DISPLAY=$D import -window root $f 2>/dev/null; elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D 2>/dev/null | convert xwd:- $f 2>/dev/null; elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f 2>/dev/null; fi'].join('\n');
 // "[s]" keeps pgrep/pkill from matching their own shell, as "[o]pt" does for QQ.
 const SL_PGREP = '[s]nowluma/index.mjs';
 // How often /qq qr puts a fresh code in front of her camera, and for how long.
@@ -158,6 +161,7 @@ export function segmentsToText(message, selfId = '') {
  *   http(s)://…            → the URL (NapCat downloads it)
  *   sticker:<id>           → a sticker from her collection (stickers.js); face:<n> → a QQ system face
  *   phone:screen           → a screenshot of her phone right now
+ *   computer:screen        → a screenshot of her computer's desktop right now
  *   phone:latest           → the newest photo/screenshot/download on her phone
  *   /sdcard/… or phone:/…  → that file on her phone
  *   any other absolute path → that file on her computer (NapCat runs there)
@@ -170,6 +174,7 @@ export function imageSource(ref) {
   const own = /^(sticker|face):\s*([0-9a-z]{1,10})$/i.exec(s);
   if (own) return { kind: own[1].toLowerCase(), ref: own[2].toLowerCase() };
   if (/^phone:screen(shot)?$/i.test(s)) return { kind: 'phone-screen', ref: s };
+  if (/^computer:screen(shot)?$/i.test(s)) return { kind: 'computer-screen', ref: s };
   if (/^phone:latest$/i.test(s)) return { kind: 'phone-latest', ref: s };
   const phonePath = /^phone:(\/.+)$/i.exec(s)?.[1] ?? (/^\/(sdcard|storage)\//.test(s) ? s : '');
   if (phonePath) return { kind: 'phone', ref: phonePath };
@@ -270,6 +275,7 @@ export function sentRef(ref) {
   if (!src) return String(ref ?? '').trim();
   if (src.kind === 'sticker' || src.kind === 'face') return `${src.kind}:${src.ref}`;
   if (src.kind === 'phone-screen') return 'phone:screen';
+  if (src.kind === 'computer-screen') return 'computer:screen';
   if (src.kind === 'phone-latest') return 'phone:latest';
   return src.kind === 'phone' && !/^\/(sdcard|storage)\//.test(src.ref) ? `phone:${src.ref}` : src.ref;
 }
@@ -1175,13 +1181,18 @@ export function apply(ctx, config = {}, deps = {}) {
   /** One OneBot image segment for an image she refers to (see imageSource). */
   async function imageSegment(ref) {
     const src = imageSource(ref);
-    if (!src) throw new Error(`can't find image "${ref}" (sticker:<id> | face:<n> | http(s) URL | phone:screen | phone:latest | /sdcard/… | a path on your computer)`);
+    if (!src) throw new Error(`can't find image "${ref}" (sticker:<id> | face:<n> | http(s) URL | phone:screen | computer:screen | phone:latest | /sdcard/… | a path on your computer)`);
     if (src.kind === 'url') {
       const why = urlRefusal(src.ref);
       if (why) throw new Error(`refusing image URL "${src.ref.slice(0, 80)}": ${why} — only public http/https addresses on ports 80/443`);
       return { type: 'image', data: { file: publicHttpUrl(src.ref) } };
     }
     if (src.kind === 'computer') return { type: 'image', data: { file: `file://${src.ref}` } };
+    if (src.kind === 'computer-screen') {
+      const out = String(await vmShell([VM_SCREENSHOT, '[ -s $f ] && base64 -w0 $f; rm -f $f'].join('\n'))).trim().split('\n').pop() ?? '';
+      if (out.length < 100) throw new Error('could not take a picture of the computer screen (no screenshot tool in the computer)');
+      return { type: 'image', data: { file: `base64://${out}` } };
+    }
     if (src.kind === 'face') return { type: 'face', data: { id: src.ref } };
     if (src.kind === 'sticker') {
       const buf = stickers.read(src.ref);
@@ -1328,7 +1339,7 @@ export function apply(ctx, config = {}, deps = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'qq_send',
-      description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
+      description: '用你的 QQ（电脑端在线）发消息：文字和/或图片。to: "user:<QQ号>"、"group:<群号>" 或 "owner"（和你说话的人）。text 里每一行是单独一条消息，像人打字那样一句一句发。images 是要发的图片，每张直接作为图片发出去（不是链接）："sticker:<id>"（你存的表情包，id 见收到的 [表情包 sticker:…]）；"face:<编号>"（QQ 小黄脸）；图片网址；"phone:screen"（你手机此刻的屏幕截图）；"computer:screen"（你电脑此刻的屏幕截图）；"phone:latest"（你手机里最新的照片/截图/下载）；手机上的路径 "/sdcard/..."；或你电脑上的绝对路径。只在你确实想回或想说时用。',
       parameters: { type: 'object', properties: { to: { type: 'string' }, text: { type: 'string' }, images: { type: 'array', items: { type: 'string' } } }, required: ['to'], additionalProperties: false },
       // presentationMeta lands on the durable tool/result: what really went out, for her memory's transcript.
       output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, images: v?.images ?? [], ...(v?.interrupted ? { interrupted: true } : {}) }) },
