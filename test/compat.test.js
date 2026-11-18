@@ -101,8 +101,8 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
 });
 
 test('hiddenFor: what each kind of session does not see', () => {
-  assert.deepEqual(hiddenFor('dot', TOOLS), ['phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search']);
-  assert.deepEqual(hiddenFor('dot', TOOLS, { hideBridgeTools: false }), ['phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate'], 'her conversation never has the device tools: her hands do');
+  assert.deepEqual(hiddenFor('dot', TOOLS), ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search']);
+  assert.deepEqual(hiddenFor('dot', TOOLS, { hideBridgeTools: false }), ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate'], 'her conversation never has the device tools: her hands do');
   const sandbox = hiddenFor('qqb-sandbox', TOOLS);
   assert.ok(!sandbox.includes('bash') && !sandbox.includes('todo_write') && !sandbox.includes('mcp__snowluma__send_private_msg'), 'only ours are touched');
   for (const n of ['memory', 'recall', 'account', 'qq_send', 'qq_sticker_keep', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__dot-qq__send_group_msg']) assert.ok(sandbox.includes(n), `${n} hidden from a sandbox session`);
@@ -146,7 +146,7 @@ test('compat service: finds qq-bridge, restricts each new agent by owner, guards
   assert.equal(h.api.ownerOfCwd(h.api.bridge().slangCwd), 'qqb-sandbox');
   assert.equal(h.api.ownerOfCwd('/home/me/dot/x'), 'dot');
   const hers = h.create('s1', '/home/me/dot');
-  assert.deepEqual(hers.restricts, [{ deny: ['phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search'] }]);
+  assert.deepEqual(hers.restricts, [{ deny: ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search'] }]);
   const group = h.create('qqb-g-111-' + 'b'.repeat(32), h.api.bridge().sessionCwd, 'qq-chat-v2');
   assert.ok(group.restricts[0].deny.includes('mcp__dot-vm__browser_navigate') && group.restricts[0].deny.includes('qq_send'));
   assert.equal(group.guards[0]({ name: 'qq_send' }), 'dsh-dot: qq_send is not available in this session (qqb-sandbox)');

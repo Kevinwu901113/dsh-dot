@@ -180,7 +180,8 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
   const out = [];
   for (const n of names) {
     // Her conversation: she does not touch the devices herself — her hands do (dot/hands.js) — so their tools are not there to call.
-    if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n)) out.push(n); continue; }
+    // (`bash` is the host's shell tool, which runs in her computer: operating the computer all the same.)
+    if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n) || n === 'bash') out.push(n); continue; }
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
     if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n) || PASTE_TOOLS.includes(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }
