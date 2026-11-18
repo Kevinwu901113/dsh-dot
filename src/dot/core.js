@@ -624,29 +624,31 @@ export function apply(ctx, config = {}) {
     if (!t.scheduled && !t.fromQq) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
       const text = contentText(event.data?.message?.content);
-      if (text.trim()) t.text = text; // the last non-empty reply of the turn is its answer
+      if (!text.trim()) return;
+      t.text = text; // a scheduled turn's answer is its last non-empty reply
+      // A turn of his words: what she writes is what she says to him — every piece, when she has written it, also
+      // the ones before a tool call ("搜到了，前三条是…" and then the next step for her hands). There is no reply
+      // of hers in such a turn that is not for him.
+      if (t.fromQq && !t.scheduled && !isSilent(text)) {
+        const say = stripSilent(text);
+        t.spoke = true;
+        // Started over because he spoke before anything reached him, and the cancel came too late to abort this
+        // step: it is kept as a draft and shown to her with his next words.
+        if (t.cancelled) keepUnsent(say.split('\n').map((l) => l.trim()).filter(Boolean));
+        else if (!ctx.get('dshQq')?.connected) herSaid(id, say);
+        else sayToOwner(id, say);
+      }
       return;
     }
     if (ended) {
       const text = t.text.trim();
-      // Started over because he spoke before anything of it reached him. His new words are already queued for the
-      // next turn, so whatever this turn wrote does not go out — also when the cancel came too late to abort it
-      // (it ended as completed): that answer is kept as a draft and shown to her with his next words.
-      if (t.fromQq && !t.scheduled && t.cancelled) {
-        const aborted = event.data?.reason?.kind === 'aborted';
-        if (!aborted && text && !isSilent(text)) keepUnsent(stripSilent(text).split('\n').map((l) => l.trim()).filter(Boolean));
-        audit('owner-turn-restarted', { session: id, aborted });
-        return;
-      }
-      if (!text || isSilent(text)) { if (t.fromQq) preempts = 0; audit('silent', { session: id }); return; }
       if (t.fromQq && !t.scheduled) {
-        // She answered him in the conversation; if no qq_send to him happened during the turn, it goes to his QQ.
-        const q = ctx.get('dshQq');
-        if ((q?.sentToOwnerAt ?? 0) >= t.startedAt) { preempts = 0; audit('qq-answered-herself', { session: id }); return; }
-        if (!q?.connected) { herSaid(id, stripSilent(text)); audit('qq-answered-herself', { session: id, why: 'qq not connected' }); return; }
-        sayToOwner(id, stripSilent(text));
+        // Everything she wrote went out as she wrote it (above). A turn started over because he spoke first is noted.
+        if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
+        if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
         return;
       }
+      if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
       // Over QQ this is on record where it goes out (dshQq.onSent); over another IM, here.
       void im.send(stripSilent(text)).then((sent) => { audit('delivered', { session: id, sent }); if (sent && !ctx.get('dshQq')?.connected) herSaid(id, stripSilent(text)); });
     }
@@ -1025,7 +1027,7 @@ export function apply(ctx, config = {}) {
     // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
     // it is started over with what he just said, so the reply she writes is to all of it. A turn that has
     // used a tool is not undone; his words go into it at its next step.
-    const restart = busy && open?.fromQq && !open.scheduled && !open.tools && typeof agent.cancel === 'function' && preempts < cfg.ownerPreemptMax;
+    const restart = busy && open?.fromQq && !open.scheduled && !open.tools && !open.spoke && typeof agent.cancel === 'function' && preempts < cfg.ownerPreemptMax;
     // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
     // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
     const via = restart ? 'restart' : busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
@@ -1105,9 +1107,16 @@ export function apply(ctx, config = {}) {
     t.startedAt = now;
     try {
       // Her own time and what her phone shows her come to her conversation: there is one of her.
-      const id = lastSession;
-      const found = id && await resolveLive(id);
-      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'no conversation of hers yet');
+      let id = lastSession;
+      let found = id && await resolveLive(id);
+      // No conversation of hers (a fresh start, "new conversation", or the remembered one is gone): her own time
+      // opens one, as his first message would — it was dropped instead, and the day's slots with it.
+      if (!found || 'error' in found) {
+        const controller = ctx.get('sessionController');
+        id = controller ? await openConversation(controller) : '';
+        found = id && await resolveLive(id);
+      }
+      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'no conversation of hers and none could be opened');
       t.session = id;
       t.onStart?.(id);
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: t.text }], source: t.source }));

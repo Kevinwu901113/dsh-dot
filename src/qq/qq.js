@@ -559,7 +559,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const computer = () => ctx.get('dshComputer');
   let WebSocketImpl = deps.WebSocket; // the `ws` package, loaded on first connect (tests inject a fake)
 
-  const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit, sentToOwnerAt: 0 };
+  const qq = { state: 'idle', error: undefined, connected: false, selfId: '', qq: cfg.qq, owner: cfg.owner, audit };
   const listeners = new Set();
   qq.onMessage = (fn) => { listeners.add(fn); return () => listeners.delete(fn); };
   // Her own messages as the backend reports them: what this plugin sent itself is known (by message id, or a send
@@ -1357,10 +1357,6 @@ export function apply(ctx, config = {}, deps = {}) {
       output: { schema: { type: 'object', properties: { sent: { type: 'number' } }, required: ['sent'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: sendReport(v) }], presentationMeta: (_a, v) => ({ sent: v?.sent ?? 0, said: v?.said ?? [], imagesSent: v?.imagesSent ?? 0, images: v?.images ?? [], ...(v?.interrupted ? { interrupted: true } : {}) }) },
       async execute(args) {
         const r = await qq.send(args.to, args.text ?? '', args.images ?? []);
-        // sentToOwnerAt means "she wrote to him herself with qq_send" (dot then does not relay the turn's answer). Only this tool
-        // sets it: dot's own sends through qq.send (relaying her answer, notices) must not, or a relay still typing its bubbles
-        // out when his next message starts a turn makes that turn look answered and its reply is never sent.
-        if (r.sent > 0 && qq.owner && parseTarget(args.to, qq.owner)?.user_id === Number(qq.owner)) qq.sentToOwnerAt = Date.now();
         const out = { sent: r.sent, said: r.said ?? [], imagesSent: r.imagesSent ?? 0, images: r.images ?? [], ...(r.failed ? { failed: r.failed, textSent: r.textSent } : {}), ...(r.interrupted ? { interrupted: true, unsent: r.unsent, ...(r.error ? { error: r.error } : {}) } : {}) };
         return r.failed || r.interrupted ? { ...out, note: sendReport(out).split('\n').slice(1).join('\n') } : out;
       },

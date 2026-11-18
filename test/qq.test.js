@@ -694,26 +694,9 @@ test('a send that fails after some bubbles went out says which reached them and 
   assert.equal(r.sent, 1); assert.deepEqual(r.said, ['到家了']);
   assert.equal(r.interrupted, true); assert.deepEqual(r.unsent, ['今天好累', '你吃了吗']); assert.equal(r.error, '发送超时');
   assert.equal(sendReport(r).split('\n')[1], '发了 1 条，后面的没发出去（发送超时）：今天好累 / 你吃了吗（已发出的别再发一遍）');
-  assert.ok(h.ctx.dshQq.sentToOwnerAt > 0, 'one bubble is with him: she did write to him');
   // nothing delivered at all: an ordinary failure
   n = 1;
   await assert.rejects(tool.execute({ to: 'owner', text: '在吗' }), /发送超时/);
-  h.stop();
-});
-
-test('only her own qq_send counts as having written to him: a send by dot (relaying her answer, a notice) does not', async () => {
-  const h = harness();
-  h.ctx.dshQq.setOwner('20002');
-  h.ready(); await tick(30);
-  const sock = FakeSocket.last;
-  sock.send = (s) => { const m = JSON.parse(s); sock.sent.push(m); setTimeout(() => sock.emit('message', JSON.stringify({ status: 'ok', retcode: 0, data: { message_id: 1 }, echo: m.echo })), 0); };
-  await h.ctx.dshQq.send('owner', '那就去睡一会');
-  assert.equal(h.ctx.dshQq.sentToOwnerAt, 0, 'a relay still typing when his next turn starts must not make that turn look answered');
-  const tool = h.tools.find((t) => t.name === 'qq_send');
-  await tool.execute({ to: 'user:30003', text: '在的' });
-  assert.equal(h.ctx.dshQq.sentToOwnerAt, 0, 'to someone else');
-  await tool.execute({ to: 'owner', text: '刚才煎了个蛋夹吐司' });
-  assert.ok(h.ctx.dshQq.sentToOwnerAt > 0, 'her own qq_send to him sets it');
   h.stop();
 });
 

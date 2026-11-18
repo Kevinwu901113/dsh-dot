@@ -95,6 +95,16 @@ const insideOf = (root, p) => p === root || p.startsWith(root.endsWith('/') ? ro
  * assigns (other than a declaration), calls something that acts (click, submit, fetch, navigation, timers, storage,
  * cookies, clipboard, dialogs, eval, DOM writes), or cannot be read at all, is not.
  */
+const POINTER_ACTIONS = new Set(['CLICK', 'DOUBLE_CLICK', 'RIGHT_CLICK', 'MOVE_TO', 'MOVE_REL', 'SCROLL', 'WAIT']);
+/** Is this browser_gui_execute_action call (its arguments as JSON text) one pointer action — no keys, no text? */
+export function pointerAction(args) {
+  try {
+    const a = (typeof args === 'string' ? JSON.parse(args) : args)?.action;
+    const type = String((a && typeof a === 'object' ? a.action_type : a) ?? '').toUpperCase();
+    return POINTER_ACTIONS.has(type) && !(a && typeof a === 'object' && ('text' in a || 'key' in a || 'keys' in a));
+  } catch { return false; }
+}
+
 export function readOnlyScript(script) {
   if (typeof script !== 'string' || !script.trim() || script.length > 4000) return false;
   const ACTS = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|importScripts|eval|Function|setTimeout|setInterval|requestAnimationFrame|postMessage|alert|confirm|prompt|open|close|print|click|submit|reset|focus|blur|select|dispatchEvent|remove|removeChild|appendChild|append|prepend|before|after|replaceWith|replaceChild|replaceChildren|insertBefore|insertAdjacentHTML|insertAdjacentElement|insertAdjacentText|write|writeln|setAttribute|removeAttribute|toggleAttribute|setProperty|removeProperty|add|toggle|scroll|scrollTo|scrollBy|scrollIntoView|play|pause|load|requestFullscreen|assign|replace(?=\s*\(\s*['"`h])|reload|pushState|replaceState|go|back|forward|setItem|removeItem|clear|execCommand|attachShadow|import)\s*\(|\b(cookie|localStorage|sessionStorage|indexedDB|caches|clipboard|credentials|serviceWorker|history|opener)\b|\bdelete\b|\bnew\s+(?!(Set|Map|Date|RegExp|Array|URL|URLSearchParams|Object)\b)|\+\+|--|\bawait\b|\bimport\b/;
@@ -172,7 +182,10 @@ export function decide(call, cfg, compiled = compile(cfg)) {
   if (cfg.readOnlyTools.includes(vmTool)) return cfg.mode === 'browser' && vmTool.startsWith('browser_') ? `dsh-computer: browser action ${vmTool}` : null;
   // A script that only reads the page is looking, like browser_get_text: it runs. Anything else of these tools asks.
   if (vmTool === 'browser_evaluate' && readOnlyScript(scriptOf(args))) return cfg.mode === 'browser' ? `dsh-computer: browser action ${vmTool}` : null;
-  if (cfg.alwaysAskTools.includes(vmTool)) return `dsh-computer: ${vmTool} (runs code or raw input in her computer)`;
+  // Moving the pointer, clicking and scrolling by coordinates is what browser_click does by index: an action like the
+  // others below. Keys and typed text through this tool are raw input and ask.
+  const pointing = vmTool === 'browser_gui_execute_action' && pointerAction(args);
+  if (cfg.alwaysAskTools.includes(vmTool) && !pointing) return `dsh-computer: ${vmTool} (runs code or raw input in her computer)`;
   // Everything else acts on the browser or the desktop — known action tools and unknown tools alike.
   if (cfg.mode === 'browser') return `dsh-computer: browser action ${vmTool}`;
   return compiled.sensitive.some((r) => r.test(args)) ? `dsh-computer: sensitive browser action ${vmTool}` : null;
