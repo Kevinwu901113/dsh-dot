@@ -80,8 +80,9 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const ctxText = (sid = 's1', cwd = home) => prompts.find((p) => p.name === 'interlude').text({ agent: { session: { id: sid, header: { cwd } } } });
   const canonText = (sid = 's1', cwd = home) => sections.find((p) => p.name === 'interlude:canon').text({ agent: { session: { id: sid, header: { cwd } } } });
   const assemble = async (sid, cwd, names) => { const a = { sections: names.map((name) => ({ name, text: name })), contexts: [], tools: [] }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.sections.map((x) => x.name); };
+  const assembleTools = async (sid, cwd, toolNames) => { const a = { sections: [{ name: 'interlude:canon', text: 'x' }], contexts: [], tools: toolNames.map((name) => ({ name })) }; let out = a; for (const fn of assemblers) out = await fn(a, { agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out.tools.map((x) => x.name); };
   const gate = async (sid, name) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid } } }, async () => out); return out; };
-  return { ctx, home, calls, sent, sections, prompts, audits, emit, emitAs, act, ctxText, canonText, assemble, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
+  return { ctx, home, calls, sent, sections, prompts, audits, emit, emitAs, act, ctxText, canonText, assemble, assembleTools, gate, followups, tick: () => ticks.forEach((f) => f()), cmd: () => cmd, tool: (n = 'doings') => tools[n], stop: () => effects.forEach((d) => typeof d === 'function' && d()) };
 }
 
 const soon = new Date(Date.now() + 3600000).toISOString();
@@ -157,6 +158,11 @@ test('prompt trim: a lean conversation of hers reads only what this plugin wrote
   h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...(get(n) ?? {}), lean: (id) => id === 's1' } : get(n)))(h.ctx.get);
   assert.deepEqual(await h.assemble('s1', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel']);
   assert.deepEqual(await h.assemble('s0', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel', 'tool:bash', 'tool:glob', 'subagents', 'mcp:vm', 'mcp:resources'], 'a conversation begun before keeps the host sections');
+  // the request's tool list is part of the assembly: hers only, also what her agent's preset brought
+  const tools = ['hands', 'bash', 'subagent', 'qq_send', 'mcp__dot-qq__invoke_action', 'workflow', 'web_search', 'schedule_create', 'run_code', 'plugin_manager'];
+  assert.deepEqual(await h.assembleTools('s1', h.home, tools), ['hands', 'qq_send', 'mcp__dot-qq__invoke_action', 'web_search', 'schedule_create', 'run_code']);
+  assert.deepEqual(await h.assembleTools('s0', h.home, tools), tools, 'not lean: every tool as the host listed it');
+  assert.deepEqual(await h.assembleTools('ui', '/Users/x/code', tools), tools, 'not hers: untouched');
   h.stop();
 });
 

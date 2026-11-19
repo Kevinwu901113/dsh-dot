@@ -631,7 +631,11 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 **真机上看到的（11-19 晚）。** 宿主那几段系统提示对 lean 的对话已经删掉（10248 → 4387 字）。工具只少了 9 个（52 → 43）：`restrict` 只管得到注册在公共层的工具；宿主自带的那 19 个（命令行、任务、子代理、workflow、插件管理、文件搜索 …）是随 agent 预设挂在会话自己身上的，`restrict` 够不着——代码里一直写着「对她隐藏 bash」，其实从没生效过。在请求发出去的路上改工具表也不行：`llm/stream` 的 `next(改过的请求)` 只影响后面的监听者，适配器发的还是原来那份（dsh-llm `index.js:2371`），试过，缓存命中和输入量都没变。
 
-所以现在是：那 19 个她还看得见，但调用会被拒绝（`dot.lean.not-hers`，审计 `lean-refused`），并告诉她用 hands 交代。**真正拿掉要给她的对话一个自己的 agent 预设**（`~/.dsh/.agent-presets/<名字>/agent.cordis.yml` 里只列她要的宿主插件，新开一段时用这个预设建会话）——要先读到宿主 standard 预设里各工具对应的插件名，还没做。
+**怎么拿掉的（查了宿主库之后）。** 请求里的工具表是提示词组装结果的一部分：`system-prompt/assemble` 这个钩子返回的 `tools` 就是发出去的（dsh-system-prompt `lib/index.js` 的 `assemble()`：先收齐各层的工具 schema，过一遍这个钩子，原样用它的返回值）。我们本来就在这个钩子里删段落，lean 的对话顺手把 `tools` 也筛成她自己的（`interlude/core.js`，审计 `lean-tools{offered,kept}`）。预设层带来的工具在这里一样会被筛掉。调用时的拒绝（`dot.lean.not-hers`）留着兜底。
+
+走不通的两条，记在这里免得再试：`llm/stream` 的 `next()` 不接参数（cordis `waterfall`：参数一开始就定死），传下去的改动会被丢掉；`~/.dsh/.agent-presets/` 从宿主 0.1.7 起不再读取，预设是 profile 里的一条 `@deepseek-ai/dsh-agent-preset` 行——给她单独建预设可行，但要先抄出 standard 预设里的每一行，暂时用不着。
+
+依据的宿主库是插件开发依赖里的 0.2.0-rc.2；他机器上桌面版的版本没有核对，以真机上的 `lean-tools` 审计和请求里的工具数为准。
 
 ## 0.24.2：手不替她写话
 
