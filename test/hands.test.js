@@ -95,7 +95,7 @@ test('hands: what they type is hers or was shown to them — never their own wor
 test('hands: how a round ended is told by the code, with what was refused on the way', async () => {
   const { handsStatus } = await import('../src/dot/core.js');
   assert.match(handsStatus({ status: 'done' }), /它自己停下的/);
-  assert.match(handsStatus({ status: 'cut', why: 'took too long' }), /太久了/);
+  assert.match(handsStatus({ status: 'cut', why: 'took too long' }), /太久了.*别当成什么都没做/);
   assert.match(handsStatus({ status: 'cut', why: 'stopped' }), /被叫停了/);
   assert.match(handsStatus({ status: 'failed', why: 'no hands session' }), /没能开始或中途断了：no hands session/);
   assert.match(handsStatus({ status: 'done', notes: ['own-words', 'own-words', 'reply-check'] }), /^它自己停下的.*；它要打一段你没给的字.*；你给的那句话被退回了/);
