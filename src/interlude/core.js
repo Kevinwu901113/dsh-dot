@@ -17,12 +17,12 @@
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 import { typesText } from '../phone/phone.js';
-import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate, workEffort } from '../llm-gate.js';
+import { installLlmGate } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
@@ -34,7 +34,6 @@ export const inject = ['llm', 'agentDefaultModel'];
 
 /** Social apps she might install, by site and by name — nothing is installed for her; only what is on her phone counts. */
 export const KNOWN_APPS = {
-  sites: { 'xiaoheihe.cn': 'com.max.xiaoheihe', 'bilibili.com': 'tv.danmaku.bili', 'weibo.com': 'com.sina.weibo', 'weibo.cn': 'com.sina.weibo', 'xiaohongshu.com': 'com.xingin.xhs', 'zhihu.com': 'com.zhihu.android', 'douyin.com': 'com.ss.android.ugc.aweme', 'coolapk.com': 'com.coolapk.market', 'tieba.baidu.com': 'com.baidu.tieba', 'douban.com': 'com.douban.frodo', 'qzone.qq.com': 'com.tencent.mobileqq' },
   labels: { 小黑盒: 'com.max.xiaoheihe', B站: 'tv.danmaku.bili', 微博: 'com.sina.weibo', 小红书: 'com.xingin.xhs', 知乎: 'com.zhihu.android', 抖音: 'com.ss.android.ugc.aweme', 酷安: 'com.coolapk.market', 贴吧: 'com.baidu.tieba', 豆瓣: 'com.douban.frodo', QQ空间: 'com.tencent.mobileqq' },
 };
 
@@ -160,8 +159,6 @@ export async function collectReply(stream) {
   return { text, args, usage };
 }
 
-/** Token usage of one call, as the ledger records it (dsh-llm's TokenUsage, or null when the provider gave none). */
-export const usageOf = (u) => (u ? { in: Number(u.inputTokens ?? 0), out: Number(u.outputTokens ?? 0), cached: Number(u.cacheReadTokens ?? 0) } : null);
 
 /** storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */
 export function renderCanon(canon, { withStyle = false } = {}) {
@@ -204,7 +201,7 @@ export function apply(ctx, config = {}) {
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const files = {
-    calls: join(dir, 'calls.jsonl'), meta: join(dir, 'meta.json'),
+    meta: join(dir, 'meta.json'),
     canon: join(dir, 'canon.json'), doings: join(dir, 'doings.json'),
   };
   mkdirSync(dir, { recursive: true });
@@ -359,7 +356,7 @@ export function apply(ctx, config = {}) {
       })();
     }
   });
-  // In her own time: no QQ (he is reached through tell_him), no ledger tool, and typing in a social app asks first.
+  // In her own time: typing in a social app asks him first.
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
     // Her own time runs in her conversation; her hands (dsh-dot/hands) do the typing, so the rule about typing looks at them too.
@@ -450,14 +447,12 @@ export function apply(ctx, config = {}) {
 
   // 4b. Her own hands on the ledger: in her conversation, when he reacts to something she did on her own.
   const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;
-  ctx.inject(['tools'], (scope) => {
-  });
 
   // 5. /interlude
   ctx.inject(['commands'], (scope) => {
     scope.effect(() => scope.commands.register({
       name: 'interlude',
-      description: 'Her persona and her own doings: status; "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one, "free" gives her some time of her own now, "growth" shows her portrait ("growth now" reviews it, "growth rollback <week>" goes back).',
+      description: 'Her persona and her own doings: status; "preset <share code>" imports a Canon from the preset hub, "canon" shows it, "doings" lists what she did on her own and what it cost, "feedback [#id] <text>" tells her what you think of one, "free" gives her some time of her own now',
       input: { hint: '[preset <code> | canon | doings | feedback [#id] <text> | free]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();

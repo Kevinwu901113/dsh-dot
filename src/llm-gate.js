@@ -10,25 +10,13 @@
 //
 //   request                                        where                         class
 //   ─────────────────────────────────────────────  ────────────────────────────  ──────────
-//   interlude round, its continuity refresh,        interlude/core.js (marked)    background
-//     the weekly growth review
-//   memory consolidation, diary                     memory/memory.js complete()   background
+//   memory consolidation, diary, fact lines          memory/memory.js complete()   background
 //   QQ group scoring (groupPolicy 'score')          qq/qq.js (marked)             background
 //   howto reflection after a phone run              dot/core.js reflectOnce()     background
-//   her errand session (current and retired):       dot/core.js isErrand          background
-//     non-conversation app notifications, phone
-//     checks, interlude look / play / try / free
-//     time (dshDot.task)
-//   interlude without dsh-dot: interlude.vmSession  interlude/core.js             background
-//     (a session set aside for looks / plays /
-//     tries), and a look / try / free-time session
-//     that is not her conversation
-//   her conversation (lastSession): the owner's     —                             foreground
-//     dsh / IM chat, QQ messages (private and
-//     group) and conversation-app notifications
-//     (QQ, WeChat) — these wake her there
-//   a phone check or look when there is no errand  —                             foreground
-//     (it falls back to her conversation)
+//   her hands on her own business (her own time,    dot/core.js backgroundSessions background
+//     a phone check): a round for him is foreground
+//   her conversation: his words, QQ and app         —                             foreground
+//     notifications, her own time
 //   anything else (other plugins, sessions we do   —                             foreground
 //     not know, compaction, titles)
 //
@@ -96,15 +84,14 @@ function normalize(c = {}) {
 
 // ── the reasoning effort of her background work ──
 // dsh has one model selector: changing the effort in any conversation also becomes the default every
-// hand-built request read (currentSelection). Turning thinking off for a chat that should sound like a
-// person therefore turned it off for the interlude's narrator, memory consolidation, the growth review
-// and her errands as well — the work where it matters. So background work has its own setting
-// (`llm.workEffort`), and the selector is left to mean what he set it for: the conversation in front of him.
+// hand-built request reads (currentSelection). Turning thinking off for a chat that should sound like a
+// person therefore turned it off for memory consolidation and the howto reflection as well — the work
+// where it matters. So background work has its own setting (`llm.workEffort`), and the selector is left
+// to mean what he set it for: the conversation in front of him.
 //
-//   hand-built requests (interlude round and growth, memory, howto reflection): the caller asks here;
-//   her errand sessions: dot answers the host's `agent/request` waterfall with it (dot/core.js);
+//   hand-built requests (memory, howto reflection): the caller asks here;
 //   QQ group scoring (one digit out): always 'off';
-//   her conversation, and everything that is not ours: untouched.
+//   her conversation, her hands, and everything that is not ours: untouched.
 //
 // An effort the model does not offer is never sent (the host rejects the request before any provider
 // I/O): the host is asked once per model, and when it says no — or cannot be asked — the selector's

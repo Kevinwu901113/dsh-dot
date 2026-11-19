@@ -33,7 +33,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
+import { background, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, fill, overrideNotes, prompt, rebase, table } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { ago, describeNow, mondayOf, stamp } from '../clock.js';
@@ -92,7 +92,6 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 }
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
-/** The model-facing reason a qq_send to him is handed back by the reply check: listed phrases, or bracketed stage directions. */
 /**
  * How a round of her hands ended, as the code saw it — not as they tell it: they stopped by themselves (whether the
  * thing worked is in their words), they were cut (too long, or she stopped them), or the round could not run; and
@@ -227,10 +226,10 @@ export function wakeText(items, { whileBusy = false, cards = '', now = Date.now(
 export const scheduledRule = () => prompt('dot.scheduled', { silent: SILENT });
 
 /** Standing working rules for sessions in <home>: a prompt section, so no AGENTS.md is needed. */
-export function workingRules({ computer = true, phone = false } = {}) {
-  const [computerIntro, computerRule] = computer ? prompt('dot.rules.computer', { vmPrefix: VM_TOOL_PREFIX }).split('\n') : ['', ''];
-  const [phoneIntro, phoneRule] = phone ? prompt('dot.rules.phone', { phonePrefix: PHONE_TOOL_PREFIX }).split('\n') : ['', ''];
-  return `${prompt('dot.rules', { computer: computerIntro, phone: phoneIntro, computerRule: computerRule ?? '', phoneRule: phoneRule ?? '', silent: SILENT })}`;
+export function workingRules() {
+  // The keys an older override of dot.rules may still name are filled with nothing: what her phone and computer are
+  // to her is said where they are introduced (phone:device, dot.computer.hers).
+  return prompt('dot.rules', { computer: '', phone: '', computerRule: '', phoneRule: '', silent: SILENT });
 }
 
 export const defaults = {
@@ -336,11 +335,6 @@ export function setupText(phoneStatus, computerStatus) {
     lines.push(`电脑：${c.state === 'off' ? '关着（他关的；要用就请他在 dot 页面打开，别自己想办法开）' : c.state === 'error' ? `出错了（${c.error ?? '未知'}），/phone doctor 或 dot 页面看详情` : COMPUTER_STAGE[c.stage] ?? '开机中'}`);
   }
   return lines.length ? prompt('dot.setup', { devices: lines.join('\n') }) : '';
-}
-/** A note left in her conversation: something for her to know that nobody said to her. */
-export function errandNote(origin, text, now = Date.now()) {
-  const what = table('dot.errand-note.what');
-  return prompt('dot.errand-note', { stamp: stamp(now, now), what: what[Object.hasOwn(what, origin) ? origin : 'other'], text: String(text).trim() });
 }
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
@@ -536,7 +530,7 @@ export function apply(ctx, config = {}) {
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
   /** Leave a note in her conversation, without waking it; true when it got there. */
-  async function noteToConversation(origin, text, note = errandNote(origin, text)) {
+  async function noteToConversation(origin, note) {
     const id = lastSession;
     const controller = ctx.get('sessionController');
     if (!id || !controller) return false;
@@ -581,7 +575,7 @@ export function apply(ctx, config = {}) {
       r.noted = true; saveReaches();
       const time = new Date(r.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
       audit('reach-unanswered', { at: r.at });
-      void noteToConversation('other', '', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
+      void noteToConversation('other', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
     }
   };
   const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
@@ -863,7 +857,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({
       name: 'dot:rules',
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
-      text: (c) => (inHome(c) ? workingRules({ computer: Boolean(computer()), phone: Boolean(phone()) }) : ''),
+      text: (c) => (inHome(c) ? workingRules() : ''),
     }), 'dsh-dot: working rules section');
     // Her clock: after the history (like dot:memory), on her conversation and her errands. "Since the
     // last message" counts from the last line said before this turn began, so it holds for the turn.
@@ -1527,7 +1521,7 @@ export function apply(ctx, config = {}) {
     const out = [...approvals.values()].map((a) => `approval waiting: ${shortTool(a.tool)} in ${who(a.session)} · ${mins(now - a.since)}${cfg.approvalWaitMs > 0 ? ` of ${mins(cfg.approvalWaitMs)}` : ''}${a.timedOutAt ? ' · timed out' : ''}`);
     for (const id of turns.keys()) {
       const t = turnInfo(id, now);
-      if (t && (t.state === 'stalled' || t.state === 'timed-out')) out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · ${t.state === 'timed-out' ? 'after an approval timed out · ' : ''}last: ${t.doing}${t.errand ? ` · given up at ${mins(cfg.errandStallMs)}` : ' · not cancelled'}`);
+      if (t && (t.state === 'stalled' || t.state === 'timed-out')) out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · ${t.state === 'timed-out' ? 'after an approval timed out · ' : ''}last: ${t.doing} · not cancelled`);
     }
     return out.length ? out : [`liveness: no approval waiting, no stalled turn (approval wait ${cfg.approvalWaitMs > 0 ? mins(cfg.approvalWaitMs) : 'unlimited'}, stalled after ${mins(cfg.turnStallMs)})`];
   };
@@ -1601,15 +1595,13 @@ export function apply(ctx, config = {}) {
       setLast(id);
     },
     /**
-     * Post an interlude task ({ kind: 'play'|'look'|'try', key, text, source, readOnly, ttlMs, onStart(sessionId), onDone(result) }):
-     * run in an errand when nothing else is (see defaults.interludeQueueMax); `onDone` gets
+     * Post a thing of her own ({ kind: 'free', key, text, source, ttlMs, onStart(sessionId), onDone(result) }): it runs in her
+     * conversation when nothing else is going on (see defaults.interludeQueueMax); `onDone` gets
      * { status: 'done'|'stalled'|'expired'|'dropped', queuedAt, startedAt, doneAt, busyWith, report, cost: { in, cached, out } | null }. → 'queued' | 'refreshed'
      */
     task: enqueueTask,
     /** How long a queued task waits before it expires. */
     taskTtlMs: cfg.interludeTaskTtlMs,
-    /** Something she wanted to tell him while living her day: a note in her conversation; she decides. True when handed over. */
-    say: (text) => noteToConversation('say', text, prompt('dot.interlude-say', { text: String(text).trim() })),
     stats,
     isErrand,
     /** Is this session hers (her conversation, an IM-opened one, her errand): what compat asks before letting it see her tools. */

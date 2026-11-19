@@ -13,13 +13,12 @@
 - 几个文件是表格，一行一项 `代号=文字`（`dot.now`、`dot.errand-note.what`、`memory.standing`、`memory.handoff`、`memory.daily.bank`）：只改等号右边。
 - **时间戳**：叫醒她的每条消息开头都有同一种时间戳 `{stamp}`：`MM-DD HH:MM`，不是今年的写 `YYYY-MM-DD HH:MM`（和记忆里的日期一个规则）。他的 QQ 消息是 `[{stamp}] 原话`（一批盖一个，多条一行一条）；其他的放在方括号里：`[{stamp} 手机通知]`、`[{stamp} 拿起手机]`、`[{stamp} {what}]`（跑腿回来）、`[{stamp} 幕间观察]`、`[{stamp} 想玩会儿手机]`。改这些文件时保留 `{stamp}` 和方括号的样子，记忆记录时按这个样子把时间戳去掉。
 - `dot.now` 是她对话里「现在」那一行：`line` 是整行，`since` 是「距上一条消息」那一段（不到一分钟、或还没说过话时整段省掉）。
-- `dot.rules.computer` / `dot.rules.phone` 各两行：第一行接在开头那段里，第二行是一条规则。
 
 **页面**：在 dsh 里发 `/dot prompts`，打开它回的网址（默认 http://127.0.0.1:7870/，只监听本机，端口用 `dot.promptsPort` 换；日志 `~/.dsh/dsh-dot-prompts.log`），`/dot prompts stop` 关掉，dsh 退出时也跟着关。开发时在仓库根目录跑 `npm run prompts` 是同一个页面（`PORT=xxxx` 换端口）。左边第一项是人设（canon.json），其余按她看到的顺序列出全部文件，标着「内置」或「已改过」；右边是整个文件，「保存」写到 `<home>/prompts/`，「恢复内置」删掉覆盖文件，「预览」用样例数据跑真实代码（没保存的改动也能预览），「全貌」拼出她对话里插件加的整段系统提示词。`npm run prompts -- --src` 时「保存」直接写进 `src/prompts/`，改的是内置版本。
 
 | 分组 | 是什么 | 文件 |
 |---|---|---|
-| 系统提示词 | 工作方式 | `dot.rules` `dot.rules.computer` `dot.rules.phone` |
+| 系统提示词 | 工作方式 | `dot.rules` |
 | | 手机 | `phone.device` `phone.device.number` `phone.stickers` |
 | | 电脑上的 QQ | `qq.channel` `qq.channel.owner` `qq.channel.score` `qq.stickers` `qq.channel.no-stickers` `qq.faces` |
 | | 现在几点（每一轮，在对话历史之后） | `dot.now` |

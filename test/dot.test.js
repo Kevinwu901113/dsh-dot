@@ -51,7 +51,7 @@ test('working rules are a prompt section for sessions in home; no AGENTS.md is w
   apply(h.ctx, h.config);
   assert.ok(!existsSync(join(h.home, 'AGENTS.md')));
   const sec = h.ctx.sections.find((s) => s.name === 'dot:rules');
-  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*DOT_SILENT[\s\S]*一行就是一条消息/);
+  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*DOT_SILENT/);
   assert.equal(sec.text({ agent: { session: { id: 'b', header: { cwd: '/elsewhere' } } } }), '');
   stop(h);
 });
@@ -198,7 +198,7 @@ test('scope: a session an IM bot opened elsewhere is dot\'s too; the desktop UI 
   const at = (id, cwd) => rules.text({ agent: { session: { id, header: { cwd } } } });
   // dsh-im relays the first message with rpcId "<channel>-<uuid>" into the inbox before the turn starts.
   h.emitAs('wx', '/Users/x/.dsh/im', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'weixin-c6d37277-7e04-421c-b080-dbc1c5f57eb6' } }] });
-  assert.match(at('wx', '/Users/x/.dsh/im'), /dot 的工作方式/);
+  assert.match(at('wx', '/Users/x/.dsh/im'), /你和他之间的几件事/);
   h.emitAs('ui', '/Users/x/code', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'rpc-1234' } }] });
   assert.equal(at('ui', '/Users/x/code'), '');
   // a scheduled turn in that IM session is delivered like one in home
@@ -256,7 +256,7 @@ test('a phone notification wakes her latest session with the notification text; 
   h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
   await wait(120);
   assert.equal(followups.length, 4);
-  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就自己去 App 里回，和平时一样；不想理就只回 DOT_SILENT。）');
+  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就让你的手去 App 里回；不想理就只回 DOT_SILENT。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);
@@ -392,10 +392,10 @@ test('pictures she is sent: his words and the wake text carry one image block pe
   assert.ok(blind.followups.length === 2 && blind.followups.every((m) => m.content.length === 1 && m.content[0].type === 'text'), 'no store: text only, as before');
 });
 
-test('working rules tell her to use a goal for long tasks', async () => {
+test('working rules: what is between her and him, nothing about operating a device', async () => {
   const { workingRules } = await import('../src/dot/core.js');
-  assert.match(workingRules(), /create_goal/);
-  assert.match(workingRules(), /一轮就能做完的事不用建目标/);
+  assert.match(workingRules(), /schedule_create/);
+  assert.doesNotMatch(workingRules(), /用户|浏览器|\{/);
 });
 
 test('with memory: the people in a QQ message are touched and their card rides along; deliveries wait during a handoff', async () => {
@@ -561,9 +561,8 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
   assert.equal(unstamp('[11-04 04:51] 在吗'), '在吗');
   assert.equal(unstamp('[2025-11-04 04:51 手机通知] x'), '[手机通知] x');
   assert.equal(unstamp('[手机通知] x'), '[手机通知] x');
-  const { ownerWords, errandNote, phoneCheckText, notificationText } = await import('../src/dot/core.js');
+  const { ownerWords, phoneCheckText, notificationText } = await import('../src/dot/core.js');
   assert.equal(ownerWords([{ text: '在吗', at: new Date(2026, 10, 4, 4, 50).toISOString() }, { text: '睡了没' }], now), '[11-04 04:50] 在吗\n睡了没');
-  assert.match(errandNote('play', '点了个赞', now), /^\[11-04 04:51 刚才在手机上玩了会儿\] 点了个赞/);
   assert.match(phoneCheckText(now), /^\[11-04 04:51 拿起手机\] /);
   assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
 });
@@ -588,7 +587,7 @@ test('dot:now: one line after the history, on her conversation and errands; "sin
   ctxNow.text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
   assert.ok(asked.at(-1) <= before, 'from the turn start, so his waking message is not "the last one"');
   const rules = h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
-  assert.match(rules, /- 几点以「现在」那行为准，不从对话里推；说"刚才""昨晚""待会"、约时间、定提醒之前先看一眼它。/);
+  assert.match(rules, /- 时间以「现在」那行为准/);
   stop(h);
 });
 
@@ -831,14 +830,6 @@ test('approvals: one message to him per turn, later ones only counted', async ()
   assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理/);
   assert.equal(h.audit.filter((e) => e.event === 'approval-merged').length, 3);
   assert.equal(h.audit.filter((e) => e.event === 'approval-merged').at(-1).count, 4);
-  stop(h);
-});
-
-test('say: what she wanted to tell him goes into her conversation as a note; she decides', async () => {
-  const { h, dot, injected } = errandHarness();
-  assert.equal(await dot.say('降温了\n你那边冷不冷'), true);
-  assert.equal(injected[0].id, 's1');
-  assert.equal(injected[0].m.content[0].text, '（这是你自己在过日子时想跟他说的：降温了\n你那边冷不冷）看现在合不合适，合适就用你自己的话说，不合适就不说。');
   stop(h);
 });
 

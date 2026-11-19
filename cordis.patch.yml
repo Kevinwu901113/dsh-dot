@@ -15,10 +15,9 @@
 #   memory    — what she remembers (people, fragments, diary, owner/self banks). DSH_DOT_MEMORY=off.
 #   compat    — living next to qq-bridge: per-session tool visibility, where its commands run, its bot
 #               accounts kept out of her QQ. DSH_DOT_COMPAT=off turns it off.
-#   interlude — 幕间, after HDS-Interlude: the Canon (persona, HDSI presets by share code) as a
-#               prompt section, and a life between conversations — script, continuity, intents,
-#               going to look at things on her phone / in her browser (read-only), optional
-#               proactive contact over dsh-im. DSH_DOT_INTERLUDE=off turns it off.
+#   interlude — her persona (the Canon / persona.md, HDSI presets by share code) as a prompt section,
+#               and 自己的时间: a few times a day, time of her own in her conversation.
+#               DSH_DOT_INTERLUDE=off turns it off.
 # Every component tolerates a sibling being off (services are looked up with ctx.get(...)?.).
 
 # 1. Replace the host subprocess provider with the VM-backed one.
@@ -153,24 +152,12 @@
         # Next to another memory plugin: auto (people-only when one is found) · full · people-only.
         coexist: !!js "process.env.DSH_DOT_MEMORY_COEXIST ?? 'auto'"
         # handoffTokens: 150000
-    # 7. 幕间 (was the standalone dsh-interlude plugin). Shares dot's home: <home>/interlude/.
+    # 7. Her persona and her own time (the component keeps the name interlude). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
       name: 'dsh-dot-life/interlude'
       disabled: !!js "process.env.DSH_DOT_INTERLUDE === 'off'"
       config:
         home: !!js "process.env.DSH_INTERLUDE_HOME ?? process.env.DSH_DOT_HOME ?? ''"
-        # Going to look (HDSI browserIntent): auto = web first; a host listed below is always
-        # looked at by her — in the app on her phone (phoneApps, host → package) or in her own VM
-        # browser (vmSites) — read-only, no approvals. Add the sites she is logged into.
-        # browser: auto
-        # Her phone's apps she looks things up in (host → package). Only apps she has installed herself are ever used.
-        phoneApps: { xiaoheihe.cn: com.max.xiaoheihe, bilibili.com: tv.danmaku.bili }
-        # vmSites: [x.com]
-        # vmDailyCap: 2
-        # 玩: small social actions on her own accounts (like / comment / follow). How often is her own
-        # habit (her self notes), not a quota; DSH_DOT_PLAY=off turns it off.
-        play: !!js "process.env.DSH_DOT_PLAY !== 'off'"
-        playApps: { 小黑盒: com.max.xiaoheihe, B站: tv.danmaku.bili }
     # 8. Her QQ on the computer (NapCat in the VM). /qq install once, /qq account <number>, /qq qr to log in.
     - id: dot-qq
       name: 'dsh-dot-life/qq'

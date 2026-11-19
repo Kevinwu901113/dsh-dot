@@ -67,8 +67,8 @@ const standing = () => S.renderStanding(sampleMemory(), { now: T0 + 3.5 * 864e5 
 // ── what she sees, in order: each entry is one thing she is given, made of these files ──
 export const GROUPS = [['system', '系统提示词'], ['wake', '叫醒她的消息'], ['call', '独立模型调用']];
 export const entries = [
-  { id: 'rules', group: 'system', name: '工作方式', note: '定时任务（先看已有的）、问一次就放下、静默、审批、长任务；有电脑、有手机时各多一句', files: ['dot.rules', 'dot.rules.computer', 'dot.rules.phone'],
-    render: () => variant([['电脑和手机都有', D.workingRules({ computer: true, phone: true })], ['只有手机', D.workingRules({ computer: false, phone: true })]]) },
+  { id: 'rules', group: 'system', name: '工作方式', note: '她和他之间的几件事：定时任务（先看已有的）、问一次就放下、静默、审批。动手的说明不在这里（在手那边）', files: ['dot.rules'],
+    render: () => D.workingRules() },
   { id: 'phone', group: 'system', name: '手机', note: '手机开着时才有；通知叫醒她那句要 dot 组件在；设了手机号（/phone number）才有那一句；表情包段要 qq 组件在，最后"记到 self"要 memory 在', files: ['phone.device', 'phone.hers', 'phone.device.wake', 'phone.device.no-wake', 'phone.device.number', 'phone.stickers', 'phone.stickers.learned', 'dot.computer.hers'],
     render: () => variant([['她的对话里（工具在手那边）', deviceText('dot', '13800138000', { tools: false })], ['她对话里电脑那一行', P.prompt('dot.computer.hers')], ['手的会话里', deviceText('dot', '13800138000', { dot: false, qq: false, memory: false, hands: true })], ['设了手机号', deviceText('dot', '13800138000')], ['没设手机号', deviceText('dot')], ['只装手机（没有 dot、qq、memory）', deviceText('dot', '', { dot: false, qq: false, memory: false })]]) },
   { id: 'howto', group: 'system', name: '她自己的经验（进 App 时给）', note: '她用手机的每一轮都按 App 记步数（<home>/her/howto/_log.jsonl）；一个会话里第一次打开某个 App，她以前记下的这个 App 的经验和最近几次的步数跟着结果给她（.given；还没有经验时 .no-notes）。整理这些经验的那次调用在「独立模型调用」里', files: ['dot.howto.given', 'dot.howto.no-notes'],
@@ -102,8 +102,6 @@ export const entries = [
       return variant([['一个 QQ 对话', D.wakeText(qqOne)], ['她忙的时候来的', D.wakeText(qqOne.slice(0, 1), { whileBusy: true })], ['两个 App，带着记得的人和冒名提醒', D.wakeText(mixed, { cards: '阿满（qq:42）：聊过；群里说话 3 次' })]]);
     } },
   { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
-  { id: 'errand', group: 'wake', name: '留在她对话里的一句', note: '不是谁对她说的话、只是让她知道的事，留在她对话里的一句（比如「那条他没回」）；说不说由她定', files: ['dot.errand-note', 'dot.errand-note.what', 'dot.interlude-say'],
-    render: () => variant([...['phone-check', 'notification', 'play', 'other'].map((o) => [o, D.errandNote(o, '小黑盒上暮看云回了我的评论，说他也觉得低频糊。')]), ['幕间想跟他说的', P.prompt('dot.interlude-say', { text: '降温了，你那边冷不冷' })]]) },
   { id: 'reach', group: 'system', name: '主动找他：发生了什么', note: '她在不是他开的那一轮里给他发了消息，算一次主动。「现在」那行下面多一行今天的数（几次、他回了几次、上一次什么时候）；一条过了 dot.reachUnansweredMs（默认 2 小时）他没回，在她对话里留一句。只给事实，没有次数上限：什么时候找他是她自己从这些里学的', files: ['dot.reach', 'dot.reach.waiting', 'dot.reach.unanswered'],
     render: () => variant([['现在那行下面', D.reachText([{ at: Date.now() - 7200000, answeredAt: Date.now() - 7000000 }, { at: Date.now() - 600000 }])], ['没回', P.prompt('dot.reach.unanswered', { time: '14:20', hours: 2 })]]) },
   { id: 'loop', group: 'wake', name: '重复调用', note: '一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果；她正在聊天时，自己的事记下的「在忙什么」', files: ['dot.loop-stopped', 'dot.busy.chat'],
@@ -155,7 +153,7 @@ export async function renderEntry(e) {
 export async function full() {
   const parts = [
     ['人设（Canon）', I.renderCanon(readCanon() ?? CANON)],
-    ['工作方式', D.workingRules({ computer: true, phone: true })],
+    ['工作方式', D.workingRules()],
     ['手机、电脑', [deviceText('dot', '', { tools: false }), P.prompt('dot.computer.hers')].join('\n')],
     ['电脑上的 QQ', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })],
     ['—— 以下在对话历史之后 ——', ''],
