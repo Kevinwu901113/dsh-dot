@@ -42,22 +42,28 @@ test('phone: a long-lived emulator (left running across restarts) does not keep 
   assert.ok(r.ms < 4000, `took ${r.ms} ms`);
 });
 
-test('phone live view: an open /stream does not keep dsh alive after close()', () => {
+test('phone live view: a waiting frame request and a running screen stream do not keep dsh alive after close()', () => {
   const code = `
     const { mountLiveView, LIVE_VIEW_PATH } = await import(${JSON.stringify(src('phone/live-view.js'))});
     const http = await import('node:http');
+    const { spawn } = await import('node:child_process');
     let route;
-    const view = mountLiveView({ webServer: { register: (r) => { route = r; return () => {}; } }, connection: { requestRejection: () => undefined }, screenshot: async () => Buffer.from('png'), shell: async () => '', ready: () => true, logger: {}, name: 't' });
-    // dsh's web server stays up in this test (it is dsh's, not ours); only our stream loop and route must let go.
+    // The screen stream is a real child process that would run for a minute; the frame request waits 25 s by itself.
+    const openStream = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { stdio: ['ignore', 'pipe', 'ignore'] });
+    const view = mountLiveView({ webServer: { register: (r) => { route = r; return () => {}; } }, connection: { requestRejection: () => undefined }, screenshot: async () => { throw new Error('offline'); }, openStream, shell: async () => '', ready: () => true, logger: {}, name: 't' });
+    // dsh's web server stays up in this test (it is dsh's, not ours); only our waiting request, stream and loop must let go.
     const server = http.createServer((req, res) => route.handler(req, res));
     server.unref();
     await new Promise((r) => server.listen(18191, '127.0.0.1', r));
-    await new Promise((r) => http.get('http://127.0.0.1:18191' + LIVE_VIEW_PATH + '/stream?fps=2', (res) => { res.on('data', () => {}); res.on('error', () => {}); r(); }).on('error', () => {}));
+    const answered = new Promise((r) => http.get('http://127.0.0.1:18191' + LIVE_VIEW_PATH + '/frame?after=0', { agent: false, headers: { connection: 'close' } }, (res) => { res.resume(); r(res.statusCode); }).on('error', () => r(0)));
+    await new Promise((r) => setTimeout(r, 300));
     view.close();
+    console.log('status', await answered);
   `;
   const r = exitsWithin(code, 8000);
   assert.ok(r.ok, `dsh did not exit after close (${r.ms} ms): ${r.out}`);
   assert.ok(r.ms < 4000, `took ${r.ms} ms`);
+  assert.match(r.out, /status 204/, 'the waiting request was answered, not left hanging');
 });
 
 test('/dot prompts: a running editor page does not keep dsh alive, and goes with it', () => {
