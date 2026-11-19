@@ -21,6 +21,8 @@ export const PHONE_TYPE_TOOL = 'phone_type';
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
 export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
+/** Is this tool one a lean conversation of hers keeps (HER_TOOLS, and her QQ's own actions)? */
+export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsWith(QQ_TOOL_PREFIX);
 // What her conversation keeps when it is lean (dot.lean, a conversation begun since it was turned on): her one verb
 // for getting things done (hands), what is speech or her own judgement (her QQ, what she remembers, what she keeps),
 // and what only works from her own conversation — a schedule wakes the session that made it, a goal drives it.

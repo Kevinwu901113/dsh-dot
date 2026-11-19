@@ -14,7 +14,7 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { deny } from '../refusals.js';
-import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
@@ -105,6 +105,16 @@ export function handsStatus(r = {}) {
       : prompt('dot.hands.status.failed', { why: why || '没有原因' });
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
   return [base.trim(), ...notes.map((n) => n.trim())].join('；');
+}
+/**
+ * A request of a lean conversation with only her own tools in it, or null when there is nothing to take out
+ * (not hers, not lean, no tools). The options object is the host's and is not changed.
+ */
+export function leanRequest(options, isLean) {
+  const id = options?.sessionId;
+  if (!id || !Array.isArray(options.tools) || !isLean(id)) return null;
+  const tools = options.tools.filter((t) => isHerTool(t?.name));
+  return tools.length === options.tools.length ? null : { ...options, tools };
 }
 /** A web address or a domain typed into a bar: where to go, not something said. */
 const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;
@@ -559,6 +569,13 @@ export function apply(ctx, config = {}) {
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   // When lean was first on here: conversations begun before it keep their tools.
   let leanSince = Number(store.get('leanSince')) || 0;
+  const leanIds = new Set(); // her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask)
+  // The host's own tools (shell, jobs, subagents, workflows …) live on the agent itself, where a restriction does not
+  // reach them: for a lean conversation they are taken out of the request here, on its way to the model, and a call
+  // to one is refused below. The list is the same on every request, so the cached prefix holds.
+  ctx.effect(() => {
+    try { return ctx.on('llm/stream', (options, next) => { const lean = leanRequest(options, (id) => leanIds.has(id)); return lean ? next(lean) : next(); }, { global: true }); } catch (err) { logger.warn(`lean: ${err.message}`); return () => {}; }
+  }, 'dsh-dot: lean requests');
   if (cfg.lean && !leanSince) { leanSince = Date.now(); store.set('leanSince', leanSince); }
   let hands = null; // her hands (hands.js), set once sessions can be made
   let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
@@ -1340,6 +1357,8 @@ export function apply(ctx, config = {}) {
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
     if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
+    // A lean conversation of hers has her own tools only; one the host still answers to by name is not run.
+    if (leanIds.has(id) && !isHerTool(exec.name)) { audit('lean-refused', { session: id, tool: exec.name }); return deny(prompt('dot.lean.not-hers', { tool: exec.name })); }
     // From here on it is about what she is saying, whichever way it goes out (spokenOf).
     const spoken = spokenOf(exec.name, args);
     if (!spoken) return next();
@@ -1573,7 +1592,7 @@ export function apply(ctx, config = {}) {
     // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
     // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
     /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
-    lean: (id, createdAt) => Boolean(cfg.lean) && !isErrand(id) && Number(createdAt) >= leanSince,
+    lean: (id, createdAt) => { const yes = Boolean(cfg.lean) && Boolean(id) && !isErrand(id) && Number(createdAt) >= leanSince; if (yes) leanIds.add(id); return yes; },
     setSession: (id) => {
       if (!id || id === lastSession) return;
       talk?.drop('new-segment'); // what he asked is in the old segment's words; the new one starts clean
