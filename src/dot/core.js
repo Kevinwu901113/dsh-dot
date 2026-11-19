@@ -573,9 +573,12 @@ export function apply(ctx, config = {}) {
   // The host's own tools (shell, jobs, subagents, workflows …) live on the agent itself, where a restriction does not
   // reach them: for a lean conversation they are taken out of the request here, on its way to the model, and a call
   // to one is refused below. The list is the same on every request, so the cached prefix holds.
-  ctx.effect(() => {
-    try { return ctx.on('llm/stream', (options, next) => { const lean = leanRequest(options, (id) => leanIds.has(id)); return lean ? next(lean) : next(); }, { global: true }); } catch (err) { logger.warn(`lean: ${err.message}`); return () => {}; }
-  }, 'dsh-dot: lean requests');
+  const leanSeen = new Set(); // sessions whose first lean request has been noted
+  ctx.effect(() => llmGate?.rewrite?.('lean', (options) => {
+    const out = leanRequest(options, (id) => leanIds.has(id));
+    if (out && !leanSeen.has(options.sessionId)) { leanSeen.add(options.sessionId); audit('lean-request', { session: options.sessionId, offered: options.tools.length, kept: out.tools.length }); }
+    return out;
+  }) ?? (() => {}), 'dsh-dot: lean requests');
   if (cfg.lean && !leanSince) { leanSince = Date.now(); store.set('leanSince', leanSince); }
   let hands = null; // her hands (hands.js), set once sessions can be made
   let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out

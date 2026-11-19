@@ -116,3 +116,18 @@ test('lean: a request of a lean conversation carries only her own tools; anythin
   assert.equal(leanRequest({ sessionId: 's1' }, () => true), null);
   assert.equal(leanRequest({ sessionId: 's1', tools: [{ name: 'hands' }] }, () => true), null);
 });
+
+test('llm gate: a registered rewriter changes the request the host gets, whatever the listener order; none leaves it alone', async () => {
+  const { createGate } = await import('../src/llm-gate.js');
+  const gate = createGate({ config: {}, logger: {}, audit: () => {} });
+  const seen = [];
+  const next = (o) => { seen.push(o); return (async function* () { yield { type: 'finish' }; })(); };
+  for await (const _ of gate.wrap({ sessionId: 's1', tools: [{ name: 'bash' }] }, next)) void _;
+  assert.equal(seen[0], undefined, 'nothing registered: next() as before');
+  const off = gate.rewrite('lean', (o) => (o.sessionId === 's1' ? { ...o, tools: [] } : null));
+  for await (const _ of gate.wrap({ sessionId: 's1', tools: [{ name: 'bash' }] }, next)) void _;
+  assert.deepEqual(seen[1].tools, []);
+  for await (const _ of gate.wrap({ sessionId: 's2', tools: [{ name: 'bash' }] }, next)) void _;
+  assert.equal(seen[2], undefined);
+  off(); gate.stop?.();
+});
