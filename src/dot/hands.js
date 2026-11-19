@@ -47,6 +47,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * an account)? Her hands do not write: what they type is hers or is already there. Whitespace does not count.
      */
     has(text) { const n = squash(text); return !n || (Boolean(job) && (squash(job.task).includes(n) || squash(job.shown).includes(n))); },
+    /** Something the code saw happen in the round under way (a refusal): it comes back with the result, as `notes`. */
+    note(what) { if (job) job.notes.push(String(what)); },
     /** The round under way ends now, as cut (she said stop, or it is not wanted any more). False when there is none. */
     stop(why = 'stopped') { if (!job) return false; job.finish('cut', why); return true; },
     /**
@@ -59,13 +61,13 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
       const what = String(task).trim();
       if (!what) return { status: 'failed', why: 'no task' };
       if (job) return { status: 'busy', doing: api.doing() };
-      const mine = job = { device, task: what, extra, startedAt: now(), said: '', shown: '', steps: 0, over: false, finish: () => {} };
+      const mine = job = { device, task: what, extra, startedAt: now(), said: '', shown: '', steps: 0, notes: [], over: false, finish: () => {} };
       const settle = (status, why) => {
         if (mine.over) return; mine.over = true;
         clearTimeout(mine.timer); try { mine.off?.(); } catch (error) { void error; }
         if (job === mine) job = null;
         if (status === 'cut') { try { mine.agent?.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }); } catch (error) { void error; } }
-        const out = { status, text: clip(mine.said, maxChars), shown: mine.shown, steps: mine.steps, ms: now() - mine.startedAt, ...(why ? { why } : {}) };
+        const out = { status, text: clip(mine.said, maxChars), shown: mine.shown, steps: mine.steps, ms: now() - mine.startedAt, notes: mine.notes, ...(why ? { why } : {}) };
         audit('hands-round', { session: mine.id, device, status, steps: mine.steps, ms: out.ms, ...(why ? { why } : {}) });
         try { Promise.resolve(onDone(out, { device, task: what, ...extra })).catch(() => {}); } catch (error) { void error; }
       };

@@ -93,6 +93,19 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
 /** The model-facing reason a qq_send to him is handed back by the reply check: listed phrases, or bracketed stage directions. */
+/**
+ * How a round of her hands ended, as the code saw it — not as they tell it: they stopped by themselves (whether the
+ * thing worked is in their words), they were cut (too long, or she stopped them), or the round could not run; and
+ * what was refused them on the way (words that were not hers, a line of hers sent back).
+ */
+export function handsStatus(r = {}) {
+  const why = String(r.why ?? '');
+  const base = r.status === 'done' ? prompt('dot.hands.status.done')
+    : r.status === 'cut' ? prompt(/太久|too long/.test(why) ? 'dot.hands.status.timeout' : 'dot.hands.status.stopped')
+      : prompt('dot.hands.status.failed', { why: why || '没有原因' });
+  const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
+  return [base.trim(), ...notes.map((n) => n.trim())].join('；');
+}
 /** A web address or a domain typed into a bar: where to go, not something said. */
 const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;
 /** The lines of a text her hands are about to type that nobody gave them: not an address, and not known to `has`. */
@@ -250,6 +263,10 @@ export const defaults = {
   replyCheck: true,
   // What he said that has no word back yet (talk.js): when a round of her hands on his business came back and she
   // answered him without giving them a next step, she is asked once whether it is done. Off: nobody asks.
+  // Her conversation keeps only her own tools (tool-prefixes.js HER_TOOLS): the rest of what the host offers is not
+  // shown to her. It takes effect in a conversation begun after this was first on (a new segment, a new window) —
+  // an older one keeps the tools its history was written with. false: every conversation sees everything, as before.
+  lean: true,
   openNudge: true,
   openNudgeMax: 1,          // how many times one thing of his is asked about
   openTtlMs: 30 * 60_000,   // a thing of his nobody touched this long is let go
@@ -540,6 +557,9 @@ export function apply(ctx, config = {}) {
   const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
+  // When lean was first on here: conversations begun before it keep their tools.
+  let leanSince = Number(store.get('leanSince')) || 0;
+  if (cfg.lean && !leanSince) { leanSince = Date.now(); store.set('leanSince', leanSince); }
   let hands = null; // her hands (hands.js), set once sessions can be made
   let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
   let talk = null;  // what he said that has no word back yet (talk.js), set once the things it waits on exist
@@ -961,7 +981,7 @@ export function apply(ctx, config = {}) {
         const found = lastSession && await resolveLive(lastSession);
         if (!found || 'error' in found) { talk?.resultArrived(); audit('hands-result-dropped', { why: 'no conversation' }); return; }
         if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
-        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, text: r.text || '（没说什么）', cut: r.status === 'done' ? '' : `\n${prompt('dot.hands.cut', { why: r.why || r.status }).trim()}` }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
+        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r), text: r.text || '（没说什么）' }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
         if (r.status !== 'failed') {
           try {
             const images = ctx.get('attachments');
@@ -1328,7 +1348,7 @@ export function apply(ctx, config = {}) {
     const round = hands?.isHands(id, exec.agent?.session?.header?.cwd) && hands.busy() ? hands.doing() : null;
     if (round && spoken.via === 'phone') {
       const own = ownWords(spoken.text, hands.has);
-      if (own.length) { audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
+      if (own.length) { hands.note('own-words'); audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
     }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
@@ -1339,6 +1359,7 @@ export function apply(ctx, config = {}) {
       const back = (c.hits.length || c.stripped) && !handsCheckDenied;
       handsCheckDenied = Boolean(back);
       if (back) {
+        hands.note('reply-check');
         audit('reply-check', { session: id, via: 'hands', to: 'app', stripped: c.stripped, hits: c.hits, denied: true });
         return deny(prompt('dot.hands.reply-check', { why: c.hits.length ? prompt('dot.reply-check.phrases', { phrases: c.hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') }));
       }
@@ -1551,8 +1572,11 @@ export function apply(ctx, config = {}) {
     session: () => lastSession,
     // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
     // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
+    /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
+    lean: (id, createdAt) => Boolean(cfg.lean) && !isErrand(id) && Number(createdAt) >= leanSince,
     setSession: (id) => {
       if (!id || id === lastSession) return;
+      talk?.drop('new-segment'); // what he asked is in the old segment's words; the new one starts clean
       if (lastSession) { pastConversations.add(lastSession); store.set('pastConversations', [...pastConversations].slice(-50)); }
       pastConversations.delete(id);
       setLast(id);

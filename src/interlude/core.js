@@ -418,11 +418,18 @@ export function apply(ctx, config = {}) {
     }), 'dsh-interlude: canon section');
     // Drop dsh's own openers for the character's sessions so the Canon is the first thing the model
     // reads; other sessions are untouched. (A `complete` section cannot do this per session.)
+    const OURS = /^(interlude|dot|phone|qq|computer|memory):/;
     const keep = (name) => name === 'interlude:canon' || name === 'dot:rules' || name.startsWith('mcp:');
     scope.effect(() => scope.on('system-prompt/assemble', async (_assembly, c, next) => {
       const assembly = await next();
       if (!inHome(c)) return assembly;
-      const sections = assembly.sections.filter((sec) => (cfg.canonOnly ? keep(sec.name) : !cfg.trimSections.includes(sec.name)));
+      // A lean conversation of hers (dot.lean) sees only her own tools, so the host's sections about the others — the
+      // shell, jobs, file search, subagents, workflows, MCP resources — are not hers to read either: what is left is
+      // what this plugin wrote for her (her card, her rules, her phone, her QQ).
+      const sess = c.agent?.session;
+      let lean = false;
+      try { lean = Boolean(ctx.get('dshDot')?.lean?.(sess?.id, sess?.header?.createdAt)); } catch { lean = false; }
+      const sections = assembly.sections.filter((sec) => (lean ? OURS.test(sec.name) : cfg.canonOnly ? keep(sec.name) : !cfg.trimSections.includes(sec.name)));
       return sections.length === assembly.sections.length ? assembly : { ...assembly, sections };
     }), 'dsh-interlude: prompt trim');
     // How she talks, as the very last thing before she answers (after the history, the memory and the

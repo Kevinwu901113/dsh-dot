@@ -219,3 +219,12 @@ test('doctor: same account, owner account, shared groups, missing bot number', (
   assert.ok(nobot.some((i) => i.level === 'warn' && /机器人号/.test(i.name)));
   assert.deepEqual(doctor({ bridge: null }), []);
 });
+
+test('hiddenFor: a lean conversation of hers sees only her own tools and her QQ actions, whatever else is registered', () => {
+  const names = ['hands', 'qq_send', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'web_search', 'read', 'write',
+    'account', 'bash', 'glob', 'grep', 'subagent', 'workflow', 'todo_write', 'plugin_manager', 'present', 'ask_user_question', 'job_list', 'some_tool_added_later',
+    'mcp__dot-qq__invoke_action', 'mcp__dot-phone__mobile_swipe_on_screen', 'mcp__dot-vm__browser_click', 'phone_type', 'mcp__snowluma__x'];
+  const hidden = hiddenFor('dot-lean', names);
+  assert.deepEqual(names.filter((n) => !hidden.includes(n)), ['hands', 'qq_send', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'web_search', 'read', 'write', 'mcp__dot-qq__invoke_action']);
+  assert.ok(hiddenFor('dot', names).length < hidden.length, 'a conversation begun before keeps what its history was written with');
+});

@@ -151,6 +151,15 @@ test('prompt trim: dsh openers are dropped for the character\'s sessions only; c
   only.stop();
 });
 
+test('prompt trim: a lean conversation of hers reads only what this plugin wrote for her', async () => {
+  const all = ['harness:identity', 'interlude:canon', 'dot:rules', 'phone:device', 'qq:channel', 'tool:bash', 'tool:glob', 'subagents', 'mcp:vm', 'mcp:resources'];
+  const h = harness({ reply: GOOD });
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...(get(n) ?? {}), lean: (id) => id === 's1' } : get(n)))(h.ctx.get);
+  assert.deepEqual(await h.assemble('s1', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel']);
+  assert.deepEqual(await h.assemble('s0', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel', 'tool:bash', 'tool:glob', 'subagents', 'mcp:vm', 'mcp:resources'], 'a conversation begun before keeps the host sections');
+  h.stop();
+});
+
 test('doings: grouped by what she did, costed, with his reactions; feedback finds the latest, an id or a bit of text', async () => {
   const { createDoings, tokensOf, yuanOf, labelOf } = await import('../src/interlude/doings.js');
   const dir = mkdtempSync(join(tmpdir(), 'doings-'));
