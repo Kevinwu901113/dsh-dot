@@ -636,10 +636,11 @@ export function apply(ctx, config = {}) {
     // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
     if (event.type === 'user/message' && event.data?.source?.kind === 'user' && !/^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
       t.elsewhere = true;
-      if (id === lastSession && !t.scheduled) talk?.heSaid(contentText(event.data?.content).trim());
+      // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
+      if (!t.scheduled && !isErrand(id) && !pastConversations.has(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
     }
     // The same account of his thing as over QQ (talk.js), for a turn his words opened somewhere else.
-    if (t.elsewhere && !t.fromQq && !t.scheduled && id === lastSession) {
+    if (t.hisHere && !t.fromQq) {
       if (event.type === 'assistant/message' && !event.data?.interrupted) {
         const text = contentText(event.data?.message?.content);
         if (text.trim() && !isSilent(text)) { t.spoke = true; talk?.sheSaid(stripSilent(text).split('\n').map((l) => l.trim()).filter(Boolean).at(-1)); }
