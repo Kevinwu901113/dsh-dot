@@ -437,10 +437,10 @@ export function apply(ctx, config = {}) {
       // a lean conversation is offered her own tools only — also the ones her agent's preset brought, which a
       // tools.restrict() does not reach. The host's two transport names stay (PTC's run_code, structured output).
       // What this host's assembly carries, noted once per lean conversation: whether the tool list is here to filter at all.
-      if (lean && !leanShape.has(sess?.id)) { leanShape.add(sess?.id); try { ctx.get('dshDot')?.audit?.({ event: 'lean-assembly', session: sess?.id, keys: Object.keys(assembly ?? {}), tools: Array.isArray(assembly?.tools) ? assembly.tools.length : typeof assembly?.tools, sections: assembly?.sections?.length }); } catch { /* not there */ } }
+      if (lean && !leanShape.has(sess?.id)) { leanShape.add(sess?.id); audit('lean-assembly', { session: sess?.id, keys: Object.keys(assembly ?? {}), tools: Array.isArray(assembly?.tools) ? assembly.tools.length : typeof assembly?.tools, sections: assembly?.sections?.length }); }
       const tools = lean && Array.isArray(assembly.tools) ? assembly.tools.filter((t) => isHerTool(t?.name) || HOST_TRANSPORT.includes(t?.name)) : assembly.tools;
       if (sections.length === assembly.sections.length && tools === assembly.tools) return assembly;
-      if (lean && tools !== assembly.tools && tools.length !== assembly.tools.length && !leanNoted.has(sess?.id)) { leanNoted.add(sess?.id); try { ctx.get('dshDot')?.audit?.({ event: 'lean-tools', session: sess?.id, offered: assembly.tools.length, kept: tools.length }); } catch { /* not there */ } }
+      if (lean && tools !== assembly.tools && tools.length !== assembly.tools.length && !leanNoted.has(sess?.id)) { leanNoted.add(sess?.id); audit('lean-tools', { session: sess?.id, offered: assembly.tools.length, kept: tools.length }); }
       return { ...assembly, sections, tools };
     }), 'dsh-interlude: prompt trim');
     // How she talks, as the very last thing before she answers (after the history, the memory and the
