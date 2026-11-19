@@ -19,7 +19,7 @@ import { Readable, Transform } from 'node:stream';
 import { deflateSync, inflateSync } from 'node:zlib';
 import { createAudit } from '../computer/audit.js';
 import { systemProxyEnv } from '../computer/backends/proxy.js';
-import { mountLiveView, LIVE_VIEW_PATH } from './live-view.js';
+import { mountLiveView, LIVE_VIEW_PATH, pictureType } from './live-view.js';
 import { localUrl, publicUrlOf } from '../web-auth.js';
 import { createShadeWatch, createPolicy, parseShade } from './notifications.js';
 import { fileError, sectionOf, setValues, writeSections } from '../settings.js';
@@ -69,6 +69,7 @@ export const defaults = {
   restartDelayMs: 10_000,   // relaunch the emulator this long after it exits by itself
   aliveEveryMs: 15_000,     // once ready, adb is asked this often whether the emulator still answers; 3 misses = relaunch
   liveView: true,           // the live view page (screen + tap/swipe/type) at /dsh-dot/phone/ on dsh's own web server, behind dsh's login
+  liveStream: true,         // the live view takes the phone's own screen stream (smooth) when it gives one; false = screencaps only
   publicUrl: '',            // the public origin of THIS dsh (your own exposure, e.g. tailscale serve of dsh's port); the live view is <publicUrl>/dsh-dot/phone/
   // Notifications: the phone's notification shade is polled (adb dumpsys) and new ones are handed to
   // listeners (dot wakes her for them). notifyApps: packages that count; [] = every non-system app.
@@ -509,7 +510,19 @@ export function apply(ctx, config = {}, deps = {}) {
   });
   phone.type = (text, opts) => typing.type(text, opts);
   /** PNG of the screen right now (a blank frame — mid-transition, screen waking — is retaken once). */
-  phone.screenshot = () => screencapRetry(async () => Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout));
+  // `adb exec-out` reports success whatever screencap did on the phone (offline mid-restart: no bytes, or an
+  // error line), so what comes back is checked here, once, for everyone who takes a screenshot.
+  phone.screenshot = () => screencapRetry(async () => {
+    const png = Buffer.from((await phone.adbExec(['exec-out', 'screencap', '-p'], { encoding: 'buffer' })).stdout);
+    if (pictureType(png) !== 'image/png') throw new Error(`screencap gave no picture (${png.length} bytes)`);
+    return png;
+  });
+  // The phone's own screen stream, for the live view: mobilecli (the binary behind her phone tools) writes
+  // JPEG frames to stdout for as long as it runs.
+  phone.openScreenStream = () => {
+    cli ||= new (createRequire(import.meta.url)('@mobilenext/mobile-mcp/lib/mobilecli.js').Mobilecli)().getPath();
+    return spawnImpl(cli, ['screencapture', '--device', mcpDevice(), '--format', 'mjpeg'], { env: env(), stdio: ['ignore', 'pipe', 'ignore'] });
+  };
   /**
    * Put a PNG in front of her camera, live: the emulator console's `virtualscene-image wall <png>`
    * swaps the "wall" poster's picture while the phone runs, and ensureCameraScene (before launch) has
@@ -935,7 +948,7 @@ export function apply(ctx, config = {}, deps = {}) {
   // The live view rides on dsh's own web server and login (see src/web-auth.js): no port of its own.
   if (cfg.liveView) {
     ctx.inject(['webServer', 'connection'], (c) => c.effect(() => {
-      const view = (deps.mountLiveView ?? mountLiveView)({ webServer: c.webServer, connection: c.connection, screenshot: phone.screenshot, shell: phone.shell, ready: () => phone.isReady, logger, name: cfg.avd });
+      const view = (deps.mountLiveView ?? mountLiveView)({ webServer: c.webServer, connection: c.connection, screenshot: phone.screenshot, openStream: cfg.liveStream ? phone.openScreenStream : undefined, shell: phone.shell, ready: () => phone.isReady, logger, name: cfg.avd });
       phone.liveViewUrl = localUrl(c.webServer, `${LIVE_VIEW_PATH}/`) || `${LIVE_VIEW_PATH}/`;
       return () => { view.close(); phone.liveViewUrl = undefined; };
     }, 'dsh-dot/phone: live view'));

@@ -264,34 +264,46 @@ test('phone gate asks through tools/pre-execute', async () => {
   h.stop();
 });
 
-test('live view on dsh\'s web server: every request passes dsh\'s connection gate; forwarded headers buy nothing', async () => {
-  const { mountLiveView, LIVE_VIEW_PATH, shellQuote } = await import('../src/phone/live-view.js');
+/** A stand-in for dsh's web server and login, with the live view mounted on it. */
+async function liveView(opts = {}) {
+  const { mountLiveView, LIVE_VIEW_PATH } = await import('../src/phone/live-view.js');
   const http = await import('node:http');
-  const shells = [];
-  // A stand-in for dsh: its web server dispatches the prefix route; its connection service admits
-  // only the signed-in owner (here: the dsh login cookie) and ignores X-Forwarded-* entirely.
   let route = null;
   const webServer = { register: (r) => { route = r; return () => { route = null; }; } };
-  const connection = { requestRejection: (req) => (/\bdsh=owner\b/.test(String(req.headers.cookie ?? '')) ? undefined : 401) };
-  const view = mountLiveView({ webServer, connection, screenshot: async () => Buffer.from('PNG!'), shell: async (c) => { shells.push(c); return c === 'wm size' ? 'Physical size: 1080x2400\n' : ''; }, ready: () => true, logger: {} });
-  assert.equal(route.kind, 'prefix'); assert.equal(route.path, LIVE_VIEW_PATH);
+  const connection = opts.connection ?? { requestRejection: () => undefined };
+  const logs = [];
+  const logger = { info: (m) => logs.push(m), debug: (m) => logs.push(m), warn: (m) => logs.push(m) };
+  const view = mountLiveView({ webServer, connection, shell: async () => '', ready: () => true, logger, ...opts });
   const server = http.createServer((req, res) => (req.url.startsWith(LIVE_VIEW_PATH) && route ? route.handler(req, res) : (res.writeHead(404), res.end())));
   await new Promise((r) => server.listen(0, '127.0.0.1', r));
   const base = `http://127.0.0.1:${server.address().port}${LIVE_VIEW_PATH}`;
+  return { base, logs, route: () => route, close: () => { view.close(); server.close(); server.closeAllConnections?.(); } };
+}
+const PIC = png(4, 4, () => [10, 200, 30, 255]);
+const PIC2 = png(4, 4, () => [200, 10, 30, 255]);
+/** A small JPEG by its structure: SOI, one APP0 segment, a scan with stuffed 0xFF and a restart marker, EOI. */
+const jpeg = (fill = 0x55) => Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0x00, 0x06, 0xff, 0xd9, 0x00, 0x01, 0xff, 0xda, 0x00, 0x04, 0x01, 0x02, fill, 0xff, 0x00, fill, 0xff, 0xd3, fill, 0xff, 0xd9]);
+
+test('live view on dsh\'s web server: every request passes dsh\'s connection gate; forwarded headers buy nothing', async () => {
+  const { shellQuote } = await import('../src/phone/live-view.js');
+  const shells = [];
+  // dsh's connection service admits only the signed-in owner (here: the dsh login cookie) and ignores X-Forwarded-* entirely.
+  const connection = { requestRejection: (req) => (/\bdsh=owner\b/.test(String(req.headers.cookie ?? '')) ? undefined : 401) };
+  const v = await liveView({ connection, screenshot: async () => PIC, shell: async (c) => { shells.push(c); return c === 'wm size' ? 'Physical size: 1080x2400\n' : ''; } });
+  const { base } = v;
+  assert.equal(v.route().kind, 'prefix');
   const owner = { cookie: 'dsh=owner' };
-  // Nobody without dsh's login: not the page, not the stream, not a tap — whatever headers they bring.
+  // Nobody without dsh's login: not the page, not a frame, not a tap — whatever headers they bring.
   assert.equal((await fetch(`${base}/`)).status, 401);
+  assert.equal((await fetch(`${base}/frame?after=0`)).status, 401);
   assert.equal((await fetch(`${base}/status`, { headers: { 'x-forwarded-host': 'dsh.local', 'x-forwarded-for': '127.0.0.1' } })).status, 401);
   assert.equal((await fetch(`${base}/tap`, { method: 'POST', body: '{"x":0.5,"y":0.5}', headers: { 'content-type': 'application/json', 'x-forwarded-host': 'dsh.local', origin: 'http://127.0.0.1' } })).status, 401);
   assert.equal(shells.length, 0, 'the phone was never touched');
   // The owner, on dsh's origin.
-  assert.match(await (await fetch(`${base}/`, { headers: owner })).text(), /<img id="screen" src="stream/);
-  assert.deepEqual(await (await fetch(`${base}/status`, { headers: owner })).json(), { ready: true, size: null });
-  const ac = new AbortController();
-  const res = await fetch(`${base}/stream?fps=5`, { signal: ac.signal, headers: owner });
-  const { value } = await res.body.getReader().read();
-  assert.match(Buffer.from(value).toString(), /--frame\r\ncontent-type: image\/png\r\ncontent-length: 4\r\n\r\nPNG!/);
-  ac.abort();
+  const page = await (await fetch(`${base}/`, { headers: owner })).text();
+  assert.match(page, /<canvas id="screen"/);
+  assert.doesNotMatch(page, /<img|multipart|stream\?/, 'no pushed stream: the page pulls frames');
+  assert.deepEqual(await (await fetch(`${base}/status`, { headers: owner })).json(), { ready: true, size: null, source: 'none', fps: 0 });
   const post = (path, body, headers = {}) => fetch(`${base}${path}`, { method: 'POST', body: JSON.stringify(body), headers: { 'content-type': 'application/json', ...owner, ...headers } });
   assert.equal((await post('/tap', { x: 0.5, y: 0.25 })).status, 204);
   assert.equal(shells.at(-1), 'input tap 540 600');
@@ -303,33 +315,145 @@ test('live view on dsh\'s web server: every request passes dsh\'s connection gat
   assert.equal(shells.at(-1), "input text 'hi%sthere'");
   assert.equal((await fetch(`${base}/tap`, { method: 'POST', body: 'x=1', headers: { ...owner, 'content-type': 'application/x-www-form-urlencoded' } })).status, 415, 'a form post (what a cross-site page can send) is not accepted');
   assert.equal(shellQuote("a b'c"), "'a%sb'\\''c'");
-  view.close();
-  assert.equal(route, null, 'close unregisters the route');
-  server.close(); server.closeAllConnections?.();
+  v.close();
+  assert.equal(v.route(), null, 'close unregisters the route');
 });
 
-test('live view: viewers share one capture loop, paced by how long a capture takes', async () => {
-  const { mountLiveView, LIVE_VIEW_PATH } = await import('../src/phone/live-view.js');
-  const http = await import('node:http');
-  let route = null, caps = 0;
-  // A slow capture (software-rendered emulator): 150 ms each.
-  const screenshot = async () => { caps++; await new Promise((r) => setTimeout(r, 150)); return Buffer.from('PNG!'); };
-  const view = mountLiveView({ webServer: { register: (r) => { route = r; return () => {}; } }, connection: { requestRejection: () => undefined }, screenshot, shell: async () => '', ready: () => true, logger: {} });
-  const server = http.createServer((req, res) => route.handler(req, res));
-  await new Promise((r) => server.listen(0, '127.0.0.1', r));
-  const url = `http://127.0.0.1:${server.address().port}${LIVE_VIEW_PATH}/stream?fps=5`;
-  const a = new AbortController(), b = new AbortController();
-  await Promise.all([fetch(url, { signal: a.signal }), fetch(url, { signal: b.signal })]);
-  await new Promise((r) => setTimeout(r, 1500));
-  // Two viewers at 5 fps would be 15 captures each, unshared and unpaced; one loop that rests 3× the
-  // capture time does ≤ 1500 / (150 + 450) + 1.
-  assert.ok(caps <= 4, `captures: ${caps}`);
-  a.abort(); b.abort();
-  await new Promise((r) => setTimeout(r, 700));
+test('live view: a frame is one whole answer to one request — newer than the one the page has, or 204', async () => {
+  let shot = PIC, caps = 0;
+  const v = await liveView({ screenshot: async () => { caps++; return shot; }, timing: { waitMs: 300, idleMs: 200 } });
+  const first = await fetch(`${v.base}/frame?after=0`);
+  assert.equal(first.status, 200);
+  assert.equal(first.headers.get('content-type'), 'image/png');
+  assert.equal(first.headers.get('content-length'), String(PIC.length));
+  const seq = Number(first.headers.get('x-frame-seq'));
+  assert.ok(Buffer.from(await first.arrayBuffer()).equals(PIC), 'the body is the picture and nothing else');
+  // The screen has not changed: nothing to send, the request ends empty.
+  assert.equal((await fetch(`${v.base}/frame?after=${seq}`)).status, 204);
+  // It changes while a request waits: that request gets the new frame.
+  const waiting = fetch(`${v.base}/frame?after=${seq}`);
+  await new Promise((r) => setTimeout(r, 50));
+  shot = PIC2;
+  const next = await waiting;
+  assert.equal(next.status, 200);
+  assert.ok(Number(next.headers.get('x-frame-seq')) > seq);
+  assert.ok(Buffer.from(await next.arrayBuffer()).equals(PIC2));
+  // A page that outlived a restart of the view carries a number from the old one: it gets the current frame at once.
+  assert.equal((await fetch(`${v.base}/frame?after=999999999999`)).status, 200);
+  // Nobody asking: the captures stop.
+  await new Promise((r) => setTimeout(r, 600));
   const after = caps;
-  await new Promise((r) => setTimeout(r, 700));
-  assert.equal(caps, after, 'no viewers, no captures');
-  view.close(); server.close(); server.closeAllConnections?.();
+  await new Promise((r) => setTimeout(r, 400));
+  assert.equal(caps, after, 'no requests, no captures');
+  v.close();
+});
+
+test('live view: what is not a picture is never sent — an empty or error-text screencap, a truncated one', async () => {
+  const { pictureType } = await import('../src/phone/live-view.js');
+  assert.equal(pictureType(PIC), 'image/png');
+  assert.equal(pictureType(jpeg()), 'image/jpeg');
+  for (const bad of [Buffer.alloc(0), Buffer.from('error: device offline\n'), PIC.subarray(0, 20), jpeg().subarray(0, 10), 'a string', undefined]) assert.equal(pictureType(bad), '', String(bad).slice(0, 20));
+  const shots = [PIC, Buffer.alloc(0), Buffer.from('error: device offline\n'), PIC2];
+  const v = await liveView({ screenshot: async () => shots.shift() ?? PIC2, timing: { waitMs: 4000, idleMs: 200, backoffMs: 20 } });
+  const a = await fetch(`${v.base}/frame?after=0`);
+  assert.ok(Buffer.from(await a.arrayBuffer()).equals(PIC));
+  // The two bad captures are skipped (with a back-off); the next thing the page gets is the next real picture.
+  const b = await fetch(`${v.base}/frame?after=${a.headers.get('x-frame-seq')}`);
+  assert.equal(b.status, 200);
+  assert.ok(Buffer.from(await b.arrayBuffer()).equals(PIC2));
+  assert.equal(v.logs.filter((l) => /not a picture/.test(l)).length, 2);
+  v.close();
+});
+
+test('live view: pages share one capture loop, paced by how long a capture takes', async () => {
+  let caps = 0;
+  // A slow capture (software-rendered emulator): 150 ms each, a different screen every time.
+  const screenshot = async () => { caps++; await new Promise((r) => setTimeout(r, 150)); return png(4, 4, () => [caps, 0, 0, 255]); };
+  const v = await liveView({ screenshot, timing: { waitMs: 2000, idleMs: 200 } });
+  const page = async () => { let seq = 0; const end = Date.now() + 1500; while (Date.now() < end) { const r = await fetch(`${v.base}/frame?after=${seq}`); if (r.status === 200) seq = Number(r.headers.get('x-frame-seq')); await r.arrayBuffer(); } };
+  await Promise.all([page(), page()]);
+  // Two pages asking as fast as they can; one loop that rests 3× the capture time does ≤ 1500 / (150 + 450) + 2.
+  assert.ok(caps <= 5, `captures: ${caps}`);
+  v.close();
+});
+
+test('jpegSplitter: whole JPEGs out of a byte stream, whatever stands between them and however it is cut', async () => {
+  const { jpegSplitter } = await import('../src/phone/live-view.js');
+  const a = jpeg(0x11), b = jpeg(0x22);
+  const streams = {
+    multipart: Buffer.concat([Buffer.from(`--b\r\nContent-Type: image/jpeg\r\nContent-Length: ${a.length}\r\n\r\n`), a, Buffer.from(`\r\n--b\r\nContent-Type: image/jpeg\r\nContent-Length: ${b.length}\r\n\r\n`), b, Buffer.from('\r\n')]),
+    bare: Buffer.concat([a, b]),
+    'junk first': Buffer.concat([Buffer.from([0x00, 0xff, 0xd8, 0x00, 0xff]), a, Buffer.from('xx'), b]),
+  };
+  for (const [name, bytes] of Object.entries(streams)) {
+    for (const cut of [1, 3, 7, bytes.length]) {
+      const got = [];
+      const s = jpegSplitter((f) => got.push(f));
+      for (let i = 0; i < bytes.length; i += cut) s.push(bytes.subarray(i, i + cut));
+      assert.equal(got.length, 2, `${name}, ${cut} bytes at a time`);
+      assert.ok(got[0].equals(a) && got[1].equals(b), `${name}, ${cut} bytes at a time`);
+    }
+  }
+  // Something that never becomes a picture is not kept: the buffer is let go at the limit.
+  const s = jpegSplitter(() => assert.fail('no frame'), { maxBytes: 64 });
+  s.push(Buffer.from([0xff, 0xd8, 0xff, 0xda, 0x00, 0x02]));
+  for (let i = 0; i < 10; i++) s.push(Buffer.alloc(32, 0x41));
+  assert.ok(s.pending() <= 64 + 32, `pending ${s.pending()}`);
+});
+
+test('live view: the phone\'s screen stream carries the view when it gives pictures; screencaps when it does not', async () => {
+  const { EventEmitter } = await import('node:events');
+  const { PassThrough } = await import('node:stream');
+  const fake = () => { const p = new EventEmitter(); p.stdout = new PassThrough(); p.killed = false; p.kill = () => { p.killed = true; p.stdout.destroy(); queueMicrotask(() => p.emit('exit', null)); }; return p; };
+  // A stream that works: its JPEGs are what the page gets, and the screencaps stop.
+  let proc = null, caps = 0;
+  let v = await liveView({ screenshot: async () => { caps++; return PIC; }, openStream: () => (proc = fake()), timing: { waitMs: 500, idleMs: 300, firstFrameMs: 400 } });
+  const first = await fetch(`${v.base}/frame?after=0`); await first.arrayBuffer();
+  assert.ok(proc, 'the stream is started when a page asks for frames');
+  proc.stdout.write(jpeg(0x11));
+  const a = await fetch(`${v.base}/frame?after=${first.headers.get('x-frame-seq')}`);
+  assert.equal(a.headers.get('content-type'), 'image/jpeg');
+  assert.ok(Buffer.from(await a.arrayBuffer()).equals(jpeg(0x11)));
+  const before = caps;
+  proc.stdout.write(jpeg(0x22));
+  const b = await fetch(`${v.base}/frame?after=${a.headers.get('x-frame-seq')}`);
+  assert.ok(Buffer.from(await b.arrayBuffer()).equals(jpeg(0x22)));
+  assert.equal(caps, before, 'no screencaps while the stream gives pictures');
+  assert.equal((await (await fetch(`${v.base}/status`)).json()).source, 'stream');
+  // Nobody asking any more: the stream process is ended.
+  await new Promise((r) => setTimeout(r, 1600));
+  assert.equal(proc.killed, true, 'an unwatched phone is not streaming its screen');
+  v.close();
+  // A stream that gives no picture (or text instead of one): screencaps carry the view, and it is said once.
+  let silent = null, shot = PIC;
+  v = await liveView({ screenshot: async () => shot, openStream: () => (silent = fake()), timing: { waitMs: 1500, idleMs: 300, firstFrameMs: 200 } });
+  const c = await fetch(`${v.base}/frame?after=0`);
+  assert.equal(c.headers.get('content-type'), 'image/png');
+  await c.arrayBuffer();
+  silent.stdout.write(Buffer.from('error: no such device\n'));
+  await new Promise((r) => setTimeout(r, 350));
+  assert.equal(silent.killed, true);
+  shot = PIC2;
+  const d = await fetch(`${v.base}/frame?after=${c.headers.get('x-frame-seq')}`);
+  assert.equal(d.headers.get('content-type'), 'image/png');
+  await d.arrayBuffer();
+  assert.equal(v.logs.filter((l) => /no screen stream/.test(l)).length, 1);
+  // One that cannot even start is the same.
+  v.close();
+  v = await liveView({ screenshot: async () => PIC, openStream: () => { throw new Error('mobilecli not found'); }, timing: { waitMs: 300, idleMs: 200 } });
+  assert.equal((await fetch(`${v.base}/frame?after=0`)).status, 200);
+  v.close();
+});
+
+test('phone.screenshot: what screencap gives is checked to be a picture — adb reports success either way', async () => {
+  const h = harness();
+  assert.ok(await until(() => h.ctx.dshPhone.isReady));
+  const real = png(8, 6, (x) => (x < 4 ? [0, 0, 255, 255] : [255, 255, 255, 255]));
+  let out = real;
+  h.ctx.dshPhone.adbExec = async (args) => ({ stdout: args.includes('screencap') ? out : '' });
+  assert.ok((await h.ctx.dshPhone.screenshot()).equals(real));
+  for (const bad of [Buffer.alloc(0), Buffer.from('error: device offline\n')]) { out = bad; await assert.rejects(() => h.ctx.dshPhone.screenshot(), /screencap gave no picture/); }
+  h.stop();
 });
 
 import { shade, SYSTEM, QQ_KUAN } from './fixtures/shade.js';
