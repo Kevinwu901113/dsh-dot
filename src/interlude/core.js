@@ -15,7 +15,7 @@
 // The Canon file keeps HDS-Interlude's `storyDefaults` field names
 // (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
 import { deny } from '../refusals.js';
-import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, isHerTool } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 import { typesText } from '../phone/phone.js';
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -419,9 +419,6 @@ export function apply(ctx, config = {}) {
     // Drop dsh's own openers for the character's sessions so the Canon is the first thing the model
     // reads; other sessions are untouched. (A `complete` section cannot do this per session.)
     const OURS = /^(interlude|dot|phone|qq|computer|memory):/;
-    const HOST_TRANSPORT = ['run_code', 'structured_output'];
-    const leanNoted = new Set();
-    const leanShape = new Set();
     const keep = (name) => name === 'interlude:canon' || name === 'dot:rules' || name.startsWith('mcp:');
     scope.effect(() => scope.on('system-prompt/assemble', async (_assembly, c, next) => {
       const assembly = await next();
@@ -431,17 +428,12 @@ export function apply(ctx, config = {}) {
       // what this plugin wrote for her (her card, her rules, her phone, her QQ).
       const sess = c.agent?.session;
       let lean = false;
-      try { lean = Boolean(ctx.get('dshDot')?.lean?.(sess?.id, sess?.header?.createdAt)); } catch { lean = false; }
+      try { lean = Boolean(ctx.get('dshDot')?.lean?.(sess?.id, sess?.header?.agentPreset)); } catch { lean = false; }
       const sections = assembly.sections.filter((sec) => (lean ? OURS.test(sec.name) : cfg.canonOnly ? keep(sec.name) : !cfg.trimSections.includes(sec.name)));
       // The tool list of the request is part of the assembly, and what this returns is what is sent (dsh-system-prompt):
       // a lean conversation is offered her own tools only — also the ones her agent's preset brought, which a
       // tools.restrict() does not reach. The host's two transport names stay (PTC's run_code, structured output).
-      // What this host's assembly carries, noted once per lean conversation: whether the tool list is here to filter at all.
-      if (lean && !leanShape.has(sess?.id)) { leanShape.add(sess?.id); audit('lean-assembly', { session: sess?.id, keys: Object.keys(assembly ?? {}), tools: Array.isArray(assembly?.tools) ? assembly.tools.length : typeof assembly?.tools, sections: assembly?.sections?.length }); }
-      const tools = lean && Array.isArray(assembly.tools) ? assembly.tools.filter((t) => isHerTool(t?.name) || HOST_TRANSPORT.includes(t?.name)) : assembly.tools;
-      if (sections.length === assembly.sections.length && tools === assembly.tools) return assembly;
-      if (lean && tools !== assembly.tools && tools.length !== assembly.tools.length && !leanNoted.has(sess?.id)) { leanNoted.add(sess?.id); audit('lean-tools', { session: sess?.id, offered: assembly.tools.length, kept: tools.length }); }
-      return { ...assembly, sections, tools };
+      return sections.length === assembly.sections.length ? assembly : { ...assembly, sections };
     }), 'dsh-interlude: prompt trim');
     // How she talks, as the very last thing before she answers (after the history, the memory and the
     // interlude): what is read last weighs most (cf. SillyTavern's Author's Note at depth 0, Character

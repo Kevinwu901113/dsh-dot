@@ -714,7 +714,7 @@ export function apply(ctx, config = {}) {
       save();
       // Archive first: a wake that reaches an archived session is dropped without a word.
       try { await ctx.get('workspaceRegistry')?.archiveSession?.(fromId); } catch (err) { logger.warn(`archive of ${fromId} failed: ${err.message}`); }
-      const { sessionId } = await controller.create({ cwd: home });
+      const { sessionId } = await (d.createConversation?.(controller) ?? controller.create({ cwd: home }));
       try { await controller.rename?.({ sessionId, title: `dot · 第 ${memory.gen} 段` }); } catch (error) { void error; }
       d.setSession?.(sessionId);
       const tail = lines.filter((l) => l.session === fromId && ['owner', 'her'].includes(l.who)).slice(-cfg.handoffTailLines);

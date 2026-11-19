@@ -210,7 +210,7 @@ setx DSH_DOT_COMPUTER off
 | `handsMaxMs` | `360000` | 她的手做一步最长多久；超过就停，带着已经说的回来 |
 | `reachUnansweredMs` | `7200000` | 她主动发给你的一条过了这么久你没回，在她对话里留一句事实「那条他没回」；0 = 不留 |
 | `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉，命中清单的句子每轮打回一次让她重说 |
-| `lean` | `true` | 她的对话只留她自己的工具：`hands`、`qq_send`、`qq_sticker_keep`、`memory`、`recall`、`keep_line`、`schedule_*`、`create_goal` / `update_goal` / `get_goal`、`web_search` / `web_fetch`、`read` / `write` / `edit`，和她 QQ 的 action；宿主其余的（任务、子代理、workflow、文件搜索、插件管理、`account` …）不出现在她的请求里。只对这一项打开之后**新开的**对话生效（新的一段、新窗口）；之前的对话保持原样，因为模型会照历史里出现过的工具名去调用。想马上生效：`/dot memory handoff` |
+| `lean` | `true` | 她的新对话用插件自带的 `dot` 预设来建（第一次开、每次交接）：宿主的工具只带读写自己的文件、定时、目标、查资料；加上插件自己的 `hands`、`qq_send`、`qq_sticker_keep`、`memory`、`recall`、`keep_line` 和她 QQ 的 action。提示词也只留插件为她写的几段。已有的对话不变（预设是建会话时定的）；想马上换：`/dot memory handoff`。宿主不认这个预设时照旧建会话 |
 | `openNudge` | `true` | 替他办的事，手回来以后她对他说了话、却没有再交代手，这一轮就结束了：手空着时问她一次（固定的一段话，不是模型写的）。她接着交代手、告诉他结果、或者沉默，三样都算数；只问一次（`openNudgeMax`），他一开口就作废，30 分钟没动静就放下（`openTtlMs`）。她有 goal 在跑时不问 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 她自己的 App 经验（`~/dot/her/howto/`）：每轮按 App 记步数；走了 `howtoMinSteps` 步以上或出过错的那轮，结束后一次小调用整理这个 App 的笔记（教训、捷径）；之后一个会话里第一次打开这个 App 时笔记跟着给她。`/dot howto` 看每个 App 的步数变化 |
 | `promptsPort` | `7870` | `/dot prompts` 提示词页面的端口（只监听 127.0.0.1） |

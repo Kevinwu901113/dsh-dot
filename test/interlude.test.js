@@ -158,11 +158,6 @@ test('prompt trim: a lean conversation of hers reads only what this plugin wrote
   h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...(get(n) ?? {}), lean: (id) => id === 's1' } : get(n)))(h.ctx.get);
   assert.deepEqual(await h.assemble('s1', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel']);
   assert.deepEqual(await h.assemble('s0', h.home, all), ['interlude:canon', 'dot:rules', 'phone:device', 'qq:channel', 'tool:bash', 'tool:glob', 'subagents', 'mcp:vm', 'mcp:resources'], 'a conversation begun before keeps the host sections');
-  // the request's tool list is part of the assembly: hers only, also what her agent's preset brought
-  const tools = ['hands', 'bash', 'subagent', 'qq_send', 'mcp__dot-qq__invoke_action', 'workflow', 'web_search', 'schedule_create', 'run_code', 'plugin_manager'];
-  assert.deepEqual(await h.assembleTools('s1', h.home, tools), ['hands', 'qq_send', 'mcp__dot-qq__invoke_action', 'web_search', 'schedule_create', 'run_code']);
-  assert.deepEqual(await h.assembleTools('s0', h.home, tools), tools, 'not lean: every tool as the host listed it');
-  assert.deepEqual(await h.assembleTools('ui', '/Users/x/code', tools), tools, 'not hers: untouched');
   h.stop();
 });
 

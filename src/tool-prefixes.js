@@ -21,6 +21,8 @@ export const PHONE_TYPE_TOOL = 'phone_type';
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
 export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
+/** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
+export const HER_PRESET = 'dot';
 /** Is this tool one a lean conversation of hers keeps (HER_TOOLS, and her QQ's own actions)? */
 export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsWith(QQ_TOOL_PREFIX);
 // What her conversation keeps when it is lean (dot.lean, a conversation begun since it was turned on): her one verb

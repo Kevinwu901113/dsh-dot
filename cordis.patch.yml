@@ -38,6 +38,63 @@
     presets: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? { 'read-only': { sandbox: 'read-only', approval: 'ask' }, 'workspace-write': { sandbox: 'workspace-write', approval: 'ask' }, 'danger-full-access': { sandbox: 'danger-full-access', approval: 'never' } } : { 'computer': { sandbox: 'danger-full-access', approval: 'ask' }, 'computer-auto': { sandbox: 'danger-full-access', approval: 'never' } }"
     defaultPreset: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? 'workspace-write' : (process.env.DSH_COMPUTER_PRESET ?? 'computer')"
 
+# Her conversation's own agent preset (dot.lean): the rows of dsh's `standard` preset she keeps — files of her own,
+# schedules, goals, looking things up, compaction — and none of the rest (shell, jobs, file search, skills, plan mode,
+# subagents and workflows, ask-user, todo, present, office, plugin manager). Her other tools are this plugin's own.
+# A session's preset decides which host tools its requests list; nothing takes them out afterwards.
+- insert:
+    - id: preset-dot
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dot
+        name: dot
+        description: dot 的对话：只带她自己的工具（dsh-dot）
+        order: 90
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are a coding agent powered by the {{model}} model.
+          - id: agent-instructions
+            name: '@deepseek-ai/dsh-agent-instructions'
+            config:
+              maxBytes: 65536
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+              readImage: false
+          - id: tool-schedule
+            name: '@deepseek-ai/dsh-tool-schedule'
+          - id: command-goal
+            name: '@deepseek-ai/dsh-command-goal'
+          - id: tool-goal
+            name: '@deepseek-ai/dsh-tool-goal'
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: command-compact
+                name: '@deepseek-ai/dsh-command-compact'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+
 - insert:
     # 0. Living next to other plugins (qq-bridge today): whose session is this, which of our tools it
     #    may see, where its commands run, which QQ accounts are not hers to answer. Always on; it only

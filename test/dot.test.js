@@ -1096,6 +1096,21 @@ test('ownerPreemptMax: after giving way twice in a row her reply goes out first;
   } finally { mock.timers.reset(); }
 });
 
+test('lean: her conversation is made with her own preset; a host that refuses the preset gets a plain session; lean follows the preset', async () => {
+  const o = ownerHarness();
+  const created = [];
+  o.services.sessionController.create = async (opts) => { created.push(opts); if (opts.agentPreset) throw new Error('unknown agent preset "dot"'); return { sessionId: 's1' }; };
+  o.services.sessionController.rename = async () => ({});
+  const made = await o.services.dshDot.createConversation(o.services.sessionController);
+  assert.deepEqual(created, [{ cwd: o.h.home, agentPreset: 'dot' }, { cwd: o.h.home }]);
+  assert.equal(made.sessionId, 's1');
+  assert.ok(o.h.audit.some((e) => e.event === 'conversation-preset-refused'));
+  assert.equal(o.services.dshDot.lean('s9', 'dot'), true);
+  assert.equal(o.services.dshDot.lean('s9', 'standard'), false, 'a window opened with another preset is as it was');
+  assert.equal(o.services.dshDot.lean('s9', undefined), false);
+  stop(o.h);
+});
+
 test('her own time with no conversation of hers opens one, as his first words would — it is not dropped', async () => {
   const o = ownerHarness();
   const created = [], done = [];
@@ -1103,7 +1118,7 @@ test('her own time with no conversation of hers opens one, as his first words wo
   o.services.sessionController.rename = async () => ({});
   assert.equal(o.services.dshDot.task({ kind: 'free', key: 'free|d|0', text: '这段时间是你自己的', source: { kind: 'dsh-interlude', form: 'free' }, onDone: (r) => done.push(r.status) }), 'queued');
   await settle(); await settle();
-  assert.deepEqual(created, [{ cwd: o.h.home }]);
+  assert.deepEqual(created, [{ cwd: o.h.home, agentPreset: 'dot' }], 'made with her own preset (dot.lean)');
   assert.deepEqual(o.calls.map((c) => [c.via, c.text]), [['followup', '这段时间是你自己的']]);
   assert.deepEqual(done, [], 'started, not dropped');
   assert.ok(o.h.audit.some((e) => e.event === 'task-started' && e.session === 's1'));
@@ -1118,7 +1133,7 @@ test('no conversation yet (first run, or after a reset): his words open one in h
     o.services.sessionController.create = async (opts) => { created.push(opts); return { sessionId: 's1' }; };
     o.services.sessionController.rename = async () => ({});
     o.say('在吗'); mock.timers.tick(1500); await settle(); await settle();
-    assert.deepEqual(created, [{ cwd: o.h.home }]);
+    assert.deepEqual(created, [{ cwd: o.h.home, agentPreset: 'dot' }], 'made with her own preset (dot.lean)');
     assert.ok(o.h.audit.some((e) => e.event === 'conversation-opened' && e.session === 's1'));
     assert.equal(o.calls.length, 1);
     assert.deepEqual(lines(o.calls[0]), ['在吗']);

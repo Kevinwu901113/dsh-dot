@@ -264,10 +264,9 @@ export function apply(ctx, config = {}) {
       const s = agent?.session;
       if (!agent?.id || !agent.ctx?.tools) return;
       const base = owner(agent.id, s?.header?.cwd, s?.header?.agentPreset);
-      // A conversation of hers begun since dot.lean was turned on starts with her own small set of tools; one that
-      // began before keeps what its history was written with (a model calls the tools its history shows, offered or not).
+      // A conversation of hers made with her own preset is lean: of the shared layer too it sees only what is hers.
       let lean = false;
-      try { lean = base === 'dot' && Boolean(ctx.get('dshDot')?.lean?.(agent.id, s?.header?.createdAt)); } catch { lean = false; }
+      try { lean = base === 'dot' && Boolean(ctx.get('dshDot')?.lean?.(agent.id, s?.header?.agentPreset)); } catch { lean = false; }
       const o = lean ? 'dot-lean' : base;
       const entry = { agent, owner: o, dispose: null, key: undefined };
       live.set(agent.id, entry);

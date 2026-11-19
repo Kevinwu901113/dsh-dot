@@ -14,7 +14,7 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { deny } from '../refusals.js';
-import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool } from '../tool-prefixes.js';
+import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
@@ -557,14 +557,12 @@ export function apply(ctx, config = {}) {
   const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
-  // When lean was first on here: conversations begun before it keep their tools.
-  let leanSince = Number(store.get('leanSince')) || 0;
-  const leanIds = new Set(); // her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask)
-  // The host's own tools (shell, jobs, subagents, workflows …) come with the agent's preset: a restriction does not
-  // reach them and a request cannot be changed on its way out (dsh-llm sends the options it was called with, whatever
-  // a listener passes on). Until her conversations have a preset of their own they are still listed to her; a call
-  // to one is refused below.
-  if (cfg.lean && !leanSince) { leanSince = Date.now(); store.set('leanSince', leanSince); }
+  // Her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask). A lean
+  // conversation is one made with her own agent preset (HER_PRESET): the host's tools come with a session's preset
+  // and nothing a plugin can do afterwards takes them out of its requests — not tools.restrict() (it does not reach
+  // what the agent's own layer registers), not llm/stream (next() takes no argument), not system-prompt/assemble
+  // (0.2.2 re-attaches the tool list after the waterfall). The preset decides; the rest follows it.
+  const leanIds = new Set();
   let hands = null; // her hands (hands.js), set once sessions can be made
   let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
   let talk = null;  // what he said that has no word back yet (talk.js), set once the things it waits on exist
@@ -944,10 +942,21 @@ export function apply(ctx, config = {}) {
     const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
     return found;
   };
+  /**
+   * Make a session in her home for her conversation: with her own preset when lean is on. A host that does not know
+   * the preset (the plugin's patch row did not load, an older dsh) refuses it — then the session is made as before.
+   */
+  const createConversation = async (controller) => {
+    if (cfg.lean) {
+      try { const made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); return made; }
+      catch (err) { audit('conversation-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
+    }
+    return controller.create({ cwd: home });
+  };
   /** A new conversation of hers in her home; '' when dsh cannot make one. */
   const openConversation = async (controller) => {
     try {
-      const { sessionId } = await controller.create({ cwd: home });
+      const { sessionId } = await createConversation(controller);
       try { await controller.rename?.({ sessionId, title: 'dot' }); } catch (error) { void error; }
       setLast(sessionId); audit('conversation-opened', { session: sessionId });
       return sessionId;
@@ -1580,7 +1589,9 @@ export function apply(ctx, config = {}) {
     // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
     // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
     /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
-    lean: (id, createdAt) => { const yes = Boolean(cfg.lean) && Boolean(id) && !isErrand(id) && Number(createdAt) >= leanSince; if (yes) leanIds.add(id); return yes; },
+    lean: (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !isErrand(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; },
+    /** A new conversation of hers, made with her own preset when lean is on (and this host knows the preset). → { sessionId } */
+    createConversation: (controller) => createConversation(controller),
     setSession: (id) => {
       if (!id || id === lastSession) return;
       talk?.drop('new-segment'); // what he asked is in the old segment's words; the new one starts clean

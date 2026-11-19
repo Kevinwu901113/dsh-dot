@@ -631,11 +631,17 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 **真机上看到的（11-19 晚）。** 宿主那几段系统提示对 lean 的对话已经删掉（10248 → 4387 字）。工具只少了 9 个（52 → 43）：`restrict` 只管得到注册在公共层的工具；宿主自带的那 19 个（命令行、任务、子代理、workflow、插件管理、文件搜索 …）是随 agent 预设挂在会话自己身上的，`restrict` 够不着——代码里一直写着「对她隐藏 bash」，其实从没生效过。在请求发出去的路上改工具表也不行：`llm/stream` 的 `next(改过的请求)` 只影响后面的监听者，适配器发的还是原来那份（dsh-llm `index.js:2371`），试过，缓存命中和输入量都没变。
 
-**怎么拿掉的（查了宿主库之后）。** 请求里的工具表是提示词组装结果的一部分：`system-prompt/assemble` 这个钩子返回的 `tools` 就是发出去的（dsh-system-prompt `lib/index.js` 的 `assemble()`：先收齐各层的工具 schema，过一遍这个钩子，原样用它的返回值）。我们本来就在这个钩子里删段落，lean 的对话顺手把 `tools` 也筛成她自己的（`interlude/core.js`，审计 `lean-tools{offered,kept}`）。预设层带来的工具在这里一样会被筛掉。调用时的拒绝（`dot.lean.not-hers`）留着兜底。
+**怎么拿掉的。** 他机器上的桌面版是 0.2.2-rc.5（`~/.dsh/dsh-runtimes/dsh-primary-runtime/runtime.json`），下面都是照这一版的包读出来的（npm 上同版本的 `@deepseek-ai/*`）：
 
-走不通的两条，记在这里免得再试：`llm/stream` 的 `next()` 不接参数（cordis `waterfall`：参数一开始就定死），传下去的改动会被丢掉；`~/.dsh/.agent-presets/` 从宿主 0.1.7 起不再读取，预设是 profile 里的一条 `@deepseek-ai/dsh-agent-preset` 行——给她单独建预设可行，但要先抄出 standard 预设里的每一行，暂时用不着。
+- 会话的宿主工具由它的 **agent 预设**决定。预设是 profile 里的一条 `@deepseek-ai/dsh-agent-preset` 行（`config: { id, name, order, plugins: […] }`），bundle 的 patch 可以自己插一条；`standard` 预设就是 `dsh-web-app/presets/standard.patch.yml` 里的这样一行。
+- 建会话时可以指定预设：`sessionController.create({ cwd, agentPreset })`（`dsh-api-session-controller` 的 `SessionCreateRequest`）。
+- 所以插件自己带一个预设 `dot`（`cordis.patch.yml` 的 `preset-dot`）：从 standard 里只留她要的行——自己的文件（`dsh-tool-fs`）、定时、目标、查资料（`dsh-tool-web`）、压缩，以及 persona / agent-instructions / time-context；命令行、任务、文件搜索、skill、plan mode、子代理和 workflow、ask-user、todo、present、office、插件管理都不带。她的新对话（第一次开、每次交接）用这个预设建；宿主不认这个预设就照旧建（审计 `conversation-preset-refused`）。
+- 「lean」跟着预设走：用 `dot` 预设建的会话才是 lean（提示词只留插件写的、公共层只留她的工具、别的调用被拒绝）。在窗口里用别的预设新开的对话保持原样。
 
-依据的宿主库是插件开发依赖里的 0.2.0-rc.2；他机器上桌面版的版本没有核对，以真机上的 `lean-tools` 审计和请求里的工具数为准。
+走不通的三条，记在这里免得再试：
+- `tools.restrict()`：只过滤继承来的（全局层和祖先层），会话自己这一层注册的不动（`dsh-tools` 的 `view()`）；预设的工具就在这一层。
+- `llm/stream`：cordis 的 `waterfall` 里 `next()` 不接参数，往下传的改动被丢掉。
+- `system-prompt/assemble`：0.2.0 里返回值的 `tools` 算数；0.2.2 把工具表放到钩子之后才接上（`assemble()` 末尾 `{ ...transformed, tools }`），钩子拿到的 assembly 里没有 `tools`——真机上记下来的键是 `sections, contexts, variables`。
 
 ## 0.24.2：手不替她写话
 
