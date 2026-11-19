@@ -253,9 +253,9 @@ export const defaults = {
   ownerQuietMs: 1500,
   ownerMaxWaitMs: 6000,
   ownerTypingMaxMs: 15000,
-  ownerDenyMax: 2,      // per turn: how often a qq_send to him is held back because he said something she has not read
-  // In a row: how often a reply of hers that has not reached him yet gives way to what he just said (the turn is
-  // started over, or the finished reply is kept back as a draft). Past this it goes out first. A bubble reaching him resets it.
+  // Read before you speak, one count for every way her words go to him (her answer, a qq_send, a turn started over):
+  // in a row, how often words of hers that have not reached him give way to what he just said. Past this they go out
+  // first — he cannot keep her silent by talking. Anything of hers reaching him starts the count again.
   ownerPreemptMax: 2,
   phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
   notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
@@ -596,7 +596,6 @@ export function apply(ctx, config = {}) {
       void noteToConversation('other', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
     }
   };
-  const ownerDenies = new Map(); // session id → qq_send calls to him held back this turn (read-before-send gate)
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
   ctx.on('session/event', (session, event) => {
@@ -629,7 +628,6 @@ export function apply(ctx, config = {}) {
       return;
     }
     if (event.type === 'turn/start') {
-      ownerDenies.delete(id);
       turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), origin: origins.get(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
       if (origins.get(id) === 'hands-result' && id === lastSession) talk?.resultArrived();
       origins.delete(id);
@@ -716,7 +714,9 @@ export function apply(ctx, config = {}) {
       }
       if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
       // Over QQ this is on record where it goes out (dshQq.onSent); over another IM, here.
-      void im.send(stripSilent(text)).then((sent) => { audit('delivered', { session: id, sent }); if (sent && !ctx.get('dshQq')?.connected) herSaid(id, stripSilent(text)); });
+      const out = cfg.replyCheck ? checkReply(stripSilent(text), replyChecks()).text : stripSilent(text); // her words: brackets out, as on every way out
+      if (!String(out).trim()) { audit('silent', { session: id }); return; }
+      void im.send(out).then((sent) => { audit('delivered', { session: id, sent }); if (sent && !ctx.get('dshQq')?.connected) herSaid(id, out); });
     }
   });
 
@@ -771,6 +771,7 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/post-execute', async (exec, result, next) => {
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
     if (exec?.name === 'qq_send' && !result?.isError && isOwnerTarget((exec.input ?? exec.args ?? exec.arguments)?.to, ctx.get('dshQq')?.owner)) {
+      preempts = 0; // something of hers reached him
       const t = turns.get(exec.agent?.session?.id);
       if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: exec.agent?.session?.id, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
     }
@@ -1058,7 +1059,7 @@ export function apply(ctx, config = {}) {
     if (!fresh && unsentDraft.length) audit('owner-draft-dropped', { lines: unsentDraft.length, ageMs: Date.now() - unsentAt });
     unsentDraft = []; return lines;
   };
-  let preempts = 0;     // replies in a row that gave way before a bubble reached him (see defaults.ownerPreemptMax)
+  let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
   /**
@@ -1190,7 +1191,17 @@ export function apply(ctx, config = {}) {
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
   // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
   const taskQueue = []; let taskRunning = null;
-  const somethingGoingOn = () => Boolean(taskRunning) || threads.size > 0 || turns.has(lastSession) || [...held.values()].some((ns) => ns.length);
+  // What her attention is on right now, in one place. Everything that would wake her on its own account (a thing of
+  // her own, picking up her phone, the one asking) asks `quiet()`; nothing keeps a list of its own.
+  const herState = () => ({
+    writing: Boolean(lastSession) && turns.has(lastSession),       // a turn of her conversation is running
+    sending: sendingCount > 0,                                     // her bubbles are going out
+    hands: Boolean(hands?.busy()),                                 // her hands are on a round
+    his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
+    moving: frozen > 0,                                            // her conversation is being handed over
+    waiting: Boolean(taskRunning) || threads.size > 0 || [...held.values()].some((ns) => ns.length), // something is already on its way to her
+  });
+  const quiet = () => !Object.values(herState()).some(Boolean);
   const finishTask = (t, status, report = '', cost = null) => {
     if (t === taskRunning) taskRunning = null; else taskQueue.splice(taskQueue.indexOf(t), 1);
     audit(`task-${status}`, { kind: t.kind, key: t.key, session: t.session, waitedMs: (t.startedAt ?? Date.now()) - t.queuedAt });
@@ -1199,7 +1210,7 @@ export function apply(ctx, config = {}) {
   const nextTask = async () => {
     const now = Date.now();
     for (const t of taskQueue.filter((x) => x.expiresAt <= now)) finishTask(t, 'expired');
-    if (!taskQueue.length || somethingGoingOn()) return;
+    if (!taskQueue.length || !quiet()) return;
     const t = taskRunning = taskQueue.shift();
     t.startedAt = now;
     try {
@@ -1389,9 +1400,8 @@ export function apply(ctx, config = {}) {
     if (!toOwner) return next();
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return next();
-    const n = ownerDenies.get(id) ?? 0;
-    if (n >= cfg.ownerDenyMax) { audit('owner-gate-passed', { session: id, denies: n }); return next(); }
-    ownerDenies.set(id, n + 1);
+    if (preempts >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts }); return next(); }
+    const n = preempts++;
     const flushed = buffered ? flushOwner(exec.agent) : 0;
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
     return deny(ownerInterruptText());
@@ -1405,11 +1415,11 @@ export function apply(ctx, config = {}) {
   talk = cfg.openNudge ? createTalk({
     max: cfg.openNudgeMax, ttlMs: cfg.openTtlMs, settleMs: cfg.openSettleMs,
     audit: ({ event, ...data }) => audit(event, { session: lastSession, ...data }),
-    canWake: () => Boolean(lastSession) && !turns.has(lastSession) && !hands?.busy() && !ownerBatch.length && !ownerTyping && sendingCount === 0 && !frozen,
+    canWake: () => Boolean(lastSession) && quiet(),
     wake: async ({ his, last, at }) => {
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found || goalActive(found.agent)) return false;
-      if (turns.has(lastSession) || hands?.busy() || ownerBatch.length) return false; // something came up while looking
+      if (!quiet()) return false; // something came up while looking
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: openNudgeText({ his, last, at }) }], source: { kind: 'dsh-dot', form: 'open-nudge', to: 'him' } }));
       lastWakeAt = Date.now();
       return true;
@@ -1424,8 +1434,7 @@ export function apply(ctx, config = {}) {
   const phoneCheck = () => {
     const every = cfg.phoneCheckEveryMinutes * 60000;
     // The phone is one device: not while her conversation is running a turn (she may be using it).
-    if (!every || !phone()?.isReady || !lastSession || turns.has(lastSession)) return;
-    if (frozen) return;
+    if (!every || !phone()?.isReady || !lastSession || !quiet()) return;
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
     if (Date.now() - lastWakeAt < every) return;
     const controller = ctx.get('sessionController');
@@ -1568,7 +1577,7 @@ export function apply(ctx, config = {}) {
           `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
           // Where his next message goes: when she "does not answer", look here first.
           `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
-          `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · qq_send to him held ≤${cfg.ownerDenyMax}×/turn while unread${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
+          `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
           ...statusLiveness(),
           `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
           (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
@@ -1611,6 +1620,9 @@ export function apply(ctx, config = {}) {
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
     busy: (id) => turns.has(id),
+    /** What her attention is on right now ({ writing, sending, hands, his, moving, waiting }), and whether none of it is. */
+    state: () => herState(),
+    quiet: () => quiet(),
     /** One open turn as the watchdog sees it (turnState + who and what), or null. */
     turn: (id) => turnInfo(id),
     /** Every open turn of hers. */

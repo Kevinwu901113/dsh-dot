@@ -615,7 +615,12 @@ function ownerHarness(cfg = {}) {
   apply(h.ctx, { ...h.config, ownerQuietMs: 1500, ownerMaxWaitMs: 6000, ownerTypingMaxMs: 15000, ...cfg });
   const say = (text) => onMessage({ kind: 'private', userId: '20002', who: '宽', text, fromOwner: true, at: new Date().toISOString() });
   const turn = { start: (n = 1) => h.emit(h.home, 'turn/start', { turn: n }), end: (n = 1) => h.emit(h.home, 'turn/end', { turn: n }) };
-  const gate = (to = 'owner') => hooks['tools/pre-execute']({ name: 'qq_send', arguments: { to, text: '好' }, agent }, async () => 'ran');
+  const gate = async (to = 'owner') => {
+    const exec = { name: 'qq_send', arguments: { to, text: '好' }, agent };
+    const r = await hooks['tools/pre-execute'](exec, async () => 'ran');
+    if (r === 'ran') await hooks['tools/post-execute']?.(exec, { content: [] }, async () => ({}));
+    return r;
+  };
   return { h, agent, calls, say, typing: (t) => onTyping({ userId: '20002', fromOwner: true, typing: t }), turn, gate, services, pre: (exec, next) => hooks['tools/pre-execute'](exec, next) };
 }
 const lines = (c) => unstamp(c.text).split('\n');
@@ -691,7 +696,7 @@ test('his messages mid-turn are steered into the running turn, with the busy lin
   } finally { mock.timers.reset(); }
 });
 
-test('read before send: qq_send to him is denied while he has words she has not read; the buffer goes in at once; at most ownerDenyMax per turn', async () => {
+test('read before send: qq_send to him is denied while he has words she has not read; the buffer goes in at once; at most ownerPreemptMax in a row', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
     const { prompt } = await import('../src/prompts.js');
@@ -712,13 +717,13 @@ test('read before send: qq_send to him is denied while he has words she has not 
     assert.equal((await o.gate()).kind, 'deny');
     // the cap: the third one goes through, even though it is still unread
     assert.equal(await o.gate(), 'ran');
-    assert.ok(o.h.audit.some((e) => e.event === 'owner-gate-passed' && e.denies === 2));
+    assert.ok(o.h.audit.some((e) => e.event === 'owner-gate-passed' && e.preempts === 2));
     assert.equal(await o.gate('user:30003'), 'ran', 'to someone else: never held');
     // the model has read it (claimed from the inbox): sends go
     o.agent.inbox.nextStep.length = 0;
     o.turn.end(2); o.turn.start(3);
     assert.equal(await o.gate('user:20002'), 'ran');
-    // a new turn has its own count
+    // what went out reached him: the count starts again
     o.say('还有'); assert.equal((await o.gate('20002')).kind, 'deny');
     mock.timers.tick(5000); await settle();
     assert.equal(o.calls.length, 2, 'the timer of a flushed batch does not deliver it twice');
