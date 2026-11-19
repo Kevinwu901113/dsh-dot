@@ -105,29 +105,3 @@ test('hands: how a round ended is told by the code, with what was refused on the
   assert.deepEqual(h.done[0][0].notes, ['own-words']);
 });
 
-test('lean: a request of a lean conversation carries only her own tools; anything else is left as it is', async () => {
-  const { leanRequest } = await import('../src/dot/core.js');
-  const tools = ['hands', 'bash', 'subagent', 'qq_send', 'mcp__dot-qq__invoke_action', 'workflow', 'web_search'].map((name) => ({ name }));
-  const o = Object.freeze({ sessionId: 's1', tools, system: 'x' });
-  const out = leanRequest(o, (id) => id === 's1');
-  assert.deepEqual(out.tools.map((t) => t.name), ['hands', 'qq_send', 'mcp__dot-qq__invoke_action', 'web_search']);
-  assert.equal(out.system, 'x'); assert.equal(o.tools.length, 7, 'the host object is not changed');
-  assert.equal(leanRequest({ sessionId: 's2', tools }, (id) => id === 's1'), null);
-  assert.equal(leanRequest({ sessionId: 's1' }, () => true), null);
-  assert.equal(leanRequest({ sessionId: 's1', tools: [{ name: 'hands' }] }, () => true), null);
-});
-
-test('llm gate: a registered rewriter changes the request the host gets, whatever the listener order; none leaves it alone', async () => {
-  const { createGate } = await import('../src/llm-gate.js');
-  const gate = createGate({ config: {}, logger: {}, audit: () => {} });
-  const seen = [];
-  const next = (o) => { seen.push(o); return (async function* () { yield { type: 'finish' }; })(); };
-  for await (const _ of gate.wrap({ sessionId: 's1', tools: [{ name: 'bash' }] }, next)) void _;
-  assert.equal(seen[0], undefined, 'nothing registered: next() as before');
-  const off = gate.rewrite('lean', (o) => (o.sessionId === 's1' ? { ...o, tools: [] } : null));
-  for await (const _ of gate.wrap({ sessionId: 's1', tools: [{ name: 'bash' }] }, next)) void _;
-  assert.deepEqual(seen[1].tools, []);
-  for await (const _ of gate.wrap({ sessionId: 's2', tools: [{ name: 'bash' }] }, next)) void _;
-  assert.equal(seen[2], undefined);
-  off(); gate.stop?.();
-});

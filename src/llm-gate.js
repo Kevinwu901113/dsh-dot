@@ -356,16 +356,10 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     } finally { end(null); }
   }
 
-  const rewriters = new Map();
   return {
     config: cfg,
     /** The `llm/stream` listener body: delays (when it must) and observes one request. */
-    wrap(options, next0) {
-      // A request may be rewritten on its way (a lean conversation's tool list): the one listener does both, so the
-      // order of listeners cannot undo it. `next(changed)` hands the host the changed request; `next()` the original.
-      let changed = null;
-      for (const fn of rewriters.values()) { try { changed = fn(changed ?? options) ?? changed; } catch (err) { debug(`llm gate: rewrite failed (${err.message})`); } }
-      const next = changed ? () => next0(changed) : next0;
+    wrap(options, next) {
       let booked;
       try { booked = begin(options); } catch (err) { debug(`llm gate: ${err.message}; request let through`); return next(); }
       const { rec, wait } = booked;
@@ -382,8 +376,6 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
       })();
     },
     classify,
-    /** Register a rewriter: (options) => changed options, or null to leave the request as it is. Returns the remover. */
-    rewrite(name, fn) { rewriters.set(name, fn); return () => { if (rewriters.get(name) === fn) rewriters.delete(name); }; },
     /** Register which sessions are background (a predicate on the session id); returns the remover. */
     backgroundSessions(name, test) {
       sessionTests.set(name, test);

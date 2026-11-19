@@ -106,16 +106,6 @@ export function handsStatus(r = {}) {
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
   return [base.trim(), ...notes.map((n) => n.trim())].join('；');
 }
-/**
- * A request of a lean conversation with only her own tools in it, or null when there is nothing to take out
- * (not hers, not lean, no tools). The options object is the host's and is not changed.
- */
-export function leanRequest(options, isLean) {
-  const id = options?.sessionId;
-  if (!id || !Array.isArray(options.tools) || !isLean(id)) return null;
-  const tools = options.tools.filter((t) => isHerTool(t?.name));
-  return tools.length === options.tools.length ? null : { ...options, tools };
-}
 /** A web address or a domain typed into a bar: where to go, not something said. */
 const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;
 /** The lines of a text her hands are about to type that nobody gave them: not an address, and not known to `has`. */
@@ -570,15 +560,10 @@ export function apply(ctx, config = {}) {
   // When lean was first on here: conversations begun before it keep their tools.
   let leanSince = Number(store.get('leanSince')) || 0;
   const leanIds = new Set(); // her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask)
-  // The host's own tools (shell, jobs, subagents, workflows …) live on the agent itself, where a restriction does not
-  // reach them: for a lean conversation they are taken out of the request here, on its way to the model, and a call
-  // to one is refused below. The list is the same on every request, so the cached prefix holds.
-  const leanSeen = new Set(); // sessions whose first lean request has been noted
-  ctx.effect(() => llmGate?.rewrite?.('lean', (options) => {
-    const out = leanRequest(options, (id) => leanIds.has(id));
-    if (out && !leanSeen.has(options.sessionId)) { leanSeen.add(options.sessionId); audit('lean-request', { session: options.sessionId, offered: options.tools.length, kept: out.tools.length }); }
-    return out;
-  }) ?? (() => {}), 'dsh-dot: lean requests');
+  // The host's own tools (shell, jobs, subagents, workflows …) come with the agent's preset: a restriction does not
+  // reach them and a request cannot be changed on its way out (dsh-llm sends the options it was called with, whatever
+  // a listener passes on). Until her conversations have a preset of their own they are still listed to her; a call
+  // to one is refused below.
   if (cfg.lean && !leanSince) { leanSince = Date.now(); store.set('leanSince', leanSince); }
   let hands = null; // her hands (hands.js), set once sessions can be made
   let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
