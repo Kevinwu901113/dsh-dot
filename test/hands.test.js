@@ -73,3 +73,21 @@ test('hands: stopped by her, or cut for taking too long (the turn is cancelled, 
   assert.ok(h.audits.some((e) => e.event === 'hands-rotated'));
   assert.equal(h.hands.start({ task: '' }).status, 'failed');
 });
+
+test('hands: what they type is hers or was shown to them — never their own words', async () => {
+  const { ownWords } = await import('../src/dot/core.js');
+  const h = harness();
+  assert.equal(h.hands.has('随便'), false, 'no round: nothing was given');
+  h.hands.start({ device: 'phone', task: '在这条帖子下面评论「笑死 这也行」，然后搜 瓦罗兰特' });
+  await tick();
+  assert.ok(h.hands.has('笑死 这也行') && h.hands.has('笑死这也行') && h.hands.has('瓦罗兰特'), 'her words, whitespace aside');
+  assert.equal(h.hands.has('哈哈确实，我也这么觉得'), false);
+  h.emit('h1', 'tool/result', { message: { content: '登录名 15625040795 密码 Abc-123456' } });
+  assert.ok(h.hands.has('15625040795') && h.hands.has('Abc-123456'), 'what a tool showed them (an account, the screen)');
+  const has = h.hands.has;
+  assert.deepEqual(ownWords('笑死 这也行', has), []);
+  assert.deepEqual(ownWords('tieba.baidu.com', has), [], 'an address is not words');
+  assert.deepEqual(ownWords('https://www.bilibili.com/v/popular', has), []);
+  assert.deepEqual(ownWords('笑死 这也行\n哈哈确实', has), ['哈哈确实']);
+  h.emit('h1', 'turn/end');
+});

@@ -93,6 +93,10 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
 /** The model-facing reason a qq_send to him is handed back by the reply check: listed phrases, or bracketed stage directions. */
+/** A web address or a domain typed into a bar: where to go, not something said. */
+const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;
+/** The lines of a text her hands are about to type that nobody gave them: not an address, and not known to `has`. */
+export const ownWords = (text, has) => String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).filter((l) => !ADDRESS.test(l) && !has(l));
 /** What she is asked, once, when a thing of his has her words on it but nothing of her hands after them. */
 export const openNudgeText = ({ his = '', last = '', at = 0, now = Date.now() } = {}) => prompt('dot.open.nudge', { stamp: stamp(now, now), ago: ago(at, now) ? `${ago(at, now)}前` : '刚才', his: his || '（没有文字）', last: last || '（没说什么）' }).trim();
 export const replyCheckText = ({ hits = [] } = {}) => prompt('dot.reply-check', { why: hits.length ? prompt('dot.reply-check.phrases', { phrases: hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') });
@@ -537,6 +541,7 @@ export function apply(ctx, config = {}) {
   let howtoFor = () => null;  // set where her phone notes are (below)
   const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
   let hands = null; // her hands (hands.js), set once sessions can be made
+  let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
   let talk = null;  // what he said that has no word back yet (talk.js), set once the things it waits on exist
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   const handsLine = () => { const d = hands?.doing?.(); return d ? prompt('dot.hands.doing', { task: d.task, secs: Math.round((Date.now() - d.startedAt) / 1000), said: d.said ? `，刚说：${d.said}` : '' }).trim() : ''; };
@@ -629,7 +634,18 @@ export function apply(ctx, config = {}) {
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
     // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
-    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && !/^qq-/.test(String(event.data?.source?.rpcId ?? ''))) t.elsewhere = true;
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && !/^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
+      t.elsewhere = true;
+      if (id === lastSession && !t.scheduled) talk?.heSaid(contentText(event.data?.content).trim());
+    }
+    // The same account of his thing as over QQ (talk.js), for a turn his words opened somewhere else.
+    if (t.elsewhere && !t.fromQq && !t.scheduled && id === lastSession) {
+      if (event.type === 'assistant/message' && !event.data?.interrupted) {
+        const text = contentText(event.data?.message?.content);
+        if (text.trim() && !isSilent(text)) { t.spoke = true; talk?.sheSaid(stripSilent(text).split('\n').map((l) => l.trim()).filter(Boolean).at(-1)); }
+      }
+      if (ended) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: false, busy: Boolean(hands?.busy()) });
+    }
     if (ended && t.elsewhere && !t.fromQq && !t.scheduled) { const last = String(t.last ?? '').trim(); if (last && !isSilent(last)) herSaid(id, stripSilent(last)); }
     if (!t.scheduled && !t.fromQq) return;
     if (event.type === 'assistant/message' && !event.data?.interrupted) {
@@ -1306,9 +1322,27 @@ export function apply(ctx, config = {}) {
     // From here on it is about what she is saying, whichever way it goes out (spokenOf).
     const spoken = spokenOf(exec.name, args);
     if (!spoken) return next();
+    // Her hands do not write. What they type on her phone is hers (in the task she gave them) or was shown to them
+    // (the screen, an account) — an address is not words. Anything else goes back to her to be said.
+    const round = hands?.isHands(id, exec.agent?.session?.header?.cwd) && hands.busy() ? hands.doing() : null;
+    if (round && spoken.via === 'phone') {
+      const own = ownWords(spoken.text, hands.has);
+      if (own.length) { audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
+    }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
+    if (cfg.replyCheck && round && spoken.text) {
+      // Typed by her hands: the words are hers, so the line goes back to her, through them. Once — her next wording goes out.
+      const c = checkReply(spoken.text, replyChecks());
+      const back = (c.hits.length || c.stripped) && !handsCheckDenied;
+      handsCheckDenied = Boolean(back);
+      if (back) {
+        audit('reply-check', { session: id, via: 'hands', to: 'app', stripped: c.stripped, hits: c.hits, denied: true });
+        return deny(prompt('dot.hands.reply-check', { why: c.hits.length ? prompt('dot.reply-check.phrases', { phrases: c.hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') }));
+      }
+      return next();
+    }
     if (cfg.replyCheck && t && !t.replyChecked && spoken.text) {
       const c = checkReply(spoken.text, replyChecks());
       if (c.hits.length || c.stripped) {

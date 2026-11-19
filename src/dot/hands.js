@@ -15,6 +15,7 @@
 import { mkdirSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 
+const squash = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
 const SHOWN_MAX = 200000; // characters of screen text a round keeps for keep_line's check (the newest)
 const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
@@ -41,6 +42,11 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     busy: () => Boolean(job),
     /** What her hands are on right now: { device, task, startedAt, said, steps } or null. */
     doing: () => (job ? { device: job.device, task: job.task, startedAt: job.startedAt, said: clip(job.said, 120), steps: job.steps } : null),
+    /**
+     * Is this text something her hands were given this round — in her task, or shown to them by a tool (the screen,
+     * an account)? Her hands do not write: what they type is hers or is already there. Whitespace does not count.
+     */
+    has(text) { const n = squash(text); return !n || (Boolean(job) && (squash(job.task).includes(n) || squash(job.shown).includes(n))); },
     /** The round under way ends now, as cut (she said stop, or it is not wanted any more). False when there is none. */
     stop(why = 'stopped') { if (!job) return false; job.finish('cut', why); return true; },
     /**
