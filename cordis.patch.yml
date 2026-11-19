@@ -39,8 +39,8 @@
     defaultPreset: !!js "process.env.DSH_DOT_COMPUTER === 'off' ? 'workspace-write' : (process.env.DSH_COMPUTER_PRESET ?? 'computer')"
 
 # Her conversation's own agent preset (dot.lean): the rows of dsh's `standard` preset she keeps — files of her own,
-# schedules, goals, looking things up, compaction — and none of the rest (shell, jobs, file search, skills, plan mode,
-# subagents and workflows, ask-user, todo, present, office, plugin manager). Her other tools are this plugin's own.
+# schedules, goals, compaction — and none of the rest (shell, jobs, file search, the web, skills, plan mode,
+# subagents and workflows, ask-user, todo, present, office, plugin manager): looking things up is her hands' work. Her other tools are this plugin's own.
 # A session's preset decides which host tools its requests list; nothing takes them out afterwards.
 - insert:
     - id: preset-dot
@@ -89,11 +89,6 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
 
 - insert:
     # 0. Living next to other plugins (qq-bridge today): whose session is this, which of our tools it

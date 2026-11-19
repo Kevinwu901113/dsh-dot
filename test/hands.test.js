@@ -95,6 +95,7 @@ test('hands: what they type is hers or was shown to them — never their own wor
 test('hands: how a round ended is told by the code, with what was refused on the way', async () => {
   const { handsStatus } = await import('../src/dot/core.js');
   assert.match(handsStatus({ status: 'done' }), /它自己停下的/);
+  assert.match(handsStatus({ status: 'done' }, 'web'), /查没查到/);
   assert.match(handsStatus({ status: 'cut', why: 'took too long' }), /太久了.*别当成什么都没做/);
   assert.match(handsStatus({ status: 'cut', why: 'stopped' }), /被叫停了/);
   assert.match(handsStatus({ status: 'failed', why: 'no hands session' }), /没能开始或中途断了：no hands session/);
@@ -105,3 +106,13 @@ test('hands: how a round ended is told by the code, with what was refused on the
   assert.deepEqual(h.done[0][0].notes, ['own-words']);
 });
 
+
+test('hands: a round for him is known as his (the request gate lets it go like her replies); looking something up is a kind of round', async () => {
+  const h = harness();
+  h.hands.start({ device: 'web', task: '（查资料，不碰手机和电脑）查一下明天的天气', forHim: true }); await tick();
+  assert.deepEqual([h.hands.doing().device, h.hands.doing().forHim], ['web', true]);
+  h.emit('h1', 'turn/end');
+  h.hands.start({ device: 'phone', task: '看一眼手机' }); await tick();
+  assert.equal(h.hands.doing().forHim, false, 'her own business stays behind his');
+  h.emit('h1', 'turn/end');
+});

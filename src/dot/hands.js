@@ -41,7 +41,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     isHands: (id, cwd) => Boolean((id && (id === current || past.has(id))) || (cwd && inside(dir, cwd))),
     busy: () => Boolean(job),
     /** What her hands are on right now: { device, task, startedAt, said, steps } or null. */
-    doing: () => (job ? { device: job.device, task: job.task, startedAt: job.startedAt, said: clip(job.said, 120), steps: job.steps } : null),
+    doing: () => (job ? { device: job.device, task: job.task, startedAt: job.startedAt, said: clip(job.said, 120), steps: job.steps, forHim: Boolean(job.extra?.forHim) } : null),
     /**
      * Is this text something her hands were given this round — in her task, or shown to them by a tool (the screen,
      * an account)? Her hands do not write: what they type is hers or is already there. Whitespace does not count.

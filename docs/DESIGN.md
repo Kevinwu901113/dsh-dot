@@ -627,7 +627,9 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 **留在她手里、不打算挪的。** 定时（提醒叫醒的是建它的那个会话）、目标（只有她的对话能被目标驱动）、QQ 上说话和发图、记什么和留哪句（是她的判断）。
 
-**下一步（还没做）。** QQ 的 action 交给手（要先把「他有没读的话先别发」和「手不替她写话」两道门接过去）；查资料交给手（要先让替他办的那一轮不排在后台、并改掉每查一次就被问一次「手空着」）；她自己的文件谁来写，没定。
+**查资料也交给手（第 3 步，11-19）。** `hands` 的 `device` 多一个 `web`：这一轮手不碰设备，只用它自己的 `web_search` / `web_fetch`，回来的话只写查到的事实（名字、日期、数字照原样，没查到就照实说，附一个链接），不带截图。她的预设里不再有 `dsh-tool-web`，这两个工具也从她的名单里去掉。原因是量出来的：她自己查一次，搜索结果和正文全留在她的对话里（一次查询把上下文从约 1.7 万 token 推到约 4.1 万），之后每句闲聊都背着。替他办的那一轮不再排在后台（`backgroundSessions` 只对她自己时间里的手成立），免得他等着的查询被她的对话挤到后面。回放（她现在这段对话的开头 + 一句话，各 10 次）：查事实 16/20 走 `hands` web，其余是手里已有答案直接答、或嘴上说「我搜一下」却没调工具——后一种换工具前也有（1/10），这一步没治它，那本账也管不到（一次工具都没调就算答过了）。代价：手一次只做一件，手机正忙时查询要等；多一次往返。
+
+**下一步（还没做）。** QQ 的 action 交给手（要先把「他有没读的话先别发」和「手不替她写话」两道门接过去）；她自己的文件谁来写，没定。
 
 **真机上看到的（11-19 晚）。** 宿主那几段系统提示对 lean 的对话已经删掉（10248 → 4387 字）。工具只少了 9 个（52 → 43）：`restrict` 只管得到注册在公共层的工具；宿主自带的那 19 个（命令行、任务、子代理、workflow、插件管理、文件搜索 …）是随 agent 预设挂在会话自己身上的，`restrict` 够不着——代码里一直写着「对她隐藏 bash」，其实从没生效过。在请求发出去的路上改工具表也不行：`llm/stream` 的 `next(改过的请求)` 只影响后面的监听者，适配器发的还是原来那份（dsh-llm `index.js:2371`），试过，缓存命中和输入量都没变。
 
@@ -635,7 +637,7 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 - 会话的宿主工具由它的 **agent 预设**决定。预设是 profile 里的一条 `@deepseek-ai/dsh-agent-preset` 行（`config: { id, name, order, plugins: […] }`），bundle 的 patch 可以自己插一条；`standard` 预设就是 `dsh-web-app/presets/standard.patch.yml` 里的这样一行。
 - 建会话时可以指定预设：`sessionController.create({ cwd, agentPreset })`（`dsh-api-session-controller` 的 `SessionCreateRequest`）。
-- 所以插件自己带一个预设 `dot`（`cordis.patch.yml` 的 `preset-dot`）：从 standard 里只留她要的行——自己的文件（`dsh-tool-fs`）、定时、目标、查资料（`dsh-tool-web`）、压缩，以及 persona / agent-instructions / time-context；命令行、任务、文件搜索、skill、plan mode、子代理和 workflow、ask-user、todo、present、office、插件管理都不带。她的新对话（第一次开、每次交接）用这个预设建；宿主不认这个预设就照旧建（审计 `conversation-preset-refused`）。
+- 所以插件自己带一个预设 `dot`（`cordis.patch.yml` 的 `preset-dot`）：从 standard 里只留她要的行——自己的文件（`dsh-tool-fs`）、定时、目标、压缩（查资料的 `dsh-tool-web` 第 3 步起也不带），以及 persona / agent-instructions / time-context；命令行、任务、文件搜索、skill、plan mode、子代理和 workflow、ask-user、todo、present、office、插件管理都不带。她的新对话（第一次开、每次交接）用这个预设建；宿主不认这个预设就照旧建（审计 `conversation-preset-refused`）。
 - 「lean」跟着预设走：用 `dot` 预设建的会话才是 lean（提示词只留插件写的、公共层只留她的工具、别的调用被拒绝）。在窗口里用别的预设新开的对话保持原样。
 
 走不通的三条，记在这里免得再试：

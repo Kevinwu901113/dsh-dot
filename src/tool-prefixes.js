@@ -28,9 +28,9 @@ export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsW
 // What her conversation keeps when it is lean (dot.lean, a conversation begun since it was turned on): her one verb
 // for getting things done (hands), what is speech or her own judgement (her QQ, what she remembers, what she keeps),
 // and what only works from her own conversation — a schedule wakes the session that made it, a goal drives it.
-// Everything else the host offers (shell jobs, subagents, workflows, file search, plugin management …) is not hers
-// to see. Looking things up and her own files are still here; they move to her hands in later steps (docs/DESIGN.md).
+// Everything else the host offers (shell jobs, subagents, workflows, file search, plugin management, the web …) is
+// not hers to see: looking things up is something her hands do (hands device: web). Her own files are still here.
 export const HER_TOOLS = ['hands', 'qq_send', 'qq_sticker_keep', 'memory', 'recall', 'keep_line',
   'schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view', 'create_goal', 'update_goal', 'get_goal',
-  'web_search', 'web_fetch', 'read', 'write', 'edit'];
+  'read', 'write', 'edit'];
 export const DEVICE_TOOL_PREFIXES = [PHONE_TOOL_PREFIX, VM_TOOL_PREFIX];

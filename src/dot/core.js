@@ -98,9 +98,9 @@ export const ownerInterruptText = () => prompt('dot.owner-interrupt');
  * thing worked is in their words), they were cut (too long, or she stopped them), or the round could not run; and
  * what was refused them on the way (words that were not hers, a line of hers sent back).
  */
-export function handsStatus(r = {}) {
+export function handsStatus(r = {}, device = '') {
   const why = String(r.why ?? '');
-  const base = r.status === 'done' ? prompt('dot.hands.status.done')
+  const base = r.status === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
     : r.status === 'cut' ? prompt(/太久|too long/.test(why) ? 'dot.hands.status.timeout' : 'dot.hands.status.stopped')
       : prompt('dot.hands.status.failed', { why: why || '没有原因' });
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
@@ -512,8 +512,9 @@ export function apply(ctx, config = {}) {
   // ends in them. Nothing is added to the list any more.
   const pastErrands = new Set([...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
   const isErrand = (id) => Boolean(id) && pastErrands.has(id);
-  // Her model requests share his provider key: her hands' steps are background and wait behind his (src/llm-gate.js).
-  const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) });
+  // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
+  // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
+  const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) && !hands.doing()?.forHim });
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at an errand or at a session archived since (11-03: his QQ messages went into an
   // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -995,8 +996,8 @@ export function apply(ctx, config = {}) {
         const found = lastSession && await resolveLive(lastSession);
         if (!found || 'error' in found) { talk?.resultArrived(); audit('hands-result-dropped', { why: 'no conversation' }); return; }
         if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
-        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r), text: r.text || '（没说什么）' }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
-        if (r.status !== 'failed') {
+        const content = [{ type: 'text', text: prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' }).trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
+        if (r.status !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
           try {
             const images = ctx.get('attachments');
             const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
@@ -1234,15 +1235,15 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer'] }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' }, stop: { type: 'boolean', description: '让正在做的那一步停下' } }, additionalProperties: false },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '这一步要做的事，说清楚；要打的字原样写上' }, stop: { type: 'boolean', description: '让正在做的那一步停下' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'busy' ? prompt('dot.hands.busy', { task: v.doing?.task ?? '', secs: Math.round((Date.now() - (v.doing?.startedAt ?? Date.now())) / 1000) }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
         if (args?.stop) return { status: hands.stop('她叫停了') ? 'stopped' : 'idle' };
-        const device = args?.device === 'computer' ? 'computer' : 'phone';
+        const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : 'phone';
         // Whose business this round is: his (a turn his words opened, or one a round for him came back to) or her own.
         const t = turns.get(lastSession);
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere));
-        const started = await hands.start({ device, task: `（在${device === 'computer' ? '电脑' : '手机'}上）${String(args?.do ?? '').trim()}`, forHim });
+        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${String(args?.do ?? '').trim()}`, forHim });
         if (forHim && started?.status === 'started') talk?.handsStarted();
         return started;
       },
