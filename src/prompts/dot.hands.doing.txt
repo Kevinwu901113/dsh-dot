@@ -1,1 +1,1 @@
-你的手正在做：{task}（{secs} 秒了{said}）。
+你正在做：{task}（{secs} 秒了{said}）。

@@ -256,7 +256,7 @@ test('a phone notification wakes her latest session with the notification text; 
   h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
   await wait(120);
   assert.equal(followups.length, 4);
-  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就让你的手去 App 里回；不想理就只回 DOT_SILENT。）');
+  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就去 App 里回（用 hands）；不想理就只回 DOT_SILENT。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);

@@ -1,1 +1,1 @@
-手还在做上一件：{task}（{secs} 秒了）。等它回来，或者 stop: true 让它停下。
+上一步还没做完：{task}（{secs} 秒了）。等它做完，或者 stop: true 停下。
