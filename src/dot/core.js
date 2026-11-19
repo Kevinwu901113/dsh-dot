@@ -124,6 +124,13 @@ export function spokenOf(name, args) {
   const text = typedText(name === PHONE_TYPE_TOOL ? name : String(name).slice(PHONE_TOOL_PREFIX.length), args);
   return text ? { via: 'phone', to: '', text } : null;
 }
+/**
+ * Whom what she writes in answer to a message goes to, said by the message itself: 'qq' for his words over QQ (a
+ * person's message, kind 'user', on the QQ channel) and for one of ours that says so (`to: 'him'` — a round of her
+ * hands on his business coming back, the one asking, a line handed back to her); 'desk' for his words typed anywhere
+ * else (his screen shows her answer); '' for everything else (a notification, her own time: she speaks with qq_send).
+ */
+export const addressed = (src) => (src?.kind === 'user' ? (/^qq-/.test(String(src.rpcId ?? '')) ? 'qq' : 'desk') : src?.kind === 'dsh-dot' && src.to === 'him' ? 'qq' : '');
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
 export function isOwnerTarget(to, owner) {
   const s = String(to ?? '').trim();
@@ -133,7 +140,7 @@ export function isOwnerTarget(to, owner) {
 }
 /** His words already handed to this agent for its next step, not yet read by the model (dsh `agent.inbox.nextStep`). */
 export function ownerUnread(agent) {
-  try { return (agent?.inbox?.nextStep ?? []).some((m) => String(m?.source?.rpcId ?? '').startsWith('qq-dot-')); } catch { return false; }
+  try { return (agent?.inbox?.nextStep ?? []).some((m) => m?.source?.kind === 'user' && String(m.source.rpcId ?? '').startsWith('qq-dot-')); } catch { return false; }
 }
 /**
  * What happened when she wrote to him unasked, as facts: `reaches` is [{ at, answeredAt? }] of today, oldest first.
@@ -559,7 +566,18 @@ export function apply(ctx, config = {}) {
   // (0.2.2 re-attaches the tool list after the waterfall). The preset decides; the rest follows it.
   const leanIds = new Set();
   let hands = null; // her hands (hands.js), set once sessions can be made
-  let handsCheckDenied = false; // a line her hands were typing went back to her once; her next wording goes out
+  // The one check of what she says, whichever way it goes out (her answer, qq_send, a line her hands type). A line
+  // that is handed back is followed by one that goes out as written — so a phrase list that is wrong costs one call,
+  // and nothing she says can be held for good. `strict` also hands back a line that only had stage directions in it
+  // (a tool's text cannot be tidied on its way out; her answer's can).
+  let wordsJustBack = false;
+  const handBack = (text, { strict = false } = {}) => {
+    if (!cfg.replyCheck || !String(text ?? '').trim()) return null;
+    const c = checkReply(text, replyChecks());
+    const back = Boolean(c.hits.length || (strict && c.stripped)) && !wordsJustBack;
+    wordsJustBack = back;
+    return back ? c : null;
+  };
   let talk = null;  // what he said that has no word back yet (talk.js), set once the things it waits on exist
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   const handsLine = () => { const d = hands?.doing?.(); return d ? prompt('dot.hands.doing', { task: d.task, secs: Math.round((Date.now() - d.startedAt) / 1000), said: d.said ? `，刚说：${d.said}` : '' }).trim() : ''; };
@@ -621,7 +639,7 @@ export function apply(ctx, config = {}) {
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
-    if (event.type === 'user/message' && /^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
+    if (event.type === 'user/message' && addressed(event.data?.source) === 'qq') {
       t.fromQq = true;
       if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
@@ -652,7 +670,7 @@ export function apply(ctx, config = {}) {
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
     // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
-    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && !/^qq-/.test(String(event.data?.source?.rpcId ?? ''))) {
+    if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
       t.elsewhere = true;
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
       if (!t.scheduled && !isErrand(id) && !pastConversations.has(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
@@ -982,8 +1000,8 @@ export function apply(ctx, config = {}) {
     tokensOf: (id) => { try { return Number(ctx.get('tokenMeter')?.measure?.(ctx.get('agents')?.get?.(id)?.session)?.totalTokens ?? 0); } catch { return 0; } },
     audit, maxMs: cfg.handsMaxMs,
     // The round is over: what the hands said, and the screen as it is now for her own eyes, come to her conversation
-    // and wake her. A round that was his business comes back as a turn whose answer goes to him (the rpcId is how
-    // a QQ turn is told, as for his own words); one of her own time is hers to speak of or not.
+    // and wake her. A round that was his business comes back as a turn whose answer goes to him (how
+    // her answer is known to be for him: the message says so); one of her own time is hers to speak of or not.
     onDone: async (r, job) => {
       if (job.forHim) talk?.handsDone(); // its result is on its way to her: his business is still being worked on
       try {
@@ -998,7 +1016,7 @@ export function apply(ctx, config = {}) {
             if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
           } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
         }
-        found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { rpcId: `qq-dot-hands-${Date.now().toString(36)}` } : {}) } }));
+        found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { to: 'him' } : {}) } }));
         audit('hands-result', { session: lastSession, status: r.status, forHim: Boolean(job.forHim), steps: r.steps });
       } catch (err) { talk?.resultArrived(); logger.warn(`hands result not delivered: ${err.message}`); }
     },
@@ -1053,23 +1071,18 @@ export function apply(ctx, config = {}) {
   // What she writes to him is checked like what she sends with qq_send: a piece with a phrase of the list in it is
   // not sent and is handed back to her once (into the turn when it is still going, else as a turn of its own whose
   // answer goes to him); what she writes next goes out as it is, so a list that is wrong costs one call.
-  const handedBack = new Map(); // session → when a piece was handed back
-  const HANDED_BACK_MS = 120000;
   const sayOrHandBack = (id, said) => {
-    const hits = cfg.replyCheck ? checkReply(said, replyChecks()).hits : [];
-    const again = Date.now() - (handedBack.get(id) ?? 0) < HANDED_BACK_MS;
-    handedBack.delete(id);
-    if (!hits.length || again) return sayToOwner(id, said);
-    handedBack.set(id, Date.now());
+    const hits = handBack(said)?.hits;
+    if (!hits) return sayToOwner(id, said);
     audit('reply-check', { session: id, via: 'answer', handedBack: true, hits });
     void (async () => {
       try {
         const found = await resolveLive(id);
         if (!found || 'error' in found) throw new Error('no conversation');
-        const message = createUserMessage({ content: [{ type: 'text', text: replyCheckText({ hits }) }], source: { kind: 'dsh-dot', form: 'reply-check', rpcId: `qq-dot-check-${Date.now().toString(36)}` } });
+        const message = createUserMessage({ content: [{ type: 'text', text: replyCheckText({ hits }) }], source: { kind: 'dsh-dot', form: 'reply-check', to: 'him' } });
         const agent = found.agent, busy = turns.has(id);
         if (busy && typeof agent.steer === 'function') agent.steer(message); else if (busy && typeof agent.send === 'function') agent.send(message, 'next-step', true); else agent.followup(message);
-      } catch (err) { logger.warn(`reply check: not handed back (${err.message}); sent as written`); handedBack.delete(id); sayToOwner(id, said); }
+      } catch (err) { logger.warn(`reply check: not handed back (${err.message}); sent as written`); sayToOwner(id, said); }
     })();
   };
   const sayToOwner = (id, said) => {
@@ -1364,26 +1377,15 @@ export function apply(ctx, config = {}) {
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
-    if (cfg.replyCheck && round && spoken.text) {
-      // Typed by her hands: the words are hers, so the line goes back to her, through them. Once — her next wording goes out.
-      const c = checkReply(spoken.text, replyChecks());
-      const back = (c.hits.length || c.stripped) && !handsCheckDenied;
-      handsCheckDenied = Boolean(back);
-      if (back) {
-        hands.note('reply-check');
-        audit('reply-check', { session: id, via: 'hands', to: 'app', stripped: c.stripped, hits: c.hits, denied: true });
-        return deny(prompt('dot.hands.reply-check', { why: c.hits.length ? prompt('dot.reply-check.phrases', { phrases: c.hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') }));
-      }
-      return next();
+    // Typed by her hands, the words are still hers: the line goes back to her, through them.
+    const c = spoken.text && (round || t) ? handBack(spoken.text, { strict: true }) : null;
+    if (c) {
+      const why = c.hits.length ? prompt('dot.reply-check.phrases', { phrases: c.hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage');
+      if (round) hands.note('reply-check');
+      audit('reply-check', { session: id, via: round ? 'hands' : exec.name === 'qq_send' ? 'qq_send' : spoken.via === 'phone' ? 'phone' : 'qq-tool', ...(toOwner ? {} : { to: spoken.to || 'app' }), stripped: c.stripped, hits: c.hits, denied: true });
+      return deny(round ? prompt('dot.hands.reply-check', { why }) : replyCheckText(c));
     }
-    if (cfg.replyCheck && t && !t.replyChecked && spoken.text) {
-      const c = checkReply(spoken.text, replyChecks());
-      if (c.hits.length || c.stripped) {
-        t.replyChecked = true;
-        audit('reply-check', { session: id, via: exec.name === 'qq_send' ? 'qq_send' : spoken.via === 'phone' ? 'phone' : 'qq-tool', ...(toOwner ? {} : { to: spoken.to || 'app' }), stripped: c.stripped, hits: c.hits, denied: true });
-        return deny(replyCheckText(c));
-      }
-    }
+    if (round) return next();
     if (!toOwner) return next();
     const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return next();
@@ -1408,7 +1410,7 @@ export function apply(ctx, config = {}) {
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found || goalActive(found.agent)) return false;
       if (turns.has(lastSession) || hands?.busy() || ownerBatch.length) return false; // something came up while looking
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: openNudgeText({ his, last, at }) }], source: { kind: 'dsh-dot', form: 'open-nudge', rpcId: `qq-dot-open-${Date.now().toString(36)}` } }));
+      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: openNudgeText({ his, last, at }) }], source: { kind: 'dsh-dot', form: 'open-nudge', to: 'him' } }));
       lastWakeAt = Date.now();
       return true;
     },

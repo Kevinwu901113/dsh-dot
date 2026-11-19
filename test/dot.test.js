@@ -1134,7 +1134,7 @@ test('no conversation yet (first run, or after a reset): his words open one in h
   } finally { mock.timers.reset(); }
 });
 
-test('what she says to him is checked in code: brackets out of what she writes; a listed phrase hands it back to her once, written or sent with qq_send', async () => {
+test('what she says to him is checked in code: brackets out of what she writes; a listed phrase hands it back to her, and what she says next goes out', async () => {
   const { parseBlacklist } = await import('../src/persona/card.js');
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
@@ -1168,11 +1168,13 @@ test('what she says to him is checked in code: brackets out of what she writes; 
     o.turn.end(4);
     o.turn.start(5);
     assert.match((await call('好 (笑)')).reason, /括号/);
+    assert.equal(await call('好 (笑)'), 'ran', 'the line after one handed back goes out as written — on any way out');
     o.turn.end(5);
     // the other ways out: a send action of the QQ backend's own tools, a comment typed on her phone
     o.turn.start(6);
     const tool = await o.pre({ name: 'mcp__dot-qq__invoke_action', arguments: { action: 'send_group_msg', params: { group_id: 777, message: '综上所述，我觉得可以' } }, agent: o.agent }, async () => 'ran');
     assert.match(tool.reason, /「综上所述」/);
+    assert.equal(await call('综上所述'), 'ran');
     o.turn.end(6);
     o.turn.start(7);
     const typed = await o.pre({ name: 'mcp__dot-phone__mobile_batch_commands', arguments: { steps: [{ name: 'mobile_click_on_screen_at_coordinates', arguments: { x: 1, y: 2 } }, { name: 'mobile_type_keys', arguments: { text: '综上所述这游戏不错' } }] }, agent: o.agent }, async () => 'ran');

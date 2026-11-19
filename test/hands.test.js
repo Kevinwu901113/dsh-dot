@@ -116,3 +116,14 @@ test('hands: a round for him is known as his (the request gate lets it go like h
   assert.equal(h.hands.doing().forHim, false, 'her own business stays behind his');
   h.emit('h1', 'turn/end');
 });
+
+test('whom her answer goes to is said by the message that woke her, not read off an id', async () => {
+  const { addressed } = await import('../src/dot/core.js');
+  assert.equal(addressed({ kind: 'user', rpcId: 'qq-dot-abc' }), 'qq');
+  assert.equal(addressed({ kind: 'user', rpcId: 'desk-1' }), 'desk');
+  assert.equal(addressed({ kind: 'user' }), 'desk');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result', to: 'him' }), 'qq');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result' }), '', 'a round of her own time: hers to speak of or not');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'phone-notification' }), '');
+  assert.equal(addressed({ kind: 'schedule' }), '');
+});
