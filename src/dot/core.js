@@ -128,6 +128,8 @@ export function spokenOf(name, args) {
  * hands on his business coming back, the one asking, a line handed back to her); 'desk' for his words typed anywhere
  * else (his screen shows her answer); '' for everything else (a notification, her own time: she speaks with qq_send).
  */
+/** Source of the short message that goes with what has just reached her (her clock, what recall found, how she talks). */
+export const TURN_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'turn-note' });
 export const addressed = (src) => (src?.kind === 'user' ? (/^qq-/.test(String(src.rpcId ?? '')) ? 'qq' : 'desk') : src?.kind === 'dsh-dot' && src.to === 'him' ? 'qq' : '');
 /** Is this qq_send `to` him? "owner", or his number (bare or user:/private:). */
 export function isOwnerTarget(to, owner) {
@@ -624,7 +626,7 @@ export function apply(ctx, config = {}) {
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
     // What woke this turn besides him (a notification, her own time) and what the turn cost: a task of hers that ran
     // in it (dshDot.task) gets its result and its cost back when the turn ends.
-    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind)) t.origin ??= event.data.source.form;
+    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind) && event.data.source.form !== 'turn-note') t.origin ??= event.data.source.form;
     if (event.type === 'assistant/message') {
       const u = event.data?.usage;
       if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
@@ -853,29 +855,44 @@ export function apply(ctx, config = {}) {
       order: (scope.systemPrompt.getSectionOrder?.('DEPLOYMENT_PERSONA_PREFIX') ?? 0) + 2,
       text: (c) => (inHome(c) ? workingRules() : ''),
     }), 'dsh-dot: working rules section');
-    // Her clock: after the history (like dot:memory), on her conversation and her errands. "Since the
-    // last message" counts from the last line said before this turn began, so it holds for the turn.
-    scope.systemPrompt.context({
-      name: 'dot:now',
-      order: 899,
-      text: (c) => {
-        if (!inHome(c)) return '';
-        const started = turns.get(c.agent?.session?.id)?.startedAt ?? Date.now();
-        return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), c.agent?.session?.id === lastSession ? reachText(reaches) : '', c.agent?.session?.id === lastSession ? handsLine() : ''].filter(Boolean).join('\n');
-      },
-    });
     // First install / boot: her phone and computer take minutes to come up; she talks meanwhile.
     scope.systemPrompt.context({
       name: 'dot:setup',
       order: 898,
       text: (c) => (inHome(c) ? setupText(phone()?.status?.(), computer()?.status?.()) : ''),
     });
-    scope.systemPrompt.context({
-      name: 'dot:scheduled-turn',
-      order: 900,
-      text: (c) => (turns.get(c.agent?.session?.id)?.scheduled ? scheduledRule() : ''),
-    });
   });
+
+  // What goes with whatever has just reached her, said once per arrival: the time, what recall found for these words,
+  // how she talks. dsh keeps one "runtime context" snapshot and appends the WHOLE of it again whenever any part of
+  // it changes (agent-loop RuntimeContextProjection: older copies stay in the history, so the cached prefix holds).
+  // Her clock changed every turn and "N 秒了" every step, so her notes — which had not changed — were appended with
+  // them each time: in one conversation of hers 103 copies, 85% of all its text (11-20). The snapshot now holds only
+  // what stays the same between consolidations (dot:memory, dot:setup); what belongs to this arrival is a short
+  // message of ours after it, the way dsh's own time-context does it (agent/pre-step). Replay, 49 real turns + one
+  // line of his: with nothing at the end she went off to operate her phone on "在干嘛" (1/6 answered); with this
+  // short tail 5/6, as with the full snapshot (6/6) — the reminder of how she talks is what did the work, and it
+  // has to be the last thing she reads.
+  const turnNotes = [];
+  const turnNote = (note) => { turnNotes.push(note); return () => { const i = turnNotes.indexOf(note); if (i >= 0) turnNotes.splice(i, 1); }; };
+  ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
+    const decision = await next();
+    const s = agent?.session, id = s?.id;
+    if (!decision || decision.kind === 'reject' || signal?.aborted || !id || !messages?.length) return decision;
+    if (!isDotSession(id, s.header?.cwd) || retired(id) || hands?.isHands(id, s.header?.cwd)) return decision;
+    const parts = [];
+    for (const n of [...turnNotes].sort((a, b) => a.order - b.order)) {
+      try { const t = String(await n.text({ agent, messages }) ?? '').trim(); if (t) parts.push(t); } catch (err) { logger.debug?.(`turn note ${n.name}: ${err.message}`); }
+    }
+    if (!parts.length) return decision;
+    return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
+  });
+  // Her clock: "since the last message" counts from the last line said before this turn began.
+  turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
+    const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? handsLine() : ''].filter(Boolean).join('\n');
+  } });
+  turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
   const busyWith = () => (turns.has(lastSession) ? prompt('dot.busy.chat') : '');
@@ -1569,6 +1586,8 @@ export function apply(ctx, config = {}) {
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
     busy: (id) => turns.has(id),
+    /** Add a part to the short message that goes with what has just reached her ({ name, order, text({ agent, messages }) → string | Promise }); returns its disposer. */
+    turnNote,
     /** What her attention is on right now ({ writing, sending, hands, his, moving, waiting }), and whether none of it is. */
     state: () => herState(),
     quiet: () => quiet(),

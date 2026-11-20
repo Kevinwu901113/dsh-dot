@@ -524,7 +524,7 @@ export function apply(ctx, config = {}) {
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
         else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); sawText(id, text); }
         // What woke her is the query; the result is in front of her before the model is called.
-        if (RECALL_WAKES(src) && !dot()?.retired?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
+        if (RECALL_WAKES(src) && !dot()?.retired?.(id)) prepareFor(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;
       }
       case 'turn/end': {
@@ -763,6 +763,11 @@ export function apply(ctx, config = {}) {
     return () => clearInterval(timer);
   }, 'dsh-dot/memory: daily diary');
 
+  // One query per arrival: asked for where the words are about to reach her (the turn note) and again when they
+  // are on record (the session event) — the second asking of the same words is the first.
+  const prepared = new Map(); // session → the words last asked about
+  const prepareFor = (id, said) => { if (!said || prepared.get(id) === said) return; prepared.set(id, said); void recall.prepare(id, said); void facts.prepare(id, said); };
+
   // ── what every turn of hers sees ──
   ctx.inject(['systemPrompt'], (scope) => {
     // Her notes: her conversation only — her hands do a job and report, they are not her remembering.
@@ -775,42 +780,23 @@ export function apply(ctx, config = {}) {
         return renderStanding(memory, { banks: !peopleOnly(), limits: cfg.limits, ...keep });
       },
     });
-    // The turns recall found for this wake. A dynamic context: dsh puts it after the history, so the
-    // cached prefix holds.
-    scope.systemPrompt.context({
-      name: 'dot:recall',
-      order: 905,
-      text: (c) => { const s = c.agent?.session; return s && !dot()?.retired?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
-    });
-    // The facts picked for this wake, after the turns recall found.
-    scope.systemPrompt.context({
-      name: 'dot:facts',
-      order: 906,
-      text: (c) => { const s = c.agent?.session; return s && !dot()?.retired?.(s.id) && isConversation(s.id, s.header?.cwd) ? facts.textFor(s.id) : ''; },
-    });
-    // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited
-    // for here, bounded by recallWaitMs, and its text put into the assembly. Registered on the
-    // systemPrompt scope like the interlude's prompt trim (proven on a real dsh); without it the
-    // result shows up from the next step on.
-    scope.effect(() => scope.on('system-prompt/assemble', async (assembly, c, next) => {
-      const id = c?.agent?.session?.id;
-      const p = id && recall.pending(id);
-      if (p && Array.isArray(assembly?.contexts)) {
-        await Promise.race([p, new Promise((r) => { setTimeout(r, cfg.recallWaitMs).unref?.(); })]);
-        const entry = assembly.contexts.find((x) => x.name === 'dot:recall');
-        const text = recall.textFor(id);
-        if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:recall', text });
-      }
-      const f = id && facts.pending(id);
-      if (f && Array.isArray(assembly?.contexts)) {
-        await Promise.race([f, new Promise((r) => { setTimeout(r, cfg.factsWaitMs).unref?.(); })]);
-        const entry = assembly.contexts.find((x) => x.name === 'dot:facts');
-        const text = facts.textFor(id);
-        if (entry) entry.text = text; else if (text) assembly.contexts.push({ name: 'dot:facts', text });
-      }
-      return next();
-    }), 'dsh-dot/memory: recall waits for its query');
   });
+  // What recall and the fact strips found for the words that have just reached her go with those words (the short
+  // message after them, dshDot.turnNote), not into the snapshot her notes are in: they change with every message, and
+  // dsh appends the whole snapshot again when any part of it changes. The query starts here, from the words as they
+  // are about to be put in front of her, and is waited for (recallWaitMs / factsWaitMs) — so what it finds is there
+  // for the reply to these words, not from the next step on.
+  const wakeWords = (messages) => { for (const m of messages ?? []) { const src = m?.source ?? {}; if (!RECALL_WAKES(src)) continue; const said = unstamp(contentText(m.content)); const text = src.kind === 'user' ? ownerSaid(said) : said; return src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; } return ''; };
+  const waited = (p, ms) => (p ? Promise.race([p, new Promise((r) => { setTimeout(r, ms).unref?.(); })]) : null);
+  ctx.inject?.(['dshDot'], (c) => c.effect(() => {
+    const d = c.dshDot ?? ctx.get('dshDot');
+    const mine = (agent) => { const s = agent?.session; return s && !d?.retired?.(s.id) && isConversation(s.id, s.header?.cwd) ? s.id : ''; };
+    const offs = [
+      d?.turnNote?.({ name: 'dot:recall', order: 905, text: async ({ agent, messages }) => { const id = mine(agent); if (!id) return ''; const said = wakeWords(messages); if (said) prepareFor(id, said); await waited(recall.pending(id), cfg.recallWaitMs); return recall.textFor(id); } }),
+      d?.turnNote?.({ name: 'dot:facts', order: 906, text: async ({ agent }) => { const id = mine(agent); if (!id) return ''; await waited(facts.pending(id), cfg.factsWaitMs); return facts.textFor(id); } }),
+    ];
+    return () => { for (const off of offs) off?.(); };
+  }, 'dsh-dot/memory: what recall found goes with the words that woke her'));
 
   // ── her own hands on it ──
   ctx.inject(['tools'], (scope) => {

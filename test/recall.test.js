@@ -36,16 +36,16 @@ function fakeEmbedders({ fail = false } = {}) {
 function harness(config = {}, emb = fakeEmbedders(), over = null) {
   if (!over) process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const home = over?.home ?? join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
-  const listeners = [], contexts = [], assemble = [];
+  const listeners = [], contexts = [], assemble = [], notes = [];
   let session = 's1';
-  const services = { dshDot: { session: () => session, setSession: (id) => { session = id; }, retired: (id) => id === 'errand', isIm: () => false } };
+  const services = { dshDot: { session: () => session, setSession: (id) => { session = id; }, retired: (id) => id === 'errand', isIm: () => false, turnNote: (n) => { notes.push(n); return () => {}; } } };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemble.push(fn); },
     effect() {},
     get: (n) => services[n],
     provide(n, v) { services[n] = v; },
-    inject(_deps, fn) { fn({ systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
+    inject(_deps, fn) { fn({ dshDot: services.dshDot, systemPrompt: { context: (c) => contexts.push(c) }, tools: { register: () => () => {} }, effect: (f) => f(), on: ctx.on }); },
   };
   apply(ctx, { home, consolidateEveryLines: 1000, recallEmbedder: emb.factory, recallMinScore: 0, recallContrast: 0, recallMinQueryLength: 0, recallNeighbors: 0, recallRecentTurns: 0, ...config }); // the fake embedder's scores are not cosines; queries here are short; neighbours and the recent list have their own test
   const emit = (id, type, data, extra = {}) => listeners.forEach((fn) => fn({ id, header: { cwd: home } }, { type, data, ...extra }));
@@ -61,8 +61,10 @@ function harness(config = {}, emb = fakeEmbedders(), over = null) {
       services.dotMemory.herSaid({ session: id, text: reply }); // dot: what she said goes on record when it has gone out — here, after the turn
     } finally { Date.now = realNow; }
   };
-  const recallCtx = contexts.find((c) => c.name === 'dot:recall');
-  return { home, emb, emit, turn, assemble, api: () => services.dotMemory, recall: () => services.dotMemory.recall, text: (id) => recallCtx.text({ agent: { session: { id, header: { cwd: home } } } }), set session(id) { session = id; } };
+  // What recall found goes with the words that woke her (dshDot.turnNote), not into the snapshot dsh keeps.
+  const recallNote = notes.find((c) => c.name === 'dot:recall');
+  const text = (id, messages = []) => recallNote.text({ agent: { session: { id, header: { cwd: home } } }, messages });
+  return { home, emb, emit, turn, assemble, contexts, api: () => services.dotMemory, recall: () => services.dotMemory.recall, text, set session(id) { session = id; } };
 }
 
 test('chunks: one per turn (what woke her + what she said back), dated; secret lines never enter', () => {
@@ -134,16 +136,16 @@ test('query: the waking message → top-k older turns in time order, minus her c
   await h.recall().sync();
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '团子是什么颜色来着' }] }, { surfaceOp: 'append' });
   await h.recall().pending('s1');
-  const text = h.text('s1');
+  const text = await h.text('s1');
   assert.match(text, /^你记得的相关原话/);
   assert.match(text, /— 10-01 周四 · \d+ 天前\n10:\d\d 他：我家猫叫团子[\s\S]*\n10:\d\d 他：团子今天又把杯子推下桌了/, 'chronological, under the day');
   assert.doesNotMatch(text, /不爱吃饭/, 'her current session is not repeated');
   assert.doesNotMatch(text, /成都/, 'top-k');
-  assert.equal(h.text('errand'), '', 'errands are not her remembering');
+  assert.equal(await h.text('errand'), '', 'errands are not her remembering');
   assert.equal(h.recall().status().lastQuery.hits, 2);
   // The turn ends: the result is not carried into the next wake.
   h.emit('s1', 'turn/end', {});
-  assert.equal(h.text('s1'), '');
+  assert.equal(await h.text('s1'), '');
   // A host that shows only the last N turns: exactly those are skipped.
   const w = harness({ recallWindowTurns: 1, recallTopK: 8 });
   w.turn('s1', '团子是只橘猫', '记住了');
@@ -405,20 +407,22 @@ test('fallback: a backend that cannot load (no library, no network, no key) reca
   } finally { if (saved) process.env.DASHSCOPE_API_KEY = saved; }
 });
 
-test('prompt assembly waits (bounded) for a query still running, and puts its text in', async () => {
+test('what recall finds is there for the reply to the words that woke her: the query starts from them and is waited for (bounded)', async () => {
   const slow = fakeEmbedders();
   const factory = (b, spec) => { const e = slow.factory(b, spec); return { ...e, embed: async (t, role) => { if (role === 'query') await wait(30); return e.embed(t, role); } }; };
   const h = harness({ recallWaitMs: 1000 }, { factory, calls: slow.calls });
   h.turn('s0', '团子是橘猫', '嗯');
   await h.recall().sync();
-  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '团子什么颜色' }] }, { surfaceOp: 'append' });
-  const assembly = { contexts: [{ name: 'dot:recall', text: h.text('s1') }] };
-  assert.equal(assembly.contexts[0].text, '', 'not ready when the contexts were read');
-  const out = await h.assemble[0](assembly, { agent: { session: { id: 's1' } } }, async () => assembly);
-  assert.match(out.contexts[0].text, /团子是橘猫/);
-  // Nothing pending (another agent, or already done): straight through.
-  const other = { contexts: [] };
-  assert.equal(await h.assemble[0](other, { agent: { session: { id: 'x' } } }, async () => other), other);
+  assert.equal(h.contexts.find((c) => c.name === 'dot:recall'), undefined, 'not part of the snapshot: it changes with every message');
+  // His words are about to be put in front of her (agent/pre-step): nothing is on record yet, the query has not run.
+  const his = { role: 'user', source: { kind: 'user' }, content: [{ type: 'text', text: '团子什么颜色' }] };
+  const before = slow.calls.filter((c) => c.role === 'query').length;
+  assert.match(await h.text('s1', [his]), /团子是橘猫/);
+  // The same words going on record afterwards do not ask again.
+  h.emit('s1', 'user/message', { source: his.source, content: his.content }, { surfaceOp: 'append' });
+  await wait(50);
+  assert.equal(slow.calls.filter((c) => c.role === 'query').length, before + 1, 'one query per arrival');
+  assert.equal(await h.text('x'), '', 'nothing pending for another session: straight through');
 });
 
 test('lexical: bigram tokens; BM25 weighs the rare word', () => {

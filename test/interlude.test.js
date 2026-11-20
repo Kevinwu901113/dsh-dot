@@ -41,7 +41,7 @@ const accounted = (text) => {
   return text;
 };
 
-function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null, memory = undefined } = {}) {
+function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null, memory = undefined, wire = null } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
   const calls = [], sent = [], listeners = [], prompts = [], sections = [], assemblers = [], effects = [], gates = [], followups = [], audits = [];
@@ -65,6 +65,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
     llm: { stream: (o) => { calls.push(o); return fakeStream(accounted(typeof reply === 'function' ? reply(o) : reply)); } },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
   };
+  wire?.(ctx); // a test's own services, before the plugin starts
   const ticks = [];
   const realSetInterval = globalThis.setInterval;
   globalThis.setInterval = (fn) => { ticks.push(fn); const h = realSetInterval(() => {}, 1e9); h.unref(); return h; };
@@ -284,24 +285,26 @@ test('free time: planned at random moments in her active hours, once a day', asy
   h.stop();
 });
 
-test('voice: how she talks is the last thing in her conversation (after the memory and the interlude), from the Canon or the built-in; not in errands', async () => {
-  const h = harness({ reply: GOOD, vm: {} });
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: (id) => id === 'e1' } : get(n)))(h.ctx.get);
-  const voice = h.prompts.find((p) => p.name === 'interlude:voice');
-  const others = h.prompts.filter((p) => p !== voice);
-  assert.ok(others.every((p) => p.order < voice.order), 'after every other context of the interlude');
-  assert.ok(voice.order > 905, 'after the memory (904/905)');
-  const c = (id, cwd = h.home) => ({ agent: { session: { id, header: { cwd } } } });
-  assert.match(voice.text(c('s1')), /接下来是dot在 IM 里回他/);
-  assert.equal(voice.text(c('e1')), '', 'errands report, they do not chat');
-  assert.equal(voice.text(c('x', '/elsewhere')), '', 'only her sessions');
+test('voice: how she talks is the last thing she reads with what has just reached her, from the Canon or the built-in; not in retired sessions', async () => {
+  const voiceOf = (opts) => {
+    const notes = [];
+    const h = harness({ ...opts, wire: (ctx) => { ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: (id) => id === 'e1', turnNote: (x) => { notes.push(x); return () => {}; } } : get(n)))(ctx.get); } });
+    return { h, note: notes.find((p) => p.name === 'interlude:voice') };
+  };
+  const c = (id, cwd) => ({ agent: { session: { id, header: { cwd } } }, messages: [] });
+  const { h, note } = voiceOf({ reply: GOOD, vm: {} });
+  assert.equal(h.prompts.find((p) => p.name === 'interlude:voice'), undefined, 'not in the snapshot dsh keeps');
+  assert.ok(note.order > 906, 'after her clock, what recall found and the fact strips (899 / 905 / 906)');
+  assert.match(note.text(c('s1', h.home)), /接下来是dot在 IM 里回他/);
+  assert.equal(note.text(c('e1', h.home)), '', 'a session that is not hers any more');
+  assert.equal(note.text(c('x', '/elsewhere')), '', 'only her sessions');
   h.stop();
-  const own = harness({ reply: GOOD, canon: { ...CANON, voice: '（你是小点：短句，一句一行。）' } });
-  assert.equal(own.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', own.home)), '（你是小点：短句，一句一行。）');
-  own.stop();
-  const off = harness({ reply: GOOD, config: { voice: false } });
-  assert.equal(off.prompts.find((p) => p.name === 'interlude:voice').text(c('s1', off.home)), '');
-  off.stop();
+  const own = voiceOf({ reply: GOOD, canon: { ...CANON, voice: '（你是小点：短句，一句一行。）' } });
+  assert.equal(own.note.text(c('s1', own.h.home)), '（你是小点：短句，一句一行。）');
+  own.h.stop();
+  const off = voiceOf({ reply: GOOD, config: { voice: false } });
+  assert.equal(off.note.text(c('s1', off.h.home)), '');
+  off.h.stop();
 });
 
 test('her card: a home with a canon gets persona.md and persona.checks.txt once; the card is what her prompt opens with; a card she (the user) wrote is never replaced', () => {

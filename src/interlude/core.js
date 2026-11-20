@@ -435,15 +435,12 @@ export function apply(ctx, config = {}) {
     // How she talks, as the very last thing before she answers (after the history, the memory and the
     // interlude): what is read last weighs most (cf. SillyTavern's Author's Note at depth 0, Character
     // Card V2 post_history_instructions). Her conversation only: her hands do not chat.
-    scope.systemPrompt.context({
-      name: 'interlude:voice',
-      order: 990,
-      text: (c) => {
-        if (!cfg.voice || !inHome(c) || dshDot()?.retired?.(c.agent?.session?.id)) return '';
-        return voiceText();
-      },
-    });
+    // It goes with whatever has just reached her (dshDot.turnNote, the last part of it), not into dsh's snapshot.
   });
+  ctx.inject?.(['dshDot'], (c) => c.effect(() => (c.dshDot ?? ctx.get('dshDot'))?.turnNote?.({
+    name: 'interlude:voice', order: 990,
+    text: ({ agent }) => (!cfg.voice || !inHome({ agent }) || dshDot()?.retired?.(agent?.session?.id) ? '' : voiceText()),
+  }) ?? (() => {}), 'dsh-interlude: how she talks, last'));
 
   // 4b. Her own hands on the ledger: in her conversation, when he reacts to something she did on her own.
   const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;

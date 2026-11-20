@@ -174,20 +174,17 @@ test('no saved target: nothing sent, /dot explains', async () => {
   stop(h);
 });
 
-test('scheduled turns get the silence rule in the prompt; others do not', () => {
+test('scheduled turns get the silence rule with what woke her; others do not', async () => {
   const h = harness();
   apply(h.ctx, h.config);
-  const rule = h.ctx.prompts.find((c) => c.name === 'dot:scheduled-turn');
-  const at = (sid) => rule.text({ agent: { session: { id: sid } } });
   h.emit(h.home, 'turn/start', { turn: 1 });
-  assert.equal(at('s1'), '', 'a user turn gets no rule');
+  assert.doesNotMatch(await turnNoteOf(h), /DOT_SILENT/, 'a user turn gets no rule');
   h.emit(h.home, 'turn/end', { turn: 1 });
-  // dsh order: the reminder is spliced into the inbox, then the turn starts and the prompt is assembled.
   h.emit(h.home, 'agent/inbox/spliced', { target: 'next-turn', inserted: [{ source: { kind: 'schedule' } }] });
   h.emit(h.home, 'turn/start', { turn: 2 });
-  assert.match(at('s1'), /DOT_SILENT/);
-  assert.equal(at('other'), '');
-  assert.equal(rule.text({}), '');
+  assert.match(await turnNoteOf(h, { messages: [{ role: 'user', content: [{ type: 'text', text: '到点了' }], source: { kind: 'schedule' } }] }), /DOT_SILENT/);
+  assert.equal(await turnNoteOf(h, { id: 'other', cwd: '/elsewhere' }), '', 'not her conversation: nothing is added');
+  assert.equal(await turnNoteOf(h, { messages: [] }), '', 'a step nothing new reached her in: nothing is added (it is said once per arrival)');
   stop(h);
 });
 
@@ -535,7 +532,7 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
   assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
 });
 
-test('dot:now: one line after the history, on her conversation and errands; "since" counts from before the turn, omitted under a minute', async () => {
+test('dot:now: one line with what has just reached her; "since" counts from before the turn, omitted under a minute', async () => {
   const { nowText } = await import('../src/dot/core.js');
   const now = new Date(2026, 10, 4, 4, 51).getTime();
   assert.equal(nowText(now, now - (3 * 60 + 12) * 60000), '现在 2026-11-04 04:51 星期三 深夜（这周一是 11-02） · 距上一条消息 3 小时 12 分');
@@ -546,18 +543,24 @@ test('dot:now: one line after the history, on her conversation and errands; "sin
   const asked = [];
   h.ctx.get = ((orig) => (name) => (name === 'dotMemory' ? { lastSaidAt: (before) => { asked.push(before); return before - 2 * 3600000; } } : orig(name)))(h.ctx.get);
   apply(h.ctx, h.config);
-  const ctxNow = h.ctx.prompts.find((c) => c.name === 'dot:now');
-  assert.equal(ctxNow.order, 899);
-  assert.match(ctxNow.text({ agent: { session: { id: 'e1', header: { cwd: h.home } } } }), /^现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+（这周一是 \d{2}-\d{2}） · 距上一条消息 2 小时$/);
-  assert.equal(ctxNow.text({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } } }), '');
+  assert.equal(h.ctx.prompts.find((c) => c.name === 'dot:now'), undefined, 'not in the snapshot dsh keeps: it changes every turn, and the whole snapshot would be appended again with it');
+  assert.match(await turnNoteOf(h, { id: 'e1' }), /^<system-reminder>\n现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+（这周一是 \d{2}-\d{2}） · 距上一条消息 2 小时\n/);
+  assert.equal(await turnNoteOf(h, { id: 'x', cwd: '/elsewhere' }), '');
   h.emit(h.home, 'turn/start', { turn: 1 });
   const before = Date.now();
-  ctxNow.text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
+  await turnNoteOf(h);
   assert.ok(asked.at(-1) <= before, 'from the turn start, so his waking message is not "the last one"');
   const rules = h.ctx.sections.find((s) => s.name === 'dot:rules').text({ agent: { session: { id: 's1', header: { cwd: h.home } } } });
   assert.match(rules, /- 时间以「现在」那行为准/);
   stop(h);
 });
+
+/** The short message dot puts after what has just reached her (agent/pre-step), as text; '' when there is none. */
+async function turnNoteOf(h, { id = 's1', cwd = h.home, messages = [{ role: 'user', content: [{ type: 'text', text: '在吗' }], source: { kind: 'user' } }] } = {}) {
+  const d = await h.hooks['agent/pre-step']({ agent: { session: { id, header: { cwd } } }, messages, signal: {} }, async () => ({ kind: 'enter', messages }));
+  const note = d.messages.find((m) => m.source?.form === 'turn-note');
+  return note ? note.content[0].text : '';
+}
 
 // ── his messages: wait for him to finish, steer mid-turn, read before sending (0.17.0) ──
 // A fake clock (setTimeout + Date mocked; setImmediate is real, so promise chains can settle).
