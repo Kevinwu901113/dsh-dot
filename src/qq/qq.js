@@ -112,8 +112,6 @@ const SL_QQ_PIN = {
 // NapCat's xvfb-run leaves sockets of dead servers there (:101, :102), and QQ exits on one of those.
 const SL_DISPLAY = String.raw`D=$(ps -eo args | awk '$1 ~ /(^|\/)(Xvnc|Xtigervnc|x11vnc)$/ { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` +
   String.raw`[ -n "$D" ] || D=$(ps -eo args | awk '$1 ~ /(^|\/)X[A-Za-z]*$/ && !/ -auth / { for (i = 2; i <= NF; i++) if ($i ~ /^:[0-9]+(\.[0-9]+)?$/) { sub(/\.[0-9]+$/, "", $i); print $i; exit } }'); ` + 'D="${D:-:99}"';
-/** Shell that sets $D to her computer's desktop display (for anything that looks at or draws on that screen). */
-export const VM_DISPLAY = SL_DISPLAY;
 /** Shell that leaves a PNG of her computer's desktop in $f (nothing there when the computer has no tool for it). */
 export const VM_SCREENSHOT = [SL_DISPLAY, 'f=/tmp/dot-screen-now.png; rm -f $f',
   'if command -v import >/dev/null; then DISPLAY=$D import -window root $f 2>/dev/null; elif command -v xwd >/dev/null && command -v convert >/dev/null; then xwd -root -display $D 2>/dev/null | convert xwd:- $f 2>/dev/null; elif command -v scrot >/dev/null; then DISPLAY=$D scrot -o $f 2>/dev/null; fi'].join('\n');

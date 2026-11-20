@@ -137,7 +137,6 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
         const n = open(t, e.session, m?.[1] === 'QQ' ? { kind: 'qq', name: m[2].trim() } : { kind: 'phone', name: m?.[1] ?? '' }, { wakeKind: 'notify' });
         n.trigger = clip(m ? text.slice(m[0].length) : text); break;
       }
-      case 'dot:phone-check': open(t, e.session, { kind: 'check' }); break;
       case 'tr:schedule': { const s = open(t, e.session, { kind: 'schedule' }); s.trigger = clip(e.text); break; }
       case 'ic:round': {
         const sc = scripts.find((x) => Math.abs(x.t - Math.floor(t / 60000) * 60000) < 60000 && (!x.phase || x.phase === e.phase)) ?? scripts.find((x) => Math.abs(x.t - t) < 120000);
@@ -187,7 +186,7 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
       }
       case 'tr:note': {
         // What an errand found, left in her conversation: belongs to the errand scene that just ended.
-        const s = recent(t, (x) => (retired(x.session) || ['check', 'play'].includes(x.source.kind) || (x.wakeKind === 'notify' && x.session !== e.session)) && x.session !== e.session, 15 * 60000)
+        const s = recent(t, (x) => (retired(x.session) || x.source.kind === 'play' || (x.wakeKind === 'notify' && x.session !== e.session)) && x.session !== e.session, 15 * 60000)
           ?? recent(t, (x) => x.session === e.session);
         act(s, 'saw', String(e.text ?? '').replace(/^\[[^\]]*\]\s*/, '')); touch(s, t); break;
       }

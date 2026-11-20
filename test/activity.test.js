@@ -38,8 +38,8 @@ function day() {
   audit.push({ ts: iso(at(61, 5)), kind: 'interlude', event: 'play', phase: 'advance', app: '小黑盒', action: 'like', target: '那篇攻略', why: '写得好', session: 'e1' });
   audit.push({ ts: iso(at(61, 6)), kind: 'interlude', event: 'round', phase: 'advance', said: true });
   tr.push({ at: at(64), who: 'note', session: 's1', text: '[刚才在手机上玩了会儿] 给那篇攻略点了赞' });
-  // 4. she picks up her phone; installs an app (approval)
-  audit.push({ ts: iso(at(120)), kind: 'dot', event: 'phone-check', session: 'e1', errand: true });
+  // 4. her phone shows something; she installs an app (approval)
+  audit.push({ ts: iso(at(120)), kind: 'dot', event: 'notification-woke', session: 'e1', count: 1, pkgs: ['com.tencent.mm'] });
   audit.push({ ts: iso(at(121)), kind: 'approval-asked', tool: 'mcp__dot-phone__mobile_install_app', session: 'e1', reason: 'dsh-dot/phone: mobile_install_app' });
   // 5. a group message from 阿满 with a sticker; she sends a sticker back
   qq.push({ ts: iso(at(180)), kind: 'group', userId: '30003', groupId: '777', who: '阿满', text: '[表情包 sticker:abcdef0123] 哈哈', fromOwner: false });
@@ -96,7 +96,7 @@ test('activity: one scene per wake, with what she did in her own words and what 
   assert.deepEqual(play.actions.map((a) => [a.k, a.text]), [['like', '小黑盒 · 那篇攻略'], ['saw', '给那篇攻略点了赞']]);
 
   const check = byAt(120);
-  assert.equal(check.source.kind, 'check');
+  assert.equal(check.source.kind, 'phone');
   assert.deepEqual(check.actions.map((a) => a.k), ['install']);
 
   const group = byAt(180);

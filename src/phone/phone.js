@@ -31,7 +31,6 @@ import { createAccounts, renderAccount } from './accounts.js';
 const WALL_POSTER = ['poster wall', 'size 1 1', 'position 0 0 -1.5', 'rotation 0 0 0', 'default poster.png', ''].join('\n');
 
 /** @deprecated name kept for callers; see notifications.js */
-export const parseNotifications = parseShade;
 
 export const name = 'dot-phone';
 export const inject = [];

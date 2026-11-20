@@ -14,7 +14,6 @@ import { join } from 'node:path';
 
 export const CARD_FILE = 'persona.md';
 export const CHECKS_FILE = 'persona.checks.txt';
-export const CARD_MAX_CHARS = 8000; // above this a card is still used, and said to be long (qq-bridge's cap; 3000–5000 is the aim)
 
 const text = (v) => String(v ?? '').trim();
 const part = (title, ...vs) => { const body = vs.map(text).filter(Boolean).join('\n\n'); return body ? `## ${title}\n${body}` : ''; };
