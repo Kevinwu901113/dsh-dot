@@ -97,19 +97,19 @@ export function runPendingReset({ logger, now = new Date(), startedAt = PROCESS_
       for (const log of ['dsh-computer-audit.jsonl', 'dsh-phone-audit.jsonl', 'dsh-qq-audit.jsonl']) for (const f of [log, `${log}.1`]) mv(join(dsh, f), join(backup, 'logs', f));
     }
     if (r >= rank('fresh')) {
-      // Last, and in one rename: her conversation and errand pointers. The old sessions stay in dsh; they are
-      // retired (pastConversations / pastErrands), so a turn ending in one of them does not make it hers again.
+      // Last, and in one rename: her conversation pointer. The old session stays in dsh; it is retired
+      // (pastConversations), so a turn ending in it does not make it hers again. Keys of older state files
+      // (errandSession, pastErrands) are folded into the same list.
       const file = join(dsh, 'dsh-dot-state.json'), s = readJson(file);
       if (existsSync(file) && !s) throw new Error(`${file} cannot be read: her conversation pointers were not cleared`);
       if (s) {
         mkdirSync(backup, { recursive: true }); copyFileSync(file, join(backup, 'dsh-dot-state.json'));
-        if (s.errandSession) s.pastErrands = [...(s.pastErrands ?? []), s.errandSession];
-        if (s.lastSession) s.pastConversations = [...(s.pastConversations ?? []), s.lastSession].slice(-50);
-        s.lastSession = ''; s.errandSession = '';
+        s.pastConversations = [...new Set([...(s.pastConversations ?? []), ...(s.pastErrands ?? []), s.errandSession, s.lastSession].filter(Boolean))].slice(-50);
+        s.lastSession = ''; delete s.errandSession; delete s.pastErrands;
         if (r >= rank('all')) delete s.stats; // today's counters on the panel (messages, wakes): from zero too
         const tmp = `${file}.tmp-${process.pid}`;
         writeFileSync(tmp, JSON.stringify(s, null, 2)); renameSync(tmp, file);
-        moved.push(`${file} (lastSession, errandSession${r >= rank('all') ? ', stats' : ''})`);
+        moved.push(`${file} (lastSession${r >= rank('all') ? ', stats' : ''})`);
       }
     }
     logger?.info?.(`reset (${p.level}): ${moved.length} item(s) moved to ${backup}`);

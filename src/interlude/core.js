@@ -439,7 +439,7 @@ export function apply(ctx, config = {}) {
       name: 'interlude:voice',
       order: 990,
       text: (c) => {
-        if (!cfg.voice || !inHome(c) || dshDot()?.isErrand?.(c.agent?.session?.id)) return '';
+        if (!cfg.voice || !inHome(c) || dshDot()?.retired?.(c.agent?.session?.id)) return '';
         return voiceText();
       },
     });

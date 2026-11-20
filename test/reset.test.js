@@ -59,7 +59,7 @@ test('levels: each one includes the ones before it; everything is moved into $DS
   assert.equal(w.state().lastSession, 's-old');
   // fresh
   w = world(); scheduleReset('fresh', w.home); r = runPendingReset({ now });
-  assert.deepEqual(w.state(), { lastSession: '', errandSession: '', pastErrands: ['e-0', 'e-old'], stats: { day: 'd' }, pastConversations: ['s-old'] }, 'no conversation is hers; the old ones are known as retired');
+  assert.deepEqual(w.state(), { lastSession: '', stats: { day: 'd' }, pastConversations: ['e-0', 'e-old', 's-old'] }, 'no conversation is hers; the old ones are known as retired');
   assert.equal(JSON.parse(readFileSync(join(r.backup, 'dsh-dot-state.json'), 'utf8')).lastSession, 's-old', 'the pointers are kept in the backup');
   assert.ok(w.has(w.home, 'her', 'howto', 'QQ.md') && w.has(w.dsh, 'stickers', 'ab12.img') && w.has(w.dsh, 'dsh-qq-audit.jsonl'));
   // all
@@ -68,7 +68,7 @@ test('levels: each one includes the ones before it; everything is moved into $DS
   assert.ok(w.has(w.home, 'her', '礼物', 'card.md'), 'only her how-to notes, nothing else of hers');
   assert.ok(!w.has(w.dsh, 'stickers') && !w.has(w.dsh, 'dsh-qq-stickers.json') && w.has(r.backup, 'stickers', 'ab12.img'));
   for (const f of ['dsh-computer-audit.jsonl', 'dsh-computer-audit.jsonl.1', 'dsh-phone-audit.jsonl', 'dsh-qq-audit.jsonl']) assert.ok(!w.has(w.dsh, f) && w.has(r.backup, 'logs', f), f);
-  assert.deepEqual(w.state(), { lastSession: '', errandSession: '', pastErrands: ['e-0', 'e-old'], pastConversations: ['s-old'] }, 'today\'s counters start from zero too');
+  assert.deepEqual(w.state(), { lastSession: '', pastConversations: ['e-0', 'e-old', 's-old'] }, 'today\'s counters start from zero too');
   assert.ok(w.has(w.dsh, 'dsh-dot.json') && w.has(w.home, 'interlude', 'canon.json'), 'settings and persona are never touched');
   assert.equal(r.error, undefined); assert.ok(r.moved.length >= 9);
 });

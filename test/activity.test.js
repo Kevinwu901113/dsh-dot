@@ -68,7 +68,7 @@ function day() {
 test('activity: one scene per wake, with what she did in her own words and what it cost', () => {
   const { dsh, home, at } = day();
   const act = createActivity({ dshHome: dsh, home });
-  const scenes = act.scenes({ busy: (id) => id === 's1', isErrand: (id) => id === 'e1' });
+  const scenes = act.scenes({ busy: (id) => id === 's1', retired: (id) => id === 'e1' });
   const byAt = (min) => scenes.find((s) => s.at === at(min) || Math.abs(s.at - at(min)) < 5000);
 
   const owner = byAt(0);
@@ -118,7 +118,7 @@ test('activity: one scene per wake, with what she did in her own words and what 
   assert.equal(last.status, 'running', 'her conversation is in a turn and this is its latest scene');
   assert.ok(scenes.every((s, i) => i === 0 || s.at <= scenes[i - 1].at), 'newest first');
   // The watchdog's view of that open turn: stalled, waiting on an approval, timed out; only the running scene changes.
-  const as = (t) => act.scenes({ busy: (id) => id === 's1', isErrand: (id) => id === 'e1', turnOf: (id) => (id === 's1' ? t : null) });
+  const as = (t) => act.scenes({ busy: (id) => id === 's1', retired: (id) => id === 'e1', turnOf: (id) => (id === 's1' ? t : null) });
   assert.deepEqual([as({ state: 'stalled', idleMs: 7 * 60000 + 5 })[0].status, as({ state: 'stalled', idleMs: 7 * 60000 + 5 })[0].minutes], ['stalled', 7]);
   assert.deepEqual([as({ state: 'approval', idleMs: 0, waitMs: 3 * 60000 })[0].status, as({ state: 'approval', idleMs: 0, waitMs: 3 * 60000 })[0].minutes], ['approval', 3]);
   assert.equal(as({ state: 'timed-out', idleMs: 11 * 60000 })[0].status, 'timed-out');
@@ -169,7 +169,7 @@ test('panel state carries the scenes; the page has the section in both languages
   const prev = process.env.DSH_HOME;
   process.env.DSH_HOME = dsh;
   try {
-    const ctx = { get: (n) => (n === 'dshDot' ? { home, busy: () => false, isErrand: (id) => id === 'e1', session: () => 's1', stats: () => null } : undefined) };
+    const ctx = { get: (n) => (n === 'dshDot' ? { home, busy: () => false, retired: (id) => id === 'e1', session: () => 's1', stats: () => null } : undefined) };
     const s = await collectState(ctx, { scenes: '5' });
     assert.equal(s.activity.scenes.length, 5);
     assert.deepEqual([s.dot.turns, s.dot.approvals], [[], []], 'without the liveness view: empty');

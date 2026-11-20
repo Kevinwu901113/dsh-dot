@@ -212,7 +212,7 @@ test('free time: her own time comes to her with a budget; QQ is hers as always, 
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000, freeDailyTokens: 30000 } });
   const tasks = [], cancelled = [];
   let fg = 'com.max.xiaoheihe/.MainActivity';
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, isErrand: (id) => id === 'e1', session: () => 's1' }
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: (id) => id === 'e1', session: () => 's1' }
     : n === 'dshPhone' ? { isReady: true, apps: async () => [], foreground: async () => fg }
       : n === 'agents' ? { get: (id) => ({ cancel: () => cancelled.push(id) }) } : get(n)))(h.ctx.get);
   writeFileSync(join(h.home, 'her', '想学的.md'), '画画');
@@ -249,7 +249,7 @@ test('free time: her own time comes to her with a budget; QQ is hers as always, 
 test('free time: one step past the whole budget stops it without a wake-up message; with no cancel, every tool is refused', async () => {
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000 } });
   const tasks = [], steered = [];
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, isErrand: () => true }
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true }
     : n === 'agents' ? { get: () => ({ steer: (m) => steered.push(m) }) } : get(n)))(h.ctx.get); // no cancel on this host
   await h.cmd().handler({ rawInput: 'free' });
   tasks[0].onStart('e1');
@@ -274,7 +274,7 @@ test('free time: one step past the whole budget stops it without a wake-up messa
 
 test('free time: planned at random moments in her active hours, once a day', async () => {
   const h = harness({ reply: GOOD, config: { freeTimesPerDay: 2, activeHours: '00:00-23:59' } });
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', isErrand: () => false } : get(n)))(h.ctx.get);
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: () => false } : get(n)))(h.ctx.get);
   h.tick();
   const meta = JSON.parse(readFileSync(join(h.home, 'interlude', 'meta.json'), 'utf8'));
   assert.ok(meta.freeDay, 'planned today');
@@ -286,7 +286,7 @@ test('free time: planned at random moments in her active hours, once a day', asy
 
 test('voice: how she talks is the last thing in her conversation (after the memory and the interlude), from the Canon or the built-in; not in errands', async () => {
   const h = harness({ reply: GOOD, vm: {} });
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', isErrand: (id) => id === 'e1' } : get(n)))(h.ctx.get);
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: (id) => id === 'e1' } : get(n)))(h.ctx.get);
   const voice = h.prompts.find((p) => p.name === 'interlude:voice');
   const others = h.prompts.filter((p) => p !== voice);
   assert.ok(others.every((p) => p.order < voice.order), 'after every other context of the interlude');

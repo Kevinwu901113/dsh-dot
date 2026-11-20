@@ -342,7 +342,7 @@ function harness({ llmReply = '{}', recall = false } = {}) {
   const agents = new Map();
   const agentFor = (id) => agents.get(id) ?? agents.set(id, { session: { id }, inject: (m) => injected.push({ id, m }) }).get(id);
   const services = {
-    dshDot: { session: () => session, setSession: (id) => { session = id; }, isErrand: (id) => id === 'errand', isIm: () => false, freeze: () => { frozen++; return () => { released++; }; } },
+    dshDot: { session: () => session, setSession: (id) => { session = id; }, retired: (id) => id === 'errand', isIm: () => false, freeze: () => { frozen++; return () => { released++; }; } },
     sessionController: { create: async () => ({ sessionId: 's2' }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentFor(id) }) },
     workspaceRegistry: { archiveSession: async (id) => { archived.push(id); } },
     agents: { get: (id) => agentFor(id) },
@@ -899,7 +899,7 @@ test('keep_line end to end: a line her hands showed her (in her conversation) be
   process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], hooks = [], tools = {}, audits = [];
-  const services = { dshDot: { session: () => 's1', isErrand: () => false, isIm: () => false }, dshComputer: { audit: (e) => audits.push(e) } };
+  const services = { dshDot: { session: () => 's1', retired: () => false, isIm: () => false }, dshComputer: { audit: (e) => audits.push(e) } };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'tools/pre-execute') hooks.push(fn); },

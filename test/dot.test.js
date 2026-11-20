@@ -534,12 +534,10 @@ test('startup self-check: a remembered conversation that is an errand or archive
     stop(h);
     return { session: provided.dshDot.session(), audit: h.audit.filter((e) => e.event === 'last-session-cleared') };
   };
-  let r = boot({ lastSession: 'old-errand', pastErrands: ['old-errand'] });
-  assert.equal(r.session, ''); assert.deepEqual(r.audit.map((e) => [e.session, e.why]), [['old-errand', 'errand']]);
+  let r = boot({ lastSession: 'old-errand', pastErrands: ['old-errand'] }) /* a state file from before there was one of her */;
+  assert.equal(r.session, ''); assert.deepEqual(r.audit.map((e) => [e.session, e.why]), [['old-errand', 'retired']]);
   r = boot({ lastSession: 'gone' }, { workspaceRegistry: { archivedSessionIds: ['x', 'gone'] } });
   assert.equal(r.session, ''); assert.equal(r.audit[0].why, 'archived');
-  r = boot({ lastSession: 'e9' }, { agents: { get: (id) => (id === 'e9' ? { session: { header: { title: 'dot · 跑腿' } } } : undefined) } });
-  assert.equal(r.session, ''); assert.equal(r.audit[0].why, 'errand title');
   r = boot({ lastSession: 'live' }, { workspaceRegistry: { archivedSessionIds: ['x'] } });
   assert.equal(r.session, 'live'); assert.equal(r.audit.length, 0);
   r = boot({ lastSession: 'live' }, { workspaceRegistry: { get archivedSessionIds() { throw new Error('not ready'); } } });

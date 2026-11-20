@@ -63,14 +63,14 @@ const PHASE = { advance: 'advance', 'follow-up': 'follow-up', intent: 'intent', 
 /**
  * Turn the records into scenes, newest first.
  * @param {object} src - parsed records: audit (computer+phone audit), qq, transcript, interludeCalls, script, memoryCalls, diary.
- * @param {object} opts - now, limit, days, busy(session) → bool, isErrand(session) → bool,
+ * @param {object} opts - now, limit, days, busy(session) → bool, retired(session) → bool,
  *   turnOf(session) → { state: 'running'|'stalled'|'approval'|'timed-out', idleMs, waitMs? } for an open turn.
  * Each scene: { at, end, session, source: { kind, name? }, status: 'running'|'stalled'|'approval'|'timed-out'|'done'|'failed',
  *   minutes? (stalled: since the last event; approval: waiting), trigger?,
  *   actions: [{ k, text, via? }], stats: { tools, model, in, out } }. Action and source kinds are keys;
  *   the page words them (zh/en).
  */
-export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, days = 3, busy = () => false, isErrand = () => false, turnOf = () => null } = {}) {
+export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, days = 3, busy = () => false, retired = () => false, turnOf = () => null } = {}) {
   const since = now - days * DAY;
   const ev = [];
   const push = (t, type, e) => { if (t >= since && t <= now + 60000) ev.push({ t, type, e }); };
@@ -175,7 +175,7 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
         act(s, 'look', e.query ?? '', { via: e.via === 'web' ? 'web' : e.via === 'phone' ? 'phone' : 'computer' }); touch(s, t); break;
       }
       case 'qq:sent': {
-        const s = recent(t, (x) => x.roundOpen, 30 * 60000) ?? recent(t, (x) => !x.round && !isErrand(x.session)) ?? open(t, '', { kind: 'qq', name: e.to?.group_id ? `群 ${e.to.group_id}` : String(e.to?.user_id ?? '') });
+        const s = recent(t, (x) => x.roundOpen, 30 * 60000) ?? recent(t, (x) => !x.round && !retired(x.session)) ?? open(t, '', { kind: 'qq', name: e.to?.group_id ? `群 ${e.to.group_id}` : String(e.to?.user_id ?? '') });
         const images = [].concat(e.images ?? []);
         if (e.text) act(s, s.round ? 'contact' : 'qq', e.text);
         if (images.length) act(s, 'image', images.join(' '));
@@ -187,7 +187,7 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
       }
       case 'tr:note': {
         // What an errand found, left in her conversation: belongs to the errand scene that just ended.
-        const s = recent(t, (x) => (isErrand(x.session) || ['check', 'play'].includes(x.source.kind) || (x.wakeKind === 'notify' && x.session !== e.session)) && x.session !== e.session, 15 * 60000)
+        const s = recent(t, (x) => (retired(x.session) || ['check', 'play'].includes(x.source.kind) || (x.wakeKind === 'notify' && x.session !== e.session)) && x.session !== e.session, 15 * 60000)
           ?? recent(t, (x) => x.session === e.session);
         act(s, 'saw', String(e.text ?? '').replace(/^\[[^\]]*\]\s*/, '')); touch(s, t); break;
       }

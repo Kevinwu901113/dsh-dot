@@ -507,22 +507,20 @@ export function apply(ctx, config = {}) {
   // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers, whatever the scope says.
   const isDotSession = (id, cwd) => !BRIDGE_ID_RE.test(String(id ?? '')) && (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id)));
 
-  // Conversations a reset retired (src/reset.js): a turn ending in one of them does not make it hers again.
-  const pastConversations = new Set(store.get('pastConversations') ?? []);
-  // Sessions that were her errands, from before there was one of her (dot/hands.js): never her conversation, whatever
-  // ends in them. Nothing is added to the list any more.
-  const pastErrands = new Set([...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
-  const isErrand = (id) => Boolean(id) && pastErrands.has(id);
+  // Sessions that were hers and are not any more: conversations a reset or a handover retired (src/reset.js,
+  // setSession), and — read from older state files, nothing adds to it — the second session she had before there was
+  // one of her. A turn ending in one of them does not make it hers again.
+  const pastConversations = new Set([...(store.get('pastConversations') ?? []), ...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
+  const retired = (id) => Boolean(id) && pastConversations.has(id);
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) && !hands.doing()?.forHim });
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
-  // can point at an errand or at a session archived since (11-03: his QQ messages went into an
-  // archived errand and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
+  // can point at a retired session or at one archived since (11-03: his QQ messages went into an
+  // archived session and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
   const staleWhy = (id) => {
     if (!id) return '';
-    if (isErrand(id)) return 'errand';
-    try { if (/跑腿/.test(String(ctx.get('agents')?.get?.(id)?.session?.header?.title ?? ''))) return 'errand title'; } catch (error) { void error; }
+    if (retired(id)) return 'retired';
     try { const ids = ctx.get('workspaceRegistry')?.archivedSessionIds; if ((Array.isArray(ids) || ids instanceof Set) && [...ids].includes(id)) return 'archived'; } catch (error) { void error; }
     return '';
   };
@@ -530,7 +528,7 @@ export function apply(ctx, config = {}) {
     const why = staleWhy(lastSession);
     if (!why) return;
     audit('last-session-cleared', { session: lastSession, why });
-    logger.warn(`her remembered conversation ${lastSession} is ${why === 'archived' ? 'archived' : 'an errand'}: cleared (the next message to her picks a new one)`);
+    logger.warn(`her remembered conversation ${lastSession} is ${why}: cleared (the next message to her picks a new one)`);
     setLast('');
   };
   selfCheck();
@@ -618,7 +616,7 @@ export function apply(ctx, config = {}) {
       if (key) approvals.get(key).eventId = event.data?.id;
     }
     if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
-    if (event.type === 'turn/end' && !isErrand(id) && !pastConversations.has(id)) setLast(id);
+    if (event.type === 'turn/end' && !retired(id)) setLast(id);
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -671,7 +669,7 @@ export function apply(ctx, config = {}) {
     if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
       t.elsewhere = true;
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
-      if (!t.scheduled && !isErrand(id) && !pastConversations.has(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
+      if (!t.scheduled && !retired(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
     }
     // The same account of his thing as over QQ (talk.js), for a turn his words opened somewhere else.
     if (t.hisHere && !t.fromQq) {
@@ -727,7 +725,7 @@ export function apply(ctx, config = {}) {
     const vm = (String(toolName ?? '').startsWith(PHONE_TOOL_PREFIX) ? phone()?.status?.() : computer()?.status?.()) ?? {};
     return vm.publicLiveViewUrl || vm.liveViewUrl || '';
   };
-  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || isErrand(s.id) || turns.has(s.id) || Boolean(hands?.isHands(s.id, s.header?.cwd))); };
+  const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || retired(s.id) || turns.has(s.id) || Boolean(hands?.isHands(s.id, s.header?.cwd))); };
   const EXPIRED = Symbol('expired'), WITHDRAWN = Symbol('withdrawn');
   ctx.on('approval/request', async (req, next) => {
     if (!hers(req.agent)) return next();
@@ -743,7 +741,7 @@ export function apply(ctx, config = {}) {
     const count = t ? (t.approvalsAsked = (t.approvalsAsked ?? 0) + 1) : 1;
     if (count === 1) {
       void im.send(approvalNotice({ tool: req.toolName, reason: req.reason, link: liveLink(req.toolName), minutes, count: [...approvals.values()].filter((x) => x.session === id).length }), 'plain');
-      audit('approval-notified', { session: id, tool: req.toolName, errand: isErrand(id) });
+      audit('approval-notified', { session: id, tool: req.toolName, retired: retired(id) });
     } else audit('approval-merged', { session: id, tool: req.toolName, count });
     if (!wait) { try { return await next(); } finally { approvals.delete(key); } }
     let timer, onAbort;
@@ -759,7 +757,7 @@ export function apply(ctx, config = {}) {
       a.timedOutAt = Date.now();
       if (t) { t.approvalTimedOutAt = a.timedOutAt; t.doing = `${shortTool(req.toolName)}（审批过期）`; }
       if (req.callId !== undefined) expiredCalls.set(req.callId, minutes);
-      audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, errand: isErrand(id) });
+      audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, retired: retired(id) });
       void im.send(`⌛ dot: ${req.toolName} 的审批 ${minutes} 分钟没人点，过期了，当拒绝处理——她放下了这步。`, 'plain');
       return 'rejected';
     } finally {
@@ -1172,7 +1170,7 @@ export function apply(ctx, config = {}) {
     if (frozen && id === lastSession) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
     // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
     // (His own words never come this way: they have their own buffer and are steered in, see flushOwner.)
-    if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', errand: isErrand(id) }); return; }
+    if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', retired: retired(id) }); return; }
     deliverTracked(items, false, id);
   };
   const flush = () => { const items = batch; batch = []; batchTimer = null; send(lastSession, items); };
@@ -1457,7 +1455,7 @@ export function apply(ctx, config = {}) {
     const t = turns.get(id);
     if (!t) return null;
     const a = pendingApproval(id);
-    return { session: id, errand: isErrand(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t, a), ...turnState(t, { now, turnStallMs: cfg.turnStallMs, approval: a }) };
+    return { session: id, retired: retired(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t, a), ...turnState(t, { now, turnStallMs: cfg.turnStallMs, approval: a }) };
   };
   const watchTurns = (now = Date.now()) => {
     if (!(cfg.turnStallMs > 0)) return;
@@ -1465,7 +1463,7 @@ export function apply(ctx, config = {}) {
       const idle = now - (t.lastEventAt ?? t.startedAt);
       if (idle < cfg.turnStallMs) continue;
       const a = pendingApproval(id);
-      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, errand: isErrand(id), idleMs: idle, doing: doingOf(t, a), ...(a ? { approval: a.tool } : {}) }); }
+      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, retired: retired(id), idleMs: idle, doing: doingOf(t, a), ...(a ? { approval: a.tool } : {}) }); }
       if (id !== lastSession || t.ownerTold || a?.notified) continue;
       t.ownerTold = true;
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
@@ -1528,7 +1526,7 @@ export function apply(ctx, config = {}) {
   // /dot: what is waiting and what is stuck, one line each.
   const mins = (ms) => `${Math.floor(ms / 60000)} min`;
   const statusLiveness = (now = Date.now()) => {
-    const who = (id) => `${isErrand(id) ? 'errand' : id === lastSession ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
+    const who = (id) => `${retired(id) ? 'retired' : id === lastSession ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
     const out = [...approvals.values()].map((a) => `approval waiting: ${shortTool(a.tool)} in ${who(a.session)} · ${mins(now - a.since)}${cfg.approvalWaitMs > 0 ? ` of ${mins(cfg.approvalWaitMs)}` : ''}${a.timedOutAt ? ' · timed out' : ''}`);
     for (const id of turns.keys()) {
       const t = turnInfo(id, now);
@@ -1588,14 +1586,14 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot: /dot command');
   });
 
-  // Other components (interlude, memory) need to know which session is her conversation and which is the errand.
+  // Other components (interlude, memory) need to know which session is her conversation.
   ctx.provide?.('dshDot', {
     home,
     session: () => lastSession,
     // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
     // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
     /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
-    lean: (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !isErrand(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; },
+    lean: (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !retired(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; },
     /** A new conversation of hers, made with her own preset when lean is on (and this host knows the preset). → { sessionId } */
     createConversation: (controller) => createConversation(controller),
     setSession: (id) => {
@@ -1614,9 +1612,9 @@ export function apply(ctx, config = {}) {
     /** How long a queued task waits before it expires. */
     taskTtlMs: cfg.interludeTaskTtlMs,
     stats,
-    isErrand,
-    /** Is this session hers (her conversation, an IM-opened one, her errand): what compat asks before letting it see her tools. */
-    hers: (id, cwd) => isDotSession(id, cwd) || isErrand(id),
+    retired,
+    /** Is this session hers (her conversation, an IM-opened one, one that was hers): what compat asks before letting it see her tools. */
+    hers: (id, cwd) => isDotSession(id, cwd) || retired(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
     busy: (id) => turns.has(id),
@@ -1628,7 +1626,7 @@ export function apply(ctx, config = {}) {
     /** Every open turn of hers. */
     turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
     /** Approvals waiting in her sessions. */
-    approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, errand: isErrand(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
+    approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, retired: retired(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => ownerBatch.length,
     /** Her bubbles to him are going out right now. */

@@ -468,7 +468,7 @@ export function apply(ctx, config = {}) {
   // ── her conversation, as it happens ──
   const isConversation = (id, cwd) => {
     const d = dot();
-    if (d?.isErrand?.(id)) return false;
+    if (d?.retired?.(id)) return false;
     return (cwd && inside(home, cwd)) || id === d?.session?.();
   };
   // What her hands' tools showed, per conversation: the only place a line she keeps (keep_line) may come from.
@@ -524,7 +524,7 @@ export function apply(ctx, config = {}) {
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
         else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); sawText(id, text); }
         // What woke her is the query; the result is in front of her before the model is called.
-        if (RECALL_WAKES(src) && !dot()?.isErrand?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
+        if (RECALL_WAKES(src) && !dot()?.retired?.(id)) { const said = src.kind === 'dsh-dot' ? text.split('\n（')[0] : text; void recall.prepare(id, said); void facts.prepare(id, said); }
         return;
       }
       case 'turn/end': {
@@ -771,7 +771,7 @@ export function apply(ctx, config = {}) {
       order: 904,
       text: (c) => {
         const s = c.agent?.session;
-        if (!s || dot()?.isErrand?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
+        if (!s || dot()?.retired?.(s.id) || !isConversation(s.id, s.header?.cwd)) return '';
         return renderStanding(memory, { banks: !peopleOnly(), limits: cfg.limits, ...keep });
       },
     });
@@ -780,13 +780,13 @@ export function apply(ctx, config = {}) {
     scope.systemPrompt.context({
       name: 'dot:recall',
       order: 905,
-      text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
+      text: (c) => { const s = c.agent?.session; return s && !dot()?.retired?.(s.id) && isConversation(s.id, s.header?.cwd) ? recall.textFor(s.id) : ''; },
     });
     // The facts picked for this wake, after the turns recall found.
     scope.systemPrompt.context({
       name: 'dot:facts',
       order: 906,
-      text: (c) => { const s = c.agent?.session; return s && !dot()?.isErrand?.(s.id) && isConversation(s.id, s.header?.cwd) ? facts.textFor(s.id) : ''; },
+      text: (c) => { const s = c.agent?.session; return s && !dot()?.retired?.(s.id) && isConversation(s.id, s.header?.cwd) ? facts.textFor(s.id) : ''; },
     });
     // Contexts are read synchronously; a query still running (a cloud call, a cold model) is waited
     // for here, bounded by recallWaitMs, and its text put into the assembly. Registered on the

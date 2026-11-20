@@ -38,7 +38,7 @@ function harness(config = {}, emb = fakeEmbedders(), over = null) {
   const home = over?.home ?? join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], contexts = [], assemble = [];
   let session = 's1';
-  const services = { dshDot: { session: () => session, setSession: (id) => { session = id; }, isErrand: (id) => id === 'errand', isIm: () => false } };
+  const services = { dshDot: { session: () => session, setSession: (id) => { session = id; }, retired: (id) => id === 'errand', isIm: () => false } };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
     on: (name, fn) => { if (name === 'session/event') listeners.push(fn); if (name === 'system-prompt/assemble') assemble.push(fn); },
