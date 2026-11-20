@@ -860,16 +860,6 @@ export function apply(ctx, config = {}) {
     if (!parts.length) return decision;
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
   });
-  // Her hands' requests and her own go out with their own reasoning effort (defaults.handsEffort, herEffort), whatever
-  // the model selector says: the request's own configuration is replaced, so it is in the logged header and not a per-call drift.
-  ctx.on('agent/request', async ({ agent }, next) => {
-    const config = await next();
-    const s = agent?.session;
-    const want = !config?.provider ? '' : hands?.isHands(s?.id, s?.header?.cwd) ? cfg.handsEffort : isDotSession(s?.id, s?.header?.cwd) && !retired(s?.id) ? cfg.herEffort : '';
-    if (!want) return config;
-    const { effort } = await effortFor(ctx, { provider: config.provider, model: config.model, reasoningEffort: config.reasoningEffort }, want);
-    return effort && effort !== config.reasoningEffort ? { ...config, reasoningEffort: effort } : config;
-  });
   // Her clock: "since the last message" counts from the last line said before this turn began.
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
@@ -950,6 +940,25 @@ export function apply(ctx, config = {}) {
     if (Date.now() - w.at > 3600000) return ''; // long since: no longer "just woke"
     return w.by === 'morning' ? prompt('dot.woke.morning', { slept: span(w.sleptMs) }) : prompt('dot.woke', { slept: span(w.sleptMs), left: span(w.untilUsualMs) });
   } });
+  // Her conversation and her hands think at their own effort (defaults.herEffort, handsEffort), whatever the model
+  // selector was last set to. It is the session's own selection, set through the agent before anything is sent into
+  // it: recorded for that session only, kept, and nothing is done when it already says so. The host fixes a step's
+  // selection before the step runs and fails the whole turn when the `agent/request` waterfall proposes another
+  // effort (11-17, and again 11-21: three of his messages went unanswered), so it is never changed there. A host
+  // without agent.model.select, or a model that does not offer the effort: the session follows the selector.
+  const thinkAt = async (agent, want) => {
+    if (!want) return;
+    try {
+      const m = agent?.model;
+      if (typeof m?.select !== 'function') return;
+      const cur = (typeof m.current === 'function' ? m.current() : null) ?? ctx.get('agentDefaultModel')?.currentSelection?.();
+      if (!cur?.provider || !cur?.model) return;
+      const { effort, why } = await effortFor(ctx, { provider: cur.provider, model: cur.model, reasoningEffort: cur.reasoningEffort }, want);
+      if (!effort || effort === cur.reasoningEffort) return;
+      m.select({ provider: cur.provider, model: cur.model, reasoningEffort: effort });
+      audit('effort-set', { session: agent.session?.id, model: `${cur.provider}/${cur.model}`, was: cur.reasoningEffort ?? 'default', effort, why });
+    } catch (err) { logger.warn(`reasoning effort not set: ${err.message}`); }
+  };
   let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; // assigned below, used by flush/releaseHeld
@@ -961,6 +970,7 @@ export function apply(ctx, config = {}) {
   const resolveLive = async (id) => {
     const live = ctx.get('agents')?.get?.(id);
     const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
+    if (found && !('error' in found) && !retired(id)) await thinkAt(found.agent, cfg.herEffort);
     return found;
   };
   /**
@@ -968,11 +978,15 @@ export function apply(ctx, config = {}) {
    * the preset (the plugin's patch row did not load, an older dsh) refuses it — then the session is made as before.
    */
   const createConversation = async (controller) => {
+    let made;
     if (cfg.lean) {
-      try { const made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); return made; }
+      try { made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); }
       catch (err) { audit('conversation-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
     }
-    return controller.create({ cwd: home });
+    made ??= await controller.create({ cwd: home });
+    // Its effort is set now, whoever is first to send into it (his words typed in its window, her own time).
+    try { await resolveLive(made?.sessionId); } catch (err) { logger.debug?.(`new conversation not resolved: ${err.message}`); }
+    return made;
   };
   /** A new conversation of hers in her home; '' when dsh cannot make one. */
   const openConversation = async (controller) => {
@@ -987,9 +1001,10 @@ export function apply(ctx, config = {}) {
   const handsAgent = async (id) => {
     try {
       const live = ctx.get('agents')?.get?.(id);
-      if (typeof live?.followup === 'function') return live;
-      const found = await ctx.get('sessionController')?.resolveAgent(id);
-      return found && !('error' in found) ? found.agent : null;
+      const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
+      if (!found || 'error' in found) return null;
+      await thinkAt(found.agent, cfg.handsEffort);
+      return found.agent;
     } catch (error) { void error; return null; }
   };
   // Her phone, put down: a while after her last step on it, it is back on its home screen — an app left open in front

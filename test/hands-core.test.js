@@ -17,7 +17,7 @@ function harness(cfg = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], hooks = {}, effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
   let command, n = 0;
-  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
+  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
   const services = {
     tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
     commands: { register: (c) => { command = c; return () => {}; } },
@@ -130,21 +130,31 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   h.stop();
 });
 
-test('her hands and she think at their own effort, whatever the selector says; an effort the model does not offer is not sent', async () => {
+test('her hands and she think at their own effort: the session\'s own selection, set before anything is sent into it', async () => {
   const h = harness();
+  assert.equal(h.hooks['agent/request'], undefined, 'never through the request waterfall: the host fails the turn');
+  const low = { provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'low' };
   await h.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
-  const request = h.hooks['agent/request'];
-  const base = { provider: 'deepseek-account', model: 'deepseek-flash', maxTokens: 256000 };
-  assert.deepEqual(await request({ agent: h.agentOf('h1') }, async () => base), { ...base, reasoningEffort: 'low' });
-  assert.deepEqual(await request({ agent: h.agentOf('s1') }, async () => ({ ...base, reasoningEffort: 'off' })), { ...base, reasoningEffort: 'low' }, 'her own conversation: low, whatever the selector says');
-  assert.equal(await request({ agent: { session: { id: 'x9', header: { cwd: '/elsewhere' } } } }, async () => base), base, 'nobody else\'s');
+  const hands = h.agentOf('h1');
+  assert.deepEqual(hands.selected, [low]);
+  assert.equal(hands.got.length, 1, 'and then the thing is sent');
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '看了' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'done' } }); await tick(); await tick();
+  const her = h.agentOf('s1');
+  assert.deepEqual(her.selected, [low], 'her own conversation, when what her hands did comes back to it');
+  assert.equal(her.got.length, 1);
+  await h.tools.hands.execute({ device: 'phone', do: '再看一眼' }); await tick();
+  h.emit('h2', 'turn/end', { reason: { kind: 'done' } }); await tick(); await tick();
+  assert.deepEqual(her.selected, [low], 'already so: nothing is done');
+  assert.ok(h.audit.some((a) => a.event === 'effort-set' && a.session === 's1' && a.was === 'off' && a.effort === 'low'));
   h.stop();
   const none = harness({ handsEffort: 'nope', herEffort: false });
   await none.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
-  assert.equal(await none.hooks['agent/request']({ agent: none.agentOf('h1') }, async () => base), base);
+  assert.deepEqual(none.agentOf('h1').selected, [], 'an effort the model does not offer is not set');
+  assert.equal(none.agentOf('h1').got.length, 1);
   const off = harness({ handsEffort: false, herEffort: false });
   await off.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
-  assert.equal(await off.hooks['agent/request']({ agent: off.agentOf('h1') }, async () => base), base);
+  assert.deepEqual(off.agentOf('h1').selected, []);
   none.stop(); off.stop();
 });
 
