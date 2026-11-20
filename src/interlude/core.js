@@ -26,6 +26,7 @@ import { installLlmGate } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
+import { inHours, msLeftInHours } from '../hours.js';
 import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
 
@@ -52,7 +53,6 @@ export const defaults = {
   voice: true,
   identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // her own time does not start within this long of her last turn
-  activeHours: '08:00-23:00', // outside this, no time of her own
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
@@ -111,25 +111,9 @@ export function contentText(content) {
   return (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join('');
 }
 
-/** 'HH:MM-HH:MM' (may wrap midnight) → is `date` inside it? Empty spec = always. */
-export function inHours(spec, date = new Date()) {
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
-  if (!m) return true;
-  const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], now = date.getHours() * 60 + date.getMinutes();
-  return start <= end ? now >= start && now < end : now >= start || now < end;
-}
 
 export { describeNow };
 
-/** Milliseconds until `spec`'s window ends ('HH:MM-HH:MM'), 0 outside it, Infinity for an empty spec. */
-export function msLeftInHours(spec, date = new Date()) {
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
-  if (!m) return Infinity;
-  if (!inHours(spec, date)) return 0;
-  const end = new Date(date); end.setHours(+m[3], +m[4], 0, 0);
-  if (end <= date) end.setDate(end.getDate() + 1);
-  return end - date;
-}
 
 function readJson(file, fallback) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; return fallback; }
@@ -266,7 +250,8 @@ export function apply(ctx, config = {}) {
   });
 
   /** A task queued now expires when her active hours end (or at dot's own TTL, whichever is first). */
-  const ttlInHours = () => { const left = msLeftInHours(cfg.activeHours); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
+  const hours = () => dshDot()?.awakeHours ?? ''; // her day is dsh-dot's to say (dot.awakeHours)
+  const ttlInHours = () => { const left = msLeftInHours(hours()); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
 
   // 自己的时间: a few times a day, at random moments in her active hours, she gets time of her own, in her conversation.
@@ -274,7 +259,7 @@ export function apply(ctx, config = {}) {
   let freeQueued = false; // one free time at a time, from queued to done
   const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
   const planFree = (now = Date.now()) => {
-    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(cfg.activeHours || '').trim());
+    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(hours()).trim());
     const day = new Date(now); day.setHours(0, 0, 0, 0);
     let start = day.getTime(), end = start + 86400000;
     if (m) { start = day.getTime() + (+m[1] * 60 + +m[2]) * 60000; end = day.getTime() + (+m[3] * 60 + +m[4]) * 60000; if (end <= start) end += 86400000; }
@@ -394,7 +379,7 @@ export function apply(ctx, config = {}) {
     rollDay();
     if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
       if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
-      if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(cfg.activeHours) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
+      if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(hours()) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
         meta.freeAt = meta.freeAt.slice(1); saveMeta();
         void freeTime('scheduled'); return;
       }
@@ -479,7 +464,7 @@ export function apply(ctx, config = {}) {
         const lines = [
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
-          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min · active ${cfg.activeHours}`,
+          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min · awake ${hours() || 'always'}`,
           `doings: ${doings.all().length} on the ledger`, `today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
@@ -512,7 +497,7 @@ export function apply(ctx, config = {}) {
         today: { tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
         doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8 }),
         free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: (meta.freeAt ?? [])[0] ?? null },
-        activeHours: cfg.activeHours,
+        awakeHours: hours(),
       };
     },
   });

@@ -544,7 +544,7 @@ test('a backlog is consolidated oldest-first in chunks; the cursor never jumps p
 
 test('daily diary: its own call about today, only when anything happened; headed by the day; herLife is the self bank', async () => {
   const h = harness({ llmReply: JSON.stringify({ diary: '今天没什么事。晚上在小黑盒看了几个角色卡帖，有一个写记忆的挺细，记下了。他没来。' }) });
-  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, dailyAt: '23:30' });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
   assert.match(await h.services.dotMemory.command('memory diary'), /not run: nothing happened today/);
   assert.equal(h.calls.length, 0, 'no call for an empty day');
   h.emit('s1', 'turn/start', {});
@@ -561,13 +561,13 @@ test('daily diary: its own call about today, only when anything happened; headed
   h.services.dotMemory.consolidate = undefined;
   const m = emptyMemory(); m.self.push('每天晚上刷一会儿小黑盒');
   const status = await h.services.dotMemory.command('memory');
-  assert.match(status, /diary \d{4}-\d{2}-\d{2} \(daily at 23:30\)/);
+  assert.match(status, /diary \d{4}-\d{2}-\d{2} \(the day ends when she falls asleep; awake always, days end at midnight\)/);
   assert.deepEqual(h.services.dotMemory.forInterlude(), [], 'the interlude gets what she knows about him; nothing yet');
 });
 
 test('day end: the unread lines are consolidated first, then the diary reads that call\'s note instead of the lines', async () => {
   const h = harness({ llmReply: JSON.stringify({ open: [{ action: 'add', content: '他说明早九点半去洗牙', due: null }], day: '他说明早九点半去洗牙。', diary: '他明天要去洗牙。' }) });
-  apply(h.ctx, { home: h.home, dailyAt: '23:30' });
+  apply(h.ctx, { home: h.home });
   h.emit('s1', 'turn/start', {});
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '明早九点半我去洗牙' }] }, { surfaceOp: 'append' });
   h.emit('s1', 'assistant/message', msg('好，记着了'));
@@ -1150,4 +1150,23 @@ test('a home whose bank an earlier build left over its limit: shown in full, not
   for (const i of [1, 2, 3, 4]) assert.equal((await h.tools.memory.execute({ target: 'owner', action: 'remove', oldText: `第 ${i} 件` })).ok, true);
   assert.equal(h.services.dotMemory.forInterlude().length, 2);
   assert.equal((await h.tools.memory.execute({ target: 'owner', action: 'add', content: '他不喜欢被叫全名' })).ok, true, 'under the limit again: adds go in');
+});
+
+test('notes: when a note was written and what it replaced is kept beside it; a note that ends is marked, not erased', async () => {
+  const { emptyMemory, bankOp, noteChange, normalizeMemory } = await import('../src/memory/store.js');
+  const m = emptyMemory();
+  const apply = (op, at, by) => { const r = bankOp(m.self, op, 2200); assert.ok(r.ok, r.error); noteChange(m, 'self', m.self, r.entries, { at, by }); m.self = r.entries; };
+  apply({ action: 'add', content: '每半小时看一次手机' }, 1000, 'daily');
+  apply({ action: 'add', content: '小黑盒改昵称要过审核' }, 2000, 'her');
+  assert.deepEqual(m.noteMeta.self['每半小时看一次手机'], { at: 1000, by: 'daily' });
+  apply({ action: 'replace', oldText: '每半小时', content: '手机来通知才看' }, 3000, 'tidy');
+  assert.deepEqual(m.noteMeta.self['手机来通知才看'], { at: 3000, by: 'tidy', was: '每半小时看一次手机' });
+  assert.equal(m.noteMeta.self['每半小时看一次手机'], undefined);
+  assert.deepEqual(m.pastNotes, [{ bank: 'self', text: '每半小时看一次手机', at: 1000, endedAt: 3000, how: 'replaced', by: 'tidy', into: '手机来通知才看' }]);
+  apply({ action: 'remove', oldText: '过审核' }, 4000, 'her');
+  assert.deepEqual(m.pastNotes.at(-1), { bank: 'self', text: '小黑盒改昵称要过审核', at: 2000, endedAt: 4000, how: 'removed', by: 'her' });
+  assert.deepEqual(m.self, ['手机来通知才看'], 'the notes themselves stay plain lines');
+  // An older memory file: notes without a date keep working; meta of lines that are gone is dropped on load.
+  const old = normalizeMemory({ version: 2, owner: ['宠物叫煤球'], self: [], noteMeta: { owner: { 不在了的一条: { at: 1 } } } });
+  assert.deepEqual(old.noteMeta, { owner: {}, self: {} }); assert.deepEqual(old.pastNotes, []);
 });

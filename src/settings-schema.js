@@ -66,7 +66,7 @@ export const SCHEMA = [
   e('qq', 'token', 'QQ', 'text', 'restart-dsh', 'OneBot 令牌', { secret: true, hidden: true }),
   // dot
   e('dot', 'phoneHomeAfterMs', 'dot', 'int', 'restart-dsh', '她在手机上的最后一步过后多久，手机自己回到桌面（毫秒，0 = 不回）', { min: 0, max: 3600000 }),
-  e('dot', 'notifyHours', 'dot', 'text', 'restart-dsh', '只在这个时段被通知叫醒（如 08:00-23:00；空 = 一直）'),
+  e('dot', 'awakeHours', 'dot', 'text', 'restart-dsh', '她的作息：醒着的时段（如 08:00-23:00，可跨午夜）。睡着时手机和 QQ 来的通知留到她醒来；你找她照常；睡下后写日记、整理记忆'),
   e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；话里有 persona.checks.txt 列的说法时退回让她改一次（直接写的和用 qq_send 发的都一样）'),
   e('dot', 'lean', 'dot', 'bool', 'restart-dsh', '她的新对话用自带的 dot 预设来建：只带她自己的工具（交代手、QQ、记忆、定时、目标、自己的文件；查资料也交给手），DSH 其余的工具不给她。已有的对话不变，新的一段才生效'),
   e('dot', 'openNudge', 'dot', 'bool', 'restart-dsh', '替你办的事，她的手回来以后她说了话却没再交代下一步：问她一次这件事还做不做（只问一次，你一开口就作废）'),

@@ -13,6 +13,7 @@
 //      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
+import { DEFAULT_AWAKE, inHours, msUntilHours, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
@@ -240,7 +241,7 @@ export const defaults = {
   // first — he cannot keep her silent by talking. Anything of hers reaching him starts the count again.
   ownerPreemptMax: 2,
   phoneHomeAfterMs: 180000, // her phone goes back to its home screen this long after her last step on it (an app left open shows no notifications); 0 = never
-  notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
+  awakeHours: DEFAULT_AWAKE, // her day ('HH:MM-HH:MM', may wrap midnight). Outside it she is asleep: what her phone and her QQ show waits for the morning (his own words still reach her), she has no time of her own, and the day's end — diary, notes, going over her memory — runs once she is asleep (src/hours.js)
   // Notifications from these apps are conversations (told to her as someone speaking, not as an app's news).
   loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
@@ -331,13 +332,6 @@ export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|tele
 // (11-03: 456k tokens, no handoff since 10-29).
 export const isImMessage = (m) => { const r = String(m?.source?.rpcId ?? ''); return IM_RPC.test(r) && !r.startsWith('qq-dot-'); };
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
-/** 'HH:MM-HH:MM' (may wrap midnight) → is `date` inside it? Empty spec = always. */
-export function inHours(spec, date = new Date()) {
-  const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(spec || '').trim());
-  if (!m) return true;
-  const start = +m[1] * 60 + +m[2], end = +m[3] * 60 + +m[4], now = date.getHours() * 60 + date.getMinutes();
-  return start <= end ? now >= start && now < end : now >= start || now < end;
-}
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const answers = (url) => new Promise((r) => {
   const q = httpGet(url, { agent: false, timeout: 1000 }, (res) => { res.resume(); r(res.statusCode === 200); });
@@ -455,10 +449,10 @@ export function createNotifier(getIm, cfg, logger, getQq = () => undefined) {
 }
 
 export function apply(ctx, config = {}) {
-  // An empty string means "not set", except for notifyHours, where '' is documented as "always".
   const logger = ctx.logger('dsh-dot');
   runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
-  const cfg = { ...defaults, ...setValues(config, { keepEmpty: ['notifyHours'] }), ...sectionOf('dot', (m) => logger.warn(m)) };
+  const cfg = { ...defaults, ...setValues(config), ...sectionOf('dot', (m) => logger.warn(m)) };
+  if (!validHours(cfg.awakeHours)) { logger.warn(`awakeHours "${cfg.awakeHours}" is not HH:MM-HH:MM; using ${DEFAULT_AWAKE}`); cfg.awakeHours = DEFAULT_AWAKE; }
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
   const phone = () => ctx.get('dshPhone');
@@ -931,6 +925,7 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
+  const awake = (date = new Date()) => inHours(cfg.awakeHours, date);
   let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; // assigned below, used by flush/releaseHeld
@@ -1180,7 +1175,12 @@ export function apply(ctx, config = {}) {
     if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', retired: retired(id) }); return; }
     deliverTracked(items, false, id);
   };
-  const flush = () => { const items = batch; batch = []; batchTimer = null; send(lastSession, items); };
+  // Asleep, what came stays here until her day starts; then it is all shown to her at once, in order.
+  const flush = () => {
+    batchTimer = null;
+    if (!awake()) { batchTimer = setTimeout(flush, msUntilHours(cfg.awakeHours) + 1000); batchTimer.unref?.(); return; }
+    const items = batch; batch = []; send(lastSession, items);
+  };
   // What arrived while her conversation was in a turn goes in when the turn ends.
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
   // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
@@ -1332,8 +1332,8 @@ export function apply(ctx, config = {}) {
     }
     // Whatever her phone or her QQ shows is shown to her as it is — which app, what it says. Whether it is worth
     // opening is hers to decide (a turn that ends in DOT_SILENT); nothing here sorts notifications by app or wording.
-    if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
     batch.push(n);
+    if (!awake()) audit('notification-held', { pkg: n.pkg, why: 'asleep' });
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(lastSession); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
@@ -1579,6 +1579,9 @@ export function apply(ctx, config = {}) {
     task: enqueueTask,
     /** How long a queued task waits before it expires. */
     taskTtlMs: cfg.interludeTaskTtlMs,
+    /** Her day (src/hours.js): the hours she is awake in, and whether she is now. */
+    awakeHours: cfg.awakeHours,
+    awake,
     stats,
     retired,
     /** Is this session hers (her conversation, an IM-opened one, one that was hers): what compat asks before letting it see her tools. */

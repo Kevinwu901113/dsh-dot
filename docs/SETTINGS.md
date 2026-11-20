@@ -39,9 +39,8 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
   "phone": { "dataGb": 32, "ramMb": 4096 },
   "computer": { "rootDisk": "32G", "memory": "6G", "cpus": 4 },
   "qq": { "githubProxy": "https://ghfast.top/", "groupPolicy": "score" },
-  "memory": { "dailyAt": "01:30" },
-  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 },
-  "dot": { "notifyHours": "08:00-23:00" }
+  "interlude": { "freeTimesPerDay": 2 },
+  "dot": { "awakeHours": "09:00-01:00" }
 }
 ```
 
@@ -59,11 +58,9 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 共享文件夹给电脑 | `computer.mounts: ["/Users/你/Projects/a"]` | |
 | 国内网络下载慢 | QQ 安装：`qq.githubProxy`；召回模型：`/dot memory recall mirror <url>`（默认已走 hf-mirror）；虚拟机镜像：`computer.image` 换镜像源 | |
 | 召回换云端 / 关掉 | `/dot memory recall backend siliconflow`，再 `/dot memory recall key siliconflow <key>` | 命令即时生效，不用重启，也不用改这个文件 |
-| **她的作息** | `interlude.activeHours`（如 `"09:00-01:00"`，可跨午夜）、`interlude.freeTimesPerDay`（每天几次「自己的时间」，0 关） | 活跃时段外不开自己的时间 |
-| 日记时间 | `memory.dailyAt`（默认 `"23:30"`） | |
+| **她的作息** | `dot.awakeHours`（她醒着的时段，默认 `"08:00-23:00"`，可跨午夜，如 `"09:00-01:00"`） | 只有这一处。睡着时：手机和 QQ 来的通知留到她醒来一起给她看（你找她照常，随时能叫醒）；不开「自己的时间」；睡下后写当天的日记、整理记忆。`interlude.freeTimesPerDay` 管每天几次「自己的时间」（0 关） |
 | 她主动找你 | 没有开关，也没有次数上限：她在自己的时间里想说就说。她眼前有今天主动了几次、你回了几次、上一条回没回（`dot.reachUnansweredMs` 过了多久算没回，默认 2 小时） | 找不找、多频繁由她自己从你的反应里学 |
 | 她什么时候看手机 | 没有定时：手机来了新通知就原样给她看一眼（哪个 App、标题、正文），点不点由她定；没有新通知不叫她。想逛是「自己的时间」里的事 | 0.24.2 起；以前每 30 分钟叫她看一次 |
-| 夜里通知不叫醒她 | `dot.notifyHours: "08:00-23:00"`（只有这个时段内通知才叫醒） | 默认空 = 任何时候都叫醒 |
 | 某个 App 的通知别叫醒她 | `/phone notify mute <包名>` | 命令即时生效 |
 | 群聊里插话的规则 | `qq.groupPolicy`：`mention`（被 @ 才回，默认）/ `score`（按价值评分，配 `qq.scoreThreshold` 0–10）/ `all` / `none` | |
 | 回复不拆条、不模拟打字 | `qq.typingMsPerChar: 0` | |
@@ -170,7 +167,6 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
 | `handoffTokens` | `150000` | 对话多长换新会话 |
 | `consolidateEveryLines` | `120` | 新记录攒满多少行整理一次（每天写日记前、交班前也各整理一次） |
-| `dailyAt` | `"23:30"` | 每天写日记、整理关于他 / 她自己的时间（当天有记录才调用） |
 | `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：硬上限，放不下的加不进去，满了要记新的就换掉一条；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
 | `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
 | `openKeepDaysIdle` | `14` | 没日子的还没了的事多少天没被碰过就拿掉 |
@@ -194,7 +190,6 @@ setx DSH_DOT_COMPUTER off
 |---|---|---|
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和另外两处保持一致 |
-| `activeHours` | `"08:00-23:00"` | 活跃时段 |
 | `idleMinutes` | `10` | 她上一轮结束后这么久之内不开「自己的时间」 |
 | `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
 | `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天几次、每次和每天的 token 上限；`0` 次关 |
@@ -214,7 +209,7 @@ setx DSH_DOT_COMPUTER off
 | `openNudge` | `true` | 替他办的事，手回来以后她对他说了话、却没有再交代手，这一轮就结束了：手空着时问她一次（固定的一段话，不是模型写的）。她接着交代手、告诉他结果、或者沉默，三样都算数；只问一次（`openNudgeMax`），他一开口就作废，30 分钟没动静就放下（`openTtlMs`）。她有 goal 在跑时不问 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 她自己的 App 经验（`~/dot/her/howto/`）：每轮按 App 记步数；走了 `howtoMinSteps` 步以上或出过错的那轮，结束后一次小调用整理这个 App 的笔记（教训、捷径）；之后一个会话里第一次打开这个 App 时笔记跟着给她。`/dot howto` 看每个 App 的步数变化 |
 | `promptsPort` | `7870` | `/dot prompts` 提示词页面的端口（只监听 127.0.0.1） |
-| `notifyHours` | `""` | 只在这个时段内通知叫醒她；空 = 一直 |
+| `awakeHours` | `"08:00-23:00"` | 她的作息：醒着的时段（可跨午夜；`"00:00-24:00"` = 不睡，一天在零点结束）。睡着时别人的通知留到醒来，不开自己的时间；睡下后是一天的收尾（日记、笔记、整理）。写错格式按默认 |
 | `notifyBatchMs` | `1000` | 多少毫秒内的通知合并成一次叫醒（别人的；你的话见下面四项） |
 | `ownerQuietMs` | `1500` | 你的 QQ 消息：你停下多少毫秒没新消息才送给她，每来一条重新计时 |
 | `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |

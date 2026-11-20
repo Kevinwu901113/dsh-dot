@@ -10,7 +10,7 @@
 //               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
 //   consolidate one model call over the transcript since the last one: 还没了的事 and people. When
 //               `consolidateEveryLines` new lines have piled up, before the diary, and before a handoff.
-//   daily       once a day at `dailyAt`, when there was anything that day: one call writes the diary
+//   daily       once a day, when she falls asleep (dot.awakeHours), when there was anything that day: one call writes the diary
 //               and is the only writer of the owner / self banks besides her own tool — what of the
 //               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
@@ -23,7 +23,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
-  DEFAULT_LIMITS, bankOp, bankSize, bankUsage, bankFull, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
+  DEFAULT_LIMITS, bankOp, noteChange, bankSize, bankUsage, bankFull, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp, quoteIn,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
@@ -31,6 +31,7 @@ import { createRecall } from './recall.js';
 import { createFacts } from './facts.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
+import { lastEnd, lastStart } from '../hours.js';
 import { sectionOf, setValues } from '../settings.js';
 import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
@@ -48,7 +49,6 @@ export const defaults = {
   minChunkLines: 10,            // after failed calls the chunk is halved, down to this
   handoffTailLines: 12,         // the last lines of the conversation carried verbatim into the new session
   inputChars: 40000,            // transcript characters one consolidation call reads; a larger backlog is read in chunks
-  dailyAt: '23:30',             // once a day, after her active hours: her diary, when anything happened that day
   maxTokens: 16384,
   limits: DEFAULT_LIMITS,        // limits.open is how much of 还没了的事 is shown each turn, not how much is kept
   openKeepDaysAfterDue: 3,      // an item with a due date goes this many days after it
@@ -456,12 +456,17 @@ export function apply(ctx, config = {}) {
   }
   ctx.effect(() => { const t = setTimeout(() => { void backfill(); }, 15000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot/memory: backfill');
 
+  // Her day runs from when she wakes to when she next wakes (dot.awakeHours); its end is when she falls asleep.
+  const awakeHours = () => dot()?.awakeHours ?? ''; // without dsh-dot: calendar days, ending at midnight
+  const herDay = (now = new Date()) => dayLabel(new Date(lastStart(awakeHours(), now)));
+  // The day that has ended: the one before she last fell asleep. Its end is due once, whenever DSH is next running
+  // (asleep as a rule; in the morning if the Mac was off that night).
+  const endedDay = (now = new Date()) => herDay(new Date(lastEnd(awakeHours(), now) - 1));
+  // What a day's end reads: everything since the last one (so the small hours he kept her up are not lost between two days), a day and a half back at most.
+  const sinceDayEnd = (now = new Date()) => { const last = Number(memory.lastDiaryAt ?? 0), start = lastStart(awakeHours(), new Date(lastEnd(awakeHours(), now) - 1)); return last > now.getTime() - 36 * 3600000 ? last : start; };
   const dailyDue = () => {
-    if (!/^\d{2}:\d{2}$/.test(String(cfg.dailyAt))) return false;
-    const now = new Date();
-    const today = dayLabel(now).slice(0, 10);
-    const hhmm = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
-    return hhmm >= cfg.dailyAt && memory.lastDiary !== today;
+    if (!memory.lastDiary) { memory.lastDiary = endedDay().slice(0, 10); return false; } // a new memory: nothing before it existed; its first day ends tonight
+    return memory.lastDiary < endedDay().slice(0, 10);
   };
   const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
@@ -634,14 +639,14 @@ export function apply(ctx, config = {}) {
   // in several calls, oldest first, each seeing the banks as the one before left them (the notes go
   // with the first); the diary is the last call's.
   let writingDiary = null;
-  async function diary({ reason = 'daily' } = {}) {
+  async function diary({ reason = 'daily', day = herDay() } = {}) {
     if (writingDiary) return writingDiary;
     writingDiary = (async () => {
-      const day = dayLabel(new Date());
-      const today = lines.filter((l) => l.at >= startOfToday() && l.at > memory.cursor && rejectReason(l.text) !== 'secret');
-      const earlier = (memory.dayNotes ?? []).filter((n) => n.at >= startOfToday()).map((n) => `[${stamp(n.from)} 到 ${stamp(n.at)} 的摘记] ${n.text}`);
+      const from = sinceDayEnd();
+      const today = lines.filter((l) => l.at >= from && l.at > memory.cursor && rejectReason(l.text) !== 'secret');
+      const earlier = (memory.dayNotes ?? []).filter((n) => n.at >= from).map((n) => `[${stamp(n.from)} 到 ${stamp(n.at)} 的摘记] ${n.text}`);
       const banks = !peopleOnly(); // people-only: the banks are the other plugin's; the diary alone
-      if (!today.length && !earlier.length) { memory.lastDiary = day.slice(0, 10); save(); return { skipped: 'nothing happened today' }; }
+      if (!today.length && !earlier.length) { memory.lastDiary = day.slice(0, 10); memory.lastDiaryAt = Date.now(); save(); return { skipped: 'nothing happened today' }; }
       const notes = {};
       const note = (bank, n) => { if (n) notes[bank] = notes[bank] ? `${notes[bank]}; ${n}` : n; };
       let left = today, out = null, first = true;
@@ -656,7 +661,7 @@ export function apply(ctx, config = {}) {
         out = parseLooseJson(r.raw);
         if (banks) for (const bank of BANKS) note(bank, applyOps(bank, out));
       } while (left.length);
-      memory.lastDiary = day.slice(0, 10);
+      memory.lastDiary = day.slice(0, 10); memory.lastDiaryAt = Date.now();
       memory.dayNotes = [];
       const entry = typeof out?.diary === 'string' ? out.diary.trim().replace(/^["“「]|["”」]$/g, '') : '';
       if (entry && !rejectReason(entry)) { try { appendFileSync(files.diary, `## ${day}\n${entry}\n\n`); } catch (err) { logger.warn(`diary write failed: ${err.message}`); } }
@@ -680,6 +685,7 @@ export function apply(ctx, config = {}) {
       const r = op && typeof op === 'object' && ['add', 'replace'].includes(op.action) ? bankOp(memory[bank], op, cfg.limits[bank]) : { ok: false, error: `not an add or replace: ${clip(JSON.stringify(op) ?? '', 60)}` };
       if (!r.ok) { skipped.push(r.error); continue; }
       if (r.note) continue; // already there
+      noteChange(memory, bank, memory[bank], r.entries, { by: 'daily' });
       memory[bank] = r.entries;
       if (op.action === 'add') added++; else replaced++;
     }
@@ -745,7 +751,7 @@ export function apply(ctx, config = {}) {
     const pending = sinceCursor().length;
     if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
-  // Once a minute: the day's end, from dailyAt on, once a day (a failed diary is tried again next minute).
+  // Once a minute: the day's end, once she is asleep, once a day (a failed diary is tried again next minute).
   // The day's unread lines are consolidated first: what he said tonight about tomorrow is in 还没了的事
   // before the day ends, and the diary call reads that call's note, not the lines again. A failed
   // consolidation leaves them unread, and the diary reads them as before.
@@ -753,7 +759,7 @@ export function apply(ctx, config = {}) {
   function dayEnd() {
     endingDay ??= (async () => {
       if (sinceCursor().length) { try { await consolidate({ reason: 'day-end' }); } catch (error) { void error; } }
-      return diary({ reason: 'daily' });
+      return diary({ reason: 'daily', day: endedDay() });
     })().finally(() => { endingDay = null; });
     return endingDay;
   }
@@ -826,6 +832,7 @@ export function apply(ctx, config = {}) {
         const r = bankOp(memory[bank], args, cfg.limits[bank]);
         if (r.full) return { ok: false, error: `这一栏满了（${bankSize(memory[bank])}/${cfg.limits[bank]} 字），没记上：要记这条，用 replace 换掉一条现在不那么要紧的（过去了的一次性的事，或同一件事的旧说法）。`, entries: memory[bank] };
         if (!r.ok) return { ok: false, error: r.error, entries: memory[bank] };
+        noteChange(memory, bank, memory[bank], r.entries, { by: 'her' });
         memory[bank] = r.entries; save();
         audit('memory-tool', { target: bank, action: args.action });
         return { ok: true, usage: bankUsage(memory[bank], cfg.limits[bank]), note: r.note };
@@ -912,7 +919,7 @@ export function apply(ctx, config = {}) {
         merges: memory.merges.length, sinceCursor: sinceCursor().length, consolidateEvery: cfg.consolidateEveryLines,
         ledger: memory.ledger?.day === d ? memory.ledger : { day: d, in: 0, out: 0, calls: 0 },
         conversation: { session: id || '', tokens: id ? await measure(id) : 0, handoffAt: cfg.handoffTokens },
-        diary: entries, lastDiary: memory.lastDiary ?? null, dailyAt: cfg.dailyAt,
+        diary: entries, lastDiary: memory.lastDiary ?? null, dayEnds: String(awakeHours()).split('-')[1] ?? '',
         recall: recall.status(),
       };
     },
@@ -935,7 +942,7 @@ export function apply(ctx, config = {}) {
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (daily at ${cfg.dailyAt})`,
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (the day ends when she falls asleep; awake ${awakeHours() || 'always, days end at midnight'})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
         `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');

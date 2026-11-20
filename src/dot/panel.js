@@ -192,7 +192,7 @@ function render(s){
       let dh='<div><b>'+esc(first.day)+'</b><div class="pre">'+esc(first.text)+'</div></div>';
       if(rest.length) dh+='<details><summary>往前翻 '+rest.length+' 篇</summary>'+rest.map(e=>'<div style="margin-top:8px"><b>'+esc(e.day)+'</b><div class="pre">'+esc(e.text)+'</div></div>').join('')+'</details>';
       $('diary').innerHTML=dh;
-    } else $('diary').innerHTML='<span class="mute">还没有日记（每天 '+esc(m.dailyAt)+' 写）</span>';
+    } else $('diary').innerHTML='<span class="mute">还没有日记（每天她睡下后写）</span>';
   } else {$('memory').innerHTML='<span class="mute">记忆未加载</span>';$('diary').innerHTML='';}
   const dz=(it&&it.doings&&it.doings.recent)||[];
   if(dz.length){

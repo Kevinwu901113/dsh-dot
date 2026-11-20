@@ -34,7 +34,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, awakeHours: '00:00-24:00' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -293,13 +293,15 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
     : name === 'goals' ? { get: () => goal }
     : name === 'commands' ? { register: (c) => { cmd = c; return () => {}; } }
     : orig(name))(h.ctx.get);
-  apply(h.ctx, { ...h.config, notifyHours: '00:00-00:01' }); // quiet hours: only the owner gets through
+  const hh = (d) => `${String(new Date(Date.now() + d * 3600000).getHours()).padStart(2, '0')}:00`;
+  apply(h.ctx, { ...h.config, awakeHours: `${hh(2)}-${hh(4)}` }); // she is asleep: only he gets through; the rest waits for her morning
   h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
   onMessage({ kind: 'private', userId: '20002', who: '宽', text: '做个长任务：刷 20 个帖子', fromOwner: true, at: new Date().toISOString() });
   onMessage({ kind: 'private', userId: '20002', who: '宽', text: '每 5 个跟我说一声', fromOwner: true, at: new Date().toISOString() });
   onMessage({ kind: 'private', userId: '30003', who: '路人', text: '在吗', fromOwner: false, at: new Date().toISOString() });
   await wait(40);
-  assert.equal(followups.length, 1, 'quiet hours hold the stranger; the owner gets through');
+  assert.equal(followups.length, 1, 'asleep, the stranger waits; he gets through');
+  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'asleep'), 'kept for when she wakes, not dropped');
   assert.equal(followups[0].source.kind, 'user');
   assert.match(followups[0].content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2}\] 做个长任务/, 'one stamp per batch');
   assert.equal(unstamp(followups[0].content[0].text), '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');

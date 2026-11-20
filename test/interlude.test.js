@@ -4,7 +4,8 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { apply, inHours, describeNow } from '../src/interlude/core.js';
+import { apply, describeNow } from '../src/interlude/core.js';
+import { inHours, msLeftInHours, msUntilHours, lastStart, lastEnd, validHours } from '../src/hours.js';
 
 function fakeStream(text) {
   // A reply starting with "TOOL:" is streamed as an `interval` tool call (arguments in deltas), as dsh-llm does.
@@ -69,7 +70,7 @@ function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me
   const ticks = [];
   const realSetInterval = globalThis.setInterval;
   globalThis.setInterval = (fn) => { ticks.push(fn); const h = realSetInterval(() => {}, 1e9); h.unref(); return h; };
-  try { apply(ctx, { home, canon, idleMinutes: 0, activeHours: '00:00-24:00', ...config }); } finally { globalThis.setInterval = realSetInterval; }
+  try { apply(ctx, { home, canon, idleMinutes: 0, ...config }); } finally { globalThis.setInterval = realSetInterval; }
   const emitAs = (sid, cwd, type, data, extra = {}) => listeners.forEach((fn) => fn({ id: sid, header: { cwd } }, { type, data, ...extra }));
   const emit = (sid, type, data, extra = {}) => emitAs(sid, home, type, data, extra);
   const act = (sid, user, assistant, origin = 'user') => {
@@ -96,6 +97,14 @@ test('inHours and describeNow', () => {
   assert.ok(inHours('08:00-23:00', new Date(2026, 9, 22, 14, 0)));
   assert.ok(!inHours('08:00-23:00', new Date(2026, 9, 22, 2, 0)));
   assert.ok(inHours('22:00-06:00', new Date(2026, 9, 22, 2, 0)));
+  // one rhythm (src/hours.js): how long she is still up, how long until she wakes, when her day began and ended
+  const at = (h, m = 0, d = 22) => new Date(2026, 9, d, h, m);
+  assert.ok(validHours('09:00-01:00') && validHours('00:00-24:00') && !validHours('') && !validHours('08:00-08:00') && !validHours('8-23'));
+  assert.ok(inHours('00:00-24:00', at(3)));
+  assert.equal(msLeftInHours('08:00-23:00', at(22)), 3600000); assert.equal(msLeftInHours('09:00-01:00', at(23)), 2 * 3600000); assert.equal(msLeftInHours('08:00-23:00', at(3)), 0);
+  assert.equal(msUntilHours('08:00-23:00', at(23, 30)), 8.5 * 3600000); assert.equal(msUntilHours('08:00-23:00', at(3)), 5 * 3600000); assert.equal(msUntilHours('08:00-23:00', at(12)), 0);
+  assert.equal(lastStart('08:00-23:00', at(3)), +at(8, 0, 21)); assert.equal(lastStart('08:00-23:00', at(12)), +at(8)); assert.equal(lastStart('09:00-01:00', at(0, 30)), +at(9, 0, 21));
+  assert.equal(lastEnd('08:00-23:00', at(23, 5)), +at(23)); assert.equal(lastEnd('08:00-23:00', at(12)), +at(23, 0, 21)); assert.equal(lastEnd('09:00-01:00', at(1, 5)), +at(1)); assert.equal(lastEnd('00:00-24:00', at(12)), +at(0));
   assert.match(describeNow(new Date(2026, 9, 22, 14, 5)), /2026-10-22 14:05 星期四 下午/);
 });
 
@@ -195,7 +204,6 @@ test('doings: grouped by what she did, costed, with his reactions; feedback find
 
 test('doings: what was still queued when dsh went down is lost, not queued forever; msLeftInHours', async () => {
   const { createDoings } = await import('../src/interlude/doings.js');
-  const { msLeftInHours } = await import('../src/interlude/core.js');
   const file = join(mkdtempSync(join(tmpdir(), 'doings-')), 'doings.json');
   let t = Date.now();
   const d = createDoings(file, { now: () => t });
@@ -274,7 +282,7 @@ test('free time: one step past the whole budget stops it without a wake-up messa
 });
 
 test('free time: planned at random moments in her active hours, once a day', async () => {
-  const h = harness({ reply: GOOD, config: { freeTimesPerDay: 2, activeHours: '00:00-23:59' } });
+  const h = harness({ reply: GOOD, config: { freeTimesPerDay: 2 } });
   h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: () => false } : get(n)))(h.ctx.get);
   h.tick();
   const meta = JSON.parse(readFileSync(join(h.home, 'interlude', 'meta.json'), 'utf8'));

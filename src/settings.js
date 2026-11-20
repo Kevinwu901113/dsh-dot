@@ -1,7 +1,7 @@
 // One settings file for every component: $DSH_HOME/dsh-dot.json (default ~/.dsh/dsh-dot.json).
 // It lives outside the plugin package, so upgrades never touch it, and the desktop app (which has no
 // shell environment) can still be configured. Each component reads its own section:
-//   { "phone": { "dataGb": 32 }, "computer": { "rootDisk": "32G" }, "interlude": { "activeHours": "09:00-01:00" } }
+//   { "phone": { "dataGb": 32 }, "computer": { "rootDisk": "32G" }, "dot": { "awakeHours": "09:00-01:00" } }
 // Order, weakest first: component defaults → the component's older file (dsh-phone.json …) →
 // the bundled cordis.patch.yml → this file. Values set by commands (/phone size, /dot memory recall …)
 // are applied by each component on top. Read once at startup: restart dsh after editing.

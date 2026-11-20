@@ -14,7 +14,7 @@
 2. **人设卡和检查表**（`src/persona/card.js`）：启动时由 Canon 生成 `~/dot/persona.md`（进提示词的卡）和 `~/dot/persona.checks.txt`（黑名单拆成的一行一条，代码检查用，不进提示词）。换了 `canon.json` 会重新生成（旧的留 `.bak-<时间>`）；你手改过的文件不会被覆盖。
 3. **说话提醒**（`voice`）：她对话每一轮的最后放一两句怎么说话，模型回话前最后读到的就是它。
 4. **说出去的话先过检查**（`dot.replyCheck`）：括号里的动作描写去掉；命中检查表的句子每轮打回一次让她重说。对她所有说出去的话都一样：QQ、评论、手机里打的字。
-5. **自己的时间**：每天 `freeTimesPerDay` 次，在 `activeHours` 里随机挑时刻（刚聊完 `idleMinutes` 内不开），在她的对话里开始，只说「这段时间是你自己的」，不给任务。她要用手机或电脑，和平时一样把一步交给手。边界在代码里：token 预算到 80% 提醒、到 100% 停；社交 App 里打字要你批准；花钱、装 App 照旧走审批。这段时间里她说的话不自动发给你，想找你由她自己发。
+5. **自己的时间**：每天 `freeTimesPerDay` 次，在她醒着的时段（`dot.awakeHours`）里随机挑时刻（刚聊完 `idleMinutes` 内不开），在她的对话里开始，只说「这段时间是你自己的」，不给任务。她要用手机或电脑，和平时一样把一步交给手。边界在代码里：token 预算到 80% 提醒、到 100% 停；社交 App 里打字要你批准；花钱、装 App 照旧走审批。这段时间里她说的话不自动发给你，想找你由她自己发。
 6. **她的账**（`doings.json`）：自己时间里做了什么、花了多少 token（设了 `price` 还折成钱）、你怎么说。`/interlude doings` 看最近的，`/interlude feedback [#id] 一句话` 记下你的反应。
 
 什么时候主动找你没有开关也没有上限，见 [DESIGN.md](DESIGN.md) 的「什么时候找他：给事实，不设上限」。
@@ -40,7 +40,6 @@
 | `canonOnly` | `false` | `true` 时只留 Canon、dot 的规则和 MCP 段 |
 | `voice` | `true` | 每轮最后的说话提醒 |
 | `identityFile` | 无 | 追加到 Canon 后面的文本文件 |
-| `activeHours` | `08:00-23:00` | 这个时段之外不开自己的时间 |
 | `idleMinutes` | `10` | 她上一轮结束后这么久之内不开自己的时间 |
 | `freeTimesPerDay` | `2` | 每天几次自己的时间，`0` 关；需要 dot 组件 |
 | `freeTokenCap` / `freeDailyTokens` | `150000` / `300000` | 每次 / 每天的 token 上限 |

@@ -166,7 +166,8 @@ dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # 源码
 {
   "phone":     { "dataGb": 32 },
   "computer":  { "rootDisk": "32G", "memory": "6G" },
-  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 }
+  "dot": { "awakeHours": "09:00-01:00" },
+  "interlude": { "freeTimesPerDay": 2 }
 }
 ```
 

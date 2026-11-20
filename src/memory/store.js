@@ -137,6 +137,31 @@ export function bankOp(entries, op, limit) {
   return { ok: true, entries: list };
 }
 
+/**
+ * When each note came to be, and what it took the place of. The notes themselves stay plain lines (what she reads
+ * and what every limit counts); this is kept beside them: memory.noteMeta[bank][line] = { at, by, was?, wasAt? },
+ * and memory.pastNotes, the lines that are no longer notes ({ bank, text, at, endedAt, how: 'replaced'|'removed',
+ * by, into? }) — a note that stops being true is marked as ended, not erased (cf. Graphiti's invalid_at, Mem0's
+ * superseded entries), so a later pass can check a note against the day it was written and see what it replaced.
+ * A note from before this existed has no entry: its date is not known.
+ * `by` is who wrote it: 'daily' (the day's end), 'her' (her memory tool), 'tidy' (the nightly check).
+ */
+export const PAST_NOTES_MAX = 200;
+export function noteChange(memory, bank, before, after, { at = Date.now(), by = '' } = {}) {
+  const was = before ?? [], is = after ?? [];
+  const gone = was.filter((e) => !is.includes(e)), came = is.filter((e) => !was.includes(e));
+  if (!gone.length && !came.length) return;
+  const meta = (memory.noteMeta ??= {}), of = (meta[bank] ??= {});
+  const one = gone.length === 1 && came.length === 1; // a replace: the new line stands where the old one did
+  for (const text of gone) {
+    const m = of[text] ?? {};
+    (memory.pastNotes ??= []).push({ bank, text, ...(m.at ? { at: m.at } : {}), endedAt: at, how: one ? 'replaced' : 'removed', by, ...(one ? { into: came[0] } : {}) });
+    delete of[text];
+  }
+  for (const text of came) of[text] = { at, by, ...(one ? { was: gone[0] } : {}) };
+  if (memory.pastNotes && memory.pastNotes.length > PAST_NOTES_MAX) memory.pastNotes = memory.pastNotes.slice(-PAST_NOTES_MAX);
+}
+
 export const bankUsage = (entries, limit) => `${bankSize(entries)}/${limit} chars`;
 
 /** Room under which a bank counts as full: an average new entry would no longer fit. */
@@ -560,7 +585,8 @@ export function normalizeMemory(m, { limits = DEFAULT_LIMITS, now = Date.now() }
   }
   // 0.23 kept a shelf and an `owed` flag: shelved items join the list (and run out like the rest).
   const open = [...(m.open ?? []), ...(Array.isArray(m.shelved) ? m.shelved : [])].map((x) => { const y = { ...x }; delete y.owed; delete y.shelvedAt; return y; });
-  const out = migratePeople({ ...e, ...m, owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], words: [...(m.words ?? [])], open, people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
+  const keepMeta = (bank, list) => Object.fromEntries(Object.entries(m.noteMeta?.[bank] ?? {}).filter(([text]) => list.includes(text))); // only of lines that are still notes
+  const out = migratePeople({ ...e, ...m, noteMeta: { owner: keepMeta('owner', m.owner ?? []), self: keepMeta('self', m.self ?? []) }, pastNotes: [...(m.pastNotes ?? [])], owner: [...(m.owner ?? [])], self: [...(m.self ?? [])], words: [...(m.words ?? [])], open, people: { ...(m.people ?? {}) }, merges: [...(m.merges ?? [])] });
   delete out.shelved;
   if (migration) out.migration = migration;
   return out;
