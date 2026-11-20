@@ -293,15 +293,12 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
     : name === 'goals' ? { get: () => goal }
     : name === 'commands' ? { register: (c) => { cmd = c; return () => {}; } }
     : orig(name))(h.ctx.get);
-  const hh = (d) => `${String(new Date(Date.now() + d * 3600000).getHours()).padStart(2, '0')}:00`;
-  apply(h.ctx, { ...h.config, awakeHours: `${hh(2)}-${hh(4)}` }); // she is asleep: only he gets through; the rest waits for her morning
+  apply(h.ctx, h.config);
   h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
   onMessage({ kind: 'private', userId: '20002', who: '宽', text: '做个长任务：刷 20 个帖子', fromOwner: true, at: new Date().toISOString() });
   onMessage({ kind: 'private', userId: '20002', who: '宽', text: '每 5 个跟我说一声', fromOwner: true, at: new Date().toISOString() });
-  onMessage({ kind: 'private', userId: '30003', who: '路人', text: '在吗', fromOwner: false, at: new Date().toISOString() });
   await wait(40);
-  assert.equal(followups.length, 1, 'asleep, the stranger waits; he gets through');
-  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'asleep'), 'kept for when she wakes, not dropped');
+  assert.equal(followups.length, 1);
   assert.equal(followups[0].source.kind, 'user');
   assert.match(followups[0].content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2}\] 做个长任务/, 'one stamp per batch');
   assert.equal(unstamp(followups[0].content[0].text), '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');
@@ -1169,4 +1166,55 @@ test('reachText: what came of writing to him unasked, as facts of today', () => 
   assert.equal(reachText([{ at: now - 30 * h }], now), '', 'yesterday is not today');
   assert.equal(reachText([{ at: now - 4 * h, answeredAt: now - 3 * h }, { at: now - h }], now), '今天你主动找过他 2 次，他回了 1 次；上一次是 14:00，他还没回。');
   assert.equal(reachText([{ at: now - h, answeredAt: now }], now), '今天你主动找过他 1 次，他回了 1 次；上一次是 14:00。');
+});
+
+test('her sleep is a state: past her hours she is asleep once it has been quiet; asleep only he wakes her, what waited is shown then, and her next turn is told how long she slept', async () => {
+  const hh = (d) => `${String(new Date(Date.now() + d * 3600000).getHours()).padStart(2, '0')}:00`;
+  const night = `${hh(2)}-${hh(4)}`; // her usual hours are not now
+  const wire = (h) => {
+    const followups = [], services = {}; let onMessage;
+    h.ctx.provide = (n, v) => { services[n] = v; };
+    h.ctx.get = ((orig) => (name) => name === 'dshQq' ? { connected: true, owner: '20002', onMessage: (fn) => { onMessage = fn; return () => {}; } }
+      : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push(m) } }) }
+      : services[name] ?? orig(name))(h.ctx.get);
+    return { followups, services, say: (text, fromOwner) => onMessage({ kind: 'private', userId: fromOwner ? '20002' : '30003', who: fromOwner ? '宽' : '路人', text, fromOwner, at: new Date().toISOString() }) };
+  };
+  // Falling asleep: what arrives still reaches her and the quiet starts over; quiet long enough, she is asleep.
+  mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
+  try {
+    const h = harness({ state: { lastSession: 's1' } }), w = wire(h);
+    apply(h.ctx, { ...h.config, budgetPollSeconds: 3600, awakeHours: night, sleepAfterQuietMinutes: 2 });
+    const slept = []; w.services.dshDot.onSleep((at) => slept.push(at));
+    mock.timers.tick(90000); await settle();
+    assert.ok(w.services.dshDot.awake(), 'not yet');
+    w.say('在吗', false); mock.timers.tick(10); await settle();
+    assert.equal(w.followups.length, 1, 'falling asleep, a notification still reaches her');
+    h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 });
+    mock.timers.tick(90000); await settle();
+    assert.ok(w.services.dshDot.awake(), 'and the quiet started over');
+    mock.timers.tick(60000); await settle();
+    assert.ok(!w.services.dshDot.awake() && slept.length === 1 && w.services.dshDot.asleepSince > 0);
+    assert.ok(h.audit.some((e) => e.event === 'asleep'));
+    stop(h);
+  } finally { mock.timers.reset(); }
+  // Asleep (remembered across a restart): a stranger waits; he wakes her; then what waited comes too.
+  const h = harness({ state: { lastSession: 's1', asleepSince: Date.now() - 2 * 3600000 } }), w = wire(h);
+  apply(h.ctx, { ...h.config, awakeHours: night });
+  assert.ok(!w.services.dshDot.awake());
+  w.say('睡了吗', false);
+  await wait(30);
+  assert.equal(w.followups.length, 0, 'asleep, the stranger waits');
+  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'asleep'), 'kept, not dropped');
+  w.say('醒醒', true);
+  await wait(60);
+  assert.ok(w.services.dshDot.awake());
+  assert.equal(h.audit.find((e) => e.event === 'woke').by, 'him');
+  assert.ok(w.followups.some((m) => /醒醒/.test(m.content[0].text)), `his words reach her: ${JSON.stringify(w.followups.map((m) => m.content[0].text))}`);
+  const note = await turnNoteOf(h, { id: 's1', cwd: h.home });
+  assert.match(note, /你已经睡下 2 小时了，这会儿被叫醒。离你平时起床还有 \d/);
+  assert.doesNotMatch(await turnNoteOf(h, { id: 's1', cwd: h.home }), /睡下/, 'told once');
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 });
+  await wait(60);
+  assert.ok(w.followups.some((m) => /路人/.test(m.content[0].text)), 'what waited while she slept is shown to her once she is up');
+  stop(h);
 });

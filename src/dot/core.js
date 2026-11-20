@@ -13,7 +13,7 @@
 //      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
-import { DEFAULT_AWAKE, inHours, msUntilHours, validHours } from '../hours.js';
+import { DEFAULT_AWAKE, inHours, msUntilHours, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
@@ -241,7 +241,8 @@ export const defaults = {
   // first — he cannot keep her silent by talking. Anything of hers reaching him starts the count again.
   ownerPreemptMax: 2,
   phoneHomeAfterMs: 180000, // her phone goes back to its home screen this long after her last step on it (an app left open shows no notifications); 0 = never
-  awakeHours: DEFAULT_AWAKE, // her day ('HH:MM-HH:MM', may wrap midnight). Outside it she is asleep: what her phone and her QQ show waits for the morning (his own words still reach her), she has no time of her own, and the day's end — diary, notes, going over her memory — runs once she is asleep (src/hours.js)
+  awakeHours: DEFAULT_AWAKE, // her usual day ('HH:MM-HH:MM', may wrap midnight): when she gets up, and from when on she falls asleep once things are quiet (see "Her sleep" below)
+  sleepAfterQuietMinutes: 30, // past her usual hours, this long with nothing going on and she is asleep; anything before that (a notification, his words, a turn) reaches her as usual and the count starts over
   // Notifications from these apps are conversations (told to her as someone speaking, not as an app's news).
   loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
@@ -590,6 +591,7 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
     if (event.type === 'turn/end' && !retired(id)) setLast(id);
+    if ((event.type === 'turn/start' || event.type === 'turn/end') && id === lastSession) wakeUp('turn'); // a turn of her conversation: she is up (or stays up)
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -925,7 +927,40 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
-  const awake = (date = new Date()) => inHours(cfg.awakeHours, date);
+  // Her sleep is a state, not a time of day. awakeHours is her habit: outside it she is falling asleep, and is asleep
+  // once it has been quiet for sleepAfterQuietMinutes — so a night she is still talking is a night she is still up, and
+  // what arrives just as she dozes off still reaches her. Asleep, only he wakes her (his words, or any turn of her
+  // conversation); what her phone and her QQ show waits. She wakes at her usual hour, or when woken; either way what
+  // waited is shown to her then, and her next turn is told how long she slept — how she takes that is hers.
+  let asleepSince = Number(store.get('asleepSince') || 0), lastStir = Date.now(), woke = null;
+  const sleepListeners = new Set();
+  const sleeps = sleepsAtAll(cfg.awakeHours);
+  const awake = () => !asleepSince;
+  const stir = () => { lastStir = Date.now(); };
+  const wakeUp = (by) => {
+    if (!asleepSince) { stir(); return; }
+    woke = { by, at: Date.now(), sleptMs: Date.now() - asleepSince, untilUsualMs: msUntilHours(cfg.awakeHours) };
+    asleepSince = 0; store.set('asleepSince', 0); stir();
+    audit('woke', { by, sleptMs: woke.sleptMs });
+    if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
+  };
+  const sleepTick = () => {
+    const usual = inHours(cfg.awakeHours);
+    if (asleepSince) { if (usual) wakeUp('morning'); return; }
+    if (usual) return;
+    if (!quiet() || Date.now() - lastStir < cfg.sleepAfterQuietMinutes * 60000) return;
+    asleepSince = Date.now(); store.set('asleepSince', asleepSince); woke = null;
+    audit('asleep', { quietMs: asleepSince - lastStir });
+    for (const fn of sleepListeners) { try { fn(asleepSince); } catch (err) { logger.warn(`onSleep failed: ${err.message}`); } }
+  };
+  ctx.effect(() => { const t = setInterval(sleepTick, 30000); t.unref?.(); return () => clearInterval(t); }, 'dsh-dot: her sleep');
+  const span = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分钟` : ''}`; };
+  turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => {
+    if (!woke || agent.session.id !== lastSession) return '';
+    const w = woke; woke = null;
+    if (Date.now() - w.at > 3600000) return ''; // long since: no longer "just woke"
+    return w.by === 'morning' ? prompt('dot.woke.morning', { slept: span(w.sleptMs) }) : prompt('dot.woke', { slept: span(w.sleptMs), left: span(w.untilUsualMs) });
+  } });
   let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; // assigned below, used by flush/releaseHeld
@@ -1004,6 +1039,7 @@ export function apply(ctx, config = {}) {
     // her answer is known to be for him: the message says so); one of her own time is hers to speak of or not.
     onDone: async (r, job) => {
       if (job.device === 'phone') armPhoneHome();
+      stir();
       if (job.forHim) talk?.handsDone(); // its result is on its way to her: his business is still being worked on
       try {
         const found = lastSession && await resolveLive(lastSession);
@@ -1175,10 +1211,10 @@ export function apply(ctx, config = {}) {
     if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', retired: retired(id) }); return; }
     deliverTracked(items, false, id);
   };
-  // Asleep, what came stays here until her day starts; then it is all shown to her at once, in order.
+  // Asleep, what came stays here until she wakes; then it is all shown to her at once, in order.
   const flush = () => {
     batchTimer = null;
-    if (!awake()) { batchTimer = setTimeout(flush, msUntilHours(cfg.awakeHours) + 1000); batchTimer.unref?.(); return; }
+    if (!awake()) return; // waking shows it to her (wakeUp)
     const items = batch; batch = []; send(lastSession, items);
   };
   // What arrived while her conversation was in a turn goes in when the turn ends.
@@ -1204,7 +1240,7 @@ export function apply(ctx, config = {}) {
   const nextTask = async () => {
     const now = Date.now();
     for (const t of taskQueue.filter((x) => x.expiresAt <= now)) finishTask(t, 'expired');
-    if (!taskQueue.length || !quiet()) return;
+    if (!taskQueue.length || !quiet() || !awake()) return; // her own things do not wake her
     const t = taskRunning = taskQueue.shift();
     t.startedAt = now;
     try {
@@ -1326,6 +1362,7 @@ export function apply(ctx, config = {}) {
     if (n.fromOwner) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
       ownerBatch.push(n); ownerTyping = false; // he pressed send
+      wakeUp('him');
       answerReaches();
       armOwner();
       return;
@@ -1333,7 +1370,7 @@ export function apply(ctx, config = {}) {
     // Whatever her phone or her QQ shows is shown to her as it is — which app, what it says. Whether it is worth
     // opening is hers to decide (a turn that ends in DOT_SILENT); nothing here sorts notifications by app or wording.
     batch.push(n);
-    if (!awake()) audit('notification-held', { pkg: n.pkg, why: 'asleep' });
+    if (!awake()) { audit('notification-held', { pkg: n.pkg, why: 'asleep' }); return; }
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
   ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(lastSession); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
@@ -1579,9 +1616,12 @@ export function apply(ctx, config = {}) {
     task: enqueueTask,
     /** How long a queued task waits before it expires. */
     taskTtlMs: cfg.interludeTaskTtlMs,
-    /** Her day (src/hours.js): the hours she is awake in, and whether she is now. */
+    /** Her day and her sleep: her usual hours, whether she is awake, since when she is asleep (0 = awake), and a call when she falls asleep. `sleeps` is false when her hours are the whole day. */
     awakeHours: cfg.awakeHours,
+    sleeps,
     awake,
+    get asleepSince() { return asleepSince; },
+    onSleep: (fn) => { sleepListeners.add(fn); return () => sleepListeners.delete(fn); },
     stats,
     retired,
     /** Is this session hers (her conversation, an IM-opened one, one that was hers): what compat asks before letting it see her tools. */

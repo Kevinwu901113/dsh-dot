@@ -77,6 +77,8 @@ export const entries = [
     render: () => variant([['设了主人、群消息先打分、有表情包', Q.channelText({ qq: '123456789', owner: '987654321', groupPolicy: 'score', stickers: STICKERS })], ['都没有', Q.channelText({ qq: '123456789', owner: '', groupPolicy: 'mention', stickers: '' })]]) },
   { id: 'now', group: 'system', name: '现在几点', note: '每一轮都带着（在对话历史之后）：现在的时间，和离上一句话多久', files: ['dot.now'],
     render: () => variant([['隔了一阵', D.nowText(Date.now(), Date.now() - (3 * 60 + 12) * 6e4)], ['刚说过话（不到一分钟，或者从没说过）', D.nowText(Date.now(), 0)]]) },
+  { id: 'woke', group: 'system', name: '刚醒', note: '她睡着（过了平时的点、安静满 dot.sleepAfterQuietMinutes）以后醒来的第一轮带一次：睡了多久。只给事实，怎么反应是人设的事', files: ['dot.woke', 'dot.woke.morning'],
+    render: () => variant([['半夜被叫醒', P.prompt('dot.woke', { slept: '40 分钟', left: '6 小时 20 分钟' })], ['早上到点醒', P.prompt('dot.woke.morning', { slept: '8 小时 15 分钟' })]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
   { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、今天到期的（到期当天、当天还没提过的）、还没了的事（有日子的在前，放不下的不显示）', files: ['memory.standing'], render: standing },
   { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header', 'memory.recall.seen'], render: async () => `${await recallText()}\n\n${renderSeen([{ text: '[2026-11-18 15:02] [我看到的]（小黑盒）：这把纯纯坐牢' }])}` },

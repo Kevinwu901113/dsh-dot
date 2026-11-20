@@ -46,3 +46,5 @@ export function lastEnd(spec, date = new Date()) {
   const end = at(date, h.end);
   return end <= date.getTime() ? end : at(date, h.end, -1);
 }
+/** Does this range leave any hours to sleep in? (Not a range, or the whole day: no.) */
+export const sleepsAtAll = (spec) => { const h = parse(spec); return Boolean(h) && !(h.start === 0 && h.end === 1440); };

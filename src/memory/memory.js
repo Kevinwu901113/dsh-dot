@@ -459,14 +459,16 @@ export function apply(ctx, config = {}) {
   // Her day runs from when she wakes to when she next wakes (dot.awakeHours); its end is when she falls asleep.
   const awakeHours = () => dot()?.awakeHours ?? ''; // without dsh-dot: calendar days, ending at midnight
   const herDay = (now = new Date()) => dayLabel(new Date(lastStart(awakeHours(), now)));
-  // The day that has ended: the one before she last fell asleep. Its end is due once, whenever DSH is next running
-  // (asleep as a rule; in the morning if the Mac was off that night).
+  // The day that has ended by the clock: the one before her usual hours last ran out.
   const endedDay = (now = new Date()) => herDay(new Date(lastEnd(awakeHours(), now) - 1));
+  // With dsh-dot and hours to sleep in, the day ends when she falls asleep (her state, not the clock: a night she is
+  // still up talking has not ended); otherwise by the clock.
+  const dayToEnd = () => { const d = dot(); if (!d?.sleeps) return endedDay(); return d.asleepSince ? herDay(new Date(d.asleepSince)) : ''; };
   // What a day's end reads: everything since the last one (so the small hours he kept her up are not lost between two days), a day and a half back at most.
   const sinceDayEnd = (now = new Date()) => { const last = Number(memory.lastDiaryAt ?? 0), start = lastStart(awakeHours(), new Date(lastEnd(awakeHours(), now) - 1)); return last > now.getTime() - 36 * 3600000 ? last : start; };
   const dailyDue = () => {
     if (!memory.lastDiary) { memory.lastDiary = endedDay().slice(0, 10); return false; } // a new memory: nothing before it existed; its first day ends tonight
-    return memory.lastDiary < endedDay().slice(0, 10);
+    return memory.lastDiary < dayToEnd().slice(0, 10);
   };
   const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
@@ -759,7 +761,7 @@ export function apply(ctx, config = {}) {
   function dayEnd() {
     endingDay ??= (async () => {
       if (sinceCursor().length) { try { await consolidate({ reason: 'day-end' }); } catch (error) { void error; } }
-      return diary({ reason: 'daily', day: endedDay() });
+      return diary({ reason: 'daily', day: dayToEnd() || endedDay() });
     })().finally(() => { endingDay = null; });
     return endingDay;
   }
