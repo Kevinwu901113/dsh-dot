@@ -17,7 +17,7 @@ function harness(cfg = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const listeners = [], hooks = {}, effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
   let command, n = 0;
-  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
+  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, noted: [], inject(m) { this.noted.push(m); }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
   const services = {
     tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
     commands: { register: (c) => { command = c; return () => {}; } },
@@ -79,10 +79,10 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   await tick();
   assert.equal(her.got.length, 1);
   assert.deepEqual(her.got[0].source, { kind: 'dsh-dot', form: 'hands-result', for: 'him' }, 'whose business it is — not "this turn goes to him"');
-  assert.match(text(her.got[0]), /做到一半，有个地方要你拿主意：（在手机上）去 emojiset[^\n]*\n问你的是：这页有三张[^\n]*\n停在猫的贴图页第一页。\n（在 hands 的 do 里回答[^\n]*\n（这是他要的事。要告诉他什么，用 say。/);
-  // the turn that wakes: what she writes in it is not sent to him; her answer goes back to the same hands
+  assert.match(text(her.got[0]), /做到一半，有个地方要你拿主意：（在手机上）去 emojiset[^\n]*\n问你的是：这页有三张[^\n]*\n停在猫的贴图页第一页。\n（在 hands 的 do 里回答[^\n]*\n（这是他要的事。要告诉他什么，写下来就行/);
+  // the turn that wakes: what she writes beside a tool call is not sent to him; her answer goes back to the same hands
   h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got[0].source, content: her.got[0].content });
-  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '手机有点卡，我再等等' }] } });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '手机有点卡，我再等等' }, { type: 'tool-call', name: 'hands' }] } });
   const answered = await h.tools.hands.execute({ device: 'phone', do: '喝咖啡的那张' });
   assert.equal(answered.status, 'answered');
   assert.equal(text(hands.got[1]), '喝咖啡的那张', 'her words as they are, to the hands that asked');
@@ -185,6 +185,43 @@ test('what she writes in her conversation goes to no one; what she says is writt
   assert.match(h.llmCalls[1].messages[0].content[0].text, /（你手上的事：正在做：（在手机上）去小黑盒找表情包，还没做完）/);
   assert.equal(h.shown('say', { status: 'silent' }), '这次没回，什么也没发。');
   assert.equal(h.qqSent.length, 1);
+  h.stop();
+});
+
+test('a turn he is in that ends: what she wrote last is what she means to tell him, and say writes the words — nothing she wrote leaves as written', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '睡了吗' }] });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '醒着呢\n\n这么晚还没睡呀' }] } });
+  h.replies.push('醒着呢');
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'completed' } });
+  await tick(30);
+  assert.deepEqual(h.qqSent, [['owner', '醒着呢', []]], 'the words are the call\'s, not hers');
+  assert.match(h.llmCalls[0].messages[0].content[0].text, /（你心里想回他的意思：醒着呢 \/ 这么晚还没睡呀。意思照这个[^\n]*\n（下面写你这次发给他的消息/);
+  assert.equal(h.llmCalls[0].system, '# 你是 小点\n话不多。');
+  assert.deepEqual(her.noted.map(text), ['说出去了：\n醒着呢'], 'what really went out is told back to her, without waking her');
+  assert.ok(!h.audit.some((a) => a.event === 'silent'));
+  // she wrote nothing: nothing goes out, and that is her not answering
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '晚安' }] });
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } });
+  await tick(30);
+  assert.equal(h.qqSent.length, 1);
+  assert.ok(h.audit.some((a) => a.event === 'silent'));
+  // a turn he is not in (her hands came back with something of her own, her own time): what she writes goes nowhere
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'hands-result' }, content: [{ type: 'text', text: '刚才那件事做完了' }] });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '存好了，先放着。' }] } });
+  h.emit('s1', 'turn/end', { turn: 4, reason: { kind: 'completed' } });
+  await tick(30);
+  assert.equal(h.qqSent.length, 1);
+  assert.equal(h.llmCalls.length, 1);
+  // what her hands did for him: the same as a turn of his
+  h.emit('s1', 'turn/start', { turn: 5 }); h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'hands-result', for: 'him' }, content: [{ type: 'text', text: '刚才那件事做完了' }] });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '第一张存好了，是水豚' }] } });
+  h.replies.push('你看看这个\n[表情包 sticker:31d44003ce]');
+  h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } });
+  await tick(30);
+  assert.deepEqual(h.qqSent[1], ['owner', '你看看这个', ['sticker:31d44003ce']]);
+  assert.match(h.llmCalls[1].messages[0].content[0].text, /他这会儿没说话，是你有事要告诉他/);
   h.stop();
 });
 

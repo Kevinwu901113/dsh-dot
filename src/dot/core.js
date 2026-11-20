@@ -647,6 +647,8 @@ export function apply(ctx, config = {}) {
       const u = event.data?.usage;
       if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
       if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
+      // The words a turn closes with: its last message, when that one calls no tool (what she writes beside a tool call is thinking aloud at work).
+      if (!event.data?.interrupted) { const c = event.data?.message?.content; t.closing = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : contentText(c).trim(); }
     }
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
@@ -666,13 +668,25 @@ export function apply(ctx, config = {}) {
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
       if (!t.scheduled && !retired(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
     }
-    // What she writes in a turn is her thinking, and goes to no one. What she says she says with `say` (say.js) —
-    // that is where a line of hers to him is counted (t.spoke). A turn on his business that ends: is anything of
-    // it still in her hands? (talk.js)
+    // Nothing she writes leaves as she wrote it. A turn he is in that ends: the words it closes with are what she means
+    // to tell him, and `say` writes the words (say.js) — unless she already said something in it herself, or wrote
+    // nothing: then nothing goes out. (Left to a tool she had to remember, the first thing he said to her on 11-21 was
+    // answered in her conversation and reached no one.) At her window it is on his screen as she wrote it.
+    // Then: is anything of his business still in her hands? (talk.js)
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
-      if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
-      if (id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: t.origin === 'open-nudge', busy: Boolean(hands?.busy()) });
+      const meant = !t.spoke && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted' ? (t.closing ?? '') : '';
+      const over = () => {
+        if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
+        if (id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: t.origin === 'open-nudge', busy: Boolean(hands?.busy()) });
+      };
+      if (!meant) { over(); return; }
+      void tellHim(t, { meant }).then(async (r) => {
+        over();
+        // What really went out is hers to know: her next turn reads it after what she wrote.
+        if (r.status !== 'said') return;
+        try { (await resolveLive(id))?.agent?.inject?.(createUserMessage({ content: [{ type: 'text', text: saidText(r) }], source: { kind: 'dsh-dot', form: 'said' } })); } catch (err) { logger.debug?.(`said not noted: ${err.message}`); }
+      });
     }
   });
 
@@ -1145,6 +1159,25 @@ export function apply(ctx, config = {}) {
       return whole();
     },
   });
+  /** What went out, told back to her: the lines and pictures as they were sent. */
+  const saidText = (r) => prompt(r.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(r.said ?? []), ...(r.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (r.unsent ?? []).join('\n') });
+  /**
+   * Something of hers for him, in turn `t` (the open one, or the one that just ended): what she knows that bears on it
+   * (`about`, from the say tool) or what she wrote she means to tell him (`meant`, a turn's closing words). The same
+   * call writes it either way; here is what the turn and the day keep of it.
+   */
+  async function tellHim(t, { about = '', meant = '', images = [] } = {}) {
+    // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
+    const r = await say.speak({ to: 'owner', about, meant, images, unprompted: !(t?.fromQq || t?.elsewhere) });
+    if (r.status === 'held') preempts++;
+    if (r.status !== 'said') return r;
+    preempts = 0; // something of hers reached him
+    if (t) t.spoke = true;
+    talk?.sheSaid((r.said ?? []).at(-1) ?? '');
+    // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
+    if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
+    return r;
+  }
 
   /**
    * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
@@ -1317,22 +1350,11 @@ export function apply(ctx, config = {}) {
       name: SAY_TOOL,
       description: prompt('dot.say-tool'),
       parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'said' ? prompt(v.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(v.said ?? []), ...(v.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (v.unsent ?? []).join('\n') }) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
       async execute(args) {
         const to = String(args?.to ?? '').trim() || 'owner';
-        const t = turns.get(lastSession);
-        const his = isOwnerTarget(to, ctx.get('dshQq')?.owner);
-        // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
-        const r = await say.speak({ to: his ? 'owner' : to, about: args?.about, context: args?.context, images: args?.images, unprompted: his && !(t?.fromQq || t?.elsewhere) });
-        if (his && r.status === 'held') preempts++;
-        if (his && r.status === 'said') {
-          preempts = 0; // something of hers reached him
-          if (t) t.spoke = true;
-          talk?.sheSaid((r.said ?? []).at(-1) ?? '');
-          // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
-          if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
-        }
-        return r;
+        if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(lastSession), { about: args?.about, images: args?.images });
+        return say.speak({ to, about: args?.about, context: args?.context, images: args?.images });
       },
     }), 'dsh-dot: say tool');
     // Her hands' one way of coming back with a question (hands.js): a choice that is hers, words that have to be hers.

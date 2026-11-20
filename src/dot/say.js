@@ -54,7 +54,7 @@ export function parseSaid(text, { has = () => true, pictures = true } = {}) {
  * @param {string} [o.where] - where the words go when not to him over QQ (a comment box, a group …)
  * @param {boolean} [o.unprompted] - she speaks first: nothing of his is waiting for an answer
  */
-export function sayInput({ dialogue = [], stickers = null, state = '', about = '', where = '', unprompted = false } = {}) {
+export function sayInput({ dialogue = [], stickers = null, state = '', about = '', meant = '', where = '', unprompted = false } = {}) {
   const parts = [];
   if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((s) => `sticker:${s.id} ${s.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   const said = dialogue.filter((l) => String(l.text ?? '').trim()).map((l) => `${l.who === 'her' ? '你' : '他'}：${String(l.text).replace(/\s*\n+\s*/g, ' / ')}`);
@@ -62,6 +62,7 @@ export function sayInput({ dialogue = [], stickers = null, state = '', about = '
   const notes = [];
   if (state) notes.push(prompt('dot.say.state', { state }).trim());
   if (String(about).trim()) notes.push(prompt('dot.say.about', { about: String(about).trim() }).trim());
+  if (String(meant).trim()) notes.push(prompt('dot.say.meant', { meant: String(meant).trim().replace(/\s*\n+\s*/g, ' / ') }).trim());
   notes.push(prompt(where ? 'dot.say.end.where' : unprompted ? 'dot.say.end.unprompted' : 'dot.say.end', { where }).trim());
   parts.push(notes.join('\n'));
   return parts.map((p) => p.trim()).join('\n\n');
@@ -100,16 +101,17 @@ export function createSay({ card, call, recent, state, stickers, check, unread =
      * @param {object} o
      * @param {string} [o.to] - 'owner' (default), user:<n>, group:<n>
      * @param {string} [o.about] - what she knows that bears on it
+     * @param {string} [o.meant] - what she wrote, in her conversation, that she means to tell him: the sense of it, not the words
      * @param {string[]} [o.images] - pictures her thinking wants sent with it (a screenshot, a file): not the call's to choose
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
      * @param {string} [o.context] - for someone else than him: what they said, where
      */
-    async speak({ to = 'owner', about = '', images = [], unprompted = false, context = '' } = {}) {
+    async speak({ to = 'owner', about = '', meant = '', images = [], unprompted = false, context = '' } = {}) {
       const his = to === 'owner';
       if (unread(to)) return { status: 'held' };
       try {
         const mine = stickers();
-        const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, state: his ? state() : '', about: [context, about].filter(Boolean).join('\n'), unprompted });
+        const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, state: his ? state() : '', about: [context, about].filter(Boolean).join('\n'), meant, unprompted });
         const out = await write(input, { has: (id) => mine.some((s) => s.id === id), pictures: true });
         const pictures = [...out.images, ...[].concat(images ?? []).filter(Boolean)];
         if (out.silent && !pictures.length) { audit('say-silent', { to }); return { status: 'silent' }; }
