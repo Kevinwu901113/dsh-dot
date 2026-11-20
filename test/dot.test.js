@@ -34,7 +34,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const emitAs = (id, cwd, type, data) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data }));
   const emit = (cwd, type, data) => emitAs('s1', cwd, type, data);
-  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, threadBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
+  return { ctx, home, effects, audit, sent, budgetSvc, emit, emitAs, hooks, config: { home, budgetPollSeconds: 0.05, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, notifyHours: '' } };
 }
 const stop = (h) => { for (const d of h.effects) if (typeof d === 'function') d(); };
 const msg = (text) => ({ message: { content: [{ type: 'text', text }] } });
@@ -233,11 +233,15 @@ test('a phone notification wakes her latest session with the notification text; 
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
   onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '你关注的游戏更新了' });
   await wait(40);
-  assert.equal(followups.length, 2, 'conversations wake together; an app notification wakes with its thread (no errand: in her conversation)');
+  assert.equal(followups.length, 1, 'what arrives together is shown to her together, whatever app it is from: nothing sorts it');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
   assert.match(followups[0].m.content[0].text, STAMP);
-  assert.deepEqual(followups.map((f) => unstamp(f.m.content[0].text).split('\n')[0]).sort(), ['[手机通知] QQ · 宽：你会主动给我发消息吗', '[手机通知] 小黑盒 · 小黑盒：你关注的游戏更新了']);
+  assert.deepEqual(unstamp(followups[0].m.content[0].text).split('\n').slice(0, 3), ['[手机通知] 2 个对话', '· QQ · 宽：你会主动给我发消息吗', '· 小黑盒 · 小黑盒：你关注的游戏更新了']);
+  onNotification({ pkg: 'com.max.xiaoheihe', title: '签到提醒', text: '今日未签到' });
+  await wait(40);
+  assert.equal(followups.length, 2, 'a notice an app sends everyone is shown too: whether it is worth a look is hers to say');
+  assert.match(unstamp(followups[1].m.content[0].text), /^\[手机通知\] 小黑盒 · 签到提醒：今日未签到/);
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
   await wait(40);
   assert.equal(followups.length, 3);
@@ -274,33 +278,7 @@ test('conversationTitle and groupNotifications', async () => {
   assert.deepEqual(g, [{ pkg: 'p', title: '宽', texts: ['1', '2'] }, { pkg: 'q', title: 'x', texts: ['y'] }]);
 });
 
-test('phone check: /dot check asks her to pick up the phone when it is up and she is idle; not while busy', async () => {
-  const { PHONE_CHECK_SOURCE } = await import('../src/dot/core.js');
-  const h = harness();
-  const followups = [];
-  h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: () => () => {}, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) } : orig(name))(h.ctx.get);
-  let cmd;
-  h.ctx.get = ((orig) => (name) => name === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : orig(name))(h.ctx.get);
-  apply(h.ctx, h.config);
-  await cmd.handler({ rawInput: 'check' });
-  await wait(20);
-  assert.equal(followups.length, 0, 'no session yet');
-  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'user/message', { source: { kind: 'user' } }); h.emit(h.home, 'turn/end', { turn: 1 });
-  h.emit(h.home, 'turn/start', { turn: 2 });
-  await cmd.handler({ rawInput: 'check' });
-  await wait(20);
-  assert.equal(followups.length, 0, 'busy: not now');
-  h.emit(h.home, 'turn/end', { turn: 2 });
-  await cmd.handler({ rawInput: 'check' });
-  await wait(20);
-  assert.equal(followups.length, 1);
-  assert.deepEqual(followups[0].m.source, PHONE_CHECK_SOURCE);
-  assert.match(followups[0].m.content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2} 拿起手机\]/);
-  assert.ok(h.audit.some((e) => e.event === 'phone-check'));
-  stop(h);
-});
-
-test('owner QQ messages enter as the owner\'s own words (human input); others stay notifications; no phone check during a goal', async () => {
+test('owner QQ messages enter as the owner\'s own words (human input); others stay notifications', async () => {
   const { ownerSource, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
   assert.equal(ownerSource().kind, 'user');
   assert.match(ownerSource().rpcId, /^qq-/);
@@ -341,13 +319,6 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   assert.deepEqual(f2[0].source, PHONE_NOTIFICATION_SOURCE);
   assert.match(unstamp(f2[0].content[0].text), /^\[手机通知\] QQ · 路人（30003）：在吗/);
   stop(h2);
-  // a goal is active: /dot check does not cut in
-  goal = { phase: 'active' };
-  apply(h.ctx, { ...h.config, notifyHours: '' });
-  await cmd.handler({ rawInput: 'check' });
-  await wait(30);
-  assert.equal(followups.length, 1);
-  assert.ok(h.audit.some((e) => e.event === 'phone-check-skipped' && e.why === 'goal active'));
   stop(h);
 });
 
@@ -559,9 +530,8 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
   assert.equal(unstamp('[11-04 04:51] 在吗'), '在吗');
   assert.equal(unstamp('[2025-11-04 04:51 手机通知] x'), '[手机通知] x');
   assert.equal(unstamp('[手机通知] x'), '[手机通知] x');
-  const { ownerWords, phoneCheckText, notificationText } = await import('../src/dot/core.js');
+  const { ownerWords, notificationText } = await import('../src/dot/core.js');
   assert.equal(ownerWords([{ text: '在吗', at: new Date(2026, 10, 4, 4, 50).toISOString() }, { text: '睡了没' }], now), '[11-04 04:50] 在吗\n睡了没');
-  assert.match(phoneCheckText(now), /^\[11-04 04:51 拿起手机\] /);
   assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
 });
 
@@ -738,7 +708,7 @@ test('visible: dshDot.turn says approval → timed-out → running; /dot lists t
     let cmd;
     h.ctx.get = ((orig) => (n) => (n === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : services[n] ?? orig(n)))(h.ctx.get);
     h.ctx.provide = (n, v) => { services[n] = v; };
-    apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0 });
+    apply(h.ctx, { ...h.config });
     const dot = services.dshDot;
     h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
     h.emit(h.home, 'turn/start', { turn: 2 });
@@ -771,17 +741,8 @@ test('visible: dshDot.turn says approval → timed-out → running; /dot lists t
   } finally { mock.timers.reset(); }
 });
 
-test('notification rules, threads, loop keys', async () => {
-  const { notifyAction, threadOf, loopKey } = await import('../src/dot/core.js');
-  const hbx = 'com.max.xiaoheihe';
-  for (const title of ['黑盒今日热点订阅', '签到提醒', '今日未签到']) assert.equal(notifyAction({ pkg: hbx, title, text: 'x' }), 'ignore', title);
-  assert.equal(notifyAction({ pkg: 'com.x', title: '双十一大促', text: '来自《某店》，点击查看>>' }), 'ignore');
-  for (const title of ['阿宽@了你', '阿宽回复了你', '阿宽关注了你', '私信']) assert.equal(notifyAction({ pkg: hbx, title, text: '' }), 'direct', title);
-  assert.equal(notifyAction({ pkg: hbx, title: '你关注的游戏更新了' }), 'batch');
-  assert.equal(notifyAction({ pkg: 'a', title: '签到提醒' }), 'batch', 'the 小黑盒 rule is for 小黑盒 only');
-  assert.equal(notifyAction({ pkg: 'a', title: 't' }, [{ pkg: 'a', action: 'ignore' }]), 'ignore', 'dot.notifyRules replaces the table');
-  assert.equal(threadOf({ pkg: hbx, text: '好耶 来自“艾尔登法环 DLC 评测”' }), `${hbx}|艾尔登法环 DLC 评测`);
-  assert.equal(threadOf({ pkg: hbx, text: '你好' }), hbx);
+test('loop keys', async () => {
+  const { loopKey } = await import('../src/dot/core.js');
   assert.equal(loopKey('bash', { command: 'convert a.png  -crop 100x200+3+4 b.png' }), loopKey('bash', { command: 'convert a.png -crop 120x260+30+4 b.png' }));
   assert.notEqual(loopKey('bash', { command: 'ls a' }), loopKey('bash', { command: 'ls b' }));
 });
@@ -796,7 +757,7 @@ function errandHarness(config = {}) {
   h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { isReady: true, onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? controller : orig(name))(h.ctx.get);
   let dot;
   h.ctx.provide = (name, svc) => { if (name === 'dshDot') dot = svc; };
-  apply(h.ctx, { ...h.config, phoneCheckEveryMinutes: 0, ...config });
+  apply(h.ctx, { ...h.config, ...config });
   h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
   return { h, dot, followups, injected, notify: (x) => onNotification({ pkg: 'com.max.xiaoheihe', at: new Date().toISOString(), ...x }) };
 }

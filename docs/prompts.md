@@ -35,7 +35,6 @@
 | | 这句话被代码拦下 | `dot.reply-check` `.phrases` `.stage`（她的 `qq_send` 里有 `persona.checks.txt` 列的说法或括号动作时退回的理由，每轮一次） |
 | | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
-| | 拿起手机 / 留在她对话里的一句 | `dot.phone-check` / `dot.errand-note` `dot.errand-note.what` |
 | | 交接 | `memory.handoff` |
 | | 自己的时间 | `interlude.free` `.budget` `.over` `.typing` |
 | 独立模型调用 | 整理记忆（还没了的事、人物） | `memory.extract`（规则，放在最前面）`memory.extract.input`（认识的人在还没了的事前面：前者少变，后者几乎每次都变） |

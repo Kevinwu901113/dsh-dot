@@ -41,7 +41,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
   "qq": { "githubProxy": "https://ghfast.top/", "groupPolicy": "score" },
   "memory": { "dailyAt": "01:30" },
   "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 },
-  "dot": { "phoneCheckEveryMinutes": 60 }
+  "dot": { "notifyHours": "08:00-23:00" }
 }
 ```
 
@@ -62,14 +62,14 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | **她的作息** | `interlude.activeHours`（如 `"09:00-01:00"`，可跨午夜）、`interlude.freeTimesPerDay`（每天几次「自己的时间」，0 关） | 活跃时段外不开自己的时间 |
 | 日记时间 | `memory.dailyAt`（默认 `"23:30"`） | |
 | 她主动找你 | 没有开关，也没有次数上限：她在自己的时间里想说就说。她眼前有今天主动了几次、你回了几次、上一条回没回（`dot.reachUnansweredMs` 过了多久算没回，默认 2 小时） | 找不找、多频繁由她自己从你的反应里学 |
-| 拿手机看的频率 | `dot.phoneCheckEveryMinutes`（默认 30，0 关） | |
+| 她什么时候看手机 | 没有定时：手机来了新通知就原样给她看一眼（哪个 App、标题、正文），点不点由她定；没有新通知不叫她。想逛是「自己的时间」里的事 | 0.24.2 起；以前每 30 分钟叫她看一次 |
 | 夜里通知不叫醒她 | `dot.notifyHours: "08:00-23:00"`（只有这个时段内通知才叫醒） | 默认空 = 任何时候都叫醒 |
 | 某个 App 的通知别叫醒她 | `/phone notify mute <包名>` | 命令即时生效 |
 | 群聊里插话的规则 | `qq.groupPolicy`：`mention`（被 @ 才回，默认）/ `score`（按价值评分，配 `qq.scoreThreshold` 0–10）/ `all` / `none` | |
 | 回复不拆条、不模拟打字 | `qq.typingMsPerChar: 0` | |
 | 发 QQ 的审批松紧 | `qq.sendPolicy`：`reply`（默认）/ `always` / `off` | |
 | 她逛 / 玩的 App | `interlude.phoneApps`（站点 → 包名）、`interlude.playApps`（名字 → 包名）、`interlude.play: false` 关掉「玩」 | 只对她自己装了的 App 生效 |
-| 省 token | `interlude.maxRoundsPerDay`、`interlude.browseDailyCap`、`memory.handoffTokens`（交班阈值，默认 150000）、`dot.phoneCheckEveryMinutes` 调大 | 每轮用量在 `~/dot/interlude/calls.jsonl`、`~/dot/memory/calls.jsonl` |
+| 省 token | `interlude.maxRoundsPerDay`、`interlude.browseDailyCap`、`memory.handoffTokens`（交班阈值，默认 150000） | 每轮用量在 `~/dot/interlude/calls.jsonl`、`~/dot/memory/calls.jsonl` |
 | 和别的记忆插件一起用 | `memory.coexist`：`auto`（默认）/ `people-only` / `full` | |
 | **和她聊天时报 429 / `rate limit reached for RPM`** | `llm.backgroundRpm` 调小（默认 20，她后台的请求每分钟最多几次；你们的对话不受限） | 被限流后闸门自己会减半、冷却，`/dot` 有一行「model requests」看近一分钟的请求数 |
 | 电脑审批多 / 少 | `gate.mode`：`risky`（默认）/ `browser`（每个浏览器动作都问）/ `off` | |
@@ -206,7 +206,7 @@ setx DSH_DOT_COMPUTER off
 |---|---|---|
 | `enabled` | `true` | `false` 关掉联系人层 |
 | `home` | `~/dot` | 和另外两处保持一致 |
-| `phoneCheckEveryMinutes` | `30` | 隔多久拿起手机看一眼，0 关 |
+| `phoneHomeAfterMs` | `180000` | 她在手机上的最后一步过后这么久，手机自己回到桌面（开在前台的 App 不出通知）；这之前接着做下一步就留在原地。App 不关，再打开还在原来那一页。0 = 不回 |
 | `handsMaxMs` | `360000` | 她的手做一步最长多久；超过就停，带着已经说的回来 |
 | `reachUnansweredMs` | `7200000` | 她主动发给你的一条过了这么久你没回，在她对话里留一句事实「那条他没回」；0 = 不留 |
 | `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉，命中清单的句子每轮打回一次让她重说 |
@@ -220,8 +220,6 @@ setx DSH_DOT_COMPUTER off
 | `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
 | `ownerPreemptMax` | `2` | 先读再说，一个数管所有出口：她的话还没到你那、你又说了话时，她连着最多让几次（重写这一轮、把写好的回答留作草稿、或拦下一条 `qq_send`）；之后先发出去。她的话有一条到了你那就清零 |
-| `notifyRules` | 见下 | 非聊天 App 的通知先过这张表（按顺序，第一条命中的算）：每条 `{ "pkg": 包名（可省）, "title": 正则, "text": 正则（可省）, "action": "ignore" / "direct" }`。`ignore` 只记一笔 `notification-ignored`，不叫醒她；`direct`（@、回复、私信、关注她的）`notifyBatchMs` 后就叫醒；都没命中的按话题合并（见下一项）。默认：小黑盒的「黑盒今日热点订阅」「签到提醒」「今日未签到」和正文是「来自《…》，点击查看>>」的推广、资讯忽略，标题含「@了你 / 回复了你 / 关注了你 / 私信」的算 `direct`。写了就整张替换默认 |
-| `threadBatchMs` | `20000` | 同一话题（App + 通知里引用的帖子「来自“…”」，没有就只按 App）这么多毫秒内来的通知合并成一次叫醒；她正忙时来的攒到那一轮结束 |
 | `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |
 | `interludeQueueMax` | `3` | 她自己时间里的事（`interlude` 交来的）一次一件，在她的对话里做，只在没有别的事时开始；排满这么多件，最早的作废（`dropped`） |
 | `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`） |

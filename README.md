@@ -305,7 +305,6 @@ flowchart LR
   | source | 含义 |
   |---|---|
   | `{ kind: 'dsh-dot', form: 'phone-notification' }` | 手机通知叫醒 |
-  | `{ kind: 'dsh-dot', form: 'phone-check' }` | 定时看手机 |
   | `{ kind: 'dsh-dot', form: 'hands-result' }` | 手做完一步，结果和当时的画面回到她的对话 |
   | `{ kind: 'dsh-interlude', form: 'free' }` | 自己的时间 |
   | `{ kind: 'dsh-dot', form: 'reply-check' }` | 她写的话里有检查表上的说法，退回给她改一次 |

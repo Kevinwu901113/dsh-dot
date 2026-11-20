@@ -55,9 +55,7 @@ export const PHONE_NOTIFICATION_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 
  */
 export const ownerSource = () => ({ kind: 'user', rpcId: `qq-dot-${Math.random().toString(36).slice(2)}${Date.now().toString(36)}` });
 /** Source of the periodic "pick up your phone" turn; not pushed to IM either. */
-export const PHONE_CHECK_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'phone-check' });
 /** The periodic turn: she picks up her phone the way people do between things. */
-export const phoneCheckText = (now = Date.now()) => prompt('dot.phone-check', { stamp: stamp(now, now), silent: SILENT });
 /** When a wake happened: the first item's arrival (held items keep theirs), else now. */
 const firstAt = (items, now) => { const t = Date.parse(items?.[0]?.at ?? ''); return Number.isFinite(t) ? Math.min(t, now) : now; };
 /**
@@ -165,24 +163,6 @@ const APP_NAMES = { qq: 'QQ', 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '�
 
 const appName = (pkg) => APP_NAMES[pkg] ?? pkg;
 
-/**
- * What an app notification (not a conversation) does, by the first matching rule (`dot.notifyRules`;
- * `pkg` exact, `title` / `text` regexes): 'ignore' (only recorded), 'direct' (about her: wakes after
- * notifyBatchMs), else 'batch' (merged per thread for threadBatchMs).
- */
-export const NOTIFY_RULES = [
-  { pkg: 'com.max.xiaoheihe', title: '黑盒今日热点订阅|签到提醒|今日未签到', action: 'ignore' },
-  { text: '来自《.+》，点击查看', action: 'ignore' }, // promos and news digests: text 来自《…》，点击查看>>
-  { title: '@了你|回复了你|关注了你|私信', action: 'direct' },
-];
-export function notifyAction(n, rules = NOTIFY_RULES) {
-  const hit = (re, s) => !re || new RegExp(re).test(String(s ?? ''));
-  return rules.find((r) => (!r.pkg || r.pkg === n.pkg) && hit(r.title, n.title) && hit(r.text, n.text))?.action ?? 'batch';
-}
-/** The post an app notification quotes (小黑盒: 来自“<post title>”), or ''. */
-const sourceOf = (n) => /来自[“"「](.+?)[”"」]/.exec(String(n.text ?? ''))?.[1] ?? '';
-/** Thread of an app notification: its app, plus the post it quotes when there is one. */
-export const threadOf = (n) => (sourceOf(n) ? `${n.pkg}|${sourceOf(n)}` : String(n.pkg));
 /** One call as loop detection sees it: tool + arguments, spacing collapsed and digits stripped. */
 export const loopKey = (name, args) => `${name} ${(typeof args === 'string' ? args : JSON.stringify(args ?? {})).replace(/\d+/g, '').replace(/\s+/g, ' ').trim()}`;
 
@@ -257,12 +237,9 @@ export const defaults = {
   // in a row, how often words of hers that have not reached him give way to what he just said. Past this they go out
   // first — he cannot keep her silent by talking. Anything of hers reaching him starts the count again.
   ownerPreemptMax: 2,
-  phoneCheckEveryMinutes: 30, // if nothing woke her meanwhile: a "pick up your phone" turn; 0 = off
+  phoneHomeAfterMs: 180000, // her phone goes back to its home screen this long after her last step on it (an app left open shows no notifications); 0 = never
   notifyHours: '', // optional quiet hours ('HH:MM-HH:MM'): outside them app notifications do not wake her; '' (default) = always
   // Notifications from these apps are conversations (told to her as someone speaking, not as an app's news).
-  conversationApps: ['qq', 'com.tencent.mobileqq', 'com.tencent.mm'],
-  notifyRules: NOTIFY_RULES, // every other app's notifications: ignore / direct / batch (see notifyAction)
-  threadBatchMs: 20000, // 'batch' notifications of one thread arriving within this window wake her once
   loopRepeat: 5,        // the same call (digits aside) this often in one turn: further ones are refused
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
   // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
@@ -937,13 +914,9 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
-  let lastWakeAt = 0; // a notification or his words arrived (or a phone check ran): no phone check for a while
-  let batch = [], batchTimer = null; // conversations (his, QQ, WeChat): one wake for what arrives within notifyBatchMs
-  const threads = new Map(); // thread → { items, due, timer }: app notifications waiting for their thread's wake
+  let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
-  let deliverTracked; let phoneCheckNow; // assigned below (phone check), used by flush/releaseHeld
-  // Conversations (the owner, QQ, WeChat) wake her conversation; every other app's notification is an errand.
-  const isConversation = (n) => n.fromOwner || cfg.conversationApps.includes(n.pkg);
+  let deliverTracked; // assigned below, used by flush/releaseHeld
   /**
    * Her agent for a session: the live agent loop from ctx.agents (steer/inject/cancel) when it is
    * running; otherwise the session controller's resolveAgent — the client API layer, whose handle on
@@ -983,6 +956,22 @@ export function apply(ctx, config = {}) {
       return found && !('error' in found) ? found.agent : null;
     } catch (error) { void error; return null; }
   };
+  // Her phone, put down: a while after her last step on it, it is back on its home screen — an app left open in front
+  // shows no notifications, and whether she is "done" is not something she has to say (she used to spend a whole
+  // round of her hands on pressing HOME after everything she did). Like a screen that locks itself; a new step on the
+  // phone before that keeps it where it is. The app is not closed: opened again, it is on the page it was left on.
+  let phoneHomeTimer = null;
+  const armPhoneHome = () => {
+    clearTimeout(phoneHomeTimer); phoneHomeTimer = null;
+    if (!(cfg.phoneHomeAfterMs > 0)) return;
+    phoneHomeTimer = setTimeout(() => {
+      phoneHomeTimer = null;
+      if (hands?.busy() || !phone()?.isReady) return;
+      Promise.resolve(phone().adbExec?.(['shell', 'input', 'keyevent', 'KEYCODE_HOME'])).then(() => audit('phone-home', { afterMs: cfg.phoneHomeAfterMs })).catch((err) => logger.debug?.(`phone home: ${err.message}`));
+    }, cfg.phoneHomeAfterMs);
+    phoneHomeTimer.unref?.();
+  };
+  ctx.effect(() => () => clearTimeout(phoneHomeTimer), 'dsh-dot: phone back to its home screen');
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
     create: async (cwd) => {
@@ -1002,6 +991,7 @@ export function apply(ctx, config = {}) {
     // and wake her. A round that was his business comes back as a turn whose answer goes to him (how
     // her answer is known to be for him: the message says so); one of her own time is hers to speak of or not.
     onDone: async (r, job) => {
+      if (job.device === 'phone') armPhoneHome();
       if (job.forHim) talk?.handsDone(); // its result is on its way to her: his business is still being worked on
       try {
         const found = lastSession && await resolveLive(lastSession);
@@ -1174,17 +1164,6 @@ export function apply(ctx, config = {}) {
     deliverTracked(items, false, id);
   };
   const flush = () => { const items = batch; batch = []; batchTimer = null; send(lastSession, items); };
-  const flushThread = async (k) => {
-    const { items } = threads.get(k); threads.delete(k);
-    send(lastSession, items);
-  };
-  const queueThread = (n, ms) => {
-    const k = threadOf(n), th = threads.get(k) ?? { items: [] }, due = Date.now() + ms;
-    th.items.push(n); threads.set(k, th);
-    if (th.due <= due) return;
-    clearTimeout(th.timer); th.due = due;
-    th.timer = setTimeout(() => { void flushThread(k).catch((err) => logger.warn(`thread wake failed: ${err.message}`)); }, ms); th.timer.unref?.();
-  };
   // What arrived while her conversation was in a turn goes in when the turn ends.
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
   // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
@@ -1197,7 +1176,7 @@ export function apply(ctx, config = {}) {
     hands: Boolean(hands?.busy()),                                 // her hands are on a round
     his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
     moving: frozen > 0,                                            // her conversation is being handed over
-    waiting: Boolean(taskRunning) || threads.size > 0 || [...held.values()].some((ns) => ns.length), // something is already on its way to her
+    waiting: Boolean(taskRunning) || batch.length > 0 || [...held.values()].some((ns) => ns.length), // something is already on its way to her
   });
   const quiet = () => !Object.values(herState()).some(Boolean);
   const finishTask = (t, status, report = '', cost = null) => {
@@ -1259,6 +1238,7 @@ export function apply(ctx, config = {}) {
         // Whose business this round is: his (a turn his words opened, or one a round for him came back to) or her own.
         const t = turns.get(lastSession);
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere));
+        if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
         const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${String(args?.do ?? '').trim()}`, forHim });
         if (forHim && started?.status === 'started') talk?.handsStarted();
         return started;
@@ -1291,7 +1271,7 @@ export function apply(ctx, config = {}) {
     if (!items.length) return 0;
     const id = lastSession;
     if (frozen) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return items.length; }
-    if (agent && id && agent.session?.id === id) { lastWakeAt = Date.now(); toOwnerAgent(agent, id, items); return items.length; }
+    if (agent && id && agent.session?.id === id) { toOwnerAgent(agent, id, items); return items.length; }
     deliverTracked(items, false, id);
     return items.length;
   };
@@ -1328,16 +1308,14 @@ export function apply(ctx, config = {}) {
     }
     if (n.fromOwner) {
       if (!ownerBatch.length) ownerFirstAt = Date.now();
-      ownerBatch.push(n); ownerTyping = false; lastWakeAt = Date.now(); // he pressed send
+      ownerBatch.push(n); ownerTyping = false; // he pressed send
       answerReaches();
       armOwner();
       return;
     }
-    const action = isConversation(n) ? 'conversation' : notifyAction(n, cfg.notifyRules);
-    if (action === 'ignore') { audit('notification-ignored', { pkg: n.pkg, title: n.title }); return; }
+    // Whatever her phone or her QQ shows is shown to her as it is — which app, what it says. Whether it is worth
+    // opening is hers to decide (a turn that ends in DOT_SILENT); nothing here sorts notifications by app or wording.
     if (cfg.notifyHours && !inHours(cfg.notifyHours)) { audit('notification-held', { pkg: n.pkg, why: 'outside notifyHours' }); return; }
-    lastWakeAt = Date.now();
-    if (action !== 'conversation') { queueThread(n, action === 'direct' ? cfg.notifyBatchMs : cfg.threadBatchMs); return; }
     batch.push(n);
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
@@ -1404,8 +1382,6 @@ export function apply(ctx, config = {}) {
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
     return deny(ownerInterruptText());
   });
-  // 6. She picks up her phone now and then even when it did not ring: a normal turn (she may act),
-  // only inside notifyHours, only when the phone is up, she is not busy, and nothing woke her lately.
   const goalActive = (agent) => { try { return ctx.get('goals')?.get(agent)?.phase === 'active'; } catch { return false; } };
   // Her ears and mouth's one account (talk.js). She is asked in her own conversation, as a turn on his business:
   // what she writes in it goes to him, and a round of her hands she starts from it is his. Not while a goal of
@@ -1419,34 +1395,11 @@ export function apply(ctx, config = {}) {
       if (!found || 'error' in found || goalActive(found.agent)) return false;
       if (!quiet()) return false; // something came up while looking
       found.agent.followup(createUserMessage({ content: [{ type: 'text', text: openNudgeText({ his, last, at }) }], source: { kind: 'dsh-dot', form: 'open-nudge', to: 'him' } }));
-      lastWakeAt = Date.now();
       return true;
     },
   }) : null;
   ctx.effect(() => () => talk?.close(), 'dsh-dot: what he said that has no word back yet');
-  const wakeOriginal = deliver;
-  deliverTracked = (items, whileBusy, id) => {
-    lastWakeAt = Date.now();
-    wakeOriginal(items, whileBusy, id);
-  };
-  const phoneCheck = () => {
-    const every = cfg.phoneCheckEveryMinutes * 60000;
-    // The phone is one device: not while her conversation is running a turn (she may be using it).
-    if (!every || !phone()?.isReady || !lastSession || !quiet()) return;
-    if (cfg.notifyHours && !inHours(cfg.notifyHours)) return;
-    if (Date.now() - lastWakeAt < every) return;
-    const controller = ctx.get('sessionController');
-    if (!controller) return;
-    lastWakeAt = Date.now();
-    waking = waking.then(async () => {
-      const main = await resolveLive(lastSession);
-      // She is on a long task: the goal driver brings her back round after round; don't cut in.
-      if (main && !('error' in main) && goalActive(main.agent)) { audit('phone-check-skipped', { why: 'goal active' }); return; }
-      if (!main || 'error' in main) return;
-      main.agent.followup(createUserMessage({ content: [{ type: 'text', text: phoneCheckText() }], source: PHONE_CHECK_SOURCE }));
-      audit('phone-check', { session: lastSession });
-    }).catch((err) => logger.warn(`phone check failed: ${err.message}`));
-  };
+  deliverTracked = deliver;
   // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
   // Her conversation is never cancelled: he is told once per turn (unless he was already told about its approval).
   const pendingApproval = (id) => { let first; for (const a of approvals.values()) if (a.session === id && (!first || a.since < first.since)) first = a; return first; };
@@ -1469,8 +1422,7 @@ export function apply(ctx, config = {}) {
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); talk?.tick(); phoneCheck(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog + phone check');
-  phoneCheckNow = phoneCheck;
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); talk?.tick(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
   // something still has to be installed, and when a device fails; problems go to the log and his IM.
   let lastDoctor = null;
@@ -1540,7 +1492,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register({
       name: 'dot',
-      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "check" makes her pick up her phone now; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
+      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
       input: { hint: '[doctor | test | check | howto [<app>] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
       handler: async ({ rawInput }) => {
         const arg = String(rawInput ?? '').trim();
@@ -1565,7 +1517,6 @@ export function apply(ctx, config = {}) {
         const t = await im.target();
         let test = '';
         if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
-        if (arg === 'check') { lastWakeAt = 0; phoneCheckNow?.(); test = '\nphone check: asked her to pick up her phone (if the phone is up and she is not busy)'; }
         const vm = computer()?.status?.();
         const ph = phone()?.status?.();
         const lines = [

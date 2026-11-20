@@ -101,7 +101,6 @@ export const entries = [
       const mixed = [{ pkg: 'com.max.xiaoheihe', title: '暮看云', text: '回复了你的评论' }, { pkg: 'qq', title: '阿满', text: '在吗', unverifiedOwner: true }];
       return variant([['一个 QQ 对话', D.wakeText(qqOne)], ['她忙的时候来的', D.wakeText(qqOne.slice(0, 1), { whileBusy: true })], ['两个 App，带着记得的人和冒名提醒', D.wakeText(mixed, { cards: '阿满（qq:42）：聊过；群里说话 3 次' })]]);
     } },
-  { id: 'phonecheck', group: 'wake', name: '拿起手机', note: '一阵子没动静时，让她看一眼手机', files: ['dot.phone-check'], render: () => D.phoneCheckText() },
   { id: 'reach', group: 'system', name: '主动找他：发生了什么', note: '她在不是他开的那一轮里给他发了消息，算一次主动。「现在」那行下面多一行今天的数（几次、他回了几次、上一次什么时候）；一条过了 dot.reachUnansweredMs（默认 2 小时）他没回，在她对话里留一句。只给事实，没有次数上限：什么时候找他是她自己从这些里学的', files: ['dot.reach', 'dot.reach.waiting', 'dot.reach.unanswered'],
     render: () => variant([['现在那行下面', D.reachText([{ at: Date.now() - 7200000, answeredAt: Date.now() - 7000000 }, { at: Date.now() - 600000 }])], ['没回', P.prompt('dot.reach.unanswered', { time: '14:20', hours: 2 })]]) },
   { id: 'loop', group: 'wake', name: '重复调用', note: '一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果；她正在聊天时，自己的事记下的「在忙什么」', files: ['dot.loop-stopped', 'dot.busy.chat'],
