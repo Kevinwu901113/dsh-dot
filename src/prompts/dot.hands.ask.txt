@@ -1,0 +1,4 @@
+{stamp} 做到一半，有个地方要你拿主意：{task}
+问你的是：{question}
+{text}
+（在 hands 的 do 里回答，就接着做；不想做了，stop 填 true。）

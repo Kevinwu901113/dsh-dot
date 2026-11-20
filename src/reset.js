@@ -106,6 +106,7 @@ export function runPendingReset({ logger, now = new Date(), startedAt = PROCESS_
         mkdirSync(backup, { recursive: true }); copyFileSync(file, join(backup, 'dsh-dot-state.json'));
         s.pastConversations = [...new Set([...(s.pastConversations ?? []), ...(s.pastErrands ?? []), s.errandSession, s.lastSession].filter(Boolean))].slice(-50);
         s.lastSession = ''; delete s.errandSession; delete s.pastErrands;
+        delete s.handsThing; // what was in her hands belonged to the conversation that is gone
         if (r >= rank('all')) delete s.stats; // today's counters on the panel (messages, wakes): from zero too
         const tmp = `${file}.tmp-${process.pid}`;
         writeFileSync(tmp, JSON.stringify(s, null, 2)); renameSync(tmp, file);

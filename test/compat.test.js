@@ -35,6 +35,7 @@ test('tool-prefixes: every tool src/ registers is classified as dot\'s own or a 
   walk('src');
   names.delete('PHONE_ZOOM_TOOL'); names.add(PHONE_ZOOM_TOOL);
   names.delete('PHONE_TYPE_TOOL'); names.add('phone_type');
+  names.delete('HANDS_ASK_TOOL'); names.add('ask_her');
   assert.ok(names.size >= 8, `found ${[...names]}`);
   for (const n of names) assert.ok(isDotTool(n) || isDeviceTool(n) || n === PHONE_ZOOM_TOOL, `${n} is in neither DOT_TOOLS nor a device prefix (src/tool-prefixes.js)`);
   for (const n of DOT_TOOLS) assert.ok(names.has(n), `DOT_TOOLS lists ${n}, which nothing registers any more`);

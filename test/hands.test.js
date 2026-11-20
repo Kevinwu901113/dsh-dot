@@ -1,4 +1,4 @@
-// dsh-dot/hands: a round is started and not waited for; its end is told through onDone.
+// dsh-dot/hands: a whole thing is given and not waited for; its end, or a question of theirs, is what reaches her.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -7,8 +7,8 @@ import { join } from 'node:path';
 import { createHands } from '../src/dot/hands.js';
 
 function harness(opts = {}) {
-  const listeners = new Set(), sent = [], cancelled = [], kv = new Map(), audits = [], done = [];
-  let n = 0, tokens = 0;
+  const listeners = new Set(), sent = [], cancelled = [], kv = new Map(opts.kv ?? []), audits = [], done = [], asked = [], retired = [];
+  let n = 0;
   const agents = new Map();
   const dir = join(mkdtempSync(join(tmpdir(), 'hands-')), 'hands');
   const hands = createHands({
@@ -18,60 +18,122 @@ function harness(opts = {}) {
     onEvent: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     message: (text) => text, textOf: (c) => c,
     store: { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) },
-    onDone: (r, j) => done.push([r, j]),
-    tokensOf: () => tokens, audit: (event, data) => audits.push({ event, ...data }), ...opts,
+    onDone: (r, j) => done.push([r, j]), onAsk: (r, j) => asked.push([r, j]), retire: (id) => retired.push(id),
+    audit: (event, data) => audits.push({ event, ...data }), ...opts,
   });
   const emit = (id, type, data) => { for (const fn of [...listeners]) fn({ id }, { type, data }); };
-  return { hands, sent, cancelled, emit, audits, kv, dir, done, setTokens: (t) => { tokens = t; }, listeners };
+  return { hands, sent, cancelled, emit, audits, kv, dir, done, asked, retired, listeners };
 }
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
-test('hands: a round starts at once and is not waited for; its end brings what the hands said last, with what the round was', async () => {
+test('hands: a thing starts at once and is not waited for; nothing comes back until it is over, then what the hands said last with what it was', async () => {
   const h = harness({ maxChars: 12 });
   assert.deepEqual(h.hands.start({ device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true }), { status: 'started' });
   await tick();
   assert.deepEqual(h.sent, [['h1', '打开贴吧，说说首页有什么']]);
-  assert.ok(h.hands.busy() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
+  assert.ok(h.hands.busy() && !h.hands.asking() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
   h.emit('h1', 'tool/call'); h.emit('h1', 'tool/call');
   h.emit('h1', 'tool/result', { message: { content: '显卡又涨价了，纯纯坐牢' } }); h.emit('h1', 'tool/result', { message: { content: [{ text: '猫把杯子推下去了' }] } });
   h.emit('h1', 'assistant/message', { message: { content: '我先看看' } });
-  assert.deepEqual([h.hands.doing().task, h.hands.doing().said, h.hands.doing().steps], ['打开贴吧，说说首页有什么', '我先看看', 2]);
-  // one pair of hands: a second round is not started
+  assert.deepEqual([h.hands.doing().task, h.hands.doing().state, h.hands.doing().said, h.hands.doing().steps], ['打开贴吧，说说首页有什么', 'running', '我先看看', 2]);
+  // one pair of hands, one thing: a second is not started, and what she said is not taken for an answer nobody asked for
   const busy = h.hands.start({ device: 'phone', task: '再做一件' });
   assert.equal(busy.status, 'busy'); assert.equal(busy.doing.task, '打开贴吧，说说首页有什么');
+  assert.deepEqual(h.hands.answer('选第一个'), { status: 'idle' });
   h.emit('h1', 'assistant/message', { message: { content: '首页有三个帖子：第一个讲显卡，第二个讲猫' } });
-  assert.equal(h.done.length, 0);
-  h.emit('h1', 'turn/end');
+  assert.equal(h.done.length + h.asked.length, 0, 'nothing reaches her while it is under way');
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
   const [r, j] = h.done[0];
-  assert.deepEqual([r.status, r.steps, r.text], ['done', 2, '首页有三个帖子：第一个讲…']);
+  assert.deepEqual([r.status, r.steps, r.rounds, r.text], ['done', 2, 1, '首页有三个帖子：第一个讲…']);
   assert.match(r.shown, /纯纯坐牢[\s\S]*猫把杯子推下去了/, 'what the screen showed them, in full: what a line she keeps is checked against');
   assert.deepEqual(j, { device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
   assert.ok(!h.hands.busy() && h.hands.doing() === null && h.listeners.size === 0);
-  assert.equal(h.hands.start({ device: 'phone', task: '点开第一个' }).status, 'started');
-  await tick(); h.emit('h1', 'turn/end');
-  assert.equal(h.sent[1][0], 'h1', 'the same hands');
-  assert.equal(h.done.length, 2);
+  assert.deepEqual(h.retired, ['h1'], 'the session is put away with the thing');
 });
 
-test('hands: stopped by her, or cut for taking too long (the turn is cancelled, what was said so far comes back); a large session is replaced', async () => {
+test('hands: each thing gets hands that have seen nothing else — what was stopped before is not theirs to pick up', async () => {
+  const h = harness();
+  h.hands.start({ device: 'phone', task: '点右上角的放大镜' }); await tick();
+  assert.equal(h.hands.stop('她叫停了'), true);
+  h.hands.start({ device: 'phone', task: '打开相册' }); await tick();
+  assert.deepEqual(h.sent.map(([id]) => id), ['h1', 'h2']);
+  // the stopped one's turn ends late: it is not the new thing's end
+  h.emit('h1', 'turn/end', { reason: { kind: 'aborted' } });
+  assert.ok(h.hands.busy() && h.done.length === 1 && h.done[0][0].status === 'cut');
+  assert.ok(h.hands.isHands('h1') && h.hands.isHands('h2'), 'the old one is still her hands');
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
+  assert.deepEqual(h.done.map(([r]) => r.status), ['cut', 'done']);
+});
+
+test('hands: they need her — said with their tool, the thing waits for her answer and carries on with it, the same hands', async () => {
+  const h = harness();
+  assert.equal(h.hands.ask('问什么'), false, 'nothing under way: nothing to ask about');
+  h.hands.start({ device: 'phone', task: '去那个站挑几张猫的贴图存下来', forHim: true }); await tick();
+  h.emit('h1', 'tool/call');
+  h.emit('h1', 'assistant/message', { message: { content: '这页有三张猫的贴图，你想存哪几张？' } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
+  assert.equal(h.done[0][0].status, 'done', 'a question in the prose of a report is a report: nobody reads "waiting for her" out of words');
+  h.hands.start({ device: 'phone', task: '去那个站挑几张猫的贴图存下来', forHim: true }); await tick();
+  assert.equal(h.hands.ask('这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？'), true);
+  assert.ok(h.hands.asked() && !h.hands.asking(), 'asked, the stretch not yet over');
+  h.emit('h2', 'assistant/message', { message: { content: '停在猫的贴图页' } });
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
+  assert.equal(h.done.length, 1);
+  const [q, job] = h.asked[0];
+  assert.deepEqual([q.question, q.text, q.rounds, job.forHim], ['这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？', '停在猫的贴图页', 1, true]);
+  assert.ok(h.hands.busy() && h.hands.asking() && !h.hands.asked());
+  assert.deepEqual([h.hands.doing().state, h.hands.doing().question], ['asking', q.question]);
+  assert.equal(h.hands.start({ device: 'phone', task: '另一件' }).status, 'busy', 'still one thing');
+  assert.equal(h.hands.has('喝咖啡的那张，备注写「续命」'), false);
+  assert.deepEqual(h.hands.answer('喝咖啡的那张，备注写「续命」'), { status: 'answered' });
+  assert.deepEqual(h.sent.at(-1), ['h2', '喝咖啡的那张，备注写「续命」'], 'the same hands: they know where they stopped');
+  assert.ok(h.hands.has('续命') && h.hands.has('去那个站'), 'her answer is hers to type from, like the task');
+  assert.ok(!h.hands.asking() && !h.hands.asked());
+  h.emit('h2', 'assistant/message', { message: { content: '存好了' } });
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
+  assert.deepEqual([h.done[1][0].status, h.done[1][0].text, h.done[1][0].rounds], ['done', '存好了', 2]);
+  // stopped while it waits for her: over, and no turn of theirs to cancel
+  h.hands.start({ device: 'phone', task: '第三件' }); await tick();
+  h.hands.ask('要不要登录？'); h.emit('h3', 'turn/end', { reason: { kind: 'completed' } });
+  const before = h.cancelled.length;
+  assert.equal(h.hands.stop('他叫停了'), true);
+  assert.deepEqual([h.done[2][0].status, h.done[2][0].why, h.cancelled.length], ['cut', '他叫停了', before]);
+  // a question she never answers does not hold her hands for good
+  const late = harness({ askMs: 20 });
+  late.hands.start({ device: 'phone', task: '登录小黑盒' }); await tick();
+  late.hands.ask('要验证码'); late.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
+  assert.ok(late.hands.asking());
+  await tick(50);
+  assert.deepEqual([late.hands.busy(), late.done[0][0].status, late.done[0][0].why], [false, 'cut', 'no answer']);
+  const { handsStatus } = await import('../src/dot/core.js');
+  assert.match(handsStatus(late.done[0][0]), /一直没等到回答/);
+});
+
+test('hands: stopped, cut for taking too long, ended by someone else; what a restart cut off is told once', async () => {
   const h = harness({ maxMs: 30 });
   h.hands.start({ task: '登录' });
   await tick();
+  assert.deepEqual(h.kv.get('handsThing').task, '登录', 'on record while it is under way');
   h.emit('h1', 'assistant/message', { message: { content: '停在验证码' } });
   assert.equal(h.hands.stop('她叫停了'), true);
   assert.deepEqual([h.done[0][0].status, h.done[0][0].text, h.done[0][0].why], ['cut', '停在验证码', '她叫停了']);
   assert.deepEqual(h.cancelled[0], ['h1', 'dot-hands: 她叫停了']);
+  assert.equal(h.kv.get('handsThing'), null);
   assert.equal(h.hands.stop(), false, 'nothing under way');
   h.hands.start({ task: '第二件' });
   await tick(60);
   assert.deepEqual([h.done[1][0].status, h.done[1][0].why], ['cut', 'took too long']);
-  h.setTokens(999999);
   h.hands.start({ task: '第三件' });
-  await tick(); h.emit('h2', 'turn/end');
-  assert.equal(h.done[2][0].status, 'done');
-  assert.ok(h.hands.isHands('h1') && h.hands.isHands('h2'), 'the old one is still her hands');
-  assert.ok(h.audits.some((e) => e.event === 'hands-rotated'));
+  await tick(); h.emit('h3', 'turn/end', { reason: { kind: 'aborted' } });
+  assert.deepEqual([h.done[2][0].status, h.done[2][0].why], ['failed', 'interrupted'], 'not done, and not hers to answer');
   assert.equal(h.hands.start({ task: '' }).status, 'failed');
+  assert.equal(h.hands.interrupted(), null);
+  // a restart in the middle: the next start of the plugin finds it, tells it once, and the old single session is still her hands
+  const again = harness({ kv: [['handsThing', { device: 'phone', task: '存贴图', forHim: true, startedAt: 1 }], ['handsSession', 'old1'], ['handsPast', ['old0']]] });
+  assert.ok(again.hands.isHands('old0') && again.hands.isHands('old1') && !again.hands.busy());
+  assert.deepEqual(again.hands.interrupted(), { device: 'phone', task: '存贴图', forHim: true, startedAt: 1 });
+  assert.equal(again.hands.interrupted(), null);
+  assert.equal(again.kv.get('handsThing'), null);
 });
 
 test('hands: what they type is hers or was shown to them — never their own words', async () => {
@@ -89,7 +151,7 @@ test('hands: what they type is hers or was shown to them — never their own wor
   assert.deepEqual(ownWords('tieba.baidu.com', has), [], 'an address is not words');
   assert.deepEqual(ownWords('https://www.bilibili.com/v/popular', has), []);
   assert.deepEqual(ownWords('笑死 这也行\n哈哈确实', has), ['哈哈确实']);
-  h.emit('h1', 'turn/end');
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
 });
 
 test('hands: how a round ended is told by the code, with what was refused on the way', async () => {
@@ -98,11 +160,12 @@ test('hands: how a round ended is told by the code, with what was refused on the
   assert.match(handsStatus({ status: 'done' }, 'web'), /查没查到/);
   assert.match(handsStatus({ status: 'cut', why: 'took too long' }), /太久了.*别当成什么都没做/);
   assert.match(handsStatus({ status: 'cut', why: 'stopped' }), /被叫停了/);
+  assert.match(handsStatus({ status: 'cut', why: '他叫停了' }), /^他叫停的.*到此为止/);
   assert.match(handsStatus({ status: 'failed', why: 'no hands session' }), /没能开始或中途断了：no hands session/);
   assert.match(handsStatus({ status: 'done', notes: ['own-words', 'own-words', 'reply-check'] }), /^做到这儿停下了.*；要打一段你没写的字.*；你写的那句话被退回了/);
   const h = harness();
   h.hands.start({ device: 'phone', task: '回一句' }); await tick();
-  h.hands.note('own-words'); h.emit('h1', 'turn/end');
+  h.hands.note('own-words'); h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
   assert.deepEqual(h.done[0][0].notes, ['own-words']);
 });
 
@@ -111,10 +174,10 @@ test('hands: a round for him is known as his (the request gate lets it go like h
   const h = harness();
   h.hands.start({ device: 'web', task: '（查资料，不碰手机和电脑）查一下明天的天气', forHim: true }); await tick();
   assert.deepEqual([h.hands.doing().device, h.hands.doing().forHim], ['web', true]);
-  h.emit('h1', 'turn/end');
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
   h.hands.start({ device: 'phone', task: '看一眼手机' }); await tick();
   assert.equal(h.hands.doing().forHim, false, 'her own business stays behind his');
-  h.emit('h1', 'turn/end');
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
 });
 
 test('whom her answer goes to is said by the message that woke her, not read off an id', async () => {
@@ -122,8 +185,9 @@ test('whom her answer goes to is said by the message that woke her, not read off
   assert.equal(addressed({ kind: 'user', rpcId: 'qq-dot-abc' }), 'qq');
   assert.equal(addressed({ kind: 'user', rpcId: 'desk-1' }), 'desk');
   assert.equal(addressed({ kind: 'user' }), 'desk');
-  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result', to: 'him' }), 'qq');
-  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result' }), '', 'a round of her own time: hers to speak of or not');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'open-nudge', to: 'him' }), 'qq');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result', for: 'him' }), '', 'her hands coming back on his business wake her; what he hears she says with qq_send');
+  assert.equal(addressed({ kind: 'dsh-dot', form: 'hands-result' }), '', 'her own time: hers to speak of or not');
   assert.equal(addressed({ kind: 'dsh-dot', form: 'phone-notification' }), '');
   assert.equal(addressed({ kind: 'schedule' }), '');
 });

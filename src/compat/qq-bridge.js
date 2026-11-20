@@ -35,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { sectionOf, dshHome } from '../settings.js';
-import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS } from '../tool-prefixes.js';
+import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS, HANDS_ASK_TOOL, HANDS_HOST_TOOLS } from '../tool-prefixes.js';
 
 export const name = 'dsh-dot/compat';
 export const inject = [];
@@ -186,9 +186,11 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
     // (`bash` is the host's shell tool, which runs in her computer: operating the computer all the same.)
     // Her conversation, lean: only what is hers (HER_TOOLS) and her QQ's own actions — whatever else is registered, now or later.
     if (owner === 'dot-lean') { if (!HER_TOOLS.includes(n) && !DOT_TOOL_PREFIXES.some((p) => n.startsWith(p))) out.push(n); continue; }
-    if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n) || n === 'bash') out.push(n); continue; }
+    if (owner === 'dot') { if ((hideBridgeTools && isBridgeTool(n)) || isDeviceTool(n) || n === 'bash' || n === HANDS_ASK_TOOL) out.push(n); continue; }
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
-    if (owner === 'hands') { if ((isDotTool(n) && n !== 'account') || n === 'hands' || isBridgeTool(n) || PASTE_TOOLS.includes(n) || WHOLE_SCREEN_TOOLS.includes(n)) out.push(n); continue; }
+    // Her hands: her devices, her accounts, asking her, and the few host tools that are doing (HANDS_HOST_TOOLS) —
+    // nothing else, whatever is registered now or later (no memory, no QQ, no subagents, no schedules, no bridge tools).
+    if (owner === 'hands') { if (!(n === 'account' || n === HANDS_ASK_TOOL || HANDS_HOST_TOOLS.includes(n) || isDeviceTool(n)) || PASTE_TOOLS.includes(n) || WHOLE_SCREEN_TOOLS.includes(n)) out.push(n); continue; }
     if (isDotTool(n)) { out.push(n); continue; }
     if (isDeviceTool(n) && (owner === 'qqb-sandbox' || (owner === 'qqb-owner' && !ownerDevices))) out.push(n);
   }

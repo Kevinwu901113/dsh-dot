@@ -13,13 +13,20 @@ export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
 export const PHONE_ZOOM_TOOL = 'phone_zoom';
 /** Typing on her phone, through the input method (src/phone/typing.js): the one way text goes in. */
 export const PHONE_TYPE_TOOL = 'phone_type';
+/** Her hands' one way of coming back to her with a question (src/dot/hands.js): theirs alone. */
+export const HANDS_ASK_TOOL = 'ask_her';
+// What her hands keep (compat hides the rest from their sessions): her devices' tools and her accounts come from this
+// plugin; of the host's, the shell (it runs in her computer), looking things up, and reading a file or a picture.
+// Everything else the host offers — subagents, workflows, schedules, messages, plugin management, asking the user —
+// is not theirs: they do one thing she gave them and come back.
+export const HANDS_HOST_TOOLS = ['bash', 'job_output', 'job_kill', 'web_search', 'web_fetch', 'read', 'read_image'];
 
 // Every model-facing tool this plugin registers, by who may use it (src/compat/qq-bridge.js hides the
 // rest per session; test/compat.test.js checks the list against the register() calls in src/).
 //   DOT_TOOLS / DOT_TOOL_PREFIXES: hers alone — her memory, her accounts, her QQ (qq_send and her
 //                                  SnowLuma actions), her day. Never in another plugin's session.
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
-export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', 'keep_line', 'qq_send', 'qq_sticker_keep'];
+export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
 /** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
 export const HER_PRESET = 'dot';
