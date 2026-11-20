@@ -1303,6 +1303,8 @@ export function apply(ctx, config = {}, deps = {}) {
   qq.setAccount = (n) => { cfg.qq = assertSafeQQ(n); qq.qq = cfg.qq; writeSettings({ qq: cfg.qq }); };
   qq.setOwner = (n) => { qq.owner = assertSafeQQ(n, 'owner QQ number'); writeSettings({ owner: qq.owner }); };
 
+  /** The stickers she has, newest last: [{ id, note }]. */
+  qq.stickerList = (n) => stickers.saved(n);
   ctx.provide('dshQq', qq);
 
   // The computer may come up after us; start when it is ready.
@@ -1361,7 +1363,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({
       name: 'qq_sticker_keep',
-      description: '把一张图存成你自己的表情包，以后用 qq_send 的 images: ["sticker:<id>"] 发。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。存下的也会同步到手机相册的 dot-stickers 里。',
+      description: '把一张图存成你自己的表情包，以后说话时会自己挑着用。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。存下的也会同步到手机相册的 dot-stickers 里。',
       parameters: { type: 'object', properties: { image: { type: 'string' }, note: { type: 'string' } }, required: ['image'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { id: { type: 'string' }, isNew: { type: 'boolean' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sticker:${v?.id}${v?.isNew ? '' : ' (already kept)'}` }] },
       async execute(args) { return qq.keepSticker(args.image, args.note ?? ''); },

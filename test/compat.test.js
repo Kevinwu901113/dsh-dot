@@ -36,6 +36,7 @@ test('tool-prefixes: every tool src/ registers is classified as dot\'s own or a 
   names.delete('PHONE_ZOOM_TOOL'); names.add(PHONE_ZOOM_TOOL);
   names.delete('PHONE_TYPE_TOOL'); names.add('phone_type');
   names.delete('HANDS_ASK_TOOL'); names.add('ask_her');
+  names.delete('SAY_TOOL'); names.add('say');
   assert.ok(names.size >= 8, `found ${[...names]}`);
   for (const n of names) assert.ok(isDotTool(n) || isDeviceTool(n) || n === PHONE_ZOOM_TOOL, `${n} is in neither DOT_TOOLS nor a device prefix (src/tool-prefixes.js)`);
   for (const n of DOT_TOOLS) assert.ok(names.has(n), `DOT_TOOLS lists ${n}, which nothing registers any more`);
@@ -103,8 +104,8 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
 });
 
 test('hiddenFor: what each kind of session does not see', () => {
-  assert.deepEqual(hiddenFor('dot', TOOLS), ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search']);
-  assert.deepEqual(hiddenFor('dot', TOOLS, { hideBridgeTools: false }), ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate'], 'her conversation never has the device tools: her hands do');
+  assert.deepEqual(hiddenFor('dot', TOOLS), ['bash', 'qq_send', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search']);
+  assert.deepEqual(hiddenFor('dot', TOOLS, { hideBridgeTools: false }), ['bash', 'qq_send', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate'], 'her conversation never has the device tools: her hands do');
   const sandbox = hiddenFor('qqb-sandbox', TOOLS);
   assert.ok(!sandbox.includes('bash') && !sandbox.includes('todo_write') && !sandbox.includes('mcp__snowluma__send_private_msg'), 'only ours are touched');
   for (const n of ['memory', 'recall', 'account', 'qq_send', 'qq_sticker_keep', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__dot-qq__send_group_msg']) assert.ok(sandbox.includes(n), `${n} hidden from a sandbox session`);
@@ -148,7 +149,7 @@ test('compat service: finds qq-bridge, restricts each new agent by owner, guards
   assert.equal(h.api.ownerOfCwd(h.api.bridge().slangCwd), 'qqb-sandbox');
   assert.equal(h.api.ownerOfCwd('/home/me/dot/x'), 'dot');
   const hers = h.create('s1', '/home/me/dot');
-  assert.deepEqual(hers.restricts, [{ deny: ['bash', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search'] }]);
+  assert.deepEqual(hers.restricts, [{ deny: ['bash', 'qq_send', 'phone_zoom', 'mcp__dot-phone__mobile_take_screenshot', 'mcp__dot-vm__browser_navigate', 'mcp__snowluma__send_private_msg', 'mcp__snowluma-host__x', 'mcp__web-search-safe__search'] }]);
   const group = h.create('qqb-g-111-' + 'b'.repeat(32), h.api.bridge().sessionCwd, 'qq-chat-v2');
   assert.ok(group.restricts[0].deny.includes('mcp__dot-vm__browser_navigate') && group.restricts[0].deny.includes('qq_send'));
   assert.equal(group.guards[0]({ name: 'qq_send' }), 'dsh-dot: qq_send is not available in this session (qqb-sandbox)');
@@ -222,10 +223,10 @@ test('doctor: same account, owner account, shared groups, missing bot number', (
 });
 
 test('hiddenFor: a lean conversation of hers sees only her own tools and her QQ actions, whatever else is registered', () => {
-  const names = ['hands', 'qq_send', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'web_search', 'read', 'write',
+  const names = ['hands', 'say', 'qq_send', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'web_search', 'read', 'write',
     'account', 'bash', 'glob', 'grep', 'subagent', 'workflow', 'todo_write', 'plugin_manager', 'present', 'ask_user_question', 'job_list', 'some_tool_added_later',
     'mcp__dot-qq__invoke_action', 'mcp__dot-phone__mobile_swipe_on_screen', 'mcp__dot-vm__browser_click', 'phone_type', 'mcp__snowluma__x'];
   const hidden = hiddenFor('dot-lean', names);
-  assert.deepEqual(names.filter((n) => !hidden.includes(n)), ['hands', 'qq_send', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'read', 'write', 'mcp__dot-qq__invoke_action']);
+  assert.deepEqual(names.filter((n) => !hidden.includes(n)), ['hands', 'say', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'read', 'write', 'mcp__dot-qq__invoke_action']);
   assert.ok(hiddenFor('dot', names).length < hidden.length, 'a conversation begun before keeps what its history was written with');
 });

@@ -74,7 +74,7 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.match(sock.opts.headers.Authorization, /^Bearer [0-9a-f]{48}$/);
   sock.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
   assert.equal(h.ctx.dshQq.connected, true);
-  assert.match(h.sections[0].text(), /qq_send/);
+  assert.match(h.sections[0].text(), /要回就用 say/);
   // a private message from the owner-to-be
   sock.emit('message', JSON.stringify({ post_type: 'message', message_type: 'private', user_id: 20002, self_id: 10001, message: [{ type: 'text', data: { text: '在吗' } }], sender: { nickname: '宽' } }));
   assert.deepEqual(got.map((m) => [m.kind, m.who, m.text, m.fromOwner]), [['private', '宽', '在吗', false]]);
@@ -120,7 +120,8 @@ test('qq: boots with the computer — configures, starts NapCat, connects throug
   assert.ok(id, 'the sticker is named in the text she reads');
   assert.deepEqual(h.fetched, ['https://multimedia.nt.qq.com.cn/download?fileid=1&rkey=x'], 'downloaded once');
   assert.equal(readFileSync(join(process.env.DSH_HOME, 'stickers', `${id}.img`)).toString(), 'GIF89a', 'kept on disk');
-  assert.match(h.sections[0].text(), new RegExp(`sticker:<id>.*${id}`), 'listed in her prompt');
+  assert.match(h.sections[0].text(), new RegExp(`说话时会自己挑着用.*${id}`), 'listed in her prompt');
+  assert.deepEqual(h.ctx.get?.('dshQq')?.stickerList?.().map((s) => s.id) ?? [id], [id], 'and for the call that writes her words');
   const ps = tool.execute({ to: 'owner', images: [`sticker:${id}`, 'face:179'] });
   await tick(5);
   assert.deepEqual(sock.sent[4].params.message, [{ type: 'image', data: { file: `base64://${Buffer.from('GIF89a').toString('base64')}`, sub_type: 1 } }]);
@@ -677,7 +678,7 @@ test('qq: the channel section goes to her sessions only when compat is here', as
   h.ready(); await tick(30);
   FakeSocket.last.emit('message', JSON.stringify({ post_type: 'meta_event', meta_event_type: 'lifecycle', sub_type: 'connect', self_id: 10001 }));
   const text = (id) => h.sections[0].text({ agent: { session: { id, header: { cwd: '/x' } } } });
-  assert.match(text('s1'), /qq_send/);
+  assert.match(text('s1'), /要回就用 say/);
   for (const id of ['s2', 's3', 's4']) assert.equal(text(id), '', `${id} (${owners[id]}) gets no QQ section`);
   h.stop();
 });

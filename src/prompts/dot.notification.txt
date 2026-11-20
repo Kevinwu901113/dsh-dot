@@ -1,2 +1,2 @@
 [{stamp} 手机通知] {messages}
-（{when}{how}；不想理就只回 {silent}。）
+（{when}{how}；不想理就什么都不用做。）

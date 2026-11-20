@@ -80,6 +80,8 @@ export function createStickers(file, { fetch = globalThis.fetch, onChange = () =
       onChange();
       return { id, isNew: true };
     },
+    /** The ones she has, newest last: [{ id, note }] (what the call that writes her words is shown — src/dot/say.js). */
+    saved(n = 12) { return list.filter((s) => s.saved).slice(-n).map((s) => ({ id: s.id, note: s.note || '' })); },
     /** One line for her prompt: the newest ones, newest last. */
     prompt(n = 12) {
       const got = list.filter((s) => s.saved).slice(-n);

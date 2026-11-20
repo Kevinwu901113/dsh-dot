@@ -13,6 +13,8 @@ export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
 export const PHONE_ZOOM_TOOL = 'phone_zoom';
 /** Typing on her phone, through the input method (src/phone/typing.js): the one way text goes in. */
 export const PHONE_TYPE_TOOL = 'phone_type';
+/** Her one way of saying something to anyone (src/dot/say.js): the words are written by a call that is only her card. */
+export const SAY_TOOL = 'say';
 /** Her hands' one way of coming back to her with a question (src/dot/hands.js): theirs alone. */
 export const HANDS_ASK_TOOL = 'ask_her';
 // What her hands keep (compat hides the rest from their sessions): her devices' tools and her accounts come from this
@@ -26,18 +28,19 @@ export const HANDS_HOST_TOOLS = ['bash', 'job_output', 'job_kill', 'web_search',
 //   DOT_TOOLS / DOT_TOOL_PREFIXES: hers alone — her memory, her accounts, her QQ (qq_send and her
 //                                  SnowLuma actions), her day. Never in another plugin's session.
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
-export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
+export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, SAY_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
 /** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
 export const HER_PRESET = 'dot';
 /** Is this tool one a lean conversation of hers keeps (HER_TOOLS, and her QQ's own actions)? */
 export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsWith(QQ_TOOL_PREFIX);
 // What her conversation keeps when it is lean (dot.lean, a conversation begun since it was turned on): her one verb
-// for getting things done (hands), what is speech or her own judgement (her QQ, what she remembers, what she keeps),
+// for getting things done (hands), her one way of speaking (say — qq_send, which takes words as written, is not hers
+// to call), her own judgement (what she remembers, what she keeps),
 // and what only works from her own conversation — a schedule wakes the session that made it, a goal drives it.
 // Everything else the host offers (shell jobs, subagents, workflows, file search, plugin management, the web …) is
 // not hers to see: looking things up is something her hands do (hands device: web). Her own files are still here.
-export const HER_TOOLS = ['hands', 'qq_send', 'qq_sticker_keep', 'memory', 'recall', 'keep_line',
+export const HER_TOOLS = ['hands', SAY_TOOL, 'qq_sticker_keep', 'memory', 'recall', 'keep_line',
   'schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view', 'create_goal', 'update_goal', 'get_goal',
   'read', 'write', 'edit'];
 export const DEVICE_TOOL_PREFIXES = [PHONE_TOOL_PREFIX, VM_TOOL_PREFIX];

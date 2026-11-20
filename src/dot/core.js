@@ -15,13 +15,14 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, inHours, msUntilHours, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT, qqSpoken } from '../qq/qq.js';
 import { typedText } from '../phone/phone.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
+import { createSay } from './say.js';
 import { createTalk } from './talk.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -271,6 +272,12 @@ export const defaults = {
   // and gave her hands nothing in 19 of 25 replays (11-21); at low, 0 of 20 — and it no longer follows whatever the
   // model selector was last set to in some other conversation.
   herEffort: 'low',
+  // What she says is written by a call of its own that is only her card (say.js): its reasoning effort ('' or false =
+  // the model selector's), how long it may be, and how many of the last lines between her and him it is shown.
+  // With thinking it wrote longer (11-21 replays), and length is what he minds most.
+  sayEffort: 'off',
+  sayMaxTokens: 600,
+  sayLines: 12,
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -652,8 +659,6 @@ export function apply(ctx, config = {}) {
       }
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
-      // His business, as her hands brought it back: is anything of it still in her hands? (talk.js)
-      if (t.forHim && !t.fromQq && id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: false, busy: Boolean(hands?.busy()) });
     }
     // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
     if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
@@ -661,50 +666,13 @@ export function apply(ctx, config = {}) {
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
       if (!t.scheduled && !retired(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
     }
-    // The same account of his thing as over QQ (talk.js), for a turn his words opened somewhere else.
-    if (t.hisHere && !t.fromQq) {
-      if (event.type === 'assistant/message' && !event.data?.interrupted) {
-        const text = contentText(event.data?.message?.content);
-        if (text.trim() && !isSilent(text)) { t.spoke = true; talk?.sheSaid(stripSilent(text).split('\n').map((l) => l.trim()).filter(Boolean).at(-1)); }
-      }
-      if (ended) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: false, busy: Boolean(hands?.busy()) });
-    }
-    if (ended && t.elsewhere && !t.fromQq && !t.scheduled) { const last = String(t.last ?? '').trim(); if (last && !isSilent(last)) herSaid(id, stripSilent(last)); }
-    if (!t.scheduled && !t.fromQq) return;
-    if (event.type === 'assistant/message' && !event.data?.interrupted) {
-      const text = contentText(event.data?.message?.content);
-      if (!text.trim()) return;
-      t.text = text; // a scheduled turn's answer is its last non-empty reply
-      // A turn of his words: what she writes is what she says to him — every piece, when she has written it, also
-      // the ones before a tool call ("搜到了，前三条是…" and then the next step for her hands). There is no reply
-      // of hers in such a turn that is not for him.
-      if (t.fromQq && !t.scheduled && !isSilent(text)) {
-        const say = stripSilent(text);
-        t.spoke = true;
-        // Started over because he spoke before anything reached him, and the cancel came too late to abort this
-        // step: it is kept as a draft and shown to her with his next words.
-        if (!t.cancelled && id === lastSession) talk?.sheSaid(say.split('\n').map((l) => l.trim()).filter(Boolean).at(-1));
-        if (t.cancelled) keepUnsent(say.split('\n').map((l) => l.trim()).filter(Boolean));
-        else if (!ctx.get('dshQq')?.connected) herSaid(id, say);
-        else sayOrHandBack(id, say);
-      }
-      return;
-    }
-    if (ended) {
-      const text = t.text.trim();
-      if (t.fromQq && !t.scheduled) {
-        // Everything she wrote went out as she wrote it (above). A turn started over because he spoke first is noted.
-        if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
-        if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
-        // His business, and this turn of it is over: is anything of it still in her hands? (talk.js)
-        if (id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: t.origin === 'open-nudge', busy: Boolean(hands?.busy()) });
-        return;
-      }
-      if (!text || isSilent(text)) { audit('silent', { session: id }); return; }
-      // Over QQ this is on record where it goes out (dshQq.onSent); over another IM, here.
-      const out = cfg.replyCheck ? checkReply(stripSilent(text), replyChecks()).text : stripSilent(text); // her words: brackets out, as on every way out
-      if (!String(out).trim()) { audit('silent', { session: id }); return; }
-      void im.send(out).then((sent) => { audit('delivered', { session: id, sent }); if (sent && !ctx.get('dshQq')?.connected) herSaid(id, out); });
+    // What she writes in a turn is her thinking, and goes to no one. What she says she says with `say` (say.js) —
+    // that is where a line of hers to him is counted (t.spoke). A turn on his business that ends: is anything of
+    // it still in her hands? (talk.js)
+    if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
+      if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
+      if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
+      if (id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: t.origin === 'open-nudge', busy: Boolean(hands?.busy()) });
     }
   });
 
@@ -757,12 +725,6 @@ export function apply(ctx, config = {}) {
   }, { prepend: true });
   // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
   ctx.on('tools/post-execute', async (exec, result, next) => {
-    // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
-    if (exec?.name === 'qq_send' && !result?.isError && isOwnerTarget((exec.input ?? exec.args ?? exec.arguments)?.to, ctx.get('dshQq')?.owner)) {
-      preempts = 0; // something of hers reached him
-      const t = turns.get(exec.agent?.session?.id);
-      if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: exec.agent?.session?.id, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
-    }
     // Typed into her phone's QQ (a chat there, not its search or sign-in): said, as much as a qq_send is. The QQ on her
     // computer does not report what her account sends from elsewhere, so it is recorded here, where the words go in.
     if (exec?.name === PHONE_TYPE_TOOL && !result?.isError) {
@@ -913,6 +875,8 @@ export function apply(ctx, config = {}) {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
     return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? handsLine() : ''].filter(Boolean).join('\n');
   } });
+  // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
+  turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
@@ -1117,70 +1081,56 @@ export function apply(ctx, config = {}) {
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
   // ── her side of the conversation with him ──
-  // Writing (a turn of his words is open, `turns`), sending (its bubbles are going out, `sendingCount`), or neither.
+  // Writing (a turn of his words is open, `turns`), sending (her bubbles are going out, `sendingCount`), or neither.
   // One rule for both: what has not reached him yet gives way to what he just said; what has reached him stands.
   let sending = Promise.resolve(), sendingCount = 0;
-  let unsentDraft = [], unsentAt = 0; // lines she wrote that never reached him: given to her once, with his next words (if they come soon)
-  const UNSENT_KEEP_MS = 5 * 60_000;
-  const keepUnsent = (lines) => { if (lines.length) { unsentDraft.push(...lines); unsentAt = Date.now(); } };
-  const takeUnsent = () => {
-    const fresh = Date.now() - unsentAt <= UNSENT_KEEP_MS, lines = fresh ? unsentDraft : [];
-    if (!fresh && unsentDraft.length) audit('owner-draft-dropped', { lines: unsentDraft.length, ageMs: Date.now() - unsentAt });
-    unsentDraft = []; return lines;
-  };
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
-  /**
-   * The answer of a turn of his goes to his QQ — the one way out for what she says to him without qq_send.
-   * He said something she has not read (still in the buffer): the whole answer is kept back as a draft and
-   * handed to her with his words. Otherwise its bubbles go out one after another; qq.send stops between
-   * bubbles when he speaks, and what was left is kept the same way.
-   */
   const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
-  // What she writes to him is checked like what she sends with qq_send: a piece with a phrase of the list in it is
-  // not sent and is handed back to her once (into the turn when it is still going, else as a turn of its own whose
-  // answer goes to him); what she writes next goes out as it is, so a list that is wrong costs one call.
-  const sayOrHandBack = (id, said) => {
-    const hits = handBack(said)?.hits;
-    if (!hits) return sayToOwner(id, said);
-    audit('reply-check', { session: id, via: 'answer', handedBack: true, hits });
-    void (async () => {
-      try {
-        const found = await resolveLive(id);
-        if (!found || 'error' in found) throw new Error('no conversation');
-        const message = createUserMessage({ content: [{ type: 'text', text: replyCheckText({ hits }) }], source: { kind: 'dsh-dot', form: 'reply-check', to: 'him' } });
-        const agent = found.agent, busy = turns.has(id);
-        if (busy && typeof agent.steer === 'function') agent.steer(message); else if (busy && typeof agent.send === 'function') agent.send(message, 'next-step', true); else agent.followup(message);
-      } catch (err) { logger.warn(`reply check: not handed back (${err.message}); sent as written`); sayToOwner(id, said); }
-    })();
-  };
-  const sayToOwner = (id, said) => {
-    // Stage directions are taken out here; which phrases went through is recorded (the rate tells whether the card
-    // and the list need work).
-    const checked = cfg.replyCheck ? checkReply(said, replyChecks()) : null;
-    if (checked && (checked.stripped || checked.hits.length)) audit('reply-check', { session: id, via: 'answer', stripped: checked.stripped, hits: checked.hits });
-    const text = checked ? checked.text : String(said);
-    const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
-    if (!lines.length) return;
-    // His unread words: in the buffer, or held while her conversation is being handed over (frozenQueue).
-    const waiting = ownerBatch.length + frozenQueue.filter((n) => n.fromOwner).length;
-    if (waiting && preempts < cfg.ownerPreemptMax) {
-      preempts++; keepUnsent(lines);
-      audit('owner-reply-held', { session: id, lines: lines.length, waiting, preempts });
-      return;
-    }
-    sendingCount++;
-    // One job per answer, wholly caught: a failure in it never leaves the chain rejected (the next answer and
-    // his waiting words hang on this chain).
-    sending = sending.then(async () => {
-      const r = await ctx.get('dshQq').send('owner', text);
-      if (r.sent > 0) preempts = 0;
-      const left = r.interrupted ? (r.unsent ?? []).map(String) : [];
-      keepUnsent(left);
-      audit('qq-relayed', { session: id, sent: r.sent, ...(left.length ? { unsent: left.length } : {}), ...(r.error ? { error: r.error } : {}) });
-    }).catch((err) => { logger.warn(`qq relay failed: ${err.message}`); audit('qq-relay-failed', { session: id, error: err.message }); }).finally(() => { sendingCount--; });
-  };
+  /** Has he said something she has not read — still in the buffer, or held while her conversation is being handed over? */
+  const hisUnread = () => ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner);
+  /** What is in her hands, as the call that writes her words is told it: from the code, not from what she says she is doing. */
+  const handsState = () => { const d = hands?.doing?.(); const since = d && ago(d.startedAt, Date.now()); return !d ? prompt('dot.say.state.none').trim() : d.state === 'asking' ? prompt('dot.say.state.asking', { task: d.task }).trim() : prompt('dot.say.state.doing', { task: d.task, since: since ? `（${since}了）` : '' }).trim(); };
+  // What she says (say.js): written by a call that is only her card, checked once, and carried out from here —
+  // to his QQ or anyone's (her bubbles one after another; qq.send stops between them when he speaks), to her own
+  // window when that is where he is talking to her (the tool's output is what he reads there), or over the IM
+  // channel when her QQ is not connected.
+  const say = createSay({
+    card: () => { try { return ctx.get('dshInterlude')?.cardText?.() ?? ''; } catch { return ''; } },
+    call: async ({ system, text }) => {
+      const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
+      const llm = ctx.get('llm');
+      if (!sel || !llm?.stream) throw new Error('no model to say it with');
+      const effort = cfg.sayEffort ? (await effortFor(ctx, sel, cfg.sayEffort)).effort : sel.reasoningEffort;
+      const reply = await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, maxTokens: cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot', form: 'say' } })] }));
+      return reply.text;
+    },
+    recent: (n) => { try { return ctx.get('dotMemory')?.recent?.(n) ?? []; } catch { return []; } },
+    state: handsState,
+    stickers: () => { try { return ctx.get('dshQq')?.stickerList?.() ?? []; } catch { return []; } },
+    check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
+    unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && hisUnread(),
+    lines: cfg.sayLines,
+    audit: (event, data) => audit(event, { session: lastSession, ...data }),
+    send: async ({ to, text, images }) => {
+      const t = turns.get(lastSession);
+      const qq = ctx.get('dshQq');
+      const whole = () => ({ said: String(text).split('\n').filter(Boolean), images: [] });
+      if (to === 'owner' && t?.elsewhere && !t.fromQq) { herSaid(lastSession, text); return whole(); }
+      if (qq?.connected) {
+        sendingCount++;
+        const job = sending.then(() => qq.send(to, text, images));
+        sending = job.catch(() => {});
+        try { return await job; } finally { sendingCount--; }
+      }
+      if (to !== 'owner') throw new Error('her QQ is not connected');
+      if (!(await im.send(text))) throw new Error('no way to reach him: her QQ is not connected and there is no IM target');
+      herSaid(lastSession, text);
+      return whole();
+    },
+  });
+
   /**
    * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
    * steered into it, so she reads them at her next step instead of after the turn (an agent without
@@ -1203,8 +1153,7 @@ export function apply(ctx, config = {}) {
       logger.info(`her agent handle offers: ${methods.join(', ')} (busy now: ${busy}, open turns: ${[...turns.keys()].map((k) => k.slice(0, 16)).join(' ') || 'none'})`);
       audit('agent-handle', { methods, busy, openTurns: turns.size });
     }
-    const unsent = takeUnsent();
-    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via === 'steer' || via === 'send', unsent }), items), source: ownerSource() });
+    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via === 'steer' || via === 'send' }), items), source: ownerSource() });
     try {
       if (via === 'restart') {
         // The cancelled turn's own input stays in her history. His new words are queued in the same tick: waking
@@ -1318,14 +1267,22 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'answered' ? prompt('dot.hands.answered') : v?.status === 'busy' ? prompt('dot.hands.busy', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
         if (args?.stop) return { status: hands.stop('她叫停了') ? 'stopped' : 'idle' };
+        // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
+        // into what her hands are given, as the words to type.
+        let words = '';
+        if (String(args?.say ?? '').trim()) {
+          try { words = await say.compose({ about: args.say, where: String(args?.do ?? '').trim() }); } catch (err) { return { status: 'failed', why: `要打的话没写出来：${err.message}` }; }
+          if (!words) return { status: 'failed', why: '这句话她不想说，没有交出去' };
+        }
+        const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // Her hands are waiting for her: what she says now is her answer, and they carry on with it.
         if (hands.asking()) {
           const his = hands.doing()?.forHim;
-          const answered = hands.answer(args?.do);
+          const answered = hands.answer(given);
           if (his && answered.status === 'answered') talk?.handsStarted();
           return answered;
         }
@@ -1334,11 +1291,35 @@ export function apply(ctx, config = {}) {
         const t = turns.get(lastSession);
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
-        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${String(args?.do ?? '').trim()}`, forHim });
+        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}`, forHim });
         if (forHim && started?.status === 'started') talk?.handsStarted();
         return started;
       },
     }), 'dsh-dot: hands tool');
+    // Her one way of saying something to anyone (say.js). She gives what she knows that bears on it — or nothing —
+    // and the words are written by a call that is only her card; what went out comes back to her as the result.
+    scope.effect(() => scope.tools.register({
+      name: SAY_TOOL,
+      description: prompt('dot.say-tool'),
+      parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'said' ? prompt(v.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(v.said ?? []), ...(v.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (v.unsent ?? []).join('\n') }) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
+      async execute(args) {
+        const to = String(args?.to ?? '').trim() || 'owner';
+        const t = turns.get(lastSession);
+        const his = isOwnerTarget(to, ctx.get('dshQq')?.owner);
+        // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
+        const r = await say.speak({ to: his ? 'owner' : to, about: args?.about, context: args?.context, images: args?.images, unprompted: his && !(t?.fromQq || t?.elsewhere) });
+        if (his && r.status === 'held') preempts++;
+        if (his && r.status === 'said') {
+          preempts = 0; // something of hers reached him
+          if (t) t.spoke = true;
+          talk?.sheSaid((r.said ?? []).at(-1) ?? '');
+          // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
+          if (t && !t.his && !t.fromQq && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
+        }
+        return r;
+      },
+    }), 'dsh-dot: say tool');
     // Her hands' one way of coming back with a question (hands.js): a choice that is hers, words that have to be hers.
     // Said with a tool, so "they need her" is a fact the code has and not something read out of a report.
     scope.effect(() => scope.tools.register({
@@ -1461,8 +1442,10 @@ export function apply(ctx, config = {}) {
     // A lean conversation of hers has her own tools only; one the host still answers to by name is not run.
     if (leanIds.has(id) && !isHerTool(exec.name)) { audit('lean-refused', { session: id, tool: exec.name }); return deny(prompt('dot.lean.not-hers', { tool: exec.name })); }
     // From here on it is about what she is saying, whichever way it goes out (spokenOf).
-    const spoken = spokenOf(exec.name, args);
+    const spoken = exec.name === SAY_TOOL ? { via: 'qq', to: String(args?.to ?? '').trim() || 'owner', text: '' } : spokenOf(exec.name, args);
     if (!spoken) return next();
+    // One way out for her words: a send of the QQ backend's own tools (or qq_send, by name) from her conversation would be words nobody wrote as her.
+    if (spoken.via === 'qq' && exec.name !== SAY_TOOL && isDotSession(id, exec.agent?.session?.header?.cwd)) return deny(prompt('dot.say.instead'));
     // Her hands do not write. What they type on her phone is hers (in the task she gave them) or was shown to them
     // (the screen, an account) — an address is not words. Anything else goes back to her to be said.
     const round = hands?.isHands(id, exec.agent?.session?.header?.cwd) && hands.busy() ? hands.doing() : null;

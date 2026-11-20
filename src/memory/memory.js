@@ -875,6 +875,10 @@ export function apply(ctx, config = {}) {
     /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
     /** What her hands' tools showed them in a round that came back to this conversation: the screen she was sent a picture of. */
     shownTo(session, text) { if (session && text) sawText(String(session), String(text)); },
+    /** The last lines between her and him, oldest first: [{ who: 'owner' | 'her', text, at }] — what was said, as it went out. */
+    recent(n = 12, { withinMs = 12 * 3600000, now = Date.now() } = {}) {
+      return lines.filter((l) => (l.who === 'owner' || (l.who === 'her' && (!l.to || l.to === 'owner'))) && now - l.at <= withinMs).slice(-n).map((l) => ({ who: l.who, text: l.text, at: l.at }));
+    },
     herSaid({ session, text, at, to }) {
       if (!String(text ?? '').trim()) return;
       record({ ...(at ? { at } : {}), who: 'her', session, ...(to ? { to: String(to) } : {}), text: String(text) });

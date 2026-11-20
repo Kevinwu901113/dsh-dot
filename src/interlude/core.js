@@ -50,7 +50,7 @@ export const defaults = {
   canonOnly: false,           // true: keep only the Canon, dot's rules and MCP (VM) sections
   // A line or two on how she talks, after everything else in her conversation's prompt (the Canon's
   // `voice` field, or interlude.voice from her name). false: none.
-  voice: true,
+  voice: false,
   identityFile: '',           // optional extra Canon text file; not read unless set
   idleMinutes: 10,            // her own time does not start within this long of her last turn
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
@@ -486,6 +486,8 @@ export function apply(ctx, config = {}) {
     checks() { return readChecks(home); },
     /** Her card as she reads it ('' when the home has none and the canon is rendered instead). */
     card() { return readCard(home); },
+    /** Her card as the text she is made of — <home>/persona.md, or the canon rendered when there is none: what the call that writes her words gets as its whole system prompt (dot/say.js). */
+    cardText() { return readCard(home) || renderCanon(canon) || ''; },
     /** The imported persona, or null while she runs on the built-in one. */
     canon() { return canon?.source ? { name: canon.storyDefaults?.characterName, title: canon.source.title, author: canon.source.author } : null; },
     /** One line on who she is (for the QQ group scorer): name + the character profile. */
