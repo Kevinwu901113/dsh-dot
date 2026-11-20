@@ -124,18 +124,19 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   h.stop();
 });
 
-test('her hands think at their own effort, whatever the selector says for her; an effort the model does not offer is not sent', async () => {
+test('her hands and she think at their own effort, whatever the selector says; an effort the model does not offer is not sent', async () => {
   const h = harness();
   await h.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
   const request = h.hooks['agent/request'];
   const base = { provider: 'deepseek-account', model: 'deepseek-flash', maxTokens: 256000 };
   assert.deepEqual(await request({ agent: h.agentOf('h1') }, async () => base), { ...base, reasoningEffort: 'low' });
-  assert.equal(await request({ agent: h.agentOf('s1') }, async () => base), base, 'her own requests are as they were');
+  assert.deepEqual(await request({ agent: h.agentOf('s1') }, async () => ({ ...base, reasoningEffort: 'off' })), { ...base, reasoningEffort: 'low' }, 'her own conversation: low, whatever the selector says');
+  assert.equal(await request({ agent: { session: { id: 'x9', header: { cwd: '/elsewhere' } } } }, async () => base), base, 'nobody else\'s');
   h.stop();
-  const none = harness({ handsEffort: 'nope' });
+  const none = harness({ handsEffort: 'nope', herEffort: false });
   await none.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
   assert.equal(await none.hooks['agent/request']({ agent: none.agentOf('h1') }, async () => base), base);
-  const off = harness({ handsEffort: false });
+  const off = harness({ handsEffort: false, herEffort: false });
   await off.tools.hands.execute({ device: 'phone', do: '看一眼' }); await tick();
   assert.equal(await off.hooks['agent/request']({ agent: off.agentOf('h1') }, async () => base), base);
   none.stop(); off.stop();

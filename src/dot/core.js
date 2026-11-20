@@ -267,6 +267,10 @@ export const defaults = {
   // The reasoning effort her hands' requests are sent with ('' or false = whatever dsh's model selector says). They carry a
   // whole thing through by themselves now, on the same model as her; an effort the model does not offer is not sent.
   handsEffort: 'low',
+  // The same for her own conversation. With none, in a conversation that had no example of it yet, she said "我去翻翻"
+  // and gave her hands nothing in 19 of 25 replays (11-21); at low, 0 of 20 — and it no longer follows whatever the
+  // model selector was last set to in some other conversation.
+  herEffort: 'low',
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -894,13 +898,14 @@ export function apply(ctx, config = {}) {
     if (!parts.length) return decision;
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
   });
-  // Her hands' requests go out with their own reasoning effort (defaults.handsEffort), whatever the model selector
-  // says for her: the request's own configuration is replaced, so it is in the logged header and not a per-call drift.
+  // Her hands' requests and her own go out with their own reasoning effort (defaults.handsEffort, herEffort), whatever
+  // the model selector says: the request's own configuration is replaced, so it is in the logged header and not a per-call drift.
   ctx.on('agent/request', async ({ agent }, next) => {
     const config = await next();
     const s = agent?.session;
-    if (!cfg.handsEffort || !config?.provider || !hands?.isHands(s?.id, s?.header?.cwd)) return config;
-    const { effort } = await effortFor(ctx, { provider: config.provider, model: config.model, reasoningEffort: config.reasoningEffort }, cfg.handsEffort);
+    const want = !config?.provider ? '' : hands?.isHands(s?.id, s?.header?.cwd) ? cfg.handsEffort : isDotSession(s?.id, s?.header?.cwd) && !retired(s?.id) ? cfg.herEffort : '';
+    if (!want) return config;
+    const { effort } = await effortFor(ctx, { provider: config.provider, model: config.model, reasoningEffort: config.reasoningEffort }, want);
     return effort && effort !== config.reasoningEffort ? { ...config, reasoningEffort: effort } : config;
   });
   // Her clock: "since the last message" counts from the last line said before this turn began.
