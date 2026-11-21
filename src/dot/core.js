@@ -13,7 +13,7 @@
 //      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
-import { DEFAULT_AWAKE, inHours, msUntilHours, sleepsAtAll, validHours } from '../hours.js';
+import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
 import { HANDS_ASK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
@@ -32,6 +32,7 @@ import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
+import { createSleep } from './sleep.js';
 import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
 import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
@@ -694,40 +695,12 @@ export function apply(ctx, config = {}) {
   // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
   // the app herself; the dsh reply is not relayed anywhere.
   let waking = Promise.resolve();
-  // Her sleep is a state, not a time of day. awakeHours is her habit: outside it she is falling asleep, and is asleep
-  // once it has been quiet for sleepAfterQuietMinutes — so a night she is still talking is a night she is still up, and
-  // what arrives just as she dozes off still reaches her. Asleep, only he wakes her (his words, or any turn of her
-  // conversation); what her phone and her QQ show waits. She wakes at her usual hour, or when woken; either way what
-  // waited is shown to her then, and her next turn is told how long she slept — how she takes that is hers.
-  let asleepSince = Number(store.get('asleepSince') || 0), lastStir = Date.now(), woke = null;
-  const sleepListeners = new Set();
+  // Her sleep (sleep.js): asleep, only he wakes her; what her phone and her QQ show waits, and is shown when she wakes.
+  const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => quiet(),
+    onWake: () => { if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); } } });
+  const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
   const sleeps = sleepsAtAll(cfg.awakeHours);
-  const awake = () => !asleepSince;
-  const stir = () => { lastStir = Date.now(); };
-  const wakeUp = (by) => {
-    if (!asleepSince) { stir(); return; }
-    woke = { by, at: Date.now(), sleptMs: Date.now() - asleepSince, untilUsualMs: msUntilHours(cfg.awakeHours) };
-    asleepSince = 0; store.set('asleepSince', 0); stir();
-    audit('woke', { by, sleptMs: woke.sleptMs });
-    if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
-  };
-  const sleepTick = () => {
-    const usual = inHours(cfg.awakeHours);
-    if (asleepSince) { if (usual) wakeUp('morning'); return; }
-    if (usual) return;
-    if (!quiet() || Date.now() - lastStir < cfg.sleepAfterQuietMinutes * 60000) return;
-    asleepSince = Date.now(); store.set('asleepSince', asleepSince); woke = null;
-    audit('asleep', { quietMs: asleepSince - lastStir });
-    for (const fn of sleepListeners) { try { fn(asleepSince); } catch (err) { logger.warn(`onSleep failed: ${err.message}`); } }
-  };
-  ctx.effect(() => { const t = setInterval(sleepTick, 30000); t.unref?.(); return () => clearInterval(t); }, 'dsh-dot: her sleep');
-  const span = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m < 60 ? `${m} 分钟` : `${Math.floor(m / 60)} 小时${m % 60 ? ` ${m % 60} 分钟` : ''}`; };
-  turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => {
-    if (!woke || agent.session.id !== lastSession) return '';
-    const w = woke; woke = null;
-    if (Date.now() - w.at > 3600000) return ''; // long since: no longer "just woke"
-    return w.by === 'morning' ? prompt('dot.woke.morning', { slept: span(w.sleptMs) }) : prompt('dot.woke', { slept: span(w.sleptMs), left: span(w.untilUsualMs) });
-  } });
+  turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === lastSession ? sleep.wokeNote() : '') });
   // Her conversation and her hands think at their own effort (defaults.herEffort, handsEffort), whatever the model
   // selector was last set to. It is the session's own selection, set through the agent before anything is sent into
   // it: recorded for that session only, kept, and nothing is done when it already says so. The host fixes a step's
@@ -1456,8 +1429,8 @@ export function apply(ctx, config = {}) {
     awakeHours: cfg.awakeHours,
     sleeps,
     awake,
-    get asleepSince() { return asleepSince; },
-    onSleep: (fn) => { sleepListeners.add(fn); return () => sleepListeners.delete(fn); },
+    get asleepSince() { return sleep.asleepSince(); },
+    onSleep: sleep.onSleep,
     stats,
     retired,
     /** Is this session hers (her conversation, an IM-opened one, one that was hers): what compat asks before letting it see her tools. */
