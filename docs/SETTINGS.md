@@ -219,7 +219,6 @@ setx DSH_DOT_COMPUTER off
 | `interludeQueueMax` | `3` | 她自己时间里的事（`interlude` 交来的）一次一件，在她的对话里做，只在没有别的事时开始；排满这么多件，最早的作废（`dropped`） |
 | `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`） |
 | `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
-| `approvalWaitMs` | `600000` | 她的会话里要审批时立刻告诉你（QQ 连着发 QQ，否则 IM；一轮只发第一条，后面的只计数）；这么久没人点就当拒绝，再告诉你一句过期了；0 = 一直等 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 
 ### `llm`（模型请求闸门，`src/llm-gate.js`）

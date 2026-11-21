@@ -487,9 +487,11 @@ export function apply(ctx, config = {}, deps = {}) {
       cli ||= new (createRequire(import.meta.url)('@mobilenext/mobile-mcp/lib/mobilecli.js').Mobilecli)().getPath();
       const { stdout } = await exec(cli, ['dump', 'ui', '--device', mcpDevice()], { env: env(), timeout: 15_000, maxBuffer: 32 * 1024 * 1024 });
       const items = itemsFromElements(JSON.parse(String(stdout)).data?.elements);
-      if (items.length) return items;
+      if (items.length) { phone.lastScreen = { items, at: Date.now() }; return items; }
     } catch (err) { logger.debug?.(`dump ui: ${err.message}`); }
-    return dumpUi((cmd) => phone.shell(cmd));
+    const items = await dumpUi((cmd) => phone.shell(cmd));
+    phone.lastScreen = { items, at: Date.now() };
+    return items;
   };
   // Typing (typing.js): through the input method, installed on her phone the first time it is needed.
   const typing = createTyping({

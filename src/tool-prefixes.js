@@ -17,6 +17,8 @@ export const PHONE_TYPE_TOOL = 'phone_type';
 export const SAY_TOOL = 'say';
 /** Her hands' one way of coming back to her with a question (src/dot/hands.js): theirs alone. */
 export const HANDS_ASK_TOOL = 'ask_her';
+/** His yes to something of hers that needs it (src/dot/consent.js): she records it, in a turn his words opened. */
+export const HIS_OK_TOOL = 'his_ok';
 // What her hands keep (compat hides the rest from their sessions): her devices' tools and her accounts come from this
 // plugin; of the host's, the shell (it runs in her computer), looking things up, and reading a file or a picture.
 // Everything else the host offers — subagents, workflows, schedules, messages, plugin management, asking the user —
@@ -28,7 +30,7 @@ export const HANDS_HOST_TOOLS = ['bash', 'job_output', 'job_kill', 'web_search',
 //   DOT_TOOLS / DOT_TOOL_PREFIXES: hers alone — her memory, her accounts, her QQ (qq_send and her
 //                                  SnowLuma actions), her day. Never in another plugin's session.
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
-export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, SAY_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
+export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
 /** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
 export const HER_PRESET = 'dot';
@@ -40,7 +42,7 @@ export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsW
 // and what only works from her own conversation — a schedule wakes the session that made it, a goal drives it.
 // Everything else the host offers (shell jobs, subagents, workflows, file search, plugin management, the web …) is
 // not hers to see: looking things up is something her hands do (hands device: web). Her own files are still here.
-export const HER_TOOLS = ['hands', SAY_TOOL, 'qq_sticker_keep', 'memory', 'recall', 'keep_line',
+export const HER_TOOLS = ['hands', SAY_TOOL, HIS_OK_TOOL, 'qq_sticker_keep', 'memory', 'recall', 'keep_line',
   'schedule_create', 'schedule_edit', 'schedule_list', 'schedule_view', 'create_goal', 'update_goal', 'get_goal',
   'read', 'write', 'edit'];
 export const DEVICE_TOOL_PREFIXES = [PHONE_TOOL_PREFIX, VM_TOOL_PREFIX];

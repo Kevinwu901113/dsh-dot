@@ -47,7 +47,7 @@ export async function collectState(ctx, opts = {}) {
       qq: qq ? await safe(() => qq.status()) : null,
       computer: computer ? await safe(() => computer.status()) : null,
     },
-    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], approvals: dot.approvals?.() ?? [], things: dot.things?.(20) ?? [] } : null,
+    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], consent: dot.consent?.() ?? null, things: dot.things?.(20) ?? [] } : null,
     interlude: interlude ? await safe(() => interlude.status()) : null,
     memory: memory ? await safe(() => memory.panel()) : null,
     // The last N scenes (one wake until its turn ended), read back from the records that exist.
@@ -110,12 +110,12 @@ const badge=(cls,label,text)=>'<span class="badge '+cls+'"><i class="dotc"></i>'
 const tile=(n,label)=>'<div class="tile"><b>'+esc(n)+'</b><span>'+esc(label)+'</span></div>';
 const bar=(v,max)=>'<div class="bar"><i style="width:'+Math.min(100,Math.round(100*(v||0)/(max||1)))+'%"></i></div>';
 const ZH=true; // the rest of this page is Chinese; Electron's navigator.language said en on a Chinese Mac
-const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',stalled:(m)=>'卡住 '+m+' 分钟',approval:(m)=>'等审批 '+m+' 分钟',timedOut:'已超时',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
+const T=ZH?{title:(n)=>'最近 '+n+' 场',none:'还没有记录（她被叫醒、幕间、玩过之后这里会出现）',run:'进行中',done:'完成',fail:'出错',stalled:(m)=>'卡住 '+m+' 分钟',quiet:'没出声',tools:'工具',model:'模型',times:' 次',tin:'token 入',tout:'出',
   src:{owner:'你',qq:'QQ',phone:'手机',interlude:'幕间',schedule:'定时',play:'玩'},
   phase:{advance:'推进','follow-up':'跟进',intent:'打算到点',seed:'开场',diary:'日记'},
   act:{qq:'回 QQ',reply:'回你',image:'发图',sticker:'存表情',saw:'看了',like:'点赞',comment:'评论',follow:'关注',play:'玩',install:'装 App',diary:'写日记',interlude:'幕间',contact:'主动联系',approval:'审批',look:'去看',try:'试新的',post:'发帖'},
   via:{web:'web',phone:'手机',computer:'电脑'}}
- :{title:(n)=>'Last '+n+' scenes',none:'Nothing yet (scenes appear once she is woken, has an interlude round, or plays)',run:'running',done:'done',fail:'failed',stalled:(m)=>'stalled '+m+' min',approval:(m)=>'approval '+m+' min',timedOut:'timed out',quiet:'stayed quiet',tools:'tools',model:'model',times:'×',tin:'tokens in',tout:'out',
+ :{title:(n)=>'Last '+n+' scenes',none:'Nothing yet (scenes appear once she is woken, has an interlude round, or plays)',run:'running',done:'done',fail:'failed',stalled:(m)=>'stalled '+m+' min',quiet:'stayed quiet',tools:'tools',model:'model',times:'×',tin:'tokens in',tout:'out',
   src:{owner:'You',qq:'QQ',phone:'Phone',interlude:'Interlude',schedule:'Scheduled',play:'Play'},
   phase:{advance:'advance','follow-up':'follow-up',intent:'intent',seed:'seed',diary:'diary'},
   act:{qq:'QQ reply',reply:'Replied',image:'Image',sticker:'Kept sticker',saw:'Saw',like:'Like',comment:'Comment',follow:'Follow',play:'Play',install:'Install app',diary:'Diary',interlude:'Interlude',contact:'Reached out',approval:'Approval',look:'Looked',try:'Tried',post:'Posted'},
@@ -131,7 +131,7 @@ function renderActivity(act){
   if(!list||!list.length){$('activity').innerHTML='<span class="mute">'+esc(T.none)+'</span>';return}
   $('activity').innerHTML=list.map((sc)=>{
     const id=sc.at+'|'+sc.session+'|'+sc.source.kind;
-    const st=sc.status==='running'?'<span class="st run">'+T.run+'</span>':sc.status==='stalled'?'<span class="st fail">'+esc(T.stalled(sc.minutes||0))+'</span>':sc.status==='approval'?'<span class="st warn">'+esc(T.approval(sc.minutes||0))+'</span>':sc.status==='timed-out'?'<span class="st fail">'+T.timedOut+'</span>':sc.status==='failed'?'<span class="st fail">'+T.fail+'</span>':'<span class="st">'+T.done+'</span>';
+    const st=sc.status==='running'?'<span class="st run">'+T.run+'</span>':sc.status==='stalled'?'<span class="st fail">'+esc(T.stalled(sc.minutes||0))+'</span>':sc.status==='failed'?'<span class="st fail">'+T.fail+'</span>':'<span class="st">'+T.done+'</span>';
     const first=sc.actions[0];
     const prev=first?'<span class="tag">'+esc(actLabel(first))+'</span>'+esc(first.text)+(sc.actions.length>1?' <span class="mute">+'+(sc.actions.length-1)+'</span>':''):'<span class="mute">'+esc(sc.quiet?T.quiet:(sc.trigger||''))+'</span>';
     const f=sc.stats||{},foot=[];
@@ -158,7 +158,7 @@ function render(s){
   if(d.computer) b+=badge(d.computer.state==='ready'?'ok':d.computer.state==='error'?'bad':'warn','电脑',(d.computer.state==='starting'&&cstage[d.computer.stage])||cstate[d.computer.state]||d.computer.state||'');
   if(d.computer&&(d.computer.gatewayOpen||d.computer.portRelayOpen)) b+=badge('bad','电脑网关',d.computer.gatewayOpen?'无密钥开放':'端口转发未关');
   if(m&&m.conversation) b+=badge(m.conversation.session?'ok':'warn','她的对话','第 '+m.gen+' 段 · '+fmt(m.conversation.tokens)+' / '+fmt(m.conversation.handoffAt)+' token');
-  for(const t of (dot&&dot.turns)||[]){if(t.state==='running')continue;const who=t.conversation?'她的对话':'会话';const mins=Math.floor((t.state==='approval'?t.waitMs:t.idleMs)/60000);b+=badge(t.state==='approval'?'warn':'bad',who,t.state==='approval'?'等审批 '+mins+' 分钟 · '+(t.tool||''):t.state==='timed-out'?'审批已超时，卡住 '+mins+' 分钟':'卡住 '+mins+' 分钟 · '+(t.doing||''));}
+  for(const t of (dot&&dot.turns)||[]){if(t.state==='running')continue;const who=t.conversation?'她的对话':'会话';const mins=Math.floor(t.idleMs/60000);b+=badge('bad',who,'卡住 '+mins+' 分钟 · '+(t.doing||''));}
   for(const n of Array.isArray(s.prompts)?s.prompts:[])b+=badge('warn','提示词覆盖',n);
   $('badges').innerHTML=b||'<span class="mute">没有组件在线</span>';
   if(it){
@@ -173,6 +173,14 @@ function render(s){
     const word={done:'做完',stopped:'被停',failed:'没做成',timeout:'太久',stuck:'卡住'};
     let h='<div class="kv">';
     for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.tokens?(e.tokens.in||0)+(e.tokens.cached||0)+(e.tokens.out||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?' · '+fmt(tk)+' token':'')+'</span></span>';}
+    h+='</div>';
+    $('now').innerHTML+=h;
+  }
+  const cs=dot&&dot.consent;
+  if(cs&&((cs.asking||[]).length||(cs.standing||[]).length)){
+    let h='<div class="kv">';
+    for(const a of cs.asking||[])h+='<span>等你点头</span><span>'+esc(a.what||a.kind)+'</span>';
+    for(const g of cs.standing||[])h+='<span>你说过都行</span><span>'+esc(g.what||g.kind)+(g.subject?' <span class="mute">· '+esc(g.subject)+'</span>':'')+'</span>';
     h+='</div>';
     $('now').innerHTML+=h;
   }

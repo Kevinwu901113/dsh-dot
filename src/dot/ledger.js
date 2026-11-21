@@ -3,7 +3,7 @@
 // and what the panel shows all come from here, never from what a model remembers having done.
 //   entry = { id, asker: 'him' | 'her', device, task, state: 'queued' | 'running' | 'ended',
 //             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', why?, by?: 'him' | 'her',
-//             question?, result?, steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
+//             question?, ask?: { for: 'her' | 'him', kind?, subject?, screen? }, result?, steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
 //             shot?: path of the screen as it was at the end, told?: at }
 // State and outcome are two things: a thing is ended once, and how it ended does not change. A restart ends whatever
 // was not ended ('failed', why 'restart') — the device may have been left halfway, and that is told once.
@@ -42,10 +42,10 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
     /** Counted as it goes; written down with the next change of state. */
     count(id, { steps = 0, tokens } = {}) { const e = find(id); if (!e) return; e.steps += steps; if (tokens) for (const k of ['in', 'cached', 'out']) e.tokens[k] += Number(tokens[k] ?? 0) || 0; },
     /** It is over, this way. Once: an ended thing stays as it ended. */
-    end(id, { outcome, why = '', by = '', question = '', result = '' } = {}) {
+    end(id, { outcome, why = '', by = '', question = '', result = '', ask = null } = {}) {
       const e = find(id);
       if (!e || e.state === 'ended') return e;
-      Object.assign(e, { state: 'ended', outcome, endedAt: now(), ...(why ? { why } : {}), ...(by ? { by } : {}), ...(question ? { question } : {}), ...(result ? { result } : {}) });
+      Object.assign(e, { state: 'ended', outcome, endedAt: now(), ...(why ? { why } : {}), ...(by ? { by } : {}), ...(question ? { question } : {}), ...(ask ? { ask } : {}), ...(result ? { result } : {}) });
       save();
       return e;
     },

@@ -9,19 +9,20 @@
 // What is left, because no plugin does it:
 //   1. results of scheduled turns in <home> go to IM through dsh-im's public `send()`,
 //      unless the reply is only DOT_SILENT (nothing worth reporting);
-//   2. an approval asked in her sessions is announced to the owner (QQ when connected, else IM) with
-//      the live-view link, and taken as rejected when nobody answers within approvalWaitMs;
+//   2. what of hers needs him (gates.js) is asked of him in her words, never with a button; his yes is kept (consent.js);
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
 import { HANDS_SOURCE, createHands, outcomeOf } from './hands.js';
 import { createLedger } from './ledger.js';
+import { approvalKind, classify, KINDS, HIM_KINDS } from './gates.js';
+import { createConsent } from './consent.js';
 import { createSay } from './say.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -109,33 +110,19 @@ export const defaults = {
   howtoMinSteps: 12,
   howtoMaxChars: 800,
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
-  // Liveness. An approval in her sessions nobody answers within approvalWaitMs is taken as rejected
-  // (0 = wait for ever). A turn with no session event for turnStallMs is stalled (he is told once).
-  approvalWaitMs: 600000,
+  // Liveness: a turn with no session event for turnStallMs is stalled (he is told once).
   turnStallMs: 300000,
+  // What one thing of her hands may cost before it stops and he is asked (tokens: new input + output + a tenth of the
+  // cached input, as DeepSeek prices them). 0: no limit.
+  thingCostCap: 600000,
 };
 
-/** What she reads when an approval nobody answered expired (in place of dsh's "the user rejected tool"). */
-export const approvalTimeoutText = (minutes) => prompt('dot.approval-timeout', { minutes });
-/** The owner's one message per turn for the approvals she is waiting on (the first one's details). */
-export function approvalNotice({ tool, reason = '', link = '', minutes = 0, count = 1 }) {
-  const r = String(reason ?? '').trim();
-  const lines = [`🔐 她在等你批 ${count} 件事，在 DeepSeek Harness 里处理${minutes ? `；${minutes} 分钟没人点就当拒绝` : ''}。`, `${tool || '工具调用'}${r ? `：${r}` : ''}`];
-  if (link && !r.includes(link)) lines.push(`实时画面：${link}`);
-  return lines.filter(Boolean).join('\n');
-}
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
 export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
-/**
- * An open turn as the panel and /dot show it: 'approval' (waiting on one, not yet expired),
- * 'timed-out' (stalled after an approval expired), 'stalled' (no session event for turnStallMs), 'running'.
- */
-export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStallMs, approval } = {}) {
+/** An open turn as the panel and /dot show it: 'stalled' (no session event for turnStallMs) or 'running'. */
+export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStallMs } = {}) {
   const idleMs = Math.max(0, now - (t.lastEventAt ?? t.startedAt ?? now));
-  const stalled = turnStallMs > 0 && idleMs >= turnStallMs;
-  if (approval && !approval.timedOutAt) return { state: 'approval', idleMs, waitMs: Math.max(0, now - approval.since), tool: approval.tool };
-  if (stalled) return { state: t.approvalTimedOutAt || approval?.timedOutAt ? 'timed-out' : 'stalled', idleMs };
-  return { state: 'running', idleMs };
+  return { state: turnStallMs > 0 && idleMs >= turnStallMs ? 'stalled' : 'running', idleMs };
 }
 
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
@@ -349,11 +336,10 @@ export function apply(ctx, config = {}) {
   const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
   const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
 
-  // 1 + 2. Scheduled turns in dot's sessions: silence or deliver; announce approvals.
+  // 1. Her turns.
   const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
-  const approvals = new Map(); // callId (else the log's id) → { session, tool, reason, since, eventId?, notified?, timedOutAt? }
   let howtoFor = () => null;  // set where her phone notes are (below)
-  const expiredCalls = new Map(); // callId → minutes waited: its tool result is rewritten (tools/post-execute)
+  const askedCalls = new Map(); // callId → what of it needs his yes: its tool result says so (tools/post-execute)
   // Her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask). A lean
   // conversation is one made with her own agent preset (HER_PRESET): the host's tools come with a session's preset
   // and nothing a plugin can do afterwards takes them out of its requests — not tools.restrict() (it does not reach
@@ -379,11 +365,13 @@ export function apply(ctx, config = {}) {
   const thingsLines = (now = Date.now()) => {
     const title = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
     const lines = ledger.unfinished().map((e) => prompt(e.state === 'running' ? 'dot.things.running' : 'dot.things.queued', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
-    for (const e of ledger.recent(10)) {
-      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > 3600000) continue;
+    const recent = ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
+    for (const e of recent) {
+      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > 3600000 || takenUp.has(e.id)) continue;
       if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
       else if (e.outcome === 'stuck') lines.push(prompt('dot.things.stuck', { what: title(e.task), question: e.question ?? '' }).trim());
     }
+    for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
     return lines.join('\n');
   };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
@@ -416,13 +404,6 @@ export function apply(ctx, config = {}) {
       if (event.type === 'tool/call') { open.doing = shortTool(event.data?.name); open.tools = (open.tools ?? 0) + 1; }
       if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
     }
-    // Pending approvals (the log's pair; the answerer below adds the ones it sees first).
-    if (event.type === 'approval/asked') {
-      const key = event.data?.callId ?? event.data?.id;
-      if (key && !approvals.has(key)) approvals.set(key, { session: id, tool: String(event.data?.toolName ?? ''), reason: String(event.data?.reason ?? ''), since: Date.now() });
-      if (key) approvals.get(key).eventId = event.data?.id;
-    }
-    if (event.type === 'approval/decided') for (const [k, a] of approvals) if (a.eventId === event.data?.id) approvals.delete(k);
     if (event.type === 'turn/end' && !retired(id)) setLast(id);
     if ((event.type === 'turn/start' || event.type === 'turn/end') && id === lastSession) wakeUp('turn'); // a turn of her conversation: she is up (or stays up)
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
@@ -501,54 +482,24 @@ export function apply(ctx, config = {}) {
     }
   });
 
-  // 2. Approvals in her sessions: he is told at once (QQ when connected, else IM), and an ask nobody
-  // answers within approvalWaitMs is rejected — an unanswered one held an errand for 13 hours
-  // (11-04). Prepended, so it wraps the answerers behind it (the UI); their late answer is dropped.
-  const liveLink = (toolName) => {
-    const vm = (String(toolName ?? '').startsWith(PHONE_TOOL_PREFIX) ? phone()?.status?.() : computer()?.status?.()) ?? {};
-    return vm.publicLiveViewUrl || vm.liveViewUrl || '';
-  };
+  // 2. What of hers needs him (gates.js): nothing waits on a button. A request the host or a plugin gates in her
+  // sessions is let through when his yes covers it (consent.js), and otherwise refused at once: in her hands' session
+  // the thing ends there as a question for him; in her conversation she is told to ask him first.
   const hers = (agent) => { const s = agent?.session; return Boolean(s?.id) && (isDotSession(s.id, s.header?.cwd) || retired(s.id) || turns.has(s.id) || Boolean(hands?.isHands(s.id, s.header?.cwd))); };
-  const EXPIRED = Symbol('expired'), WITHDRAWN = Symbol('withdrawn');
   ctx.on('approval/request', async (req, next) => {
     if (!hers(req.agent)) return next();
-    const id = req.agent.session.id;
-    const key = req.callId ?? Symbol('approval');
-    const a = approvals.get(key) ?? { session: id, tool: String(req.toolName ?? ''), reason: String(req.reason ?? ''), since: Date.now() };
-    approvals.set(key, a);
-    const wait = Number(cfg.approvalWaitMs) || 0;
-    const minutes = wait > 0 ? Math.max(1, Math.round(wait / 60000)) : 0;
-    a.notified = true;
-    // One message per turn (16 in 7 minutes on 11-04): the first ask; later ones only count.
-    const t = turns.get(id);
-    const count = t ? (t.approvalsAsked = (t.approvalsAsked ?? 0) + 1) : 1;
-    if (count === 1) {
-      void im.send(approvalNotice({ tool: req.toolName, reason: req.reason, link: liveLink(req.toolName), minutes, count: [...approvals.values()].filter((x) => x.session === id).length }), 'plain');
-      audit('approval-notified', { session: id, tool: req.toolName, retired: retired(id) });
-    } else audit('approval-merged', { session: id, tool: req.toolName, count });
-    if (!wait) { try { return await next(); } finally { approvals.delete(key); } }
-    let timer, onAbort;
-    const expired = new Promise((r) => {
-      timer = setTimeout(() => r(EXPIRED), wait); timer.unref?.();
-      onAbort = () => r(WITHDRAWN);
-      req.signal?.addEventListener?.('abort', onAbort, { once: true });
-    });
-    try {
-      const out = await Promise.race([Promise.resolve().then(() => next()), expired]);
-      if (out === WITHDRAWN) return 'cancelled';
-      if (out !== EXPIRED) return out;
-      a.timedOutAt = Date.now();
-      if (t) { t.approvalTimedOutAt = a.timedOutAt; t.doing = `${shortTool(req.toolName)}（审批过期）`; }
-      if (req.callId !== undefined) expiredCalls.set(req.callId, minutes);
-      audit('approval-timeout', { session: id, tool: req.toolName, waitedMs: wait, retired: retired(id) });
-      void im.send(`⌛ dot: ${req.toolName} 的审批 ${minutes} 分钟没人点，过期了，当拒绝处理——她放下了这步。`, 'plain');
-      return 'rejected';
-    } finally {
-      clearTimeout(timer); req.signal?.removeEventListener?.('abort', onAbort);
-      approvals.delete(key);
-    }
+    const s = req.agent.session;
+    const k = approvalKind(req.toolName, req.reason);
+    const theirs = Boolean(hands?.isHands(s.id, s.header?.cwd));
+    const thing = theirs ? hands.doing()?.id ?? '' : '';
+    if (consent.allows({ kind: k.kind, subject: k.subject, thing })) { audit('consent-used', { session: s.id, kind: k.kind, thing }); return 'approved'; }
+    if (theirs) hands.ask(prompt('dot.gates.ask.q', { what: k.what }), { for: 'him', kind: k.kind, subject: k.subject });
+    else consent.ask(k);
+    if (req.callId !== undefined) askedCalls.set(req.callId, { what: k.what, theirs });
+    audit('consent-asked', { session: s.id, kind: k.kind, tool: req.toolName, thing });
+    return 'rejected';
   }, { prepend: true });
-  // dsh words a rejection as "the user rejected tool …": an expired one says what happened instead.
+  // dsh words a refusal as "the user rejected tool …": one that waits for his yes says so instead.
   ctx.on('tools/post-execute', async (exec, result, next) => {
     // Typed into her phone's QQ (a chat there, not its search or sign-in): said, as much as a qq_send is. The QQ on her
     // computer does not report what her account sends from elsewhere, so it is recorded here, where the words go in.
@@ -559,14 +510,14 @@ export function apply(ctx, config = {}) {
         if (text && /^com\.tencent\.mobileqq\//i.test(fg) && !/search|login|register|verify/i.test(fg)) { ctx.get('dotMemory')?.herSaid?.({ session: lastSession, text, to: '手机QQ' }); audit('said-on-phone', { chars: text.length }); }
       } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
     }
-    const minutes = expiredCalls.get(exec?.callId);
+    const asked = askedCalls.get(exec?.callId);
     const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
-    if (minutes === undefined && !note) return next();
-    if (minutes !== undefined) expiredCalls.delete(exec.callId);
+    if (asked === undefined && !note) return next();
+    if (asked !== undefined) askedCalls.delete(exec.callId);
     const d = await next();
     const contexts = [...(d?.additionalContexts ?? []), ...(note ? [createUserMessage({ content: [{ type: 'text', text: note }], source: { kind: 'dsh-dot', form: 'manual' } })] : [])];
-    const out = minutes !== undefined ? { kind: 'block', feedback: [{ type: 'text', text: approvalTimeoutText(minutes) }] } : { ...d };
+    const out = asked !== undefined ? { kind: 'block', feedback: [{ type: 'text', text: prompt(asked.theirs ? 'dot.gates.ask' : 'dot.gates.asked.her', { what: asked.what }) }] } : { ...d };
     if (contexts.length) out.additionalContexts = contexts; else delete out.additionalContexts;
     return out;
   });
@@ -800,6 +751,9 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => () => clearTimeout(phoneHomeTimer), 'dsh-dot: phone back to its home screen');
   // The book of things (ledger.js): every thing she gives her hands, and what came of it.
   const ledger = createLedger({ store });
+  // What he said yes to (consent.js).
+  const consent = createConsent({ store });
+  const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
     create: async (cwd) => {
@@ -813,6 +767,7 @@ export function apply(ctx, config = {}) {
     message: (text) => createUserMessage({ content: [{ type: 'text', text }], source: HANDS_SOURCE }),
     textOf: contentText,
     store, ledger,
+    overCap: (e) => (cfg.thingCostCap > 0 && costOf(e) > cfg.thingCostCap && !consent.allows({ kind: 'spend', thing: e.id }) ? prompt('dot.gates.spend.q', { tokens: Math.round(costOf(e) / 1000) }) : ''),
     // A session her hands are done with is put away: one per thing, so they pile up otherwise.
     retire: async (id) => { try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.debug?.(`hands session not archived: ${err.message}`); } },
     audit, maxMs: cfg.handsMaxMs,
@@ -836,10 +791,12 @@ export function apply(ctx, config = {}) {
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
-      const lead = r.question
+      const lead = r.question && r.ask?.for === 'him'
+        ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
+        : r.question
         ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
         : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' });
-      const content = [{ type: 'text', text: lead.trim() + (job.forHim ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
+      const content = [{ type: 'text', text: lead.trim() + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
       if (r.status !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
         try {
           const images = ctx.get('attachments');
@@ -958,7 +915,10 @@ export function apply(ctx, config = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
     const facts = factsFor(t);
     audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
-    const r = await say.speak({ to: 'owner', about, facts, images, unprompted: !(t?.fromQq || t?.elsewhere) });
+    // A question for him that needs the screen (a QR code to scan): it goes with what she says.
+    const ended = t?.thing ? ledger.get(t.thing) : null;
+    const shots = ended?.outcome === 'stuck' && ended.ask?.screen && ended.device === 'phone' ? ['phone:screen'] : [];
+    const r = await say.speak({ to: 'owner', about, facts, images: [...[].concat(images ?? []), ...shots], unprompted: !(t?.fromQq || t?.elsewhere) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
@@ -1104,7 +1064,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
         if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(lastSession); const stopped = hands.stop('她叫停了', { by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
@@ -1124,7 +1084,8 @@ export function apply(ctx, config = {}) {
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
-        const before = t?.thing ? ledger.get(t.thing) : null;
+        // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
+        const before = t?.thing ? ledger.get(t.thing) : args?.after ? ledger.recent(10).find((e) => e.device === device) : null;
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.result ? `停下时说的是：${head(before.result, 300)}` : '没有留下话' }).trim()}` : '';
         const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
@@ -1137,21 +1098,44 @@ export function apply(ctx, config = {}) {
       name: SAY_TOOL,
       description: prompt('dot.say-tool'),
       parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'needs-ok' ? prompt('dot.gates.asked.her', { what: v.what ?? '' }) : v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
       async execute(args) {
         const to = String(args?.to ?? '').trim() || 'owner';
         if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(lastSession), { about: args?.about, images: args?.images });
+        // Someone she does not talk with, a group gone quiet, a file off her devices: his yes first (gates.js).
+        const why = ctx.get('dshQq')?.gateFor?.({ to, images: args?.images ?? [] });
+        if (why) {
+          const k = approvalKind('qq_send', why);
+          if (!consent.allows({ kind: k.kind, subject: k.subject })) { consent.ask(k); audit('consent-asked', { session: lastSession, kind: k.kind, to }); return { status: 'needs-ok', what: k.what }; }
+          audit('consent-used', { session: lastSession, kind: k.kind, to });
+        }
         return say.speak({ to, about: args?.about, context: args?.context, images: args?.images });
       },
     }), 'dsh-dot: say tool');
+    // His yes, in his own words (consent.js): only in a turn his words opened, kept with the kind of thing it is for.
+    scope.effect(() => scope.tools.register({
+      name: HIS_OK_TOOL,
+      description: prompt('dot.gates.ok-tool'),
+      parameters: { type: 'object', properties: { kind: { type: 'string', enum: Object.keys(KINDS), description: Object.entries(KINDS).map(([k, v]) => `${k}：${v}`).join('；') }, always: { type: 'boolean', description: '他明说以后这种都行才填 true' } }, required: ['kind'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
+      async execute(args) {
+        const t = turns.get(lastSession);
+        const kind = String(args?.kind ?? '');
+        if (!KINDS[kind] || !(t?.fromQq || t?.elsewhere)) { audit('consent-refused', { session: lastSession, kind }); return { status: 'refused', kind }; }
+        const waiting = ledger.recent(10).find((e) => e.ask?.kind === kind && e.ask?.subject) ?? consent.asking().find((a) => a.kind === kind && a.subject);
+        const g = consent.grant({ kind, subject: waiting?.ask?.subject ?? waiting?.subject ?? '', words: t.said ?? '', always: Boolean(args?.always) });
+        audit('consent-granted', { session: lastSession, kind, subject: g.subject, always: g.always });
+        return { status: 'ok', kind };
+      },
+    }), 'dsh-dot: his yes');
     // Her hands' one way of coming back with a question (hands.js): a choice that is hers, words that have to be hers.
     // Said with a tool, so "they need her" is a fact the code has and not something read out of a report.
     scope.effect(() => scope.tools.register({
       name: HANDS_ASK_TOOL,
       description: prompt('dot.hands.ask-tool'),
-      parameters: { type: 'object', properties: { question: { type: 'string', description: '要她定的事，一两句说清；她要选的东西一条一条列出来' } }, required: ['question'], additionalProperties: false },
+      parameters: { type: 'object', properties: { question: { type: 'string', description: '要定的事，一两句说清；要选的东西一条一条列出来' }, for: { type: 'string', enum: ['her', 'him'], description: 'her：她来定（默认）；him：只有他能做的一步（发到他手机上的验证码、扫码、人脸、付款最后一步）' }, screen: { type: 'boolean', description: '要把现在的屏幕一起给他看（比如二维码）' } }, required: ['question'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.idle') }] },
-      async execute(args) { return { status: hands.ask(args?.question) ? 'asked' : 'idle' }; },
+      async execute(args) { return { status: hands.ask(args?.question, { for: args?.for, kind: args?.for === 'him' ? (/验证码|校验码|动态码/.test(String(args?.question ?? '')) ? 'code' : 'him') : undefined, screen: args?.screen }) ? 'asked' : 'idle' }; },
     }), 'dsh-dot: hands ask tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
@@ -1263,6 +1247,27 @@ export function apply(ctx, config = {}) {
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if (exec.name === HANDS_ASK_TOOL && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
+    // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
+    if (theirs && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name === PHONE_TYPE_TOOL)) {
+      let fg = '';
+      try { fg = String((await phone()?.foreground?.()) ?? ''); } catch (error) { void error; }
+      const g = classify({ tool: exec.name, input: args, screen: phone()?.lastScreen, fg });
+      if (g) {
+        const thing = hands.doing()?.id ?? '';
+        if (g.tier === 'forbid') { audit('gate-forbid', { session: id, kind: g.kind, what: g.what, thing }); return deny(prompt('dot.gates.forbid', { what: g.what })); }
+        if (g.tier === 'him') {
+          hands.ask(prompt('dot.gates.him.q', { what: HIM_KINDS[g.kind] ?? g.what }), { for: 'him', kind: g.kind, ...(g.screen ? { screen: true } : {}) });
+          audit('gate-him', { session: id, kind: g.kind, what: g.what, thing });
+          return deny(prompt('dot.gates.him', { what: HIM_KINDS[g.kind] ?? g.what }));
+        }
+        if (!consent.allows({ kind: g.kind, subject: g.subject, thing })) {
+          hands.ask(prompt('dot.gates.ask.q', { what: g.what }), { for: 'him', kind: g.kind, ...(g.subject ? { subject: g.subject } : {}) });
+          audit('consent-asked', { session: id, kind: g.kind, what: g.what, thing });
+          return deny(prompt('dot.gates.ask', { what: g.what }));
+        }
+        audit('consent-used', { session: id, kind: g.kind, thing });
+      }
+    }
     // A lean conversation of hers has her own tools only; one the host still answers to by name is not run.
     if (leanIds.has(id) && !isHerTool(exec.name)) { audit('lean-refused', { session: id, tool: exec.name }); return deny(prompt('dot.lean.not-hers', { tool: exec.name })); }
     // From here on it is about what she is saying, whichever way it goes out (spokenOf).
@@ -1302,25 +1307,22 @@ export function apply(ctx, config = {}) {
   });
   deliverTracked = deliver;
   // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
-  // Her conversation is never cancelled: he is told once per turn (unless he was already told about its approval).
-  const pendingApproval = (id) => { let first; for (const a of approvals.values()) if (a.session === id && (!first || a.since < first.since)) first = a; return first; };
-  const doingOf = (t, a) => (a ? `等 ${shortTool(a.tool)} 的审批` : t.doing || (t.said ? t.said.replace(/\s+/g, ' ').slice(0, 60) : '') || '（不清楚）');
+  // Her conversation is never cancelled: he is told once per turn.
+  const doingOf = (t) => t.doing || (t.said ? t.said.replace(/\s+/g, ' ').slice(0, 60) : '') || '（不清楚）';
   const turnInfo = (id, now = Date.now()) => {
     const t = turns.get(id);
     if (!t) return null;
-    const a = pendingApproval(id);
-    return { session: id, retired: retired(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t, a), ...turnState(t, { now, turnStallMs: cfg.turnStallMs, approval: a }) };
+    return { session: id, retired: retired(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t), ...turnState(t, { now, turnStallMs: cfg.turnStallMs }) };
   };
   const watchTurns = (now = Date.now()) => {
     if (!(cfg.turnStallMs > 0)) return;
     for (const [id, t] of [...turns]) {
       const idle = now - (t.lastEventAt ?? t.startedAt);
       if (idle < cfg.turnStallMs) continue;
-      const a = pendingApproval(id);
-      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, retired: retired(id), idleMs: idle, doing: doingOf(t, a), ...(a ? { approval: a.tool } : {}) }); }
-      if (id !== lastSession || t.ownerTold || a?.notified) continue;
+      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, retired: retired(id), idleMs: idle, doing: doingOf(t) }); }
+      if (id !== lastSession || t.ownerTold) continue;
       t.ownerTold = true;
-      void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
+      void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
   ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
@@ -1380,12 +1382,12 @@ export function apply(ctx, config = {}) {
   const mins = (ms) => `${Math.floor(ms / 60000)} min`;
   const statusLiveness = (now = Date.now()) => {
     const who = (id) => `${retired(id) ? 'retired' : id === lastSession ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
-    const out = [...approvals.values()].map((a) => `approval waiting: ${shortTool(a.tool)} in ${who(a.session)} · ${mins(now - a.since)}${cfg.approvalWaitMs > 0 ? ` of ${mins(cfg.approvalWaitMs)}` : ''}${a.timedOutAt ? ' · timed out' : ''}`);
+    const out = [...consent.asking().map((a) => `waiting for his yes: ${a.what} · ${mins(now - a.at)}`), ...consent.standing().map((g) => `his standing yes: ${KINDS[g.kind] ?? g.kind}${g.subject ? ` (${g.subject})` : ''} · 「${g.words}」`)];
     for (const id of turns.keys()) {
       const t = turnInfo(id, now);
-      if (t && (t.state === 'stalled' || t.state === 'timed-out')) out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · ${t.state === 'timed-out' ? 'after an approval timed out · ' : ''}last: ${t.doing} · not cancelled`);
+      if (t && t.state === 'stalled') out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · last: ${t.doing} · not cancelled`);
     }
-    return out.length ? out : [`liveness: no approval waiting, no stalled turn (approval wait ${cfg.approvalWaitMs > 0 ? mins(cfg.approvalWaitMs) : 'unlimited'}, stalled after ${mins(cfg.turnStallMs)})`];
+    return out.length ? out : [`liveness: nothing waits for his yes, no stalled turn (stalled after ${mins(cfg.turnStallMs)})`];
   };
 
   // /dot
@@ -1494,8 +1496,10 @@ export function apply(ctx, config = {}) {
     turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
     /** The book of things (ledger.js), newest first: what she set out to do and what came of each. */
     things: (n = 20) => ledger.recent(n),
-    /** Approvals waiting in her sessions. */
-    approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, retired: retired(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
+    /** What waits for his yes, and his standing yeses (consent.js). */
+    consent: () => ({ asking: consent.asking(), standing: consent.standing() }),
+    /** A code sent to his phone that he gave her is not kept: digits in his words while a thing waits for one are masked. */
+    redact: (text) => { const e = ledger.recent(5).find((x) => x.ask?.kind === 'code' && Date.now() - (x.endedAt ?? 0) < 15 * 60_000); return e ? String(text ?? '').replace(/(?<!\d)\d{4,8}(?!\d)/g, '〔验证码〕') : text; },
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => ownerBatch.length,
     /** Her bubbles to him are going out right now. */

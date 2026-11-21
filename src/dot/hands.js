@@ -40,6 +40,7 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  * @param deps.agentFor   async (id) => the agent handle ({ followup, cancel? }) or null — asked for each time it is used: the
  *                        handle of a session that is not running is a thinner one, and goes stale
  * @param deps.ledger     the book of things (ledger.js)
+ * @param deps.overCap    (entry) => '' or the question to ask him when a thing has cost more than it may (it ends stuck there)
  * @param deps.onEvent    (fn: (session, event) => void) => dispose — the host's session events
  * @param deps.message    (text) => the user message that carries a task or something added to it
  * @param deps.textOf     (content) => text of an assistant message's content
@@ -48,7 +49,7 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  * @param deps.retire     (id) — a session the hands are done with (the host may put it away)
  * @param deps.maxMs      a thing is cut after this long
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, onDone = () => {}, retire = () => {}, audit = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
   const past = new Set(store.get('handsPast') ?? []);
   { const old = store.get('handsSession'); if (old) { past.add(String(old)); store.set('handsSession', ''); } } // one session for all rounds, before 0.25
   { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', why: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
@@ -66,8 +67,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     const running = thing === t && t.state === 'running';
     if (thing === t) thing = null; else { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
     if (status === 'cut' && running) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }));
-    const out = snapshot(t, { status, ...(why ? { why } : {}), ...(status === 'stuck' ? { question: t.question } : {}) });
-    ledger.end(t.entry, { outcome: outcomeOf(status, why), why, by: stoppedBy || (status === 'cut' && /^他/.test(String(why)) ? 'him' : status === 'cut' && /^她/.test(String(why)) ? 'her' : ''), result: out.text, question: status === 'stuck' ? t.question : '' });
+    const out = snapshot(t, { status, ...(why ? { why } : {}), ...(status === 'stuck' ? { question: t.question, ask: t.ask } : {}) });
+    ledger.end(t.entry, { outcome: outcomeOf(status, why), why, by: stoppedBy || (status === 'cut' && /^他/.test(String(why)) ? 'him' : status === 'cut' && /^她/.test(String(why)) ? 'her' : ''), result: out.text, question: status === 'stuck' ? t.question : '', ...(status === 'stuck' && t.ask ? { ask: t.ask } : {}) });
     audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, status, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(why ? { why } : {}) });
     if (t.id) call(retire, t.id);
     call(onDone, out, view(t));
@@ -98,7 +99,12 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
           else if (event?.type === 'tool/result') { const c = event.data?.message?.content; let s = textOf(c); if ((!s || typeof s !== 'string') && c && typeof c === 'object') { try { s = JSON.stringify(c); } catch (error) { void error; s = ''; } } if (s) mine.shown = `${mine.shown}\n${s}`.slice(-SHOWN_MAX); }
           else if (event?.type === 'assistant/message') {
             const u = event.data?.usage;
-            if (u) ledger.count(mine.entry, { tokens: { in: (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0), cached: u.cacheReadTokens, out: u.outputTokens } });
+            if (u) {
+              ledger.count(mine.entry, { tokens: { in: (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0), cached: u.cacheReadTokens, out: u.outputTokens } });
+              // Over what a thing may cost without his yes: it stops here, as a question for him.
+              const q = overCap(ledger.get(mine.entry) ?? {});
+              if (q && !mine.question) { mine.question = q; mine.ask = { for: 'him', kind: 'spend' }; call(withAgent, mine, (agent) => agent.cancel?.({ kind: 'hook', reason: 'dot-hands: over its cost' })); settle(mine, 'stuck'); return; }
+            }
             // What a run closes with is its result: its last message, when that one calls no tool. What was said beside a call is on the way, not the outcome.
             if (!event.data?.interrupted) { const c = event.data?.message?.content; const t = textOf(c); if (String(t ?? '').trim()) mine.last = t; mine.said = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : String(t ?? ''); }
           }
@@ -135,8 +141,12 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     has(text) { const n = squash(text); return !n || (Boolean(thing) && (squash(thing.words).includes(n) || squash(thing.shown).includes(n))); },
     /** Something the code saw happen (a refusal): it comes back with the result, as `notes`. */
     note(what) { if (thing) thing.notes.push(String(what)); },
-    /** From the hands' own tool: they need her. The round under way ends as this question. False when nothing is under way. */
-    ask(question) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running') return false; thing.question = q; return true; },
+    /**
+     * From the hands' own tool, or from a gate: they need her — or him (`ask.for: 'him'`: his yes, or something only he
+     * can do; `ask.screen`: the screen goes with the question). The run under way ends as this question; the first
+     * question stands. False when nothing is under way.
+     */
+    ask(question, ask = {}) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
     /** Everything stops now, as cut (she or he said stop): the thing under way, and what waited behind it. `by`: whose word it was. False when there is none. */
     stop(why = 'stopped', { by = '' } = {}) {
       if (!thing && !queue.length) return false;

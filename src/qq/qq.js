@@ -1346,6 +1346,9 @@ export function apply(ctx, config = {}, deps = {}) {
     return { kind: 'ask', reason };
   });
 
+  /** Would a message to `to` (with these pictures) need his yes? → null, or the reason (sendGate). */
+  qq.gateFor = ({ to, text = '', images = [] }) => sendGate({ to, text, images }, { owner: qq.owner, policy: cfg.sendPolicy, windowMs: cfg.replyWindowMinutes * 60_000, recent: (k) => recent.get(k) });
+
   // The tool she answers with. Only text, only to a user or a group; nothing that manages friends,
   // groups or files — those are not hers to do from here.
   ctx.inject(['tools'], (scope) => {

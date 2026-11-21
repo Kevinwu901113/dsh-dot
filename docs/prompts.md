@@ -33,7 +33,7 @@
 | 叫醒她的消息 | 他的 QQ 消息 | `dot.owner-words`（她这轮进行中插进来时多一行 `dot.owner-words.busy`；她上一条有话没发出去时附 `dot.owner-words.unsent`） |
 | | 他插话了 | `dot.owner-interrupt`（发给他的 `qq_send` 被拦下的理由）/ `qq.send-interrupted`（气泡发到一半他说话） |
 | | 这句话被代码拦下 | `dot.reply-check` `.phrases` `.stage`（她的 `qq_send` 里有 `persona.checks.txt` 列的说法或括号动作时退回的理由，每轮一次） |
-| | 审批过期 | `dot.approval-timeout`（`dot.approvalWaitMs` 没人点时她看到的工具结果，替换 dsh 的 "the user rejected tool"） |
+| | 要他点头 / 他本人来 | `dot.gates.forbid` `.him` `.ask` `.asked.her`（被拦下时的工具结果）`.him.q` `.ask.q` `.spend.q`（手停下时记的那句）；`his_ok` 工具 `dot.gates.ok-tool` `.ok` `.ok.refused`；「现在」下面那行 `dot.things.asking`；手回来时 `dot.hands.ask.him` |
 | | 手机通知 | `dot.notification` `.many` `.busy` `.how-qq` `.how-mixed` `.how-app` `.cards` `.unverified` |
 | | 交接 | `memory.handoff` |
 | | 自己的时间 | `interlude.free` `.budget` `.over` `.typing` |

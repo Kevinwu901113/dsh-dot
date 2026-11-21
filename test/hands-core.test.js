@@ -332,3 +332,58 @@ test('what she decides by: the book, a line a thing — what is under way, what 
   assert.doesNotMatch(n2, /在做：/);
   h.stop();
 });
+
+test('what needs him: code reads the screen; an ask ends the thing for him, his yes in his own words lets it through once; his own steps are his; nothing waits on a button', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  let fg = 'com.android.packageinstaller/.InstallStart';
+  h.services.dshPhone = { lastScreen: { items: [{ words: '安装', x: 10, y: 10 }], at: Date.now() }, foreground: async () => fg };
+  const tapAt = (id) => h.pre(id, 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 10, y: 10 });
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装个小红书' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '装小红书' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  // an "ask" step: refused at once, the thing ends as a question for him
+  const r = await tapAt('h1');
+  assert.equal(r.kind, 'deny');
+  assert.match(r.reason, /^这一步要先问过他：装一个 App。已经记下了/);
+  assert.match((await tapAt('h1')).reason, /^记下了。这件事到此为止/);
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '停在安装确认页。' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  const back = text(her.got.at(-1));
+  assert.match(back, /停在一个要他来的地方：（在手机上）装小红书\n要他点头：装一个 App\n停在安装确认页。\n（这件事到这儿停了/);
+  assert.doesNotMatch(back, /你能定的就定了/, 'not hers to decide');
+  assert.match(await note(), /卡住了：（在手机上）装小红书。要定的是：要他点头：装一个 App/);
+  // his yes is his: not in a turn of hers, and only in words of his
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'refused', kind: 'install' });
+  assert.equal(h.shown('his_ok', { status: 'refused' }), '没记：要他自己刚说的话里同意了才能记。');
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装吧' }] });
+  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'ok', kind: 'install' });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '好' }, { type: 'tool-call', name: 'hands' }] } });
+  await h.tools.hands.execute({ device: 'phone', do: '接着装', after: true }); await tick();
+  assert.match(text(h.agentOf('h2').got[0]), /^（在手机上）接着装\n（接着刚才那件：（在手机上）装小红书\n问过：要他点头：装一个 App。屏幕还停在那时的地方/);
+  assert.equal(await tapAt('h2'), 'ran', 'his yes covers this thing');
+  assert.doesNotMatch(await note(), /卡住了：（在手机上）装小红书/, 'a stuck thing taken up again is not stuck');
+  // his own step: a payment's last tap is not hers, yes or no
+  fg = 'com.xingin.xhs/.Pay';
+  h.services.dshPhone.lastScreen = { items: [{ words: '确认支付', x: 10, y: 10 }], at: Date.now() };
+  const pay = await tapAt('h2');
+  assert.match(pay.reason, /^这一步要他本人来：付款、下单的最后一步。/);
+  h.emit('s1', 'turn/end', { turn: 4 }); await tick(30);
+  h.emit('h2', 'assistant/message', { message: { content: [{ type: 'text', text: '停在付款页。' }] } });
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  assert.match(text(her.got.at(-1)), /要他本人来：付款、下单的最后一步[\s\S]*要他本人来的（验证码、扫码、人脸、付款）：告诉他/);
+  // money is not done at all
+  fg = 'com.eg.android.AlipayGphone/.Main';
+  assert.match((await tapAt('h2')).reason, /^这一步不做：在 com\.eg\.android\.AlipayGphone 里操作/);
+  // a step the host gates in her own conversation is refused at once (no button), and she reads to ask him first
+  const answer = await h.hooks['approval/request']({ agent: her, toolName: 'bash', callId: 'c9', reason: 'rm -rf ~/old' }, async () => { throw new Error('no button'); });
+  assert.equal(answer, 'rejected');
+  const post = await h.hooks['tools/post-execute']({ callId: 'c9', name: 'bash', agent: her }, { isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "bash"' }] }, async () => ({ kind: 'accept' }));
+  assert.match(post.feedback[0].text, /^这一步要先问过他：电脑上：rm -rf ~\/old。先问他；他同意了用 his_ok 记下，再做。/);
+  assert.match(await note(), /等他点头：电脑上：rm -rf ~\/old/);
+  assert.equal(await h.hooks['approval/request']({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } }, toolName: 'bash' }, async () => 'approved'), 'approved', 'not hers: passed on');
+  h.stop();
+});

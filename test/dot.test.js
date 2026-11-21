@@ -58,71 +58,6 @@ test('working rules are a prompt section for sessions in home; no AGENTS.md is w
   stop(h);
 });
 
-test('an approval in her session is announced to him at once, with the live view link and the wait', async () => {
-  const h = harness();
-  apply(h.ctx, h.config);
-  const answerer = h.hooks['approval/request'];
-  assert.equal(answerer.opts?.prepend, true, 'wraps the answerers behind it (the UI)');
-  const agent = { session: { id: 's1', header: { cwd: h.home } } };
-  h.emit(h.home, 'turn/start', { turn: 1 });
-  const out = await answerer({ agent, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'dsh-computer: sensitive browser action browser_click' }, async () => 'allowed-once');
-  assert.equal(out, 'allowed-once', 'his answer goes through as it is');
-  await wait(20);
-  assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理；10 分钟没人点就当拒绝。\nmcp__dot-vm__browser_click：dsh-computer: sensitive browser action[\s\S]*https:\/\/mac\.ts\.net\/vnc/);
-  // The gate already includes the link in its reason: not repeated (a new turn: a new notice).
-  h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 });
-  await answerer({ agent, toolName: 'bash', callId: 'c2', reason: 'risky\n实时画面 / live view: https://mac.ts.net/vnc' }, async () => 'rejected');
-  await wait(20);
-  assert.equal((h.sent[1].text.match(/mac\.ts\.net\/vnc/g) || []).length, 1);
-  assert.equal(h.audit.filter((e) => e.event === 'approval-notified').length, 2);
-  // Not her session: passed on, nobody told.
-  assert.equal(await answerer({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } }, toolName: 'bash' }, async () => 'rejected'), 'rejected');
-  await wait(20);
-  assert.equal(h.sent.length, 2);
-  stop(h);
-});
-
-test('an approval nobody answers within approvalWaitMs is rejected; he hears it expired; she reads why; a withdrawn one is not', async () => {
-  mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
-  try {
-    const { prompt } = await import('../src/prompts.js');
-    const h = harness();
-    apply(h.ctx, h.config);
-    const answerer = h.hooks['approval/request'];
-    const agent = { session: { id: 's1', header: { cwd: h.home } } };
-    h.emit(h.home, 'turn/start', { turn: 1 });
-    h.emit(h.home, 'approval/asked', { id: 'ap1', toolName: 'bash', callId: 'c1', reason: 'rm -rf' });
-    let answered = 0;
-    const pending = answerer({ agent, toolName: 'bash', callId: 'c1', reason: 'rm -rf' }, () => { answered++; return new Promise(() => {}); });
-    mock.timers.tick(599_999); await settle();
-    assert.equal(answered, 1, 'the UI answerer was asked');
-    assert.ok(!h.audit.some((e) => e.event === 'approval-timeout'));
-    mock.timers.tick(1); await settle();
-    assert.equal(await pending, 'rejected');
-    assert.ok(h.audit.some((e) => e.event === 'approval-timeout' && e.tool === 'bash' && e.waitedMs === 600000));
-    for (let i = 0; i < 5; i++) await settle();
-    assert.match(h.sent.at(-1).text, /bash 的审批 10 分钟没人点，过期了/);
-    // dsh's denial is rewritten for that call only
-    const post = h.hooks['tools/post-execute'];
-    const res = await post({ callId: 'c1', name: 'bash', agent }, { isError: true, content: [{ type: 'text', text: 'Error: the user rejected tool "bash"' }] }, async () => ({ kind: 'accept' }));
-    assert.deepEqual(res, { kind: 'block', feedback: [{ type: 'text', text: prompt('dot.approval-timeout', { minutes: 10 }) }] });
-    assert.equal(prompt('dot.approval-timeout', { minutes: 10 }), '没人批（等了 10 分钟没人点），这步先放下：只继续不依赖审批的事，不得换渠道绕过；需要时说明阻塞。');
-    assert.deepEqual(await post({ callId: 'c1', name: 'bash' }, {}, async () => ({ kind: 'accept' })), { kind: 'accept' }, 'once');
-    // withdrawn (the turn was stopped): 'cancelled', no expiry message
-    const ac = new AbortController();
-    h.emit(h.home, 'turn/end', { turn: 1 }); h.emit(h.home, 'turn/start', { turn: 2 }); // a new turn: a new notice
-    const sentBefore = h.sent.length;
-    const p2 = answerer({ agent, toolName: 'bash', callId: 'c2', signal: ac.signal }, () => new Promise(() => {}));
-    ac.abort();
-    assert.equal(await p2, 'cancelled');
-    mock.timers.tick(600_000); await settle();
-    assert.equal(h.audit.filter((e) => e.event === 'approval-timeout').length, 1);
-    for (let i = 0; i < 5; i++) await settle();
-    assert.equal(h.sent.length, sentBefore + 1, 'only the ask itself');
-    stop(h);
-  } finally { mock.timers.reset(); }
-});
-
 test('budget block and unblock are announced once', async () => {
   const h = harness({ blocked: ['daily'] });
   apply(h.ctx, h.config);
@@ -644,7 +579,7 @@ test('read before send: say to him is denied while he has words she has not read
   } finally { mock.timers.reset(); }
 });
 
-test('visible: dshDot.turn says approval → timed-out → running; /dot lists the approval waiting and the stalled turn', async () => {
+test('visible: dshDot.turn says stalled → running; /dot lists what waits for his yes and the stalled turn', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: Date.now() });
   try {
     const h = harness();
@@ -658,29 +593,19 @@ test('visible: dshDot.turn says approval → timed-out → running; /dot lists t
     h.emit(h.home, 'turn/start', { turn: 2 });
     assert.equal(dot.turn('s1').state, 'running');
     assert.equal(dot.turn('nope'), null);
-    h.emit(h.home, 'approval/asked', { id: 'ap1', toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' });
-    const pending = h.hooks['approval/request']({ agent: { session: { id: 's1', header: { cwd: h.home } } }, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' }, () => new Promise(() => {}));
-    for (let m = 0; m < 3; m++) { mock.timers.tick(60_000); await settle(); }
-    const t = dot.turn('s1');
-    assert.equal(t.state, 'approval'); assert.equal(Math.floor(t.waitMs / 60000), 3); assert.equal(t.doing, '等 browser_click 的审批');
-    assert.deepEqual(dot.approvals().map((a) => [a.session, a.tool]), [['s1', 'mcp__dot-vm__browser_click']]);
-    let out = (await cmd.handler({ rawInput: '' })).text;
-    assert.match(out, /approval waiting: browser_click in her conversation s1 · 3 min of 10 min/);
-    for (let m = 0; m < 7; m++) { mock.timers.tick(60_000); await settle(); }
-    assert.equal(await pending, 'rejected');
-    h.emit(h.home, 'approval/decided', { id: 'ap1', outcome: 'rejected' });
-    assert.deepEqual(dot.approvals(), []);
-    assert.equal(dot.turn('s1').state, 'running', 'the decision is an event: not stalled yet');
+    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: nothing waits for his yes, no stalled turn \(stalled after 5 min\)/);
+    // a step the host gates is refused at once: no button waits, and the turn goes on
+    assert.equal(await h.hooks['approval/request']({ agent: { session: { id: 's1', header: { cwd: h.home } } }, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' }, () => new Promise(() => {})), 'rejected');
+    assert.deepEqual(dot.consent().asking.map((a) => a.kind), ['computer']);
     for (let m = 0; m < 6; m++) { mock.timers.tick(60_000); await settle(); }
-    assert.equal(dot.turn('s1').state, 'timed-out', 'no event since the approval expired');
-    out = (await cmd.handler({ rawInput: '' })).text;
-    assert.match(out, /stalled turn: her conversation s1 · no event for 6 min · after an approval timed out · last: browser_click（审批过期）/);
-    assert.match(out, /not cancelled/);
+    assert.equal(dot.turn('s1').state, 'stalled');
+    const out = (await cmd.handler({ rawInput: '' })).text;
+    assert.match(out, /waiting for his yes: 电脑上：login · 6 min/);
+    assert.match(out, /stalled turn: her conversation s1 · no event for 6 min · last: [^\n]* · not cancelled/);
     assert.equal(dot.turns().length, 1);
     h.emit(h.home, 'assistant/message', msg('好了'));
     assert.equal(dot.turn('s1').state, 'running');
     h.emit(h.home, 'turn/end', { turn: 2 });
-    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: no approval waiting, no stalled turn \(approval wait 10 min, stalled after 5 min\)/);
     stop(h);
   } finally { mock.timers.reset(); }
 });
@@ -722,22 +647,6 @@ test('loop: the same call (digits aside) loopRepeat times in a turn; further one
   // looking and scrolling again is reading a changing screen, never a loop
   for (let i = 0; i < 6; i++) assert.equal(await pre({ name: 'mcp__dot-phone__mobile_list_elements_on_screen', input: { device: 'dot' }, agent }, async () => 'ran'), 'ran');
   for (let i = 0; i < 6; i++) assert.equal(await pre({ name: 'mcp__dot-phone__mobile_swipe_on_screen', input: { device: 'dot', direction: 'up' }, agent }, async () => 'ran'), 'ran');
-  stop(h);
-});
-
-test('approvals: one message to him per turn, later ones only counted', async () => {
-  const h = harness();
-  apply(h.ctx, h.config);
-  const answerer = h.hooks['approval/request'];
-  const agent = { session: { id: 's1', header: { cwd: h.home } } };
-  h.emit(h.home, 'turn/start', { turn: 1 });
-  for (let i = 0; i < 4; i++) await answerer({ agent, toolName: 'bash', callId: `c${i}`, reason: 'r' }, async () => 'allowed-once');
-  h.emit(h.home, 'turn/end', { turn: 1 });
-  await wait(20);
-  assert.equal(h.sent.length, 1);
-  assert.match(h.sent[0].text, /^🔐 她在等你批 1 件事，在 DeepSeek Harness 里处理/);
-  assert.equal(h.audit.filter((e) => e.event === 'approval-merged').length, 3);
-  assert.equal(h.audit.filter((e) => e.event === 'approval-merged').at(-1).count, 4);
   stop(h);
 });
 

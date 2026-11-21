@@ -525,7 +525,8 @@ export function apply(ctx, config = {}) {
         // Wake messages carry a stamp ([11-04 04:51] …); a transcript line has its own time.
         const said = unstamp(contentText(event.data?.content ?? event.data?.message?.content));
         const text = src.kind === 'user' ? ownerSaid(said) : said;
-        if (src.kind === 'user') record({ who: 'owner', session: id, text });
+        // A code he just gave her for a sign-in is not kept (dshDot.redact masks it while such a thing is fresh).
+        if (src.kind === 'user') record({ who: 'owner', session: id, text: dot()?.redact?.(text) ?? text });
         if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
