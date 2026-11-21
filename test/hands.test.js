@@ -50,7 +50,7 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   assert.deepEqual([r.status, r.steps, r.rounds, r.text], ['done', 2, 1, headTail('首页有三个帖子：第一个讲显卡，第二个讲猫', 12)]);
   assert.match(r.text, /^首页有三个帖子：\n…（中间略去 \d+ 字）…\n二个讲猫$/, 'the head and the tail, nothing rewritten');
   assert.match(r.shown, /纯纯坐牢[\s\S]*猫把杯子推下去了/, 'what the screen showed them, in full: what a line she keeps is checked against');
-  assert.deepEqual(j, { id: 't1', device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
+  assert.deepEqual(j, { id: 't1', session: 'h1', device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
   assert.deepEqual(h.retired, ['h1'], 'the session is put away with the thing');
   const e = h.ledger.get('t1');
   assert.deepEqual([e.state, e.outcome, e.steps, e.result, e.session], ['ended', 'done', 2, r.text, 'h1'], 'on the book: how it ended and what came of it');

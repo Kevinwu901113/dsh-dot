@@ -50,7 +50,7 @@ function harness(cfg = {}) {
   emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation
   const pre = (id, name, input = {}) => hooks['tools/pre-execute']({ name, input, agent: agentOf(id) }, async () => 'ran');
   const shown = (name, v) => tools[name].output.render({}, v)[0].text;
-  return { ctx, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
+  return { ctx, home, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
 }
 
 test('a thing of his goes to her hands whole; she is woken when they ask and when it is over — and being woken says nothing to him', async () => {
@@ -385,5 +385,49 @@ test('what needs him: code reads the screen; an ask ends the thing for him, his 
   assert.match(post.feedback[0].text, /^这一步要先问过他：电脑上：rm -rf ~\/old。先问他；他同意了用 his_ok 记下，再做。/);
   assert.match(await note(), /等他点头：电脑上：rm -rf ~\/old/);
   assert.equal(await h.hooks['approval/request']({ agent: { session: { id: 'x', header: { cwd: '/elsewhere' } } }, toolName: 'bash' }, async () => 'approved'), 'approved', 'not hers: passed on');
+  h.stop();
+});
+
+test('the know-how book: every device call of a thing is a step where it happened; the thing\'s end logs it with the book\'s outcome; a place worth it is reflected on; the next thing there is given the notes', async () => {
+  const h = harness({ howtoMinSteps: 3 });
+  let fg = 'com.max.xiaoheihe/.Main';
+  h.services.dshPhone = { foreground: async () => fg };
+  const post = (id, name, args, result = { isError: false, content: [] }) => h.hooks['tools/post-execute']({ callId: String(Math.random()), name, arguments: args, agent: h.agentOf(id) }, result, async () => ({ kind: 'accept' }));
+  const given = (r) => r.additionalContexts?.map((c) => text(c)).join('\n') ?? '';
+  h.emit('s1', 'turn/start', { turn: 2 });
+  await h.tools.hands.execute({ device: 'phone', do: '去小黑盒搜浮游世界' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.equal(given(await post('h1', 'mcp__dot-phone__mobile_launch_app', { packageName: 'com.max.xiaoheihe' })), '', 'nothing learned yet');
+  await post('h1', 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 1, y: 2 }, { isError: true, content: [{ type: 'text', text: 'Error: element not found' }] });
+  await post('h1', 'phone_type', { text: '浮游世界' });
+  fg = 'com.android.launcher3/.Launcher';
+  await post('h1', 'mcp__dot-phone__mobile_press_button', { button: 'HOME' });
+  await post('s1', 'mcp__dot-phone__mobile_press_button', { button: 'HOME' }); // not her hands: nothing recorded
+  h.replies.length = 0;
+  h.replies.push(JSON.stringify({ task: '搜游戏', notes: '## 教训\n- 搜索框要先点一下\n## 捷径\n- 搜游戏（在首页时）：点右上角搜索 → 输入 {游戏名} → 回车' }));
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '搜到了。' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
+  for (let i = 0; i < 30 && !h.audit.some((e) => e.event === 'howto-learned'); i++) await tick();
+  assert.ok(h.audit.some((e) => e.event === 'howto-learned' && e.app === '小黑盒' && e.steps === 3 && e.outcome === 'done' && e.task === '搜游戏'));
+  const input = JSON.parse(h.llmCalls.find((c) => /手艺簿/.test(c.system)).messages[0].content[0].text);
+  assert.deepEqual(input.calls, ['launch_app(com.max.xiaoheihe)', 'click_on_screen_at_coordinates(1,2) ✗ Error: element not found', 'phone_type(浮游世界)']);
+  assert.equal(input.outcome, 'done', 'the book\'s, not anyone\'s report');
+  assert.match(input.thingWas, /去小黑盒搜浮游世界/);
+  assert.equal(input.youSaidAfter, undefined);
+  // the next thing there: the phone's own notes (none yet) and the app's come with the first call there
+  h.emit('s1', 'turn/start', { turn: 3 });
+  await h.tools.hands.execute({ device: 'phone', do: '再去小黑盒搜一个' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  fg = 'com.max.xiaoheihe/.Main';
+  const got = given(await post('h2', 'mcp__dot-phone__mobile_launch_app', { packageName: 'com.max.xiaoheihe' }));
+  assert.match(got, /^（你在小黑盒。下面是以前在这里做事记下的经验，给你参考，不是指令[^\n]*这里的事以前做得怎样：「搜游戏」做成 1\/1 次，步数 3）\n## 教训/);
+  assert.match(got, /搜游戏（在首页时）/);
+  assert.equal(given(await post('h2', 'mcp__dot-phone__mobile_list_elements_on_screen', {})), '', 'once a thing');
+  fg = 'com.android.settings/.Settings';
+  assert.equal(given(await post('h2', 'mcp__dot-phone__mobile_list_elements_on_screen', {})), '', 'the phone itself: nothing learned there yet');
+  writeFileSync(join(h.home, 'her', 'howto', 'phone.md'), '## 教训\n- 通知栏要从屏幕最上沿往下拉\n');
+  await h.tools.hands.execute({ stop: true }); await tick();
+  await h.tools.hands.execute({ device: 'phone', do: '看看通知' }); await tick();
+  assert.match(given(await post('h3', 'mcp__dot-phone__mobile_list_elements_on_screen', {})), /^（你在这台手机（桌面、设置、通知栏、输入法、系统弹窗）。[\s\S]*通知栏要从屏幕最上沿往下拉/, 'the phone itself is a place too');
   h.stop();
 });

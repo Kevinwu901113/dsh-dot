@@ -728,7 +728,7 @@ test('qq_send in the transcript is what went out: a denied send nothing, an inte
 
 test('persona lives only in the Canon: the daily call keeps persona and 「照着某某学」 out of self', () => {
   const text = dailyPrompt({ day: '2026-11-03 周二', text: '我：照着星野那版学', banks: { owner: [], self: ['拼出来的人设：蓝发'] } });
-  assert.match(text, /她自己那一栏记她学会了什么、习惯、看法（人设、说话风格、「照着某某学」不算）/);
+  assert.match(text, /她自己那一栏记她的习惯、看法（人设、说话风格、「照着某某学」不算；怎么用手机、电脑和 App 另有手艺簿记，不记这里）/);
   assert.match(text, /- 拼出来的人设：蓝发/, 'existing entries are shown as they are, not migrated');
 });
 

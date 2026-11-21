@@ -47,7 +47,7 @@ export async function collectState(ctx, opts = {}) {
       qq: qq ? await safe(() => qq.status()) : null,
       computer: computer ? await safe(() => computer.status()) : null,
     },
-    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], consent: dot.consent?.() ?? null, things: dot.things?.(20) ?? [] } : null,
+    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], consent: dot.consent?.() ?? null, knowhow: dot.knowhow?.() ?? [], things: dot.things?.(20) ?? [] } : null,
     interlude: interlude ? await safe(() => interlude.status()) : null,
     memory: memory ? await safe(() => memory.panel()) : null,
     // The last N scenes (one wake until its turn ended), read back from the records that exist.
@@ -176,6 +176,13 @@ function render(s){
     h+='</div>';
     $('now').innerHTML+=h;
   }
+  const kh=(dot&&dot.knowhow)||[];
+  if(kh.length){
+    let h='<div class="kv">';
+    for(const p of kh.slice(0,12)){const name=p.app==='phone'?'手机本身':p.app==='computer'?'电脑':p.app;const ts=(p.tasks||[]).slice(-3).map((t)=>esc(t.task)+' 做成 '+t.done+'/'+t.runs+(t.steps.length?' · '+t.steps.slice(-5).join('→')+' 步':'')+(t.tokens&&t.tokens.length?' · '+t.tokens.slice(-5).map((n)=>Math.round(n/1000)+'k').join('→'):'')).join('<br>');h+='<span>'+esc(name)+(p.notes?'':' <span class="mute">· 还没经验</span>')+'</span><span>'+(ts||'<span class="mute">最近 '+esc((p.last||[]).join('→'))+' 步</span>')+'</span>';}
+    h+='</div>';
+    $('now').innerHTML+='<div class="mute" style="margin-top:8px">手艺簿（越用越快、越省）</div>'+h;
+  }
   const cs=dot&&dot.consent;
   if(cs&&((cs.asking||[]).length||(cs.standing||[]).length)){
     let h='<div class="kv">';
@@ -211,7 +218,7 @@ function render(s){
   } else {$('memory').innerHTML='<span class="mute">记忆未加载</span>';$('diary').innerHTML='';}
   const dz=(it&&it.doings&&it.doings.recent)||[];
   if(dz.length){
-    $('script').innerHTML=dz.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.at)+' · '+esc(e.status||'')+(e.tokens?' · '+fmt(e.tokens)+' token':'')+'</b><div class="pre">'+esc(e.what)+(e.result?'\n'+esc(e.result):'')+(e.feedback?'\n'+e.feedback.map(esc).join('\n'):'')+'</div></div>').join('');
+    $('script').innerHTML=dz.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.at)+' · '+esc(e.status||'')+(e.tokens?' · '+fmt(e.tokens)+' token':'')+'</b><div class="pre">'+esc(e.what)+(e.result?'\\n'+esc(e.result):'')+(e.feedback?'\\n'+e.feedback.map(esc).join('\\n'):'')+'</div></div>').join('');
   } else $('script').innerHTML='<span class="mute">还没有（自己的时间里做的事会记在这里）</span>';
   renderActivity(s.activity);
   $('foot').textContent='更新于 '+new Date(s.at).toLocaleTimeString('zh-CN');

@@ -812,7 +812,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['tools'], (scope) => {
     scope.effect(() => scope.tools.register({
       name: 'memory',
-      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（学会的事、习惯、看法；人设和说话风格不记，它们在 Canon 里）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
+      description: '你自己的长期记忆。target：owner=关于他（你的人）；self=你自己的笔记（习惯、看法；人设和说话风格不记，它们在 Canon 里；怎么用手机、App 不记，手艺簿会记）；open=还没了的事（说过要做、答应了、先搁着的）；person=某个你认识的人的一句印象（person 填 id 或名字）。action：add 加一条；replace 改一条（oldText 写原条目里独一无二的一小段）；remove 删一条。open 另有 done（办完了、取消了，oldText 指那条），add/replace 时可带 due（MM-DD）；open 过了日子几天、或没日子很久没再提，会自己拿掉，不用去删。owner、self 有字数上限，满了加不进去：要记新的，先用 replace 换掉一条现在不那么要紧的。只记以后用得上的；具体说过的话不用抄，原话会留着。',
       parameters: { type: 'object', properties: { target: { type: 'string', enum: ['owner', 'self', 'open', 'person'] }, person: { type: 'string' }, action: { type: 'string', enum: ['add', 'replace', 'remove', 'done'] }, content: { type: 'string' }, oldText: { type: 'string' }, due: { type: 'string' } }, required: ['target', 'action'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? `memory: ${v.usage ?? 'ok'}` : `memory error: ${v?.error}` }] },
       async execute(args) {

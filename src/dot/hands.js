@@ -57,7 +57,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const queue = []; // things given while one is under way, in order
   const remember = (id) => { past.add(id); store.set('handsPast', [...past].slice(-30)); };
   const call = (fn, ...a) => { try { Promise.resolve(fn(...a)).catch(() => {}); } catch (error) { void error; } };
-  const view = (t) => ({ id: t.entry, device: t.device, task: t.task, ...t.extra });
+  const view = (t) => ({ id: t.entry, session: t.id, device: t.device, task: t.task, ...t.extra });
   const snapshot = (t, more) => ({ text: headTail(t.said, maxChars), shown: t.shown, steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
   const withAgent = async (t, fn) => { const agent = t.id ? await agentFor(t.id) : null; if (!agent) throw new Error('no hands session'); return fn(agent); };
   /** The thing is over, whichever way. */
@@ -132,7 +132,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     /** Have her hands asked her something in the round under way (it ends as that question)? */
     asked: () => Boolean(thing?.state === 'running' && thing.question),
     /** What is in her hands right now: { id, device, task, state, question, startedAt, said, steps, … } or null. */
-    doing: () => (thing ? { id: thing.entry, device: thing.device, task: thing.task, state: 'running', question: thing.question, startedAt: thing.startedAt, said: clip(thing.said || thing.last, 120), steps: thing.steps, forHim: Boolean(thing.extra?.forHim), waiting: queue.length } : null),
+    doing: () => (thing ? { id: thing.entry, session: thing.id, device: thing.device, task: thing.task, state: 'running', question: thing.question, startedAt: thing.startedAt, said: clip(thing.said || thing.last, 120), steps: thing.steps, forHim: Boolean(thing.extra?.forHim), waiting: queue.length } : null),
     /**
      * Is this text something her hands were given for this thing — in what she said (the task, what she added), or shown
      * to them by a tool (the screen, an account)? Her hands do not write: what they type is hers or is already

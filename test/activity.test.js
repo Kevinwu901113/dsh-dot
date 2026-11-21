@@ -179,3 +179,11 @@ test('panel state carries the scenes; the page has the section in both languages
   assert.match(page, /api\/state\?scenes=/);
   assert.match(page, /卡住 '\+m\+' 分钟/); assert.match(page, /等你点头/); assert.doesNotMatch(page, /等审批|已超时/);
 });
+
+test('panel page: its script parses (a "\\n" in the page template becomes a real line break inside a string)', async () => {
+  const { Script } = await import('node:vm');
+  const { pageHtml: page } = await import('../src/dot/panel.js');
+  const scripts = [...page().matchAll(/<script[^>]*>([\s\S]*?)<\/script>/g)].map((m) => m[1]);
+  assert.ok(scripts.length);
+  for (const s of scripts) assert.doesNotThrow(() => new Script(s));
+});

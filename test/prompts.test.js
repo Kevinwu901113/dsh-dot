@@ -149,7 +149,7 @@ test('prompts render: phone.device — the number sentence only when she has a n
   const { deviceText } = await import('../src/phone/phone.js');
   const without = deviceText('emulator-5554');
   assert.doesNotMatch(without, /你的手机号|\{number\}|\{stickers\}/);
-  const stickers = prompt('phone.stickers', { learned: prompt('phone.stickers.learned') });
+  const stickers = prompt('phone.stickers');
   assert.equal(without.split('\n').length, 2 + stickers.split('\n').length);
   assert.ok(without.endsWith(`\n${stickers}`), 'the sticker how-to closes the phone section');
   assert.ok(without.includes(prompt('phone.device.wake')), 'with dot: notifications wake her');
@@ -180,13 +180,13 @@ test('prompts render: phone.device alone — nothing that needs dot, qq or memor
 });
 
 test('prompts render: stickers — where they really are, and how each phone app adds them (taught, not pushed)', async () => {
-  const how = prompt('phone.stickers', { learned: prompt('phone.stickers.learned') });
+  const how = prompt('phone.stickers');
   assert.ok(how.split('\n').length <= 6);
   assert.match(how, /相册的 dot-stickers/);
   assert.match(how, /- QQ：聊天里别人发的表情长按 → 添加到表情；从相册发出去的图，发出后长按 → 添加到表情/);
   assert.match(how, /- 微信：聊天里的图或表情长按 → 添加表情/);
   assert.match(how, /- 小黑盒：评论配图从相册选/);
-  assert.match(how, /第一次在某个 App 里做成了，用 memory 工具记到 self/);
+  assert.doesNotMatch(how, /memory 工具|记到 self/, 'how to use an app is the know-how book\'s');
   assert.doesNotMatch(how, /马上|现在就|主动|记得去|一定要/, 'a how-to, not a chore');
   for (const id of ['qq.stickers', 'qq.channel.no-stickers']) {
     const t = raw(id);

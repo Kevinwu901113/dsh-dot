@@ -18,7 +18,7 @@ import { HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TO
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
-import { batchLaunch, createHowto, howtoTool } from './howto.js';
+import { batchLaunch, createHowto, howtoTool, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands, outcomeOf } from './hands.js';
 import { createLedger } from './ledger.js';
 import { approvalKind, classify, KINDS, HIM_KINDS } from './gates.js';
@@ -103,9 +103,10 @@ export const defaults = {
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
   interludeTaskTtlMs: 1800000, // not started within this long: given up ('expired')
-  // What she learns using her phone (howto.js): each turn's steps per app are logged; a turn of
-  // howtoMinSteps steps or more, or with errors, is reflected on once (a small call) and her notes for
-  // that app rewritten (≤ howtoMaxChars); the first time she opens the app in a session they come along.
+  // The know-how book (howto.js): each thing's steps per place (an app, the phone itself, the computer) are logged
+  // with the thing's outcome, time and cost; a place with errors, a run that broke off, or clearly more steps than
+  // usual (≥ howtoMinSteps) is reflected on once (a small call) and its notes rewritten (≤ howtoMaxChars); the first
+  // time her hands are there in a thing, they come along.
   howto: true,
   howtoMinSteps: 12,
   howtoMaxChars: 800,
@@ -526,40 +527,44 @@ export function apply(ctx, config = {}) {
   // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
   // schedule wakes, as a dynamic context; only those turns get it.
   const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
-  // Her phone notes (howto.js): every phone call of her sessions is a step of this turn's run; the first
-  // time she is in an app in a session, her notes for it come along (in the post-execute hook above).
+  // The know-how book (howto.js): every device call her hands make while a thing runs is a step of that thing, in
+  // the place it happened; the first time they are in a place in that thing, its notes come along (in the
+  // post-execute hook above). The thing's end (hands onDone, below) logs it and picks what is worth learning from.
   const appLabels = { ...Object.fromEntries(Object.entries(KNOWN_APPS.labels).map(([label, pkg]) => [pkg, label])), 'com.tencent.mobileqq': 'QQ', 'com.tencent.mm': '微信' };
-  const LAUNCHERS = /launcher|\.home$|^com\.android\.systemui$/i;
-  const labelOf = (pkg) => (!pkg || LAUNCHERS.test(pkg) ? 'phone' : appLabels[pkg] ?? pkg);
+  // The phone itself: the home screen, settings, the shade, the keyboard, the system's own dialogs.
+  const SYSTEM = /launcher|\.home$|^com\.android\.(systemui|settings|packageinstaller|permissioncontroller|documentsui|intentresolver)$|^com\.google\.android\.(permissioncontroller|packageinstaller|documentsui|inputmethod\..*)$|inputmethod|keyboard/i;
+  const labelOf = (pkg) => (!pkg || SYSTEM.test(pkg) ? 'phone' : appLabels[pkg] ?? pkg);
   const howto = createHowto({ dir: join(home, 'her', 'howto'), minSteps: cfg.howtoMinSteps, maxChars: cfg.howtoMaxChars });
-  const herSession = (s) => Boolean(s?.id && (isDotSession(s.id, s.header?.cwd) || turns.has(s.id) || (hands?.isHands(s.id, s.header?.cwd))));
   howtoFor = async (exec, result) => {
-    if (!exec.name.startsWith(PHONE_TOOL_PREFIX)) return null;
+    const onPhone = exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name === PHONE_TYPE_TOOL;
+    if (!onPhone && !exec.name.startsWith(VM_TOOL_PREFIX)) return null;
     const s = exec.agent?.session;
-    if (!herSession(s)) return null;
+    if (!s?.id || hands?.doing()?.session !== s.id) return null; // a late result of a thing that is over
     const input = exec.arguments ?? exec.input;
-    // The app this call happened in: the one in front after it (a launch, inside a batch too, says so directly).
-    let pkg = input?.packageName ?? batchLaunch(input);
-    try { pkg = String((await phone()?.foreground?.()) ?? '').split('/')[0] || pkg; } catch (error) { void error; }
-    const app = labelOf(pkg);
+    let app = 'computer';
+    if (onPhone) {
+      // The app this call happened in: the one in front after it (a launch, inside a batch too, says so directly).
+      let pkg = input?.packageName ?? batchLaunch(input);
+      try { pkg = String((await phone()?.foreground?.()) ?? '').split('/')[0] || pkg; } catch (error) { void error; }
+      app = labelOf(pkg);
+    }
     howto.step(s.id, app, exec.name, input, { isError: Boolean(result?.isError), error: contentText(result?.content ?? []) });
-    if (howto.needsReview(app)) void reflectHowto({ review: true, app });
-    const got = howto.take(s.id, app);
-    if (!got) return null;
-    audit('howto-given', { session: s.id, app });
-    return prompt('dot.howto.given', { app: got.app, notes: got.notes || prompt('dot.howto.no-notes'), recent: got.recent || '—' });
+    const given = [];
+    for (const place of onPhone && app !== 'phone' ? ['phone', app] : [app]) {
+      if (howto.needsReview(place)) { void reflectHowto({ review: true, app: place }); continue; }
+      const got = howto.take(s.id, place);
+      if (!got) continue;
+      audit('howto-given', { session: s.id, app: place });
+      given.push(prompt('dot.howto.given', { app: placeName(place), notes: got.notes, recent: got.recent || '—' }).trim());
+    }
+    return given.join('\n\n') || null;
   };
-  const said = new Map(); // her session id → her last words this turn (for the reflection)
-  ctx.on('session/event', (session, event) => {
-    if (!cfg.howto || !herSession(session)) return;
-    const id = session.id;
-    if (event?.type === 'turn/start') { howto.turnStarted(id); return; }
-    if (event?.type === 'assistant/message' && !event.data?.interrupted) { const t = contentText(event.data?.message?.content); if (t.trim()) said.set(id, t); return; }
-    if (event?.type !== 'turn/end') return;
-    const learn = howto.end(id, said.get(id) ?? '');
-    said.delete(id);
-    for (const r of learn) reflectHowto(r);
-  });
+  /** The thing in her hands is over: its steps go into the book, with what the ledger has of it. */
+  const learnFrom = (job) => {
+    if (!cfg.howto || !job?.session) return;
+    const e = ledger.get(job.id);
+    for (const r of howto.end(job.session, { thing: job.id, task: job.task, outcome: e?.outcome ?? '', ms: (e?.endedAt ?? Date.now()) - (e?.startedAt ?? e?.openedAt ?? Date.now()), tokens: costOf(e) })) reflectHowto(r);
+  };
   // One small call per run worth learning from: what she did (her calls and short error types, not the
   // screen's text), her notes for the app, her last runs → the notes rewritten. One app at a time:
   // a second run of the same app waits for the first reflection and reads the notes it wrote.
@@ -585,7 +590,7 @@ export function apply(ctx, config = {}) {
       })));
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
       if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
-      if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, worked: Boolean(out.worked), ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
+      if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, outcome: r.outcome, ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
     } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
   }
   ctx.inject(['systemPrompt'], (scope) => {
@@ -776,6 +781,7 @@ export function apply(ctx, config = {}) {
     // it — is hers: on his business the message says whose it is, and she tells him with qq_send.
     // A thing stopped on someone's word wakes nobody: whoever said stop knows, and the ledger has how far it got.
     onDone: (r, job) => {
+      learnFrom(job);
       if (job.device === 'phone') armPhoneHome(r.status === 'stuck' ? cfg.handsStuckHoldMs : cfg.phoneHomeAfterMs);
       if (r.status !== 'cut' || outcomeOf(r.status, r.why) !== 'stopped') return handsBack(r, job);
       audit('hands-result', { thing: job.id, status: 'stopped', forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds, woke: false });
@@ -1408,7 +1414,7 @@ export function apply(ctx, config = {}) {
         }
         if (/^howto\b/.test(arg)) {
           const app = arg.slice(5).trim();
-          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}${howto.needsReview(app) ? '\n(old notes: read over before she is given them again)' : ''}\n\nsteps per task, oldest first: ${howto.tasks(app).map((t) => `${t.task} ${t.steps.join(' → ')}`).join(' · ') || '-'}\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.worked === false ? '✗' : ''}`).join(' → ') || '-'}` };
+          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}${howto.needsReview(app) ? '\n(old notes: read over before they are given again)' : ''}\n\ntasks, oldest first: ${howto.tasks(app).map((t) => `${t.task} done ${t.done}/${t.runs}${t.steps.length ? `, steps ${t.steps.join(' → ')}` : ''}${t.tokens.length ? `, tokens ${t.tokens.map((n) => Math.round(n / 1000) + 'k').join(' → ')}` : ''}`).join(' · ') || '-'}\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.outcome && r.outcome !== 'done' ? `[${r.outcome}]` : ''}`).join(' → ') || '-'}` };
           const rows = howto.apps().map((a) => { const r = howto.recent(a, 10); return `${a}: ${r.map((x) => x.steps).join(' → ') || '-'}${howto.notes(a) ? ' · notes' : ''}`; });
           return { kind: 'success', text: `steps per run, oldest first (notes in ${howto.dir})\n${rows.join('\n') || '(nothing yet)'}` };
         }
@@ -1498,6 +1504,8 @@ export function apply(ctx, config = {}) {
     things: (n = 20) => ledger.recent(n),
     /** What waits for his yes, and his standing yeses (consent.js). */
     consent: () => ({ asking: consent.asking(), standing: consent.standing() }),
+    /** The know-how book, place by place: notes or not, how each task went (howto.js summary). */
+    knowhow: () => howto.summary(),
     /** A code sent to his phone that he gave her is not kept: digits in his words while a thing waits for one are masked. */
     redact: (text) => { const e = ledger.recent(5).find((x) => x.ask?.kind === 'code' && Date.now() - (x.endedAt ?? 0) < 15 * 60_000); return e ? String(text ?? '').replace(/(?<!\d)\d{4,8}(?!\d)/g, '〔验证码〕') : text; },
     /** His messages waiting in the buffer; flushOwner() delivers them now. */

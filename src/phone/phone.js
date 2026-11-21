@@ -374,13 +374,13 @@ export async function screencapRetry(grab, { waitMs = 400, wait = sleep } = {}) 
 /**
  * The phone section. Parts that only hold with a sibling component are said only when it is there
  * (the phone also runs alone, next to someone else's character): notifications wake her only
- * through dot, the sticker album is fed by qq, and "remember it" needs memory. Defaults: all on.
+ * through dot, and the sticker album is fed by qq. Defaults: all on.
  */
 export const deviceText = (serial, number = '', has = {}) => {
-  const { dot = true, qq = true, memory = true, tools = true, hands = false } = has;
+  const { dot = true, qq = true, tools = true, hands = false } = has;
   const parts = {
     number: number ? prompt('phone.device.number', { number }) : '',
-    stickers: qq ? prompt('phone.stickers', { learned: memory ? prompt('phone.stickers.learned') : '' }) : '',
+    stickers: qq ? prompt('phone.stickers') : '',
   };
   // Her conversation when her hands hold the phone's tools: what the phone is to her, not how to press it.
   if (!tools) return prompt('phone.hers', parts);
@@ -1036,7 +1036,7 @@ export function apply(ctx, config = {}, deps = {}) {
         const hers = o === 'dot';
         let tools = true; // does this session hold the phone's tools (compat hides them from her conversation: her hands hold them)
         try { tools = !ctx.get?.('dshDotCompat')?.hiddenFor?.(o, [`${PHONE_TOOL_PREFIX}mobile_click_on_screen_at_coordinates`])?.length; } catch { /* no compat: every session holds them */ }
-        return deviceText(mcpDevice(), cfg.number, { dot: hers && Boolean(ctx.get?.('dshDot')), qq: hers && Boolean(ctx.get?.('dshQq')), memory: hers && Boolean(ctx.get?.('dotMemory')), tools, hands: o === 'hands' });
+        return deviceText(mcpDevice(), cfg.number, { dot: hers && Boolean(ctx.get?.('dshDot')), qq: hers && Boolean(ctx.get?.('dshQq')), tools, hands: o === 'hands' });
       },
     }), 'dsh-dot/phone: device section');
   });
