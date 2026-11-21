@@ -14,12 +14,12 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool, placeName } from './howto.js';
-import { HANDS_SOURCE, createHands, outcomeOf } from './hands.js';
+import { HANDS_SOURCE, createHands } from './hands.js';
 import { createLedger } from './ledger.js';
 import { approvalKind, classify, KINDS, HIM_KINDS } from './gates.js';
 import { createConsent } from './consent.js';
@@ -46,7 +46,7 @@ import { runPendingReset } from '../reset.js';
 import { ago, stamp, today, unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
 import { head } from '../cut.js';
-import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
+import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, voiceHow, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
 
 export const name = 'dsh-dot';
@@ -805,6 +805,7 @@ export function apply(ctx, config = {}) {
     message: (text) => createUserMessage({ content: [{ type: 'text', text }], source: HANDS_SOURCE }),
     textOf: contentText,
     store, ledger,
+    done: () => prompt('dot.hands.done-missing'),
     overCap: (e) => (cfg.thingCostCap > 0 && costOf(e) > cfg.thingCostCap && !consent.allows({ kind: 'spend', thing: e.id }) ? prompt('dot.gates.spend.q', { tokens: Math.round(costOf(e) / 1000) }) : ''),
     // A session her hands are done with is put away: one per thing, so they pile up otherwise.
     retire: async (id) => { try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.debug?.(`hands session not archived: ${err.message}`); } },
@@ -815,14 +816,16 @@ export function apply(ctx, config = {}) {
     // A thing stopped on someone's word wakes nobody: whoever said stop knows, and the ledger has how far it got.
     onDone: (r, job) => {
       learnFrom(job);
-      if (job.device === 'phone') armPhoneHome(r.status === 'stuck' ? cfg.handsStuckHoldMs : cfg.phoneHomeAfterMs);
-      if (r.status !== 'cut' || outcomeOf(r.status, r.why) !== 'stopped') return handsBack(r, job);
+      if (job.device === 'phone') armPhoneHome(r.outcome === 'stuck' ? cfg.handsStuckHoldMs : cfg.phoneHomeAfterMs);
+      if (r.outcome !== 'stopped') return handsBack(r, job);
       audit('hands-result', { thing: job.id, status: 'stopped', forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds, woke: false });
       // He stopped it from outside her conversation (/dot stop): she finds a line about it the next time she is up, no more.
-      if (/^他/.test(String(r.why))) void noteToConversation('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' }).trim()}`);
+      if (r.cause === 'command') void noteToConversation('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) }).trim()}`);
       return undefined;
     },
   });
+  /** What came of a thing, for her: the hands' summary, then their details. */
+  const resultText = (r) => [r.summary, r.detail].map((x) => String(x ?? '').trim()).filter(Boolean).join('\n') || '（没说什么）';
   async function handsBack(r, job) {
     stir();
     try {
@@ -831,12 +834,12 @@ export function apply(ctx, config = {}) {
       if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
       const lead = r.question && r.ask?.for === 'him'
-        ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
+        ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
         : r.question
-        ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
-        : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' });
+        ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
+        : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) });
       const content = [{ type: 'text', text: lead.trim() + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
-      if (r.status !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
+      if (r.outcome !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
         try {
           const images = ctx.get('attachments');
           const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
@@ -846,11 +849,11 @@ export function apply(ctx, config = {}) {
       }
       found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
       if (job.id) ledger.note(job.id, { told: Date.now() });
-      audit('hands-result', { thing: job.id, session: lastSession, status: r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
+      audit('hands-result', { thing: job.id, session: lastSession, outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
-  ctx.effect(() => { const t = setTimeout(() => { for (const cut of hands.interrupted()) void handsBack({ status: 'failed', why: '重启打断了', text: '', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
+  ctx.effect(() => { const t = setTimeout(() => { for (const cut of hands.interrupted()) void handsBack({ outcome: 'failed', by: 'code', cause: 'restart', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
     const pkgs = [...new Set(all.map((n) => n.pkg))];
@@ -893,13 +896,12 @@ export function apply(ctx, config = {}) {
   // What the voice is told about her doings comes from the book, never from what she wrote: one line a thing, no task
   // text beyond its first clause (11-21: given the whole task, the voice read it out as progress).
   const titleOf = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
-  const howOf = (e) => handsStatus({ status: e.outcome === 'done' ? 'done' : e.outcome === 'failed' ? 'failed' : 'cut', why: e.why }, e.device);
   const factsFor = (t) => {
     const out = [];
     const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.thing].filter(Boolean));
     const about = t?.thing ? ledger.get(t.thing) : null;
-    if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: howOf(about), result: about.result ? `结果：${head(about.result, 500)}` : '没有留下结果' }));
-    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), result: e.result ? `停下前说的是：${head(e.result, 200)}` : '停下前没有做出结果' })); }
+    if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: voiceHow(about), summary: about.summary ? prompt('dot.say.fact.summary', { summary: about.summary }).trim() : prompt('dot.say.fact.no-summary').trim() }));
+    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), how: voiceHow(e).replace(/。$/, '') })); }
     for (const id of t?.opened ?? []) { const e = ledger.get(id); if (e && e.state !== 'ended') out.push(prompt(e.state === 'queued' ? 'dot.say.fact.queued' : 'dot.say.fact.opened', { what: titleOf(e.task) })); }
     const rest = ledger.unfinished().filter((e) => !mine.has(e.id));
     for (const e of rest.filter((x) => x.state === 'running')) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
@@ -1101,7 +1103,7 @@ export function apply(ctx, config = {}) {
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
-        if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(lastSession); const stopped = hands.stop('她叫停了', { by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
+        if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(lastSession); const stopped = hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -1120,7 +1122,7 @@ export function apply(ctx, config = {}) {
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
         // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
         const before = t?.thing ? ledger.get(t.thing) : args?.after ? ledger.recent(10).find((e) => e.device === device) : null;
-        const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.result ? `停下时说的是：${head(before.result, 300)}` : '没有留下话' }).trim()}` : '';
+        const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
         const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
         return started;
@@ -1171,6 +1173,15 @@ export function apply(ctx, config = {}) {
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.idle') }] },
       async execute(args) { return { status: hands.ask(args?.question, { for: args?.for, kind: args?.for === 'him' ? (/验证码|校验码|动态码/.test(String(args?.question ?? '')) ? 'code' : 'him') : undefined, screen: args?.screen }) ? 'asked' : 'idle' }; },
     }), 'dsh-dot: hands ask tool');
+    // Her hands' one way of saying a thing is done (hands.js): what came of it, as a line and as details. The book keeps
+    // both; each reader words them for itself (the voice gets the line, she gets both with the screen).
+    scope.effect(() => scope.tools.register({
+      name: HANDS_DONE_TOOL,
+      description: prompt('dot.hands.done-tool'),
+      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' } }, required: ['summary'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : 'dot.hands.idle') }] },
+      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail }) ? 'done' : 'idle' }; },
+    }), 'dsh-dot: hands done tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
@@ -1287,7 +1298,7 @@ export function apply(ctx, config = {}) {
     if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
     // Her hands: asking her is theirs alone, and once they have asked, this stretch of theirs is over — nothing more is done until she answers.
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
-    if (exec.name === HANDS_ASK_TOOL && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
+    if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
     // Her phone is reached with its own tools, where the gates look: not through the shell.
     if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
@@ -1449,7 +1460,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
-      stop: () => { const d = hands?.doing?.(); return hands?.stop('他叫停了') ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
+      stop: () => { const d = hands?.doing?.(); return hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
       memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText,
     })), 'dsh-dot: /dot command');
   });

@@ -91,12 +91,11 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   await tick(30);
   assert.deepEqual(h.qqSent, [['owner', '好', []]], 'only the answer to his own words went out: a thing of his she took further is not at its end');
   // it is over: once
-  h.emit('h2', 'assistant/message', { message: { content: [{ type: 'text', text: '存好了，喝咖啡的猫在相册里。' }] } });
-  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
+  await h.tools.done.execute({ summary: '存好了，喝咖啡的猫在相册里。' });
   await tick();
   assert.equal(her.got.length, 2);
-  assert.match(text(her.got[1]), /刚才那件事做完了：（在手机上）存喝咖啡的那张[\s\S]*\n（做到这儿停下了[^\n]*\n结果：存好了，喝咖啡的猫在相册里。\n（这是他要的事/);
-  assert.deepEqual(h.audit.filter((e) => e.event === 'hands-result').map((e) => [e.status, e.forHim]), [['stuck', true], ['done', true]]);
+  assert.match(text(her.got[1]), /刚才那件事做完了：（在手机上）存喝咖啡的那张[\s\S]*\n（手收尾了[^\n]*\n结果：存好了，喝咖啡的猫在相册里。\n（这是他要的事/);
+  assert.deepEqual(h.audit.filter((e) => e.event === 'hands-result').map((e) => [e.outcome, e.forHim]), [['stuck', true], ['done', true]]);
   // one more thing for the hands at work goes into their run; with nothing under way there is nothing to add to
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: her.got[1].source, content: her.got[1].content });
   assert.match(h.shown('hands', await h.tools.hands.execute({ add: '再存一张' })), /^你现在没在做什么|没有可补的/);
@@ -107,8 +106,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   assert.equal(text(h.agentOf('h3').got[1]), '顺便看看有没有狗的');
   assert.equal(h.shown('hands', { status: 'added' }), '补上了，它下一步之前就会看到。');
   h.emit('s1', 'turn/end', { turn: 4 });
-  h.emit('h3', 'assistant/message', { message: { content: [{ type: 'text', text: '有猫有狗' }] } });
-  h.emit('h3', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  await h.tools.done.execute({ summary: '有猫有狗' }); await tick();
   assert.deepEqual(her.got[2].source, { kind: 'dsh-dot', form: 'hands-result', for: 'him', thing: 't3' });
   h.stop();
 });
@@ -119,8 +117,8 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   assert.deepEqual(await h.command('stop'), { kind: 'success', text: '她手上现在没有事' });
   await h.tools.hands.execute({ device: 'phone', do: '逛逛贴吧' }); await tick();
   assert.deepEqual(await h.command('stop'), { kind: 'success', text: '停下了：（在手机上）逛逛贴吧' });
-  await tick();
-  assert.deepEqual(h.agentOf('h1').cancels, ['dot-hands: 他叫停了']);
+  await tick(30);
+  assert.deepEqual(h.agentOf('h1').cancels, ['dot-hands: stopped']);
   assert.equal(her.got.length, 0, 'a thing stopped on his word does not wake her');
   assert.match(text(her.noted[0]), /（他叫停的：[^\n]*到此为止，不要接着做）/, 'she finds a line about it, the next time she is up');
   // her own stop: she knows, nothing comes back; and a thing given while one is under way waits its turn
@@ -136,8 +134,7 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   await h.tools.hands.execute({ device: 'phone', do: '看看小黑盒首页' }); await tick();
   const release = h.services.dshDot.freeze();
   const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
-  h.emit(hid, 'assistant/message', { message: { content: [{ type: 'text', text: '首页是推荐流' }] } });
-  h.emit(hid, 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  await h.tools.done.execute({ summary: '首页是推荐流' }); await tick();
   assert.equal(her.got.length, 0, 'not delivered into the conversation she is leaving');
   h.services.dshDot.setSession('s2');
   assert.deepEqual(her.cancels, ['dot: her conversation moved on']);
@@ -155,13 +152,12 @@ test('her hands and she think at their own effort: the session\'s own selection,
   const hands = h.agentOf('h1');
   assert.deepEqual(hands.selected, [low]);
   assert.equal(hands.got.length, 1, 'and then the thing is sent');
-  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '看了' }] } });
-  h.emit('h1', 'turn/end', { reason: { kind: 'done' } }); await tick(); await tick();
+  await h.tools.done.execute({ summary: '看了' }); await tick(); await tick();
   const her = h.agentOf('s1');
   assert.deepEqual(her.selected, [low], 'her own conversation, when what her hands did comes back to it');
   assert.equal(her.got.length, 1);
   await h.tools.hands.execute({ device: 'phone', do: '再看一眼' }); await tick();
-  h.emit('h2', 'turn/end', { reason: { kind: 'done' } }); await tick(); await tick();
+  await h.tools.done.execute({ summary: '看了' }); await tick(); await tick();
   assert.deepEqual(her.selected, [low], 'already so: nothing is done');
   assert.ok(h.audit.some((a) => a.event === 'effort-set' && a.session === 's1' && a.was === 'off' && a.effort === 'low'));
   h.stop();
@@ -257,7 +253,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('收到！');
   h.emit('s1', 'turn/end', { turn: 7, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(5), /（这一轮刚停下一件事：（在手机上）打开小黑盒找表情包。停下前没有做出结果）/);
+  assert.match(fed(5), /（这一轮刚停下一件事：（在手机上）打开小黑盒找表情包。他叫停了）/);
   assert.equal(her.got.length, 0, 'the stopped thing wakes nobody');
   // a thing of his comes to its end: the voice is given the book's result for it
   h.emit('s1', 'turn/start', { turn: 8 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查下明天天气' }] });
@@ -265,14 +261,14 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 8, reason: { kind: 'completed' } }); await tick(30);
   const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
-  h.emit(hid, 'assistant/message', { message: { content: [{ type: 'text', text: '明天多云，18 到 24 度。' }] } });
-  h.emit(hid, 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  await h.tools.done.execute({ summary: '明天多云，18 到 24 度。' }); await tick();
   assert.equal(her.got.length, 1);
   h.emit('s1', 'turn/start', { turn: 9 }); h.emit('s1', 'user/message', { source: her.got[0].source, content: her.got[0].content });
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
   h.replies.push('明天多云，十八到二十四度');
   h.emit('s1', 'turn/end', { turn: 9, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。[^\n]*结果：明天多云，18 到 24 度。）/);
+  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。）/, 'their one-line summary, and nothing written for her');
+  assert.doesNotMatch(fed(7), /看图|看结果/, 'nothing to look at: the voice has no picture');
   assert.match(fed(7), /他这会儿没说话，是你有事要告诉他/);
   assert.equal(h.qqSent.at(-1)[1], '明天多云，十八到二十四度');
   // a turn he is not in (her own thing came back): what she writes goes nowhere, and nothing is said
@@ -414,8 +410,7 @@ test('the know-how book: every device call of a thing is a step where it happene
   await post('s1', 'mcp__dot-phone__mobile_press_button', { button: 'HOME' }); // not her hands: nothing recorded
   h.replies.length = 0;
   h.replies.push(JSON.stringify({ task: '搜游戏', notes: '## 教训\n- 搜索框要先点一下\n## 捷径\n- 搜游戏（在首页时）：点右上角搜索 → 输入 {游戏名} → 回车' }));
-  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '搜到了。' }] } });
-  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
+  await h.tools.done.execute({ summary: '搜到了。' });
   for (let i = 0; i < 30 && !h.audit.some((e) => e.event === 'howto-learned'); i++) await tick();
   assert.ok(h.audit.some((e) => e.event === 'howto-learned' && e.app === '小黑盒' && e.steps === 3 && e.outcome === 'done' && e.task === '搜游戏'));
   const input = JSON.parse(h.llmCalls.find((c) => /手艺簿/.test(c.system)).messages[0].content[0].text);
@@ -454,8 +449,7 @@ test('his words opened a thing: the answer waits a moment — a quick thing is a
   await his(2, '明天广州天气怎样', ['查明天广州天气']);
   await tick(20);
   assert.deepEqual(h.qqSent, [], 'held');
-  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '明天多云 22 度' }] } });
-  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  await h.tools.done.execute({ summary: '明天多云 22 度' }); await tick();
   await tick(80);
   assert.deepEqual(h.qqSent, [], 'nothing of his under way when the wait was over: folded into the result');
   assert.ok(h.audit.some((e) => e.event === 'ack-folded'));

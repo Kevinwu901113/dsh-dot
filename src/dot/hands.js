@@ -17,7 +17,10 @@
 //   start({ device, task })  → { status: 'started' } at once; or 'busy' (what they are on) / 'failed'.
 //   add(text)                → one more thing said to the hands at work, read between two of their steps.
 //   ask(question)            ← from the hands' own tool: this round ends as a question to her.
-//   stop(why)                → the thing ends now, as cut; what waited behind it is let go with it.
+//   finish({ summary, detail }) ← from the hands' own tool: the thing is done, and this is what came of it.
+//   stop({ by, cause })      → the thing ends now, stopped; what waited behind it is let go with it.
+// How a thing ends is told as facts (ledger.js): its outcome, who stopped it, why, the hands' summary and details.
+// Nothing here writes a sentence for anyone: each reader words them for itself.
 // Every thing is an entry in the ledger (ledger.js): opened when she gives it, ended when it is over. One is done at
 // a time; one given meanwhile waits its turn.
 // The hands' sessions live outside her home (so nothing that goes by "a session in her home" takes them for her).
@@ -30,8 +33,6 @@ const squash = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
 const SHOWN_MAX = 200000; // characters of screen text a thing keeps for keep_line's check (the newest)
 const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${head(t, n)}…` : t; };
-/** How a thing ended, in the ledger's words, from how the hands' run ended. */
-export const outcomeOf = (status, why = '') => (status === 'done' ? 'done' : status === 'stuck' ? 'stuck' : status === 'failed' ? 'failed' : /too long/.test(why) ? 'timeout' : 'stopped');
 const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(p || sep)); return b === a || b.startsWith(a + sep); };
 
 /**
@@ -41,35 +42,43 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  *                        handle of a session that is not running is a thinner one, and goes stale
  * @param deps.ledger     the book of things (ledger.js)
  * @param deps.overCap    (entry) => '' or the question to ask him when a thing has cost more than it may (it ends stuck there)
+ * @param deps.done       () => what they are told when a run ends without their tool saying it is done (once)
  * @param deps.onEvent    (fn: (session, event) => void) => dispose — the host's session events
  * @param deps.message    (text) => the user message that carries a task or something added to it
  * @param deps.textOf     (content) => text of an assistant message's content
  * @param deps.store      { get(key), set(key, value) } — remembered across restarts
- * @param deps.onDone     (result, thing) — it is over. result = { status: 'done' | 'cut' | 'failed', text, shown, steps, rounds, ms, notes, why? }
+ * @param deps.onDone     (result, thing) — it is over. result = { outcome, by, cause?, error?, summary?, detail?, question?, ask?, shown, steps, rounds, ms, notes }
  * @param deps.retire     (id) — a session the hands are done with (the host may put it away)
  * @param deps.maxMs      a thing is cut after this long
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', done = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
   const past = new Set(store.get('handsPast') ?? []);
   { const old = store.get('handsSession'); if (old) { past.add(String(old)); store.set('handsSession', ''); } } // one session for all rounds, before 0.25
-  { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', why: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
+  { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', cause: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
   let thing = null; // the one thing under way: { entry, device, task, extra, … }
   const queue = []; // things given while one is under way, in order
   const remember = (id) => { past.add(id); store.set('handsPast', [...past].slice(-30)); };
   const call = (fn, ...a) => { try { Promise.resolve(fn(...a)).catch(() => {}); } catch (error) { void error; } };
   const view = (t) => ({ id: t.entry, session: t.id, device: t.device, task: t.task, ...t.extra });
-  const snapshot = (t, more) => ({ text: headTail(t.said, maxChars), shown: t.shown, steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
+  const snapshot = (t, more) => ({ shown: t.shown, steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
   const withAgent = async (t, fn) => { const agent = t.id ? await agentFor(t.id) : null; if (!agent) throw new Error('no hands session'); return fn(agent); };
-  /** The thing is over, whichever way. */
-  const settle = (t, status, why, stoppedBy = '') => {
+  /**
+   * The thing is over, whichever way. `outcome`: done · stuck · failed · timeout · stopped; `by`: whose word ended it
+   * (him, her, or the code); `cause` (ledger.js CAUSES) and `error` when it did not simply end.
+   */
+  const settle = (t, outcome, { by = 'code', cause = '', error = '' } = {}) => {
     if (t.over) return; t.over = true;
-    clearTimeout(t.timer); try { t.off?.(); } catch (error) { void error; }
+    clearTimeout(t.timer); try { t.off?.(); } catch (e) { void e; }
     const running = thing === t && t.state === 'running';
     if (thing === t) thing = null; else { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
-    if (status === 'cut' && running) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }));
-    const out = snapshot(t, { status, ...(why ? { why } : {}), ...(status === 'stuck' ? { question: t.question, ask: t.ask } : {}) });
-    ledger.end(t.entry, { outcome: outcomeOf(status, why), why, by: stoppedBy || (status === 'cut' && /^他/.test(String(why)) ? 'him' : status === 'cut' && /^她/.test(String(why)) ? 'her' : ''), result: out.text, question: status === 'stuck' ? t.question : '', ...(status === 'stuck' && t.ask ? { ask: t.ask } : {}) });
-    audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, status, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(why ? { why } : {}) });
+    // A run still going is ended here: stopped or too long, or done by their own word (their tool, nothing more to say).
+    if (running && (outcome === 'stopped' || outcome === 'timeout' || (outcome === 'done' && t.result))) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
+    // What came of it: their own summary and details when they gave them (finish), else what they last said, as details.
+    const summary = String(t.result?.summary ?? '').trim(), detail = headTail(t.result ? t.result.detail : t.said, maxChars);
+    const facts = { outcome, by, ...(cause ? { cause } : {}), ...(error ? { error: String(error).slice(0, 160) } : {}), ...(summary ? { summary } : {}), ...(detail ? { detail } : {}), ...(outcome === 'stuck' ? { question: t.question, ...(t.ask ? { ask: t.ask } : {}) } : {}) };
+    const out = snapshot(t, facts);
+    ledger.end(t.entry, facts);
+    audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, outcome, by, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(cause ? { cause } : {}) });
     if (t.id) call(retire, t.id);
     call(onDone, out, view(t));
     if (!thing && queue.length) begin(queue.shift());
@@ -78,7 +87,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const round = async (t, text) => {
     t.state = 'running'; t.question = ''; t.said = ''; t.rounds++;
     clearTimeout(t.timer);
-    t.timer = setTimeout(() => settle(t, 'cut', 'took too long'), maxMs); t.timer.unref?.();
+    t.timer = setTimeout(() => settle(t, 'timeout', { cause: 'timeout' }), maxMs); t.timer.unref?.();
     await withAgent(t, (agent) => agent.followup(message(text)));
   };
   /** Its turn has come: hands that have seen nothing else are made for it, and given the whole of it. */
@@ -91,7 +100,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
         if (id) { remember(id); audit('hands-opened', { session: id, thing: mine.entry }); }
         ledger.begin(mine.entry, { session: id });
         if (mine.over) return;
-        if (!id) { settle(mine, 'failed', 'no hands session'); return; }
+        if (!id) { settle(mine, 'failed', { cause: 'no-session' }); return; }
         mine.off = onEvent((session, event) => {
           if (session?.id !== id || mine.over || mine.state !== 'running') return;
           if (event?.type === 'tool/call') { mine.steps++; ledger.count(mine.entry, { steps: 1 }); }
@@ -103,24 +112,28 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
               ledger.count(mine.entry, { tokens: { in: (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0), cached: u.cacheReadTokens, out: u.outputTokens } });
               // Over what a thing may cost without his yes: it stops here, as a question for him.
               const q = overCap(ledger.get(mine.entry) ?? {});
-              if (q && !mine.question) { mine.question = q; mine.ask = { for: 'him', kind: 'spend' }; call(withAgent, mine, (agent) => agent.cancel?.({ kind: 'hook', reason: 'dot-hands: over its cost' })); settle(mine, 'stuck'); return; }
+              if (q && !mine.question) { mine.question = q; mine.ask = { for: 'him', kind: 'spend' }; call(withAgent, mine, (agent) => agent.cancel?.({ kind: 'hook', reason: 'dot-hands: over its cost' })); settle(mine, 'stuck', { cause: 'over-cap' }); return; }
             }
             // What a run closes with is its result: its last message, when that one calls no tool. What was said beside a call is on the way, not the outcome.
             if (!event.data?.interrupted) { const c = event.data?.message?.content; const t = textOf(c); if (String(t ?? '').trim()) mine.last = t; mine.said = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : String(t ?? ''); }
           }
           else if (event?.type === 'turn/end') {
             // Ended by someone else (the host, a crash of the step): not done, and not a question either.
-            if (event.data?.reason?.kind === 'aborted') { settle(mine, 'failed', 'interrupted'); return; }
+            if (event.data?.reason?.kind === 'aborted') { settle(mine, 'failed', { cause: 'interrupted' }); return; }
             // The run broke (the model call failed): how far it got is on the screen, what it meant to say is not a result.
-            if (event.data?.reason?.kind === 'error') { settle(mine, 'failed', `broke off: ${String(event.data.reason.error?.message ?? '').slice(0, 120)}`); return; }
-            // Over with nothing said is not a thing done: nobody can tell what came of it.
-            if (!mine.question) { if (String(mine.said ?? '').trim()) settle(mine, 'done'); else settle(mine, 'failed', 'no result'); return; }
+            if (event.data?.reason?.kind === 'error') { settle(mine, 'failed', { cause: 'broke-off', error: String(event.data.reason.error?.message ?? '') }); return; }
+            // A thing is done when they say so with their tool (finish), which ends it. Over without it: told once to
+            // finish properly (what they would say is the thing's result); still nothing, and nobody can tell what came of it.
+            if (!mine.question) {
+              if (!mine.nudged) { mine.nudged = true; void round(mine, done()).catch((err) => settle(mine, 'failed', { cause: 'broke-off', error: err.message })); return; }
+              settle(mine, 'failed', { cause: 'no-result' }); return;
+            }
             // They need her: the thing ends here, as stuck on that question. Nothing waits — what she decides is given as a new thing, and the device is where it was left.
             settle(mine, 'stuck');
           }
         }) ?? (() => {});
         await round(mine, mine.task);
-      } catch (err) { settle(mine, 'failed', err.message); }
+      } catch (err) { settle(mine, 'failed', { cause: 'broke-off', error: err.message }); }
     })();
   };
   const api = {
@@ -147,11 +160,25 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * question stands. False when nothing is under way.
      */
     ask(question, ask = {}) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
-    /** Everything stops now, as cut (she or he said stop): the thing under way, and what waited behind it. `by`: whose word it was. False when there is none. */
-    stop(why = 'stopped', { by = '' } = {}) {
+    /**
+     * From the hands' own tool: the thing is done, and this is what came of it — `summary` in a line, `detail` for her.
+     * It ends here (nothing more is said). False when nothing is under way, or it has already asked.
+     */
+    finish({ summary = '', detail = '' } = {}) {
+      const t = thing;
+      if (!t || t.state !== 'running' || t.question || t.over) return false;
+      t.result = { summary: String(summary ?? '').trim(), detail: String(detail ?? '').trim() };
+      settle(t, 'done');
+      return true;
+    },
+    /**
+     * Everything stops now (she or he said stop): the thing under way, and what waited behind it. `by`: whose word it
+     * was; `cause`: 'stopped', or 'command' when it came from outside her conversation (his /dot stop). False when there is none.
+     */
+    stop({ by = 'her', cause = 'stopped' } = {}) {
       if (!thing && !queue.length) return false;
-      for (const t of queue.splice(0)) settle(t, 'cut', why, by);
-      if (thing) settle(thing, 'cut', why, by);
+      for (const t of queue.splice(0)) settle(t, 'stopped', { by, cause });
+      if (thing) settle(thing, 'stopped', { by, cause });
       return true;
     },
     /** What a restart cut off ([{ id, device, task, asker, … }]); told once. */

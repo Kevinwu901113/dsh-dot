@@ -172,7 +172,7 @@ function render(s){
   if(dot&&dot.things&&dot.things.length){
     const word={done:'做完',stopped:'被停',failed:'没做成',timeout:'太久',stuck:'卡住'};
     let h='<div class="kv">';
-    for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.tokens?(e.tokens.in||0)+(e.tokens.cached||0)+(e.tokens.out||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?' · '+fmt(tk)+' token':'')+'</span></span>';}
+    for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.tokens?(e.tokens.in||0)+(e.tokens.cached||0)+(e.tokens.out||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+(e.summary?'<br>'+esc(String(e.summary).slice(0,80)):'')+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?' · '+fmt(tk)+' token':'')+'</span></span>';}
     h+='</div>';
     $('now').innerHTML+=h;
   }

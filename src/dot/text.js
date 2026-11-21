@@ -54,17 +54,28 @@ export function withImages(text, images = [], { max = Infinity, maxBytes = Infin
 /** The model-facing reason a qq_send to him is held back: he said something she has not read yet. */
 export const ownerInterruptText = () => prompt('dot.owner-interrupt');
 /**
- * How a thing in her hands ended, as the code saw it — not as they tell it: they stopped by themselves (whether it
- * worked is in their words), they were cut (too long, she stopped them, he did), or it could not run; and what was
- * refused them on the way (words that were not hers, a line of hers sent back).
+ * How a thing of her hands ended, for her conversation: she has the screen in front of her, so this may tell her what
+ * to look at. From the book's facts only ({ outcome, by, cause, error, notes }), never from another reader's words.
  */
 export function handsStatus(r = {}, device = '') {
-  const why = String(r.why ?? '');
-  const base = r.status === 'stuck' ? prompt('dot.hands.status.stuck') : r.status === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
-    : r.status === 'cut' ? prompt(/太久|too long/.test(why) ? 'dot.hands.status.timeout' : /^他/.test(why) ? 'dot.hands.status.stopped.his' : 'dot.hands.status.stopped')
-      : prompt('dot.hands.status.failed', { why: why || '没有原因' });
+  const o = r.outcome;
+  const base = o === 'stuck' ? prompt('dot.hands.status.stuck') : o === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
+    : o === 'timeout' ? prompt('dot.hands.status.timeout') : o === 'stopped' ? prompt(r.by === 'him' ? 'dot.hands.status.stopped.his' : 'dot.hands.status.stopped')
+      : prompt('dot.hands.status.failed', { why: `${prompt(CAUSE_WORDS[r.cause] ?? CAUSE_WORDS['broke-off']).trim()}${r.error ? `（${r.error}）` : ''}` });
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
   return [base.trim(), ...notes.map((n) => n.trim())].join('；');
+}
+/** Why a thing failed, in her words (a cause without its own words: it broke off). */
+const CAUSE_WORDS = { restart: 'dot.hands.cause.restart', 'no-session': 'dot.hands.cause.no-session', interrupted: 'dot.hands.cause.interrupted', 'broke-off': 'dot.hands.cause.broke-off', 'no-result': 'dot.hands.cause.no-result' };
+/**
+ * How a thing ended, for the call that writes her words: facts in a few words (with its full stop; '' when the summary
+ * says it), nothing to look at (it has no picture) and nothing to do. From the book's facts only.
+ */
+export function voiceHow(e = {}) {
+  const o = e.outcome;
+  if (o === 'done') return ''; // how it went is in their summary (done is their word that it is over, not that it worked)
+  const id = o === 'timeout' ? 'dot.say.how.timeout' : o === 'stopped' ? (e.by === 'him' ? 'dot.say.how.stopped.him' : 'dot.say.how.stopped.her') : e.cause === 'restart' ? 'dot.say.how.failed.restart' : 'dot.say.how.failed';
+  return `${prompt(id).trim()}。`;
 }
 /** A web address or a domain typed into a bar: where to go, not something said. */
 const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;

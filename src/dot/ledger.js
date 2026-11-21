@@ -2,13 +2,35 @@
 // came of each. One entry per thing; only code writes it. What she is told about a thing, what she can say about it,
 // and what the panel shows all come from here, never from what a model remembers having done.
 //   entry = { id, asker: 'him' | 'her', device, task, state: 'queued' | 'running' | 'ended',
-//             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', why?, by?: 'him' | 'her',
-//             question?, ask?: { for: 'her' | 'him', kind?, subject?, screen? }, result?, steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
+//             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', by?: 'him' | 'her' | 'code', cause?, error?,
+//             summary?, detail?, question?, ask?: { for: 'her' | 'him', kind?, subject?, screen? },
+//             steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
 //             shot?: path of the screen as it was at the end, told?: at }
+// Only facts are kept, never a sentence written for one of its readers: who stopped it is a field, why it ended is one
+// of a few causes (CAUSES), what came of it is the hands' own one-line summary and their details. Each reader (her
+// conversation, the voice, the line in her notes, the panel) words these for itself.
 // State and outcome are two things: a thing is ended once, and how it ended does not change. A restart ends whatever
-// was not ended ('failed', why 'restart') — the device may have been left halfway, and that is told once.
+// was not ended ('failed', cause 'restart') — the device may have been left halfway, and that is told once.
 
 import { head as headOf, tail as tailOf } from '../cut.js';
+
+/** Why a thing ended, when that is not plain from its outcome. */
+export const CAUSES = ['restart', 'no-session', 'interrupted', 'broke-off', 'no-result', 'timeout', 'stopped', 'command', 'over-cap'];
+
+/** An entry from before the book kept facts only (a `why` sentence, a `result` text): read once as fields. */
+export function factsOf(e) {
+  if (!e || !('why' in e || 'result' in e)) return e;
+  const { why = '', result = '', ...rest } = e;
+  const w = String(why);
+  const cause = w === 'restart' || /重启/.test(w) ? 'restart' : /too long/.test(w) ? 'timeout' : /no hands session/.test(w) ? 'no-session' : /^broke off/.test(w) ? 'broke-off' : /no result/.test(w) ? 'no-result' : w === 'interrupted' ? 'interrupted' : e.outcome === 'stopped' ? 'stopped' : w ? 'broke-off' : '';
+  return {
+    ...rest,
+    ...(cause && !rest.cause ? { cause } : {}),
+    ...(!rest.by && e.outcome === 'stopped' ? { by: /^他/.test(w) ? 'him' : /^她/.test(w) ? 'her' : 'code' } : {}),
+    ...(cause === 'broke-off' && w && !rest.error ? { error: w.replace(/^broke off:?\s*/, '').slice(0, 160) } : {}),
+    ...(result && !rest.detail ? { detail: String(result) } : {}),
+  };
+}
 
 /** The head and the tail of a long text: not a summary, so nothing in it was made up on the way. */
 export function headTail(text, max = 900) {
@@ -23,12 +45,14 @@ export function headTail(text, max = 900) {
  * @param deps.keep   how many entries are kept (the newest)
  */
 export function createLedger({ store, key = 'things', keep = 100, now = () => Date.now() }) {
-  let list = (Array.isArray(store.get(key)) ? store.get(key) : []).filter((e) => e && e.id);
+  const raw = (Array.isArray(store.get(key)) ? store.get(key) : []).filter((e) => e && e.id);
+  let list = raw.map(factsOf);
+  const folded = list.some((e, i) => e !== raw[i]);
   const cut = [];
-  for (const e of list) if (e.state !== 'ended') { Object.assign(e, { state: 'ended', outcome: 'failed', why: 'restart', endedAt: now() }); cut.push(e); }
+  for (const e of list) if (e.state !== 'ended') { Object.assign(e, { state: 'ended', outcome: 'failed', by: 'code', cause: 'restart', endedAt: now() }); cut.push(e); }
   let n = list.reduce((m, e) => Math.max(m, Number(String(e.id).slice(1)) || 0), 0);
   const save = () => { list = list.slice(-keep); store.set(key, list); };
-  if (cut.length) save();
+  if (cut.length || folded) save();
   const find = (id) => list.find((e) => e.id === id) ?? null;
   return {
     /** A new thing, queued. → its id */
@@ -42,10 +66,11 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
     /** Counted as it goes; written down with the next change of state. */
     count(id, { steps = 0, tokens } = {}) { const e = find(id); if (!e) return; e.steps += steps; if (tokens) for (const k of ['in', 'cached', 'out']) e.tokens[k] += Number(tokens[k] ?? 0) || 0; },
     /** It is over, this way. Once: an ended thing stays as it ended. */
-    end(id, { outcome, why = '', by = '', question = '', result = '', ask = null } = {}) {
+    end(id, { outcome, by = 'code', cause = '', error = '', summary = '', detail = '', question = '', ask = null } = {}) {
       const e = find(id);
       if (!e || e.state === 'ended') return e;
-      Object.assign(e, { state: 'ended', outcome, endedAt: now(), ...(why ? { why } : {}), ...(by ? { by } : {}), ...(question ? { question } : {}), ...(ask ? { ask } : {}), ...(result ? { result } : {}) });
+      const some = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v));
+      Object.assign(e, { state: 'ended', outcome, by, endedAt: now(), ...some({ cause, error, summary, detail, question }), ...(ask ? { ask } : {}) });
       save();
       return e;
     },
