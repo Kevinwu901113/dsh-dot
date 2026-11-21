@@ -88,7 +88,7 @@ export const entries = [
   { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
     render: () => P.prompt('interlude.voice', { name: '小点' }) },
 
-  { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：等他停下（1.5 秒没新消息，最多 6 秒）一批盖一个时间戳，后面是他打的原话；她这轮还没做完时插进这一轮，多一行 dot.owner-words.busy；她上一条有没发出去的话（他先说了话），附在后面给她看一次 dot.owner-words.unsent', files: ['dot.owner-words', 'dot.owner-words.busy', 'dot.owner-words.unsent'],
+  { id: 'owner', group: 'wake', name: '他的 QQ 消息', note: '他从电脑端 QQ 发来的话：等他停下（1.5 秒没新消息，最多 6 秒）一批盖一个时间戳，报成「他：…」，后面是他打的原话（记进原话库时去掉「他：」）；她这轮还没做完时插进这一轮，多一行 dot.owner-words.busy；她上一条有没发出去的话（他先说了话），附在后面给她看一次 dot.owner-words.unsent', files: ['dot.owner-words', 'dot.owner-words.busy', 'dot.owner-words.unsent'],
     render: () => variant([['她空闲', D.ownerWords([{ text: '在吗' }, { text: '帮我看个东西' }])], ['她这轮进行中', D.ownerWords([{ text: '算了' }, { text: '先别弄了' }], Date.now(), { whileBusy: true })], ['她有话没发出去', D.ownerWords([{ text: '你中午吃什么' }], Date.now(), { unsent: ['回放的事我自己想办法', '你醒了再聊也行'] })]]) },
   { id: 'interrupt', group: 'wake', name: '他插话了', note: '她要 qq_send 给他时他还有没看的话：这次发送被拦下（工具返回的理由，每轮最多 2 次）；气泡发到一半他又说话：剩下的不发（qq_send 的结果）', files: ['dot.owner-interrupt', 'qq.send-interrupted'],
     render: () => variant([['发送被拦下', D.ownerInterruptText()], ['发到一半', Q.sendReport({ sent: 1, interrupted: true, unsent: ['那家店我去过', '还挺好吃的'] })]]) },

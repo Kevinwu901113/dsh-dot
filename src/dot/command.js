@@ -1,0 +1,44 @@
+// dsh-dot/command: /dot — his commands on her (stop what is in her hands, the doctor, her know-how book, the prompts
+// page, memory's own) and her status. What the status says of her state is given by dot (core.js).
+import { overrideNotes, rebase } from '../prompts.js';
+
+/**
+ * @param deps.stop     () => text — stop what is in her hands, on his word
+ * @param deps.memory   () => dsh-dot/memory's service (its /dot memory and /dot people) or null
+ * @param deps.howto    the know-how book (howto.js)
+ * @param deps.checkup  checkup.js
+ * @param deps.prompts  the prompts page ({ start, stop })
+ * @param deps.status   async (arg) => text — her status ('test' also sends a test message to his IM)
+ */
+export function dotCommand({ stop, memory, howto, checkup, prompts, status }) {
+  const ok = (text) => ({ kind: 'success', text });
+  const book = (app) => {
+    if (app) {
+      const tasks = howto.tasks(app).map((t) => `${t.task} done ${t.done}/${t.runs}${t.steps.length ? `, steps ${t.steps.join(' → ')}` : ''}${t.tokens.length ? `, tokens ${t.tokens.map((n) => `${Math.round(n / 1000)}k`).join(' → ')}` : ''}`).join(' · ');
+      const runs = howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.outcome && r.outcome !== 'done' ? `[${r.outcome}]` : ''}`).join(' → ');
+      return `${app}\n${howto.notes(app) || '(no notes yet)'}${howto.needsReview(app) ? '\n(old notes: read over before they are given again)' : ''}\n\ntasks, oldest first: ${tasks || '-'}\nlast runs: ${runs || '-'}`;
+    }
+    const rows = howto.apps().map((a) => `${a}: ${howto.recent(a, 10).map((x) => x.steps).join(' → ') || '-'}${howto.notes(a) ? ' · notes' : ''}`);
+    return `steps per run, oldest first (notes in ${howto.dir})\n${rows.join('\n') || '(nothing yet)'}`;
+  };
+  return {
+    name: 'dot',
+    description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
+    input: { hint: '[stop | doctor | test | check | howto [<app>] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+    handler: async ({ rawInput }) => {
+      const arg = String(rawInput ?? '').trim();
+      if (arg === 'stop') return ok(stop());
+      // /dot memory … and /dot people … belong to dsh-dot/memory.
+      if (/^(memory|people)\b/.test(arg)) { const mem = memory(); return ok(mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded'); }
+      if (/^howto\b/.test(arg)) return ok(book(arg.slice(5).trim()));
+      if (arg === 'doctor') { try { return ok(await checkup.text()); } catch (err) { return ok(`doctor failed: ${err.message}`); } }
+      if (arg === 'prompts stop') return ok((await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running');
+      const rb = /^prompts rebase (\S+)( --reset)?$/.exec(arg);
+      if (rb) { try { return ok(rebase(rb[1], Boolean(rb[2]))); } catch (err) { return ok(err.message); } }
+      if (arg === 'prompts') {
+        try { return { kind: 'success', text: [`提示词和人设页面：${await prompts.start()}\n（只在本机打开；/dot prompts stop 关掉）`, ...overrideNotes().map((n) => `提示词覆盖 ${n}（/dot prompts rebase <id>）`)].join('\n') }; } catch (err) { return { kind: 'success', text: `prompts page failed: ${err.message}` }; }
+      }
+      return ok(await status(arg));
+    },
+  };
+}

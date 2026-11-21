@@ -14,7 +14,7 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -24,6 +24,7 @@ import { createLedger } from './ledger.js';
 import { approvalKind, classify, KINDS, HIM_KINDS } from './gates.js';
 import { createConsent } from './consent.js';
 import { createSay } from './say.js';
+import { createOutlet } from './outlet.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -35,12 +36,14 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
 import { createSleep } from './sleep.js';
-import { doctorFor, report as doctorReport } from '../doctor.js';
+import { createCheckup } from './checkup.js';
+import { dotCommand } from './command.js';
 import { sectionOf, setValues } from '../settings.js';
 import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
-import { configure as configurePrompts, overrideNotes, prompt, rebase } from '../prompts.js';
+import { configure as configurePrompts, prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
-import { ago, stamp, today } from '../clock.js';
+import { ago, stamp, today, unstamp } from '../clock.js';
+import { ownerSaid } from '../said.js';
 import { head } from '../cut.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
@@ -429,7 +432,7 @@ export function apply(ctx, config = {}) {
       t.fromQq = true;
       if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
-        const said = contentText(event.data?.content).replace(/^\[[^\]]*\]\s*/, '').trim();
+        const said = ownerSaid(unstamp(contentText(event.data?.content))).trim();
         if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
       }
       return;
@@ -768,8 +771,13 @@ export function apply(ctx, config = {}) {
     create: async (cwd) => {
       const controller = ctx.get('sessionController');
       if (!controller) return '';
-      try { const { sessionId } = await controller.create({ cwd }); try { await controller.rename?.({ sessionId, title: 'dot · 手' }); } catch (error) { void error; } return sessionId; }
-      catch (err) { logger.warn(`hands session not created: ${err.message}`); return ''; }
+      // With their own preset (only the host tools doing takes); a host that does not know it refuses it — then as before.
+      let made = null;
+      try { made = await controller.create({ cwd, agentPreset: HANDS_PRESET }); } catch (err) { audit('hands-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
+      try { made ??= await controller.create({ cwd }); } catch (err) { logger.warn(`hands session not created: ${err.message}`); return ''; }
+      const { sessionId } = made ?? {};
+      try { await controller.rename?.({ sessionId, title: 'dot · 手' }); } catch (error) { void error; }
+      return sessionId ?? '';
     },
     agentFor: handsAgent,
     onEvent: (fn) => ctx.on('session/event', fn),
@@ -848,9 +856,8 @@ export function apply(ctx, config = {}) {
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
   // ── her side of the conversation with him ──
-  // Writing (a turn of his words is open, `turns`), sending (her bubbles are going out, `sendingCount`), or neither.
+  // Writing (a turn of his words is open, `turns`), sending (her bubbles are going out, outlet.busy()), or neither.
   // One rule for both: what has not reached him yet gives way to what he just said; what has reached him stands.
-  let sending = Promise.resolve(), sendingCount = 0;
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
@@ -876,6 +883,11 @@ export function apply(ctx, config = {}) {
     if (!out.length) out.push(prompt('dot.say.fact.none'));
     return out.map((x) => x.trim());
   };
+  const outlet = createOutlet({
+    qq: () => ctx.get('dshQq'), im,
+    here: () => { const t = turns.get(lastSession); return Boolean(t?.elsewhere && !t.fromQq); },
+    herSaid: (text) => herSaid(lastSession, text),
+  });
   // What she says (say.js): written by a call that is only her card, checked once, and carried out from here —
   // to his QQ or anyone's (her bubbles one after another; qq.send stops between them when he speaks), to her own
   // window when that is where he is talking to her (the tool's output is what he reads there), or over the IM
@@ -896,22 +908,7 @@ export function apply(ctx, config = {}) {
     unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && hisUnread(),
     lines: cfg.sayLines, maxLines: cfg.sayMaxLines,
     audit: (event, data) => audit(event, { session: lastSession, ...data }),
-    send: async ({ to, text, images }) => {
-      const t = turns.get(lastSession);
-      const qq = ctx.get('dshQq');
-      const whole = () => ({ said: String(text).split('\n').filter(Boolean), images: [] });
-      if (to === 'owner' && t?.elsewhere && !t.fromQq) { herSaid(lastSession, text); return whole(); }
-      if (qq?.connected) {
-        sendingCount++;
-        const job = sending.then(() => qq.send(to, text, images));
-        sending = job.catch(() => {});
-        try { return await job; } finally { sendingCount--; }
-      }
-      if (to !== 'owner') throw new Error('her QQ is not connected');
-      if (!(await im.send(text))) throw new Error('no way to reach him: her QQ is not connected and there is no IM target');
-      herSaid(lastSession, text);
-      return whole();
-    },
+    send: (m) => outlet.send(m),
   });
   /** What went out, told back to her: the lines and pictures as they were sent. */
   let saidNote = '';
@@ -1016,7 +1013,7 @@ export function apply(ctx, config = {}) {
   // her own, picking up her phone, the one asking) asks `quiet()`; nothing keeps a list of its own.
   const herState = () => ({
     writing: Boolean(lastSession) && turns.has(lastSession),       // a turn of her conversation is running
-    sending: sendingCount > 0,                                     // her bubbles are going out
+    sending: outlet.busy(),                                        // her bubbles are going out
     hands: Boolean(hands?.busy()),                                 // her hands are on a round
     his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
     moving: frozen > 0,                                            // her conversation is being handed over
@@ -1169,7 +1166,7 @@ export function apply(ctx, config = {}) {
     clearTimeout(ownerTimer); ownerTimer = null;
     // Her bubbles are still going out: sending counts as busy. They stop at the next bubble (qq.send sees he
     // spoke); his words go in once they have, together with what was left unsent.
-    if (!agent && sendingCount > 0 && ownerBatch.length) { void sending.finally(() => flushOwner()); return 0; }
+    if (!agent && outlet.busy() && ownerBatch.length) { void outlet.settled().finally(() => flushOwner()); return 0; }
     const items = ownerBatch; ownerBatch = []; ownerTyping = ownerTypingSeen = false;
     if (!items.length) return 0;
     const id = lastSession;
@@ -1343,24 +1340,9 @@ export function apply(ctx, config = {}) {
     }
   };
   ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
-  // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
-  // something still has to be installed, and when a device fails; problems go to the log and his IM.
-  let lastDoctor = null;
-  const runDoctor = async () => {
-    const items = await doctorFor({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() });
-    lastDoctor = { at: Date.now(), bad: items.filter((i) => i.level === 'bad').length, warn: items.filter((i) => i.level === 'warn').length };
-    audit('doctor', { bad: lastDoctor.bad, warn: lastDoctor.warn, problems: items.filter((i) => i.level !== 'ok').map((i) => i.name) });
-    return items;
-  };
-  const doctorTell = async (why) => {
-    try {
-      const items = await runDoctor();
-      if (!items.some((i) => i.level === 'bad')) return;
-      const text = doctorReport(items, { onlyProblems: true });
-      logger.warn(`${why}\n${text}`);
-      void im.send(`🩺 ${why}\n${text}\n（完整结果：在 dsh 里发 /phone doctor，或打开左侧栏的 dot 页面）`, 'plain');
-    } catch (err) { logger.warn(`doctor failed: ${err.message}`); }
-  };
+  // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
+  const checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
+  const doctorTell = (why) => checkup.tell(why);
   ctx.effect(() => {
     const t = setTimeout(() => {
       const p = phone()?.doctorInfo?.(), c = computer()?.doctorInfo?.();
@@ -1407,56 +1389,35 @@ export function apply(ctx, config = {}) {
     return out.length ? out : [`liveness: nothing waits for his yes, no stalled turn (stalled after ${mins(cfg.turnStallMs)})`];
   };
 
-  // /dot
+  // /dot (command.js): the command's surface; what it reports of her state is said here.
+  const statusText = async (arg) => {
+    const t = await im.target();
+    let test = '';
+    if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
+    const vm = computer()?.status?.();
+    const ph = phone()?.status?.();
+    const lines = [
+      `computer: ${vm ? `${vm.state}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}` : 'not installed (optional)'} · phone: ${ph ? `${ph.state}${ph.error ? ` (${ph.error})` : ''}` : 'not installed (optional)'}`,
+      `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
+      ...(checkup.last() && (checkup.last().bad || checkup.last().warn) ? [`doctor: ${checkup.last().bad} problem(s), ${checkup.last().warn} warning(s) — /dot doctor`] : []),
+      `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
+      // Where his next message goes: when she "does not answer", look here first.
+      `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
+      `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
+      ...statusLiveness(),
+      `budget: ${ctx.get('budget') ? (budget.blocked().length ? `BLOCKED (${budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
+      (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
+      `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
+    ];
+    return lines.join('\n') + test;
+  };
   // The command registry can come up after dot, so register through a child that waits for it.
   ctx.inject(['commands'], (commandCtx) => {
-    commandCtx.effect(() => commandCtx.commands.register({
-      name: 'dot',
-      description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
-      input: { hint: '[stop | doctor | test | check | howto [<app>] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
-      handler: async ({ rawInput }) => {
-        const arg = String(rawInput ?? '').trim();
-        // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
-        if (arg === 'stop') { const d = hands?.doing?.(); return { kind: 'success', text: hands?.stop('他叫停了') ? `停下了：${d?.task ?? ''}` : '她手上现在没有事' }; }
-        // /dot memory … and /dot people … belong to dsh-dot/memory.
-        if (/^(memory|people)\b/.test(arg)) {
-          const mem = ctx.get('dotMemory');
-          return { kind: 'success', text: mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded' };
-        }
-        if (/^howto\b/.test(arg)) {
-          const app = arg.slice(5).trim();
-          if (app) return { kind: 'success', text: `${app}\n${howto.notes(app) || '(no notes yet)'}${howto.needsReview(app) ? '\n(old notes: read over before they are given again)' : ''}\n\ntasks, oldest first: ${howto.tasks(app).map((t) => `${t.task} done ${t.done}/${t.runs}${t.steps.length ? `, steps ${t.steps.join(' → ')}` : ''}${t.tokens.length ? `, tokens ${t.tokens.map((n) => Math.round(n / 1000) + 'k').join(' → ')}` : ''}`).join(' · ') || '-'}\nlast runs: ${howto.recent(app, 10).map((r) => `${r.steps}${r.errors ? `(${r.errors}✗)` : ''}${r.outcome && r.outcome !== 'done' ? `[${r.outcome}]` : ''}`).join(' → ') || '-'}` };
-          const rows = howto.apps().map((a) => { const r = howto.recent(a, 10); return `${a}: ${r.map((x) => x.steps).join(' → ') || '-'}${howto.notes(a) ? ' · notes' : ''}`; });
-          return { kind: 'success', text: `steps per run, oldest first (notes in ${howto.dir})\n${rows.join('\n') || '(nothing yet)'}` };
-        }
-        if (arg === 'doctor') { try { return { kind: 'success', text: doctorReport(await runDoctor()) }; } catch (err) { return { kind: 'success', text: `doctor failed: ${err.message}` }; } }
-        if (arg === 'prompts stop') return { kind: 'success', text: (await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running' };
-        const rb = /^prompts rebase (\S+)( --reset)?$/.exec(arg);
-        if (rb) { try { return { kind: 'success', text: rebase(rb[1], Boolean(rb[2])) }; } catch (err) { return { kind: 'success', text: err.message }; } }
-        if (arg === 'prompts') {
-          try { return { kind: 'success', text: [`提示词和人设页面：${await prompts.start()}\n（只在本机打开；/dot prompts stop 关掉）`, ...overrideNotes().map((n) => `提示词覆盖 ${n}（/dot prompts rebase <id>）`)].join('\n') }; } catch (err) { return { kind: 'success', text: `prompts page failed: ${err.message}` }; }
-        }
-        const t = await im.target();
-        let test = '';
-        if (arg === 'test') test = `\ntest message: ${(await im.send('👋 dot 测试消息：IM 通道正常。', 'plain')) ? 'sent' : 'FAILED'}`;
-        const vm = computer()?.status?.();
-        const ph = phone()?.status?.();
-        const lines = [
-          `computer: ${vm ? `${vm.state}${vm.publicLiveViewUrl ? ` · ${vm.publicLiveViewUrl}` : ''}` : 'not installed (optional)'} · phone: ${ph ? `${ph.state}${ph.error ? ` (${ph.error})` : ''}` : 'not installed (optional)'}`,
-          `IM: ${t.error ? `not ready (${t.error})` : `${t.name ?? t.target} via ${t.bot}`}`,
-          ...(lastDoctor && (lastDoctor.bad || lastDoctor.warn) ? [`doctor: ${lastDoctor.bad} problem(s), ${lastDoctor.warn} warning(s) — /dot doctor`] : []),
-          `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
-          // Where his next message goes: when she "does not answer", look here first.
-          `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
-          `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
-          ...statusLiveness(),
-          `budget: ${ctx.get('budget') ? (budget.blocked().length ? `BLOCKED (${budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
-          (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
-          `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
-        ];
-        return { kind: 'success', text: lines.join('\n') + test };
-      },
-    }), 'dsh-dot: /dot command');
+    commandCtx.effect(() => commandCtx.commands.register(dotCommand({
+      // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
+      stop: () => { const d = hands?.doing?.(); return hands?.stop('他叫停了') ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
+      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText,
+    })), 'dsh-dot: /dot command');
   });
 
   // Other components (interlude, memory) need to know which session is her conversation.
@@ -1522,7 +1483,7 @@ export function apply(ctx, config = {}) {
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => ownerBatch.length,
     /** Her bubbles to him are going out right now. */
-    sending: () => sendingCount > 0,
+    sending: () => outlet.busy(),
     flushOwner: () => flushOwner(),
     isIm: (id) => imSessions.has(id),
     /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */

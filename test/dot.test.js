@@ -226,8 +226,10 @@ test('owner QQ messages enter as the owner\'s own words (human input); others st
   await wait(40);
   assert.equal(followups.length, 1);
   assert.equal(followups[0].source.kind, 'user');
-  assert.match(followups[0].content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2}\] 做个长任务/, 'one stamp per batch');
-  assert.equal(unstamp(followups[0].content[0].text), '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'exactly what he typed');
+  assert.match(followups[0].content[0].text, /^\[\d{2}-\d{2} \d{2}:\d{2}\] 他：做个长任务/, 'one stamp per batch');
+  assert.equal(unstamp(followups[0].content[0].text), '他：做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'what he typed, reported');
+  const { ownerSaid } = await import('../src/said.js');
+  assert.equal(ownerSaid(unstamp(followups[0].content[0].text)), '做个长任务：刷 20 个帖子\n每 5 个跟我说一声', 'and exactly what he typed, for the transcript');
   // daytime: a stranger is a notification, not human input
   const h2 = harness();
   const f2 = [];
@@ -420,7 +422,7 @@ test('clock: one stamp format (year only when it differs), how long ago, unstamp
   assert.equal(unstamp('[2025-11-04 04:51 手机通知] x'), '[手机通知] x');
   assert.equal(unstamp('[手机通知] x'), '[手机通知] x');
   const { ownerWords, notificationText } = await import('../src/dot/core.js');
-  assert.equal(ownerWords([{ text: '在吗', at: new Date(2026, 10, 4, 4, 50).toISOString() }, { text: '睡了没' }], now), '[11-04 04:50] 在吗\n睡了没');
+  assert.equal(ownerWords([{ text: '在吗', at: new Date(2026, 10, 4, 4, 50).toISOString() }, { text: '睡了没' }], now), '[11-04 04:50] 他：在吗\n睡了没');
   assert.match(notificationText([{ pkg: 'x', text: 'y', at: new Date(2025, 11, 31, 23, 59).toISOString() }], { now }), /^\[2025-12-31 23:59 手机通知\] x：y/);
 });
 
@@ -484,7 +486,8 @@ function ownerHarness(cfg = {}) {
   };
   return { h, agent, calls, say, typing: (t) => onTyping({ userId: '20002', fromOwner: true, typing: t }), turn, gate, services, pre: (exec, next) => hooks['tools/pre-execute'](exec, next) };
 }
-const lines = (c) => unstamp(c.text).split('\n');
+// His words are reported to her (dot.owner-words: "他：…"); what follows the lead is exactly what he typed.
+const lines = (c) => { const t = unstamp(c.text); assert.ok(t.startsWith('他：'), t); return t.slice(2).split('\n'); };
 
 test('his messages: a quiet period that every message restarts; never later than ownerMaxWaitMs after the first; one stamp per batch', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: new Date(2026, 10, 3, 22, 1).getTime() });
@@ -498,7 +501,7 @@ test('his messages: a quiet period that every message restarts; never later than
     mock.timers.tick(1); await settle();
     assert.equal(o.calls.length, 1);
     assert.equal(o.calls[0].via, 'followup', 'idle: a followup starts her turn');
-    assert.match(o.calls[0].text, /^\[11-03 22:01\] 在吗\n/);
+    assert.match(o.calls[0].text, /^\[11-03 22:01\] 他：在吗\n/);
     assert.deepEqual(lines(o.calls[0]), ['在吗', '问你个事', '算了'], 'exactly what he typed, no busy line');
     // he never pauses for 1.5 s: delivered 6 s after the first anyway
     for (let i = 0; i < 6; i++) { o.say(`第${i}条`); mock.timers.tick(1000); await settle(); }

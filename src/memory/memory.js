@@ -37,6 +37,7 @@ import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
 import { head } from '../cut.js';
+import { ownerSaid } from '../said.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -245,16 +246,7 @@ export function applyExtraction(memory, out, { limits = DEFAULT_LIMITS, now = Da
  * Transcript lines from a session's raw event log (sessionQuery.readSession): used once, to give
  * memory the conversation that happened before memory was installed.
  */
-/** His words as he typed them: without the line dot adds when they were steered into a running turn. */
-export const ownerSaid = (text) => {
-  // …and without the note about lines of hers that did not reach him (dot.owner-words.unsent), which comes last.
-  const head = `\n${prompt('dot.owner-words.unsent', { lines: '\u0000' }).split('\u0000')[0]}`;
-  // (A template someone rewrote to start with the lines themselves leaves no head to recognise: then nothing is cut.)
-  const i = head.trim().length >= 4 ? text.indexOf(head) : -1;
-  const t = i >= 0 ? text.slice(0, i) : text;
-  const busy = `\n${prompt('dot.owner-words.busy')}`;
-  return t.endsWith(busy) ? t.slice(0, -busy.length) : t;
-};
+export { ownerSaid } from '../said.js';
 
 /** An image she sent, as her transcript writes it — the ref itself, so the line can be sent again as it reads: `[表情包 sticker:<id>]`, else `[图 <ref>]` (phone:screen, phone:latest, a URL, face:<n>, a path). */
 export const sentImage = (ref) => { const r = String(ref ?? '').trim(); return /^sticker:/i.test(r) ? `[表情包 ${r}]` : `[图 ${r}]`; };
