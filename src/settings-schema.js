@@ -70,7 +70,10 @@ export const SCHEMA = [
   e('dot', 'sleepAfterQuietMinutes', 'dot', 'int', 'restart-dsh', '过了平时的点，安静多久算睡着（分钟）', { min: 1, max: 240 }),
   e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；话里有 persona.checks.txt 列的说法时退回让她改一次（直接写的和用 qq_send 发的都一样）'),
   e('dot', 'lean', 'dot', 'bool', 'restart-dsh', '她的新对话用自带的 dot 预设来建：只带她自己的工具（交代手、QQ、记忆、定时、目标、自己的文件；查资料也交给手），DSH 其余的工具不给她。已有的对话不变，新的一段才生效'),
-  e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
+  e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '手艺簿：记下她的手在手机本身、各个 App、电脑上做事的经验，下次到那里时给它'),
+  e('dot', 'thingCostCap', 'dot', 'int', 'restart-dsh', '一件事花到这么多 token（缓存命中按十分之一算）就停下问你要不要接着做（0 = 不管）', { min: 0 }),
+  e('dot', 'ackHoldMs', 'dot', 'int', 'restart-dsh', '你的话让她去做一件事时，回你之前等多久：这之前做完的，只回一次、带着结果（毫秒，0 = 马上回）', { min: 0, max: 120000 }),
+  e('dot', 'pushesKept', 'dot', 'int', 'restart-dsh', 'App 自己的推送（不是人发来的）不叫醒她：留最近几条，下次她醒着有事时一起给她看', { min: 0, max: 50 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
   e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（整理记忆、用法笔记、她的手）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
   e('llm', 'backgroundRpm', '模型请求', 'int', 'restart-dsh', '她后台的请求每分钟最多几次（整理记忆、她的手、群聊评分；和你的对话不限；0 = 不限速）', { min: 0, max: 600 }),
