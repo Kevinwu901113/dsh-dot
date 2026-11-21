@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import { PHONE_TOOL_PREFIX, VM_TOOL_PREFIX } from '../src/tool-prefixes.js';
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync } from 'node:fs';
+import { mkdtempSync, readFileSync, existsSync, writeFileSync, mkdirSync, utimesSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, describeNow } from '../src/interlude/core.js';
@@ -320,10 +320,11 @@ test('her card: a home with a canon gets persona.md and persona.checks.txt once;
   const h = harness({ canon });
   const card = readFileSync(join(h.home, 'persona.md'), 'utf8');
   assert.match(card, /^# 你是 林夏\n\n## 你是谁\n22岁的女大学生。\n\n## 怎么说话\n一条一行。\n$/);
-  assert.equal(h.canonText(), card.trim());
+  assert.equal(h.canonText(), '# 你是 林夏\n\n## 你是谁\n22岁的女大学生。', 'in her conversation: who she is; how she talks is the voice\'s to read (persona/parts.js)');
   assert.ok(!existsSync(join(h.home, 'persona.checks.txt')), 'no blacklist in the canon: no checks file');
   assert.ok(h.audits.some((e) => e.event === 'card-synced' && e.card === 'written'));
   writeFileSync(join(h.home, 'persona.md'), '# 你是 小夏\n自己写的卡\n');
+  { const later = new Date(Date.now() + 5000); utimesSync(join(h.home, 'persona.md'), later, later); }
   assert.equal(h.canonText(), '# 你是 小夏\n自己写的卡');
   // the next start does not write it again, and a deleted card falls back to the canon as rendered before
   const again = harness({ canon });

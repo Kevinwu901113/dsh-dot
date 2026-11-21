@@ -29,6 +29,7 @@ import { describeNow, stamp } from '../clock.js';
 import { inHours, msLeftInHours } from '../hours.js';
 import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
+import { cardFor } from '../persona/parts.js';
 import { head } from '../cut.js';
 
 export const name = 'dot-interlude';
@@ -196,7 +197,8 @@ export function apply(ctx, config = {}) {
     let extra = '';
     if (cfg.identityFile) { try { extra = readFileSync(cfg.identityFile, 'utf8'); } catch (error) { void error; } }
     // Her card (<home>/persona.md) is what she reads; a home without one still gets the canon rendered as before.
-    return [readCard(home) || renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
+    // In her conversation it is the parts meant for the one who decides (persona/parts.js): who she is, not how she talks.
+    return [cardFor(home, 'decide', readCard(home)) || renderCanon(canon, opts), extra.trim()].filter(Boolean).join('\n\n');
   };
   /** The reminder of how she talks: the Canon's own (`voice`) when it has one, else the built-in from her name. */
   const voiceText = () => {
@@ -488,7 +490,7 @@ export function apply(ctx, config = {}) {
     /** Her card as she reads it ('' when the home has none and the canon is rendered instead). */
     card() { return readCard(home); },
     /** Her card as the text she is made of — <home>/persona.md, or the canon rendered when there is none: what the call that writes her words gets as its whole system prompt (dot/say.js). */
-    cardText() { return readCard(home) || renderCanon(canon) || ''; },
+    cardText() { return cardFor(home, 'say', readCard(home)) || renderCanon(canon) || ''; },
     /** The imported persona, or null while she runs on the built-in one. */
     canon() { return canon?.source ? { name: canon.storyDefaults?.characterName, title: canon.source.title, author: canon.source.author } : null; },
     /** One line on who she is (for the QQ group scorer): name + the character profile. */
