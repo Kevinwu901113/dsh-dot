@@ -423,7 +423,7 @@ test('llm gate: a request of dot\'s voice is recorded as it reaches the listener
   const options = { system: '# 你是 木槿', messages: [{ role: 'user', source: { kind: 'dsh-dot', form: 'say' }, content: [{ type: 'text', text: '（下面写你这次发给他的消息）' }] }] };
   for await (const _ of gate.wrap(options, () => (async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; })())) { void _; }
   const e = events.find((x) => x.event === 'say-request');
-  assert.deepEqual([e.systemChars, e.systemSha.length, e.tools, e.roles, e.userChars], [options.system.length, 12, 0, 'user', 15]);
+  assert.deepEqual([e.systemChars, e.systemSha.length, e.tools, e.roles, e.userChars], [options.system.length, 12, 0, 'user', options.messages[0].content[0].text.length]);
   events.length = 0;
   for await (const _ of gate.wrap({ ...options, messages: [{ role: 'user', content: 'hi' }] }, () => (async function* () {})())) { void _; }
   assert.ok(!events.some((x) => x.event === 'say-request'), 'other requests are not recorded');
