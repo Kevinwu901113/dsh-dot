@@ -309,3 +309,26 @@ test('where he is talking to her is where her words show; words her hands type f
   assert.equal((await h.tools.hands.execute({ device: 'phone', do: '回他一句', say: 'x' })).status, 'failed');
   h.stop();
 });
+
+test('what she decides by: the book, a line a thing — what is under way, what he stopped (not to be taken up again), what is stuck', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  assert.doesNotMatch(await note(), /在做：|排着：|叫停的/);
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '去贴吧看看' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '打开贴吧看首页。挑几条好玩的。' }); await tick();
+  await h.tools.hands.execute({ device: 'web', do: '查明天天气' });
+  const n1 = await note();
+  assert.match(n1, /在做：（在手机上）打开贴吧看首页（[^）]*开始的）。还没完，别再开一件一样的/);
+  assert.match(n1, /排着：（查资料[^）]*）查明天天气。/);
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  // his "stop": she stops it in his turn — the book has it as his stop, and says not to take it up again
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '停' }] });
+  await h.tools.hands.execute({ stop: true }); await tick();
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  const n2 = await note();
+  assert.match(n2, /他叫停的：（在手机上）打开贴吧看首页。他没再提，就别再做，也别换个法子接着做。/);
+  assert.match(n2, /他叫停的：（查资料[^）]*）查明天天气。/);
+  assert.doesNotMatch(n2, /在做：/);
+  h.stop();
+});

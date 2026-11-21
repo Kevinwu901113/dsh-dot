@@ -60,14 +60,14 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const snapshot = (t, more) => ({ text: headTail(t.said, maxChars), shown: t.shown, steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
   const withAgent = async (t, fn) => { const agent = t.id ? await agentFor(t.id) : null; if (!agent) throw new Error('no hands session'); return fn(agent); };
   /** The thing is over, whichever way. */
-  const settle = (t, status, why) => {
+  const settle = (t, status, why, stoppedBy = '') => {
     if (t.over) return; t.over = true;
     clearTimeout(t.timer); try { t.off?.(); } catch (error) { void error; }
     const running = thing === t && t.state === 'running';
     if (thing === t) thing = null; else { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
     if (status === 'cut' && running) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${why}` }));
     const out = snapshot(t, { status, ...(why ? { why } : {}), ...(status === 'stuck' ? { question: t.question } : {}) });
-    ledger.end(t.entry, { outcome: outcomeOf(status, why), why, by: status === 'cut' && /^他/.test(String(why)) ? 'him' : status === 'cut' && /^她/.test(String(why)) ? 'her' : '', result: out.text, question: status === 'stuck' ? t.question : '' });
+    ledger.end(t.entry, { outcome: outcomeOf(status, why), why, by: stoppedBy || (status === 'cut' && /^他/.test(String(why)) ? 'him' : status === 'cut' && /^她/.test(String(why)) ? 'her' : ''), result: out.text, question: status === 'stuck' ? t.question : '' });
     audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, status, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(why ? { why } : {}) });
     if (t.id) call(retire, t.id);
     call(onDone, out, view(t));
@@ -137,11 +137,11 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     note(what) { if (thing) thing.notes.push(String(what)); },
     /** From the hands' own tool: they need her. The round under way ends as this question. False when nothing is under way. */
     ask(question) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running') return false; thing.question = q; return true; },
-    /** Everything stops now, as cut (she or he said stop): the thing under way, and what waited behind it. False when there is none. */
-    stop(why = 'stopped') {
+    /** Everything stops now, as cut (she or he said stop): the thing under way, and what waited behind it. `by`: whose word it was. False when there is none. */
+    stop(why = 'stopped', { by = '' } = {}) {
       if (!thing && !queue.length) return false;
-      for (const t of queue.splice(0)) settle(t, 'cut', why);
-      if (thing) settle(thing, 'cut', why);
+      for (const t of queue.splice(0)) settle(t, 'cut', why, by);
+      if (thing) settle(thing, 'cut', why, by);
       return true;
     },
     /** What a restart cut off ([{ id, device, task, asker, … }]); told once. */
