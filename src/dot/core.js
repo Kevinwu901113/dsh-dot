@@ -61,6 +61,7 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
+  gateScreenMs: 5000,   // a tap of her hands is judged by the screen as read within this long (else it is read again first)
   ackHoldMs: 15000,    // his words opened a thing: the answer waits this long, so a quick thing is answered once, with its result; 0 = at once
   pushesKept: 12,      // an app's own pushes (not a person writing) wake no one: the latest this many are shown with what reaches her next
   // His messages have their own buffer: delivered once he has been quiet this long (every message
@@ -1284,10 +1285,16 @@ export function apply(ctx, config = {}) {
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if (exec.name === HANDS_ASK_TOOL && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
+    // Her phone is reached with its own tools, where the gates look: not through the shell.
+    if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
     // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
     if (theirs && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name === PHONE_TYPE_TOOL)) {
       let fg = '';
       try { fg = String((await phone()?.foreground?.()) ?? ''); } catch (error) { void error; }
+      // A tap is judged by the words under it now: a screen read more than a few seconds ago (or never: her hands
+      // looked with the phone's own listing tool) is read again first.
+      const seen = phone()?.lastScreen;
+      if (/click|tap|press|batch/.test(exec.name) && (!seen || Date.now() - (seen.at ?? 0) > cfg.gateScreenMs)) { try { await phone()?.screenItems?.(); } catch (error) { void error; } }
       const g = classify({ tool: exec.name, input: args, screen: phone()?.lastScreen, fg });
       if (g) {
         const thing = hands.doing()?.id ?? '';

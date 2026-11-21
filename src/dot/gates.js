@@ -20,6 +20,10 @@ const HIM_CLICK = [[/确认支付|立即支付|确认付款|立即付款|去支�
 const HIM_SCREEN = [[/拖动.{0,6}滑块|滑动验证|安全验证|请完成.{0,8}验证|人机验证|依次点击|按顺序点击/, 'captcha'], [/扫码登录|二维码登录|扫一扫登录|使用.{0,10}扫码/, 'qr']];
 const ASK_CLICK = [[/同意并继续|同意协议|已阅读并同意|同意并登录|接受并继续|同意并注册/, 'terms'], [/注册/, 'register'], [/删除|清空|卸载/, 'delete'],
   [/加好友|添加好友|加为好友|申请加群|加入群聊|加入该群|申请入群/, 'friend'], [/拨打|呼叫|发送短信|发短信/, 'call'], [/修改密码|重置密码|绑定手机|解绑|换绑/, 'account']];
+// Apps where a tap reaches someone and can cost money with no word on the button saying so (a recent call dials, a
+// thread's send arrow sends): anything done in them is asked about, once a thing.
+const ASK_APPS = [[/dialer|incallui|\.telecom|\.contacts$/, 'call'], [/messaging|\.mms$/, 'call']];
+const ASK_URL = /^(?:tel|sms|smsto|mms|mmsto):/i;
 const PHONE_NUMBER = /(?<!\d)1[3-9]\d{9}(?!\d)/;
 const SECRET = /\b(?:sk|ak|pk|ghp|gho|xox[bp]|AKIA)[-_]?[A-Za-z0-9_-]{16,}|\b[A-Za-z0-9+/_-]{36,}\b/;
 const LOOKS = /^(mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|phone_zoom)$/;
@@ -49,6 +53,9 @@ export function classify({ tool, input, screen, fg = '', now = Date.now() }) {
   const pkg = String(args.packageName ?? args.package ?? args.appId ?? '');
   if (t === 'mobile_launch_app' && FORBIDDEN_APPS.test(pkg)) return { tier: 'forbid', kind: 'finance', what: `打开 ${pkg}` };
   if (FORBIDDEN_APPS.test(fg) && !/press_button/.test(t)) return { tier: 'forbid', kind: 'finance', what: `在 ${fg.split('/')[0]} 里操作` };
+  if (t === 'mobile_open_url' && ASK_URL.test(String(args.url ?? ''))) return { tier: 'ask', kind: 'call', what: '打电话、发短信' };
+  const askApp = (t === 'mobile_launch_app' && match(ASK_APPS, pkg)) || (!/press_button|swipe/.test(t) && match(ASK_APPS, String(fg).split('/')[0]));
+  if (askApp) return { tier: 'ask', kind: askApp, what: '用电话或短信' };
   const items = screen && now - (screen.at ?? 0) <= STALE_MS ? screen.items ?? [] : [];
   const onScreen = items.map((it) => it.words ?? '').join(' ');
   const clicks = t === 'mobile_click_on_screen_at_coordinates' ? [args] : t === 'mobile_batch_commands' ? [].concat(args.steps ?? args.commands ?? []).filter((s) => /click/.test(String(s?.name ?? s?.tool ?? ''))).map((s) => s.arguments ?? s.args ?? s) : [];

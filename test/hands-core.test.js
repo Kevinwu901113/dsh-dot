@@ -375,6 +375,15 @@ test('what needs him: code reads the screen; an ask ends the thing for him, his 
   h.emit('h2', 'assistant/message', { message: { content: [{ type: 'text', text: '停在付款页。' }] } });
   h.emit('h2', 'turn/end', { reason: { kind: 'completed' } }); await tick();
   assert.match(text(her.got.at(-1)), /要他本人来：付款、下单的最后一步[\s\S]*要他本人来的（验证码、扫码、人脸、付款）：告诉他/);
+  // a tap is judged by the screen as it is now: a stale read is read again first
+  fg = 'com.xingin.xhs/.Main';
+  let reads = 0;
+  h.services.dshPhone.lastScreen = { items: [{ words: '首页', x: 10, y: 10 }], at: Date.now() - 60_000 };
+  h.services.dshPhone.screenItems = async () => { reads++; h.services.dshPhone.lastScreen = { items: [{ words: '确认支付', x: 10, y: 10 }], at: Date.now() }; return []; };
+  assert.match((await tapAt('h2')).reason ?? '', /^记下了。这件事到此为止|^这一步要他本人来/);
+  assert.equal(reads, 1, 'read again');
+  // her phone is reached with its own tools, not through the shell
+  assert.match((await h.pre('h2', 'bash', { command: '~/Library/Android/sdk/platform-tools/adb shell am start -a android.intent.action.CALL tel:10086' })).reason, /^手机用手机的工具来操作/);
   // money is not done at all
   fg = 'com.eg.android.AlipayGphone/.Main';
   assert.match((await tapAt('h2')).reason, /^这一步不做：在 com\.eg\.android\.AlipayGphone 里操作/);

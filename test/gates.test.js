@@ -21,6 +21,11 @@ test('gates: money is not done, his own steps are his, the rest of what needs hi
   assert.equal(classify({ ...tap(10, 10), fg: 'com.android.permissioncontroller/.X', screen: screen(['仅在使用中允许', 10, 10]) }).kind, 'permission');
   assert.deepEqual(classify({ tool: 'phone_type', input: { text: '我的手机是13812345678' } }), { tier: 'ask', kind: 'phone-number', what: '打手机号 13812345678', subject: '13812345678' });
   assert.equal(classify({ tool: 'phone_type', input: { text: 'sk-abcdefghijklmnopqrstuvwx' } }).kind, 'secret');
+  // a tap in the dialer or a messaging app reaches someone with no word saying so (a recent call dials): asked
+  assert.deepEqual(classify({ ...tap(10, 10), fg: 'com.google.android.dialer/com.android.dialer.main.impl.MainActivity', screen: screen(['10086', 10, 10]) }), { tier: 'ask', kind: 'call', what: '用电话或短信' });
+  assert.equal(classify({ tool: 'mcp__dot-phone__mobile_launch_app', input: { packageName: 'com.google.android.apps.messaging' } }).kind, 'call');
+  assert.equal(classify({ tool: 'mcp__dot-phone__mobile_open_url', input: { url: 'tel:10086' } }).kind, 'call');
+  assert.equal(classify({ tool: 'mcp__dot-phone__mobile_swipe_on_screen', input: {}, fg: 'com.google.android.dialer/.X' }), null, 'scrolling the call log is looking');
   // hers: looking, ordinary taps, a tap far from any words, a screen read too long ago
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_list_elements_on_screen', input: {} }), null);
   assert.equal(classify({ ...tap(10, 10), screen: screen(['点赞', 10, 10]) }), null);

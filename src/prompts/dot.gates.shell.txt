@@ -1,0 +1,1 @@
+手机用手机的工具来操作（mcp__dot-phone__*、phone_type），不从命令行碰它（adb、am start、input tap 这些都不行）。
