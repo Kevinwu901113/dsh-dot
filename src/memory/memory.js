@@ -827,7 +827,7 @@ export function apply(ctx, config = {}) {
           if (!r.ok) return { ok: false, error: r.error, items: memory.open.map((x) => x.text) };
           expireOpen(memory, keep);
           save(); audit('memory-tool', { target: 'open', action: args.action });
-          return { ok: true, usage: `${memory.open.length} open`, note: r.note };
+          return { ok: true, usage: `${memory.open.length} open`, ...(r.note ? { note: r.note } : {}) };
         }
         const bank = args.target === 'owner' ? 'owner' : 'self';
         if (!['add', 'replace', 'remove'].includes(args.action)) return { ok: false, error: `${args.action} is for target=open` };
@@ -837,7 +837,7 @@ export function apply(ctx, config = {}) {
         noteChange(memory, bank, memory[bank], r.entries, { by: 'her' });
         memory[bank] = r.entries; save();
         audit('memory-tool', { target: bank, action: args.action });
-        return { ok: true, usage: bankUsage(memory[bank], cfg.limits[bank]), note: r.note };
+        return { ok: true, usage: bankUsage(memory[bank], cfg.limits[bank]), ...(r.note ? { note: r.note } : {}) };
       },
     }), 'dsh-dot/memory: memory tool');
     scope.effect(() => scope.tools.register({

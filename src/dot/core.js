@@ -23,7 +23,6 @@ import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { createSay } from './say.js';
-import { createTalk } from './talk.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -110,7 +109,6 @@ const ADDRESS = /^(https?:\/\/\S+|[\w-]+(\.[\w-]+)+(\/\S*)?)$/i;
 /** The lines of a text her hands are about to type that nobody gave them: not an address, and not known to `has`. */
 export const ownWords = (text, has) => String(text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).filter((l) => !ADDRESS.test(l) && !has(l));
 /** What she is asked, once, when a thing of his has her words on it but nothing of her hands after them. */
-export const openNudgeText = ({ his = '', last = '', at = 0, now = Date.now() } = {}) => prompt('dot.open.nudge', { stamp: stamp(now, now), ago: ago(at, now) ? `${ago(at, now)}前` : '刚才', his: his || '（没有文字）', last: last || '（没说什么）' }).trim();
 export const replyCheckText = ({ hits = [] } = {}) => prompt('dot.reply-check', { why: hits.length ? prompt('dot.reply-check.phrases', { phrases: hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage') });
 /**
  * What a call is about to say, by whatever way out: her qq_send or a send action of the QQ backend's own tools
@@ -250,16 +248,10 @@ export const defaults = {
   // What she says to him is checked in code before it goes out (src/persona/card.js): stage directions in brackets
   // are taken out, and a phrase of <home>/persona.checks.txt sends a qq_send back to her once a turn. false: nothing is checked.
   replyCheck: true,
-  // What he said that has no word back yet (talk.js): when a round of her hands on his business came back and she
-  // answered him without giving them a next step, she is asked once whether it is done. Off: nobody asks.
   // Her conversation keeps only her own tools (tool-prefixes.js HER_TOOLS): the rest of what the host offers is not
   // shown to her. It takes effect in a conversation begun after this was first on (a new segment, a new window) —
   // an older one keeps the tools its history was written with. false: every conversation sees everything, as before.
   lean: true,
-  openNudge: true,
-  openNudgeMax: 1,          // how many times one thing of his is asked about
-  openTtlMs: 30 * 60_000,   // a thing of his nobody touched this long is let go
-  openSettleMs: 5000,       // after her turn ends, this long before asking (her bubbles go out, he may be typing)
   // Her devices are operated by her hands (hands.js), a whole thing at a time, from her conversation: she says what
   // she wants done, the hands do it to the end — or come back with a question that is hers to answer. A stretch of
   // theirs (the thing, or the part after an answer of hers) is cut after handsMaxMs.
@@ -567,7 +559,6 @@ export function apply(ctx, config = {}) {
     wordsJustBack = back;
     return back ? c : null;
   };
-  let talk = null;  // what he said that has no word back yet (talk.js), set once the things it waits on exist
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   const handsLine = () => { const d = hands?.doing?.(); return !d ? '' : d.state === 'asking' ? prompt('dot.hands.asking', { task: d.task, question: d.question }).trim() : prompt('dot.hands.doing', { task: d.task, since: ago(d.startedAt, Date.now()) ? `（${ago(d.startedAt, Date.now())}了）` : '' }).trim(); };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
@@ -619,7 +610,6 @@ export function apply(ctx, config = {}) {
     }
     if (event.type === 'turn/start') {
       turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), origin: origins.get(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
-      if (origins.get(id) === 'hands-result' && id === lastSession) talk?.resultArrived();
       origins.delete(id);
       return;
     }
@@ -666,19 +656,17 @@ export function apply(ctx, config = {}) {
     if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
       t.elsewhere = true;
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
-      if (!t.scheduled && !retired(id)) { t.hisHere = true; talk?.heSaid(contentText(event.data?.content).trim()); }
+      if (!t.scheduled && !retired(id)) { t.hisHere = true; }
     }
     // Nothing she writes leaves as she wrote it. A turn he is in that ends: the words it closes with are what she means
     // to tell him, and `say` writes the words (say.js) — unless she already said something in it herself, or wrote
     // nothing: then nothing goes out. (Left to a tool she had to remember, the first thing he said to her on 11-21 was
     // answered in her conversation and reached no one.) At her window it is on his screen as she wrote it.
-    // Then: is anything of his business still in her hands? (talk.js)
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
       const meant = !t.spoke && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted' ? (t.closing ?? '') : '';
       const over = () => {
         if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
-        if (id === lastSession) talk?.turnEnded({ spoke: Boolean(t.spoke), asked: t.origin === 'open-nudge', busy: Boolean(hands?.busy()) });
       };
       if (!meant) { over(); return; }
       void tellHim(t, { meant }).then(async (r) => {
@@ -1061,11 +1049,10 @@ export function apply(ctx, config = {}) {
   });
   async function handsBack(r, job) {
     stir();
-    if (job.forHim) talk?.handsDone(); // on its way to her: his business is still being worked on
     try {
       await moved(); // her conversation is being handed over: it goes to the new one
       const found = lastSession && await resolveLive(lastSession);
-      if (!found || 'error' in found) { talk?.resultArrived(); audit('hands-result-dropped', { why: 'no conversation' }); return; }
+      if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
       const head = r.question
         ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
@@ -1080,7 +1067,7 @@ export function apply(ctx, config = {}) {
       }
       found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}) } }));
       audit('hands-result', { session: lastSession, status: r.question ? 'asking' : r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
-    } catch (err) { talk?.resultArrived(); logger.warn(`hands result not delivered: ${err.message}`); }
+    } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
   ctx.effect(() => { const t = setTimeout(() => { const cut = hands.interrupted(); if (cut) void handsBack({ status: 'failed', why: '重启打断了', text: '', steps: 0, rounds: 0 }, cut); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
@@ -1173,7 +1160,6 @@ export function apply(ctx, config = {}) {
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
     if (t) t.spoke = true;
-    talk?.sheSaid((r.said ?? []).at(-1) ?? '');
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
     if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
     return r;
@@ -1213,7 +1199,6 @@ export function apply(ctx, config = {}) {
       } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
     } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
     audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
-    if (id === lastSession) talk?.heSaid(items.map((n) => n.text).join(' '));
   };
   // The pictures in what wakes her (dsh-dot/qq saved them in the attachment store): image blocks in the
   // message, capped per message by qq's imageSeeMax and the store's imageLimits. Without a store: text only.
@@ -1331,7 +1316,6 @@ export function apply(ctx, config = {}) {
         if (hands.asking()) {
           const his = hands.doing()?.forHim;
           const answered = hands.answer(given);
-          if (his && answered.status === 'answered') talk?.handsStarted();
           return answered;
         }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : 'phone';
@@ -1340,7 +1324,6 @@ export function apply(ctx, config = {}) {
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
         const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}`, forHim });
-        if (forHim && started?.status === 'started') talk?.handsStarted();
         return started;
       },
     }), 'dsh-dot: hands tool');
@@ -1491,8 +1474,8 @@ export function apply(ctx, config = {}) {
       if (own.length) { hands.note('own-words'); audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
     }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
-    // What she tells him on something her hands brought back is on his thing's account (talk.js), like her answer in a turn of his words.
-    const told = () => { if (toOwner && t?.forHim && id === lastSession) { t.spoke = true; talk?.sheSaid(String(spoken.text ?? '').split('\n').map((l) => l.trim()).filter(Boolean).at(-1)); } return next(); };
+    // What she tells him on something her hands brought back counts as said in that turn, like her answer in a turn of his words.
+    const told = () => { if (toOwner && t?.forHim && id === lastSession) t.spoke = true; return next(); };
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
     // Typed by her hands, the words are still hers: the line goes back to her, through them.
@@ -1513,23 +1496,6 @@ export function apply(ctx, config = {}) {
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
     return deny(ownerInterruptText());
   });
-  const goalActive = (agent) => { try { return ctx.get('goals')?.get(agent)?.phase === 'active'; } catch { return false; } };
-  // Her ears and mouth's one account (talk.js). She is asked in her own conversation, as a turn on his business:
-  // what she writes in it goes to him, and a round of her hands she starts from it is his. Not while a goal of
-  // hers is running (dsh's goal driver already brings her back after every turn).
-  talk = cfg.openNudge ? createTalk({
-    max: cfg.openNudgeMax, ttlMs: cfg.openTtlMs, settleMs: cfg.openSettleMs,
-    audit: ({ event, ...data }) => audit(event, { session: lastSession, ...data }),
-    canWake: () => Boolean(lastSession) && quiet(),
-    wake: async ({ his, last, at }) => {
-      const found = lastSession && await resolveLive(lastSession);
-      if (!found || 'error' in found || goalActive(found.agent)) return false;
-      if (!quiet()) return false; // something came up while looking
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: openNudgeText({ his, last, at }) }], source: { kind: 'dsh-dot', form: 'open-nudge', to: 'him' } }));
-      return true;
-    },
-  }) : null;
-  ctx.effect(() => () => talk?.close(), 'dsh-dot: what he said that has no word back yet');
   deliverTracked = deliver;
   // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
   // Her conversation is never cancelled: he is told once per turn (unless he was already told about its approval).
@@ -1553,7 +1519,7 @@ export function apply(ctx, config = {}) {
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t, a)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); talk?.tick(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor: what the host gives her phone and computer. Runs on /dot doctor, once a start when
   // something still has to be installed, and when a device fails; problems go to the log and his IM.
   let lastDoctor = null;
@@ -1682,7 +1648,6 @@ export function apply(ctx, config = {}) {
     createConversation: (controller) => createConversation(controller),
     setSession: (id) => {
       if (!id || id === lastSession) return;
-      talk?.drop('new-segment'); // what he asked is in the old segment's words; the new one starts clean
       if (lastSession) {
         pastConversations.add(lastSession); store.set('pastConversations', [...pastConversations].slice(-50));
         // The one she leaves stops here: a turn still running in it and whatever waits in its inbox are not carried on

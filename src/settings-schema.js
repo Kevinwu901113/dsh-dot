@@ -70,7 +70,6 @@ export const SCHEMA = [
   e('dot', 'sleepAfterQuietMinutes', 'dot', 'int', 'restart-dsh', '过了平时的点，安静多久算睡着（分钟）', { min: 1, max: 240 }),
   e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；话里有 persona.checks.txt 列的说法时退回让她改一次（直接写的和用 qq_send 发的都一样）'),
   e('dot', 'lean', 'dot', 'bool', 'restart-dsh', '她的新对话用自带的 dot 预设来建：只带她自己的工具（交代手、QQ、记忆、定时、目标、自己的文件；查资料也交给手），DSH 其余的工具不给她。已有的对话不变，新的一段才生效'),
-  e('dot', 'openNudge', 'dot', 'bool', 'restart-dsh', '替你办的事，她的手回来以后她说了话却没再交代下一步：问她一次这件事还做不做（只问一次，你一开口就作废）'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '记录她自己的 App 使用经验'),
   e('dot', 'approvalWaitMs', 'dot', 'int', 'restart-dsh', '没人回的审批多久算拒绝（毫秒，0 = 一直等）', { min: 0 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
