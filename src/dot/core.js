@@ -61,6 +61,7 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
+  ackHoldMs: 15000,    // his words opened a thing: the answer waits this long, so a quick thing is answered once, with its result; 0 = at once
   pushesKept: 12,      // an app's own pushes (not a person writing) wake no one: the latest this many are shown with what reaches her next
   // His messages have their own buffer: delivered once he has been quiet this long (every message
   // restarts it), but never later than ownerMaxWaitMs after the first; while QQ says he is typing
@@ -483,6 +484,23 @@ export function apply(ctx, config = {}) {
       if (!speak) { over(); return; }
       // A note wholly in brackets is a thought to herself, not something she knows for him.
       const note = stripSilent(String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '')).replace(new RegExp(SILENT, 'g'), '').trim();
+      // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
+      // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.
+      // His next words call the wait off (that turn answers all of it).
+      if (t.fromQq && t.opened?.length && cfg.ackHoldMs > 0) {
+        dropAck('another turn');
+        const ack = { timer: null };
+        ack.timer = setTimeout(() => {
+          if (ackHold !== ack) return;
+          ackHold = null;
+          if (!hisUnderWay()) { audit('ack-folded', { session: id }); over(); return; }
+          void tellHim(t, { about: note }).then(over, over);
+        }, cfg.ackHoldMs);
+        ack.timer.unref?.();
+        ackHold = ack;
+        audit('ack-held', { session: id, things: t.opened });
+        return;
+      }
       void tellHim(t, { about: note }).then(over, over);
     }
   });
@@ -858,6 +876,10 @@ export function apply(ctx, config = {}) {
   // ── her side of the conversation with him ──
   // Writing (a turn of his words is open, `turns`), sending (her bubbles are going out, outlet.busy()), or neither.
   // One rule for both: what has not reached him yet gives way to what he just said; what has reached him stands.
+  let ackHold = null;   // the answer to his turn that opened a thing, held for a moment (see the voice at a turn's end)
+  const dropAck = (why) => { if (!ackHold) return; clearTimeout(ackHold.timer); ackHold = null; audit('ack-dropped', { why }); };
+  /** Is something he asked for still in her hands (queued or running)? */
+  const hisUnderWay = () => ledger.unfinished().some((e) => e.asker === 'him');
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
@@ -1208,6 +1230,7 @@ export function apply(ctx, config = {}) {
       }
     }
     if (n.fromOwner) {
+      dropAck('he spoke');
       if (!ownerBatch.length) ownerFirstAt = Date.now();
       ownerBatch.push(n); ownerTyping = false; // he pressed send
       wakeUp('him');

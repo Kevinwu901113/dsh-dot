@@ -5,7 +5,7 @@ import { mkdirSync, mkdtempSync, readFileSync, existsSync, statSync, readdirSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply } from '../src/memory/memory.js';
-import { SPECS, chunkTurns, contrastCut, createBm25, createRecall, incomingWords, lexTokens, libDir, openIndex, queryLength, renderTurns, settingsFile } from '../src/memory/recall.js';
+import { SPECS, chunkTurns, factLines, contrastCut, createBm25, createRecall, incomingWords, lexTokens, libDir, openIndex, queryLength, renderTurns, settingsFile } from '../src/memory/recall.js';
 import { annotate, dayHeading } from '../src/memory/when.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -643,4 +643,12 @@ test('annotate: 月底, X号, lunar dates and festivals by the built-in Chinese 
     '下个月1号（=2027-01-01）、月底（=12-31）、下月底（=2027-01-31）、28号（=12-28）、15号（=12-15）、10号、3号楼');
   assert.equal(annotate('二十七号交，5号复查', at(2026, 11, 24)), '二十七号（=11-27）交，5号（=12-05）复查');
   for (const t of ['八月十五回家', '春节后第三天开门', '反正月初三', '他上初三了', '三号窗口', '大一号的', '31号', '每月底', '十二月底']) assert.equal(annotate(t, at(2026, 2, 1)), t, t);
+});
+
+test('a note of what she did is recalled without the lines that told her what to do about it (dot\'s rules at the time, which change)', () => {
+  const said = '[11-20 18:05] 刚才那件事做完了：（在手机上）存喝咖啡的猫\n（做到这儿停下了，手机留在原处。）\n结果：存好了，在相册里。\n（这是他要的事。你能定的就定了再交出去；该他定的，用一句话记下要问他什么。）';
+  assert.equal(factLines(said), '[11-20 18:05] 刚才那件事做完了：（在手机上）存喝咖啡的猫\n结果：存好了，在相册里。');
+  const [c] = chunkTurns([{ at: 1, who: 'note', text: said, session: 's' }]);
+  assert.doesNotMatch(c.text, /你能定的就定了/);
+  assert.match(c.text, /存好了/);
 });

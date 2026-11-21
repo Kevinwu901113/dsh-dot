@@ -33,7 +33,7 @@ function harness(cfg = {}) {
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'low' }) },
     dshInterlude: { cardText: () => '# 你是 小点\n话不多。', checks: () => [] },
     dotMemory: { recent: () => [{ who: 'owner', text: '在干嘛呀' }], herSaid: (x) => herSaid.push(x) },
-    dshQq: { connected: true, owner: '20002', onMessage: () => () => {}, onTyping: () => () => {}, stickerList: () => [{ id: '31d44003ce', note: '开心猫' }], send: async (to, t, images) => { qqSent.push([to, t, images]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: images ?? [] }; } },
+    dshQq: { connected: true, owner: '20002', onMessage: (fn) => { services.qqMessage = fn; return () => {}; }, onTyping: () => () => {}, stickerList: () => [{ id: '31d44003ce', note: '开心猫' }], send: async (to, t, images) => { qqSent.push([to, t, images]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: images ?? [] }; } },
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },
   };
   const ctx = {
@@ -45,7 +45,7 @@ function harness(cfg = {}) {
     get: (name) => (name === 'systemPrompt' ? ctx.systemPrompt : services[name]),
     provide: (name, v) => { services[name] = v; },
   };
-  apply(ctx, { home, budgetPollSeconds: 0, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, awakeHours: '00:00-24:00', ...cfg });
+  apply(ctx, { home, budgetPollSeconds: 0, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, awakeHours: '00:00-24:00', ackHoldMs: 0, ...cfg });
   const emit = (id, type, data) => { const a = agentOf(id); for (const fn of [...listeners]) fn(a.session, { type, data }); };
   emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation
   const pre = (id, name, input = {}) => hooks['tools/pre-execute']({ name, input, agent: agentOf(id) }, async () => 'ran');
@@ -429,5 +429,41 @@ test('the know-how book: every device call of a thing is a step where it happene
   await h.tools.hands.execute({ stop: true }); await tick();
   await h.tools.hands.execute({ device: 'phone', do: '看看通知' }); await tick();
   assert.match(given(await post('h3', 'mcp__dot-phone__mobile_list_elements_on_screen', {})), /^（你在这台手机（桌面、设置、通知栏、输入法、系统弹窗）。[\s\S]*通知栏要从屏幕最上沿往下拉/, 'the phone itself is a place too');
+  h.stop();
+});
+
+test('his words opened a thing: the answer waits a moment — a quick thing is answered once, with its result; one still going gets word that it is under way; his next words call the wait off', async () => {
+  const h = harness({ ackHoldMs: 60 });
+  const his = async (turn, words, things) => {
+    h.emit('s1', 'turn/start', { turn }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: words }] });
+    for (const d of things) await h.tools.hands.execute({ device: 'web', do: d });
+    await tick();
+    h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '交出去了' }] } });
+    h.emit('s1', 'turn/end', { turn, reason: { kind: 'completed' } });
+  };
+  // quick: over before the wait is — nothing goes out for his turn; the turn its end wakes tells him
+  await his(2, '明天广州天气怎样', ['查明天广州天气']);
+  await tick(20);
+  assert.deepEqual(h.qqSent, [], 'held');
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '明天多云 22 度' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  await tick(80);
+  assert.deepEqual(h.qqSent, [], 'nothing of his under way when the wait was over: folded into the result');
+  assert.ok(h.audit.some((e) => e.event === 'ack-folded'));
+  const woke = h.agentOf('s1').got.at(-1);
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: woke.source, content: woke.content });
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.equal(h.qqSent.length, 1, 'one answer, with the result');
+  // still going when the wait is over: word that it is under way
+  await his(4, '帮我查下高铁票', ['查明天去深圳的高铁']);
+  await tick(100);
+  assert.equal(h.qqSent.length, 2);
+  // his next words call the wait off: the turn they open answers all of it
+  await his(5, '再查个东西', ['查后天的']);
+  await tick(10);
+  h.services.qqMessage({ kind: 'private', userId: '20002', who: '宽', text: '算了不用了', fromOwner: true, at: new Date().toISOString() });
+  await tick(100);
+  assert.ok(h.audit.some((e) => e.event === 'ack-dropped' && e.why === 'he spoke'));
+  assert.equal(h.qqSent.length, 2, 'the held answer did not go out');
   h.stop();
 });

@@ -151,6 +151,9 @@ const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
 const slug = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '_');
 const mask = (k) => (k ? `${head(k, 3)}…${k.slice(-4)}` : '');
 
+/** What she did, without the lines that told her what to do about it (a note's lines wholly in brackets: dot's instructions at the time, which change). */
+export const factLines = (text) => String(text ?? '').split('\n').filter((l) => !/^[（(][^]*[)）]$/.test(l.trim())).join('\n').trim();
+
 /**
  * Transcript lines → one chunk per turn: whatever woke her, then what she said back. A new chunk
  * starts when something comes in after she has spoken, or the session changes. Secret lines are
@@ -160,7 +163,7 @@ export function chunkTurns(lines, maxChars = 1200) {
   const out = [];
   let cur = null;
   for (const l of lines) {
-    const text = String(l?.text ?? '').trim();
+    const text = l?.who === 'note' ? factLines(l?.text) : String(l?.text ?? '').trim();
     // A line she kept while browsing (who: 'seen') is not part of any turn: a chunk of its own, marked, so that
     // recall can keep it out of the turns' places (query) and it never splits or joins a conversation.
     if (l?.who === 'seen') {

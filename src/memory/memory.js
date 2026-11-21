@@ -27,7 +27,7 @@ import {
   handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp, quoteIn,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
-import { createRecall } from './recall.js';
+import { createRecall, factLines } from './recall.js';
 import { createFacts } from './facts.js';
 import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
@@ -141,7 +141,7 @@ export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); re
 export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
   const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]', seen: '[我看到的]' }[l.who] ?? l.who;
   const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : l.who === 'seen' && l.from ? `（${l.from}）` : '';
-  return `[${stamp(l.at, now)}] ${who}${to}：${annotate(l.text, l.at, now)}`;
+  return `[${stamp(l.at, now)}] ${who}${to}：${annotate(l.who === 'note' ? factLines(l.text) : l.text, l.at, now)}`;
 }
 
 /**
@@ -523,7 +523,7 @@ export function apply(ctx, config = {}) {
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
         // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
-        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: text.slice(0, 600) }); sawText(id, text); }
+        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: factLines(text).slice(0, 600) }); sawText(id, text); }
         // What woke her is the query; the result is in front of her before the model is called.
         if (RECALL_WAKES(src) && !dot()?.retired?.(id)) prepareFor(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;
