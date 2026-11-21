@@ -29,6 +29,7 @@ import { describeNow, stamp } from '../clock.js';
 import { inHours, msLeftInHours } from '../hours.js';
 import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
+import { head } from '../cut.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -72,7 +73,7 @@ export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|tele
 export const isImMessage = (m) => IM_RPC.test(String(m?.source?.rpcId ?? ''));
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const dayOf = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
 
 /** Source of the message that opens her own time. */
 export const FREE_SOURCE = Object.freeze({ kind: 'dsh-interlude', form: 'free' });

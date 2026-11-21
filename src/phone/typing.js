@@ -1,3 +1,4 @@
+import { head } from '../cut.js';
 // dsh-dot/phone typing: text goes into the focused field through an input method, and is checked.
 //
 // mobile-mcp's own typing puts non-ASCII text on the clipboard and sends a paste key, and says "typed" whether or
@@ -58,7 +59,7 @@ export function screenLines(items, { max = 70, chars = 60, top = 100 } = {}) {
     const key = `${it.words}@${Math.round(it.x / 20)},${Math.round(it.y / 20)}`;
     if (seen.has(key)) continue;
     seen.add(key);
-    out.push({ ...it, line: `「${it.words.length > chars ? `${it.words.slice(0, chars)}…` : it.words}」(${it.x}, ${it.y})${it.focused ? ' ←光标在这' : ''}` });
+    out.push({ ...it, line: `「${it.words.length > chars ? `${head(it.words, chars)}…` : it.words}」(${it.x}, ${it.y})${it.focused ? ' ←光标在这' : ''}` });
   }
   out.sort((p, q) => p.y - q.y || p.x - q.x);
   return out.slice(0, max).map((o) => o.line).join('\n');

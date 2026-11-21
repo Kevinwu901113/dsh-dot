@@ -38,6 +38,7 @@ import { estimateTokens, rejectReason, search } from './store.js';
 import { annotate, dayHeading } from './when.js';
 import { dayMark } from '../clock.js';
 import { prompt } from '../prompts.js';
+import { head } from '../cut.js';
 
 export const BACKENDS = ['local', 'siliconflow', 'dashscope', 'off'];
 const MODELS = {
@@ -146,9 +147,9 @@ function writeRecallSettings(patch) {
 const WHO = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]', seen: '[我看到的]' };
 const p2 = (n) => String(n).padStart(2, '0');
 const dateStamp = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
 const slug = (s) => String(s).replace(/[^A-Za-z0-9._-]+/g, '_');
-const mask = (k) => (k ? `${k.slice(0, 3)}…${k.slice(-4)}` : '');
+const mask = (k) => (k ? `${head(k, 3)}…${k.slice(-4)}` : '');
 
 /**
  * Transcript lines → one chunk per turn: whatever woke her, then what she said back. A new chunk

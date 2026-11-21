@@ -23,11 +23,12 @@
 import { mkdirSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { headTail } from './ledger.js';
+import { head } from '../cut.js';
 
 const squash = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
 const SHOWN_MAX = 200000; // characters of screen text a thing keeps for keep_line's check (the newest)
-const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
+const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 /** How a thing ended, in the ledger's words, from how the hands' run ended. */
 export const outcomeOf = (status, why = '') => (status === 'done' ? 'done' : status === 'failed' ? 'failed' : /too long|no answer/.test(why) ? 'timeout' : 'stopped');
 const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(p || sep)); return b === a || b.startsWith(a + sep); };
@@ -99,11 +100,14 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
           else if (event?.type === 'assistant/message') {
             const u = event.data?.usage;
             if (u) ledger.count(mine.entry, { tokens: { in: (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0), cached: u.cacheReadTokens, out: u.outputTokens } });
-            if (!event.data?.interrupted) { const t = textOf(event.data?.message?.content); if (String(t ?? '').trim()) mine.said = t; }
+            // What a run closes with is its result: its last message, when that one calls no tool. What was said beside a call is on the way, not the outcome.
+            if (!event.data?.interrupted) { const c = event.data?.message?.content; const t = textOf(c); if (String(t ?? '').trim()) mine.last = t; mine.said = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : String(t ?? ''); }
           }
           else if (event?.type === 'turn/end') {
             // Ended by someone else (the host, a crash of the step): not done, and not a question either.
             if (event.data?.reason?.kind === 'aborted') { settle(mine, 'failed', 'interrupted'); return; }
+            // The run broke (the model call failed): how far it got is on the screen, what it meant to say is not a result.
+            if (event.data?.reason?.kind === 'error') { settle(mine, 'failed', `broke off: ${String(event.data.reason.error?.message ?? '').slice(0, 120)}`); return; }
             // Over with nothing said is not a thing done: nobody can tell what came of it.
             if (!mine.question) { if (String(mine.said ?? '').trim()) settle(mine, 'done'); else settle(mine, 'failed', 'no result'); return; }
             // A question nobody answers does not hold her hands for good: after askMs the thing is let go.
@@ -128,7 +132,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     /** Have her hands asked her something in the round under way (it ends as that question)? */
     asked: () => Boolean(thing?.state === 'running' && thing.question),
     /** What is in her hands right now: { id, device, task, state, question, startedAt, said, steps, … } or null. */
-    doing: () => (thing ? { id: thing.entry, device: thing.device, task: thing.task, state: thing.state, question: thing.question, startedAt: thing.startedAt, said: clip(thing.said, 120), steps: thing.steps, forHim: Boolean(thing.extra?.forHim), waiting: queue.length } : null),
+    doing: () => (thing ? { id: thing.entry, device: thing.device, task: thing.task, state: thing.state, question: thing.question, startedAt: thing.startedAt, said: clip(thing.said || thing.last, 120), steps: thing.steps, forHim: Boolean(thing.extra?.forHim), waiting: queue.length } : null),
     /**
      * Is this text something her hands were given for this thing — in what she said (the task, her answers), or shown
      * to them by a tool (the screen, an account)? Her hands do not write: what they type is hers or is already
@@ -157,7 +161,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
       const what = String(task).trim();
       if (!what) return { status: 'failed', why: 'no task' };
       const entry = ledger.open({ asker: extra.forHim ? 'him' : 'her', device, task: what });
-      const mine = { entry, device, task: what, extra, state: 'running', question: '', words: what, startedAt: now(), said: '', shown: '', steps: 0, rounds: 0, notes: [], over: false };
+      const mine = { entry, device, task: what, extra, state: 'running', question: '', words: what, startedAt: now(), said: '', last: '', shown: '', steps: 0, rounds: 0, notes: [], over: false };
       if (thing) { queue.push(mine); return { status: 'queued', id: entry, doing: api.doing() }; }
       begin(mine);
       return { status: 'started', id: entry };

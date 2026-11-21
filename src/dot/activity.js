@@ -12,6 +12,7 @@
 // parsed again only when its size or mtime changed, so the panel's 3-second poll stays cheap.
 import { closeSync, openSync, readSync, statSync } from 'node:fs';
 import { join } from 'node:path';
+import { head } from '../cut.js';
 
 export const DEFAULT_SCENES = 30;
 const DAY = 86400000;
@@ -19,7 +20,7 @@ const WINDOW = 10 * 60000; // an event belongs to a scene that saw something thi
 const MERGE = 20000;      // two records of one wake (audit line + transcript line) are this close
 const CLIP = 80;
 
-const clip = (s, n = CLIP) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
+const clip = (s, n = CLIP) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 const timeOf = (v) => (typeof v === 'number' ? v : Date.parse(v ?? '')) || 0;
 
 /** The last `maxBytes` of a file as lines (a partial first line dropped); `.1` (rotated audit) fills up what is left. */

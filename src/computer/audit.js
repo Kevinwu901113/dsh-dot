@@ -2,13 +2,14 @@
 // process started in the VM, every VM tool call and its result, approvals asked, folder changes.
 // One file per DSH_HOME; rotated to `.1` past 10 MB. Never throws into the caller.
 import { appendFileSync, renameSync, statSync } from 'node:fs';
+import { head } from '../cut.js';
 
 const MAX_BYTES = 10 * 1024 * 1024;
 
 /** Cut long values so one entry stays readable. */
 export function clip(value, max = 500) {
   const text = typeof value === 'string' ? value : JSON.stringify(value ?? null);
-  return text.length > max ? `${text.slice(0, max)}…(+${text.length - max})` : text;
+  return text.length > max ? `${head(text, max)}…(+${text.length - max})` : text;
 }
 
 /**

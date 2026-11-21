@@ -42,3 +42,15 @@ test('ledger: only the newest are kept; a long result keeps its head and its tai
   const cut = headTail(long, 30);
   assert.ok(cut.startsWith('头'.repeat(20)) && cut.endsWith('尾'.repeat(10)) && /中间略去 170 字/.test(cut));
 });
+
+test('cut: a text is never cut in the middle of a character', async () => {
+  const { head, tail } = await import('../src/cut.js');
+  const s = '真废啊🤣好';
+  assert.equal(head(s, 4), '真废啊', 'half an emoji is dropped, not sent');
+  assert.equal(head(s, 5), '真废啊🤣');
+  assert.equal(tail(s, 2), '好');
+  assert.equal(tail(s, 3), '🤣好');
+  assert.ok(headTail(`${'头'.repeat(19)}🤣${'中'.repeat(50)}🤣${'尾'.repeat(9)}`, 30).isWellFormed());
+  const { screenLines } = await import('../src/phone/typing.js');
+  assert.ok(screenLines([{ words: `${'字'.repeat(59)}🤣后面`, x: 1, y: 200 }]).isWellFormed());
+});

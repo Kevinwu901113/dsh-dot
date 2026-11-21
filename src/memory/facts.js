@@ -19,9 +19,10 @@ import { createBm25, openIndex } from './recall.js';
 import { annotate } from './when.js';
 import { dayMark, stamp } from '../clock.js';
 import { prompt } from '../prompts.js';
+import { head } from '../cut.js';
 
 const DAY = 86400000;
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
 const dotp = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
 
 /** The days (local midnight, ms) a sentence said at `at` speaks of, by when.js's own reading. */

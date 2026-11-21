@@ -6,10 +6,11 @@
 // cost, the last few with their results and his reactions, and today's total. Whether something was
 // worth it is hers to judge — nothing here scores it.
 import { readFileSync, writeFileSync } from 'node:fs';
+import { head } from '../cut.js';
 
 const DAY = 86400000;
 const KEEP = 200;
-const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
+const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 const hhmm = (ms) => { const d = new Date(ms); return `${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`; };
 const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); return d.getTime(); };
 

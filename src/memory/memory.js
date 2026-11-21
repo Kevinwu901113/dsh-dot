@@ -36,6 +36,7 @@ import { sectionOf, setValues } from '../settings.js';
 import { background, installLlmGate, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
+import { head } from '../cut.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -128,7 +129,7 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
 const contentText = (content) => (typeof content === 'string' ? content : (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join(''));
 const isSilent = (t) => /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(String(t ?? ''));
 const stamp = (ms, now = Date.now()) => { const d = new Date(ms); const p = (n) => String(n).padStart(2, '0'); return `${dayMark(ms, now)} ${p(d.getHours())}:${p(d.getMinutes())}`; };
-const clip = (s, n) => (s.length > n ? `${s.slice(0, n)}…` : s);
+const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
 /** "2026-10-27 周一" — a day as the diary heads it (local time). */
 export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${'周日周一周二周三周四周五周六'.slice(d.getDay() * 2, d.getDay() * 2 + 2)}`; };
 

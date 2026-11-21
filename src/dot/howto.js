@@ -20,8 +20,9 @@
 import { appendFileSync, mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { wasRefused } from '../refusals.js';
+import { head } from '../cut.js';
 
-const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${t.slice(0, n)}…` : t; };
+const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 const read = (f) => { try { return readFileSync(f, 'utf8'); } catch (error) { void error; return ''; } };
 /** Write whole, or not at all (tmp + rename). */
 const writeAtomic = (f, text) => { const tmp = `${f}.tmp`; writeFileSync(tmp, text); renameSync(tmp, f); };

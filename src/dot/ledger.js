@@ -8,12 +8,14 @@
 // State and outcome are two things: a thing is ended once, and how it ended does not change. A restart ends whatever
 // was not ended ('failed', why 'restart') — the device may have been left halfway, and that is told once.
 
+import { head as headOf, tail as tailOf } from '../cut.js';
+
 /** The head and the tail of a long text: not a summary, so nothing in it was made up on the way. */
 export function headTail(text, max = 900) {
   const t = String(text ?? '').trim();
   if (t.length <= max) return t;
   const head = Math.ceil(max * 2 / 3), tail = max - head;
-  return `${t.slice(0, head)}\n…（中间略去 ${t.length - max} 字）…\n${t.slice(-tail)}`;
+  return `${headOf(t, head)}\n…（中间略去 ${t.length - max} 字）…\n${tailOf(t, tail)}`;
 }
 
 /**

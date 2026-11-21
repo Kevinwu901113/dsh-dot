@@ -152,6 +152,13 @@ test('hands: stopped, cut for taking too long, ended by someone else; what a res
   await tick(); h.emit(h.sent.at(-1)[0], 'turn/end', { reason: { kind: 'aborted' } });
   assert.deepEqual([h.done[2][0].status, h.done[2][0].why], ['failed', 'interrupted'], 'not done, and not hers to answer');
   assert.equal(h.hands.start({ task: '' }).status, 'failed');
+  // the run broke (the model call failed): not a thing done, and what it said on the way is not its result
+  h.hands.start({ task: '第四件' }); await tick();
+  const hid = h.sent.at(-1)[0];
+  h.emit(hid, 'assistant/message', { message: { content: [{ type: 'text', text: '我先打开看看' }, { type: 'tool-call', name: 'x' }] } });
+  h.emit(hid, 'turn/end', { reason: { kind: 'error', error: { message: 'Failed to parse the request body as JSON' } } });
+  assert.deepEqual([h.done.at(-1)[0].status, h.done.at(-1)[0].text], ['failed', '']);
+  assert.match(h.done.at(-1)[0].why, /^broke off: Failed to parse/);
   assert.deepEqual(h.hands.interrupted(), []);
   // a restart in the middle: the next start of the plugin finds it, tells it once, and the old single session is still her hands
   const again = harness({ kv: [['handsThing', { device: 'phone', task: '存贴图', forHim: true, startedAt: 1 }], ['handsSession', 'old1'], ['handsPast', ['old0']]] });
