@@ -116,3 +116,19 @@ test('readOnlyScript: reading the page passes; anything that changes, goes somew
     '`${document.title}`', 'setTimeout(() => 1, 10)', 'navigator.clipboard.readText()', 'el.remove()',
   ]) assert.equal(readOnlyScript(s), false, s);
 });
+
+test('her hands\' calls are left to dsh-dot\'s gates (handsOf); the rules here are shared with them as structured risks', async () => {
+  const { gate, vm } = harness();
+  vm.handsOf = () => true;
+  assert.equal(await gate('bash', { command: 'git push origin main' }), 'ran', 'nothing asked here for her hands');
+  delete vm.handsOf;
+  assert.equal((await gate('bash', { command: 'git push origin main' })).kind, 'ask');
+  const exec = (name, input, cwd) => ({ name, input, agent: { session: { id: 's', header: cwd ? { cwd } : {} } } });
+  assert.deepEqual(vm.gate.riskOf(exec('bash', { command: 'git push origin main' })), { cat: 'shell', command: 'git push origin main', reason: 'dsh-computer: risky shell command in the VM' });
+  assert.equal(vm.gate.riskOf(exec('bash', { command: 'rm -rf /Users/k/dot/x' })).cat, 'shared');
+  assert.equal(vm.gate.riskOf(exec('bash', { command: 'cat ~/.ssh/id_rsa' })).cat, 'protected');
+  assert.equal(vm.gate.riskOf(exec('bash', { command: 'ls' })), null);
+  assert.equal(vm.gate.acts('mcp__dot-vm__browser_click'), true);
+  assert.equal(vm.gate.acts('mcp__dot-vm__browser_get_text'), false);
+  assert.equal(vm.gate.acts('bash'), false);
+});

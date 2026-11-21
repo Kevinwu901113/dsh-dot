@@ -244,6 +244,16 @@ export function apply(ctx, config = {}, deps = {}) {
   };
   let off = cfg.power === false;
   computer.audit = createAudit(auditFile());
+  /** The page in front of her browser — { url, title } — or null when the browser cannot be asked (quickly). */
+  computer.page = async ({ timeoutMs = 1500 } = {}) => {
+    if (off || !computer.isReady) return null;
+    try {
+      const res = await fetch(`${base}/cdp/json/list`, { headers: computer.authHeaders(), signal: AbortSignal.timeout(timeoutMs) });
+      if (!res.ok) return null;
+      const p = (await res.json()).find((t) => t?.type === 'page' && !/^(devtools|chrome-extension):/.test(String(t.url ?? '')));
+      return p ? { url: String(p.url ?? ''), title: String(p.title ?? '') } : null;
+    } catch (error) { void error; return null; }
+  };
 
   // Status for other plugins (dot, IM bridges): one snapshot shape plus change notifications.
   const listeners = new Set();

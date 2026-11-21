@@ -20,8 +20,8 @@ import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
-import { createLedger } from './ledger.js';
-import { approvalKind, classify, KINDS, HIM_KINDS } from './gates.js';
+import { createLedger, headTail } from './ledger.js';
+import { approvalKind, classify, classifyComputer, KINDS, HIM_KINDS } from './gates.js';
 import { createConsent } from './consent.js';
 import { createSay } from './say.js';
 import { createOutlet } from './outlet.js';
@@ -104,6 +104,7 @@ export const defaults = {
   // With thinking it wrote longer (11-21 replays), and length is what he minds most.
   sayEffort: 'off',
   sayMaxTokens: 600,
+  sayDetailChars: 800, // a thing's details as the voice gets them (the book is where results come from; her own words carry her stance)
   sayLines: 12,
   sayMaxLines: 4,        // a message of hers has at most this many lines; what the voice writes beyond is not sent
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
@@ -519,7 +520,7 @@ export function apply(ctx, config = {}) {
     const theirs = Boolean(hands?.isHands(s.id, s.header?.cwd));
     const thing = theirs ? hands.doing()?.id ?? '' : '';
     if (consent.allows({ kind: k.kind, subject: k.subject, thing })) { audit('consent-used', { session: s.id, kind: k.kind, thing }); return 'approved'; }
-    if (theirs) hands.ask(prompt('dot.gates.ask.q', { what: k.what }), { for: 'him', kind: k.kind, subject: k.subject });
+    if (theirs) hands.ask(prompt('dot.gates.ask.q', { what: k.what }), { for: 'him', kind: k.kind, subject: k.subject, tier: 'ask', what: k.what });
     else consent.ask(k);
     if (req.callId !== undefined) askedCalls.set(req.callId, { what: k.what, theirs });
     audit('consent-asked', { session: s.id, kind: k.kind, tool: req.toolName, thing });
@@ -588,7 +589,7 @@ export function apply(ctx, config = {}) {
   const learnFrom = (job) => {
     if (!cfg.howto || !job?.session) return;
     const e = ledger.get(job.id);
-    for (const r of howto.end(job.session, { thing: job.id, task: job.task, outcome: e?.outcome ?? '', ms: (e?.endedAt ?? Date.now()) - (e?.startedAt ?? e?.openedAt ?? Date.now()), tokens: costOf(e) })) reflectHowto(r);
+    for (const r of howto.end(job.session, { thing: job.id, task: job.task, name: e?.name ?? '', outcome: e?.outcome ?? '', ms: (e?.endedAt ?? Date.now()) - (e?.startedAt ?? e?.openedAt ?? Date.now()), tokens: costOf(e) })) reflectHowto(r);
   };
   // One small call per run worth learning from: what she did (her calls and short error types, not the
   // screen's text), her notes for the app, her last runs → the notes rewritten. One app at a time:
@@ -900,7 +901,9 @@ export function apply(ctx, config = {}) {
     const out = [];
     const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.thing].filter(Boolean));
     const about = t?.thing ? ledger.get(t.thing) : null;
-    if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: voiceHow(about), summary: about.summary ? prompt('dot.say.fact.summary', { summary: about.summary }).trim() : prompt('dot.say.fact.no-summary').trim() }));
+    // A step one of the gates stopped (gates.js): which step, that it was not done, and whose rule it is — from the book, so the voice has nothing to fill in.
+    if (about?.state === 'ended' && about.ask?.tier && about.ask.what) out.push(prompt(about.ask.tier === 'him' ? 'dot.say.fact.gate.him' : 'dot.say.fact.gate.ask', { what: titleOf(about.task), step: about.ask.what }));
+    else if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: voiceHow(about), summary: about.summary ? prompt('dot.say.fact.summary', { summary: about.summary }).trim() + (about.detail ? prompt('dot.say.fact.detail', { detail: headTail(about.detail, cfg.sayDetailChars) }).trimEnd() : '') : prompt('dot.say.fact.no-summary').trim() }));
     for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), how: voiceHow(e).replace(/。$/, '') })); }
     for (const id of t?.opened ?? []) { const e = ledger.get(id); if (e && e.state !== 'ended') out.push(prompt(e.state === 'queued' ? 'dot.say.fact.queued' : 'dot.say.fact.opened', { what: titleOf(e.task) })); }
     const rest = ledger.unfinished().filter((e) => !mine.has(e.id));
@@ -953,7 +956,7 @@ export function apply(ctx, config = {}) {
     audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
     const ended = t?.thing ? ledger.get(t.thing) : null;
-    const shots = ended?.outcome === 'stuck' && ended.ask?.screen && ended.device === 'phone' ? ['phone:screen'] : [];
+    const shots = ended?.outcome === 'stuck' && ended.ask?.screen && (ended.device === 'phone' || ended.device === 'computer') ? [`${ended.device}:screen`] : [];
     const r = await say.speak({ to: 'owner', about, facts, images: [...[].concat(images ?? []), ...shots], unprompted: !(t?.fromQq || t?.elsewhere) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
@@ -1133,7 +1136,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: SAY_TOOL,
       description: prompt('dot.say-tool'),
-      parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
+      parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；手上那件事的结果不用复述（会照记录给到），写你的看法、打算或要他做的；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'needs-ok' ? prompt('dot.gates.asked.her', { what: v.what ?? '' }) : v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
       async execute(args) {
         const to = String(args?.to ?? '').trim() || 'owner';
@@ -1178,9 +1181,9 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: HANDS_DONE_TOOL,
       description: prompt('dot.hands.done-tool'),
-      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' } }, required: ['summary'], additionalProperties: false },
+      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' } }, required: ['summary'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : 'dot.hands.idle') }] },
-      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail }) ? 'done' : 'idle' }; },
+      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task }) ? 'done' : 'idle' }; },
     }), 'dsh-dot: hands done tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
@@ -1283,6 +1286,27 @@ export function apply(ctx, config = {}) {
   // the buffer, or steered but not reached by the model) is held back once or twice per turn; the
   // buffer goes in right away, so her next step has it.
   // Also: a loop (the same call over and over in one turn) is stopped, and an errand never talks to him.
+  /** A call of her hands one of the gates stopped (gates.js): ended as a question for him, refused; null when it goes on. */
+  const gateHands = (g, id, device) => {
+    if (!g) return null;
+    const thing = hands.doing()?.id ?? '';
+    if (g.tier === 'forbid') { audit('gate-forbid', { session: id, device, kind: g.kind, what: g.what, thing }); return deny(prompt('dot.gates.forbid', { what: g.what })); }
+    if (g.tier === 'him') {
+      const what = HIM_KINDS[g.kind] ?? g.what;
+      hands.ask(prompt('dot.gates.him.q', { what }), { for: 'him', kind: g.kind, tier: 'him', what, ...(g.screen ? { screen: true } : {}) });
+      audit('gate-him', { session: id, device, kind: g.kind, what: g.what, thing });
+      return deny(prompt('dot.gates.him', { what }));
+    }
+    if (!consent.allows({ kind: g.kind, subject: g.subject, thing })) {
+      hands.ask(prompt('dot.gates.ask.q', { what: g.what }), { for: 'him', kind: g.kind, tier: 'ask', what: g.what, ...(g.subject ? { subject: g.subject } : {}) });
+      audit('consent-asked', { session: id, device, kind: g.kind, what: g.what, thing });
+      return deny(prompt('dot.gates.ask', { what: g.what }));
+    }
+    audit('consent-used', { session: id, device, kind: g.kind, thing });
+    return null;
+  };
+  // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
+  ctx.inject(['dshComputer'], (c) => c.effect(() => { const pc = c.dshComputer; pc.handsOf = (exec) => Boolean(hands?.isHands(exec?.agent?.session?.id, exec?.agent?.session?.header?.cwd)); return () => { delete pc.handsOf; }; }, 'dsh-dot: computer gate defers to hands gates'));
   ctx.on('tools/pre-execute', async (exec, next) => {
     const id = exec.agent?.session?.id;
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
@@ -1310,22 +1334,18 @@ export function apply(ctx, config = {}) {
       // looked with the phone's own listing tool) is read again first.
       const seen = phone()?.lastScreen;
       if (/click|tap|press|batch/.test(exec.name) && (!seen || Date.now() - (seen.at ?? 0) > cfg.gateScreenMs)) { try { await phone()?.screenItems?.(); } catch (error) { void error; } }
-      const g = classify({ tool: exec.name, input: args, screen: phone()?.lastScreen, fg });
-      if (g) {
-        const thing = hands.doing()?.id ?? '';
-        if (g.tier === 'forbid') { audit('gate-forbid', { session: id, kind: g.kind, what: g.what, thing }); return deny(prompt('dot.gates.forbid', { what: g.what })); }
-        if (g.tier === 'him') {
-          hands.ask(prompt('dot.gates.him.q', { what: HIM_KINDS[g.kind] ?? g.what }), { for: 'him', kind: g.kind, ...(g.screen ? { screen: true } : {}) });
-          audit('gate-him', { session: id, kind: g.kind, what: g.what, thing });
-          return deny(prompt('dot.gates.him', { what: HIM_KINDS[g.kind] ?? g.what }));
-        }
-        if (!consent.allows({ kind: g.kind, subject: g.subject, thing })) {
-          hands.ask(prompt('dot.gates.ask.q', { what: g.what }), { for: 'him', kind: g.kind, ...(g.subject ? { subject: g.subject } : {}) });
-          audit('consent-asked', { session: id, kind: g.kind, what: g.what, thing });
-          return deny(prompt('dot.gates.ask', { what: g.what }));
-        }
-        audit('consent-used', { session: id, kind: g.kind, thing });
-      }
+      const stop = gateHands(classify({ tool: exec.name, input: args, screen: phone()?.lastScreen, fg }), id, 'phone');
+      if (stop) return stop;
+    }
+    // On her computer the same tiers (gates.js classifyComputer), from what the computer's own rules find in the call
+    // (computer/gate.js, which then asks nothing of its own for it) and the page her browser is on now.
+    if (theirs && (exec.name === 'bash' || exec.name.startsWith(VM_TOOL_PREFIX))) {
+      const pc = computer();
+      const doing = Boolean(pc?.gate?.acts?.(exec.name));
+      const page = doing ? (await pc?.page?.()) ?? null : null;
+      exec.dotGated = true;
+      const stop = gateHands(classifyComputer({ tool: exec.name, input: args, risk: pc?.gate?.riskOf?.(exec) ?? null, acts: doing, page }), id, 'computer');
+      if (stop) return stop;
     }
     // A lean conversation of hers has her own tools only; one the host still answers to by name is not run.
     if (leanIds.has(id) && !isHerTool(exec.name)) { audit('lean-refused', { session: id, tool: exec.name }); return deny(prompt('dot.lean.not-hers', { tool: exec.name })); }

@@ -11,6 +11,10 @@ export const KINDS = {
   register: '注册账号', terms: '同意条款或协议', friend: '加好友、进群', call: '打电话、发短信', account: '改密码、绑定或解绑',
   permission: '给 App 开权限', 'phone-number': '打一个手机号', secret: '打密钥、口令一类的字', computer: '电脑上要他点头的操作',
   spend: '一件事花得比上限多', 'qq-action': 'QQ 上的其他操作', other: '要他点头的操作',
+  // her computer (classifyComputer)
+  remote: '让电脑连到别的机器（ssh、scp）', push: '把代码推出去（git push）', 'fetch-run': '下载一段东西直接跑', admin: '用管理员权限（sudo）',
+  disk: '动整块磁盘', 'secret-file': '碰密钥、登录信息所在的文件', 'shared-delete': '删改他共享过来的文件夹', 'page-script': '在网页里跑脚本、直接按键',
+  browser: '电脑浏览器上的操作',
 };
 export const HIM_KINDS = { pay: '付款、下单的最后一步', identity: '实名、人脸或身份证', captcha: '人机验证（滑块、点图）', qr: '扫码登录', code: '发到他手机上的验证码' };
 
@@ -91,3 +95,64 @@ export function approvalKind(toolName, reason = '') {
   if (tool === 'bash' || String(toolName).startsWith('mcp__dot-vm__')) return { kind: 'computer', subject: r.slice(0, 80), what: `电脑上：${r.replace(/\s+/g, ' ').slice(0, 80)}` };
   return { kind: 'other', subject: tool, what: `${tool}${r ? `：${r.slice(0, 60)}` : ''}` };
 }
+
+// Her computer (the VM): the same four tiers. computer/gate.js says what a call risks (its own rules: shell, files,
+// protected places, shared folders); the page the browser is on (address and title, read at call time) and the
+// words in the call say the rest. A tap's own label is not known here (the VM's tools click by index): a page that
+// is a till, a captcha or a QR sign-in is his as a whole.
+const FORBIDDEN_SITES = /alipay|unionpay|95516|\bbank|icbc|ccb\.com|abchina|boc\.cn|cmbchina|bankcomm|psbc|spdb|cib\.com|citicbank|eastmoney|10jqka|xueqiu|futunn|futu5|tigerbrokers|binance|okx\.|okex|coinbase|huobi|htx\.|gate\.io|bybit|bitget|kraken|metamask|paypal|wise\.com|网银|银行|证券|交易所|钱包/i;
+const HIM_PAGE = [[/checkout|cashier|\bpay\.|\/pay\b|payment|收银台|确认支付|确认付款|立即支付|订单支付/i, 'pay'], [/captcha|recaptcha|hcaptcha|geetest|人机验证|安全验证|滑块验证/i, 'captcha'], [/qrlogin|qrcode.?login|扫码登录|二维码登录/i, 'qr'], [/实名认证|人脸识别|身份验证|上传身份证/i, 'identity']];
+const ASK_PAGE = [[/注册|sign[\s_-]?up|register|create.?account/i, 'register'], [/同意.{0,6}(条款|协议)|terms of service|user agreement/i, 'terms']];
+const ASK_WORDS = [[/删除|清空|卸载|注销|delete|remove|unsubscribe/i, 'delete'], [/修改密码|重置密码|绑定手机|解绑|换绑|change.?password|reset.?password/i, 'account'], [/注册|sign[\s_-]?up|register/i, 'register'], [/同意并|accept|agree/i, 'terms']];
+const SHELL_KINDS = [[/\bsudo\s+(\S+)/, 'admin'], [/\bgit\s+push\b\s*(\S*)/, 'push'], [/\b(?:ssh|scp)\b[^\n;|&]*?(?:\s|@)([\w.-]+\.[\w.-]+|\d+\.\d+\.\d+\.\d+)(?=[:\s]|$)/, 'remote'], [/\b(?:ssh|scp)\b/, 'remote'],
+  [/\b(?:curl|wget)\b[^|]*?https?:\/\/([^/\s'"]+)[^|]*\|/, 'fetch-run'], [/\b(?:curl|wget|base64)\b/, 'fetch-run'], [/(?:\bdd\s+if=|\bmkfs|\bshred\b|\bwipe\b|>\s*)(\/dev\/\w+)?/, 'disk']];
+const hostOf = (url) => { try { return new URL(String(url)).hostname; } catch { return ''; } };
+
+/**
+ * What a call of her hands on her computer is, by the four tiers. → null (hers) or { tier, kind, what, subject? }
+ * @param {object} a
+ * @param {string} a.tool
+ * @param {any} a.input
+ * @param {{ cat: string, subject?: string, command?: string } | null} a.risk  computer/gate.js risk(): what its rules found
+ * @param {boolean} a.acts  a browser or desktop action (not only looking)
+ * @param {{ url?: string, title?: string }} [a.page]  the page in front, read at call time
+ */
+export function classifyComputer({ tool, input, risk = null, acts = false, page = null }) {
+  const t = short(tool), args = argsOf(input), text = typeof input === 'string' ? input : JSON.stringify(input ?? {});
+  const to = String(args.url ?? '');
+  const url = to || String(page?.url ?? ''), title = String(page?.title ?? ''), host = hostOf(url);
+  const where = host || title.slice(0, 20) || '网页';
+  if (acts) {
+    if (FORBIDDEN_SITES.test(host) || FORBIDDEN_SITES.test(title)) return { tier: 'forbid', kind: 'finance', what: `在 ${where} 上操作` };
+    if (FORBIDDEN_WORDS.test(text)) return { tier: 'forbid', kind: 'money', what: '转账、提现一类的操作' };
+    // Going to a page is looking; doing something on a page of his is his.
+    const him = /navigate|new_tab|go_back|go_forward|switch_tab|close_tab/.test(t) ? '' : match(HIM_PAGE, `${url} ${title}`);
+    if (him) return { tier: 'him', kind: him, what: HIM_KINDS[him], screen: true };
+    const typed = String(args.value ?? args.text ?? '');
+    if (typed && PHONE_NUMBER.test(typed)) return { tier: 'ask', kind: 'phone-number', what: `打手机号 ${PHONE_NUMBER.exec(typed)[0]}`, subject: PHONE_NUMBER.exec(typed)[0] };
+    if (typed && SECRET.test(typed)) return { tier: 'ask', kind: 'secret', what: '打一串像密钥的字' };
+    const page_ = /navigate|new_tab/.test(t) ? '' : match(ASK_PAGE, title);
+    if (page_) return { tier: 'ask', kind: page_, what: `${KINDS[page_]}（${where}）`, subject: host };
+  }
+  if (!risk) return null;
+  switch (risk.cat) {
+    case 'protected': return { tier: 'ask', kind: 'secret-file', what: `${KINDS['secret-file']}：${risk.subject}`, subject: risk.subject };
+    case 'shell': {
+      const cmd = String(risk.command ?? '');
+      for (const [re, kind] of SHELL_KINDS) { const m = re.exec(cmd); if (m) { const subject = (m[1] ?? '').replace(/^-.*/, ''); return { tier: 'ask', kind, what: `${KINDS[kind]}${subject ? `：${subject}` : ''}`, subject }; } }
+      return { tier: 'ask', kind: 'computer', what: `电脑上：${cmd.replace(/\s+/g, ' ').slice(0, 60)}`, subject: cmd.slice(0, 60) };
+    }
+    case 'shared': case 'home': return { tier: 'ask', kind: 'shared-delete', what: risk.cat === 'home' ? '删改她整个电脑的家目录' : `${KINDS['shared-delete']}：${risk.subject}`, subject: risk.subject };
+    case 'file-delete': return { tier: 'ask', kind: 'delete', what: `删除或挪走 ${risk.subject || '电脑上的文件'}`, subject: risk.subject };
+    case 'script': return { tier: 'ask', kind: 'page-script', what: `${KINDS['page-script']}（${where}）`, subject: host };
+    case 'sensitive': {
+      if (match(HIM_PAGE, text) === 'pay' || /\b(pay|checkout|purchase|order)\b|支付|付款|下单|购买|充值/i.test(text)) return { tier: 'him', kind: 'pay', what: HIM_KINDS.pay, screen: true };
+      if (/wallet|bank|credit|transfer|钱包|银行|转账|红包/i.test(text)) return { tier: 'forbid', kind: 'money', what: '和钱有关的操作' };
+      const kind = match(ASK_WORDS, text);
+      return kind ? { tier: 'ask', kind, what: `${KINDS[kind]}（${where}）`, subject: host } : null; // signing in with her own account is hers
+    }
+    case 'browser': return { tier: 'ask', kind: 'browser', what: `${KINDS.browser}：${t}（${where}）`, subject: host };
+    default: return { tier: 'ask', kind: 'computer', what: `电脑上：${risk.reason ?? t}`, subject: risk.cat };
+  }
+}
+

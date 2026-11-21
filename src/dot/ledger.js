@@ -3,7 +3,7 @@
 // and what the panel shows all come from here, never from what a model remembers having done.
 //   entry = { id, asker: 'him' | 'her', device, task, state: 'queued' | 'running' | 'ended',
 //             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', by?: 'him' | 'her' | 'code', cause?, error?,
-//             summary?, detail?, question?, ask?: { for: 'her' | 'him', kind?, subject?, screen? },
+//             summary?, detail?, name? (the hands' short name for it), question?, ask?: { for: 'her' | 'him', kind?, subject?, tier?: 'him' | 'ask', what?, screen? },
 //             steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
 //             shot?: path of the screen as it was at the end, told?: at }
 // Only facts are kept, never a sentence written for one of its readers: who stopped it is a field, why it ended is one
@@ -66,11 +66,11 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
     /** Counted as it goes; written down with the next change of state. */
     count(id, { steps = 0, tokens } = {}) { const e = find(id); if (!e) return; e.steps += steps; if (tokens) for (const k of ['in', 'cached', 'out']) e.tokens[k] += Number(tokens[k] ?? 0) || 0; },
     /** It is over, this way. Once: an ended thing stays as it ended. */
-    end(id, { outcome, by = 'code', cause = '', error = '', summary = '', detail = '', question = '', ask = null } = {}) {
+    end(id, { outcome, by = 'code', cause = '', error = '', summary = '', detail = '', name = '', question = '', ask = null } = {}) {
       const e = find(id);
       if (!e || e.state === 'ended') return e;
       const some = (o) => Object.fromEntries(Object.entries(o).filter(([, v]) => v));
-      Object.assign(e, { state: 'ended', outcome, by, endedAt: now(), ...some({ cause, error, summary, detail, question }), ...(ask ? { ask } : {}) });
+      Object.assign(e, { state: 'ended', outcome, by, endedAt: now(), ...some({ cause, error, summary, detail, name, question }), ...(ask ? { ask } : {}) });
       save();
       return e;
     },

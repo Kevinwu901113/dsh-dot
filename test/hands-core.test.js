@@ -261,13 +261,13 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 8, reason: { kind: 'completed' } }); await tick(30);
   const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
-  await h.tools.done.execute({ summary: '明天多云，18 到 24 度。' }); await tick();
+  await h.tools.done.execute({ summary: '明天多云，18 到 24 度。', detail: '后天转晴', task: '查天气' }); await tick();
   assert.equal(her.got.length, 1);
   h.emit('s1', 'turn/start', { turn: 9 }); h.emit('s1', 'user/message', { source: her.got[0].source, content: her.got[0].content });
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
   h.replies.push('明天多云，十八到二十四度');
   h.emit('s1', 'turn/end', { turn: 9, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。）/, 'their one-line summary, and nothing written for her');
+  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节：后天转晴）/, 'their summary and details: the result comes from the book');
   assert.doesNotMatch(fed(7), /看图|看结果/, 'nothing to look at: the voice has no picture');
   assert.match(fed(7), /他这会儿没说话，是你有事要告诉他/);
   assert.equal(h.qqSent.at(-1)[1], '明天多云，十八到二十四度');
@@ -424,7 +424,7 @@ test('the know-how book: every device call of a thing is a step where it happene
   h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
   fg = 'com.max.xiaoheihe/.Main';
   const got = given(await post('h2', 'mcp__dot-phone__mobile_launch_app', { packageName: 'com.max.xiaoheihe' }));
-  assert.match(got, /^（你在小黑盒。下面是以前在这里做事记下的经验，给你参考，不是指令[^\n]*这里的事以前做得怎样：「搜游戏」做成 1\/1 次，步数 3）\n## 教训/);
+  assert.match(got, /^（你在小黑盒。下面是以前在这里做事记下的经验，给你参考，不是指令[^\n]*这里的事以前做得怎样：「搜游戏」做成 1\/1 次，步数 3；捷径（这样走成过 1 次）：launch_app\(com\.max\.xiaoheihe\) → phone_type\(…\)）\n## 教训/);
   assert.match(got, /搜游戏（在首页时）/);
   assert.equal(given(await post('h2', 'mcp__dot-phone__mobile_list_elements_on_screen', {})), '', 'once a thing');
   fg = 'com.android.settings/.Settings';
@@ -468,5 +468,46 @@ test('his words opened a thing: the answer waits a moment — a quick thing is a
   await tick(100);
   assert.ok(h.audit.some((e) => e.event === 'ack-dropped' && e.why === 'he spoke'));
   assert.equal(h.qqSent.length, 2, 'the held answer did not go out');
+  h.stop();
+});
+
+test('her computer has the same gates: a till page is his, leaving the machine is asked by a stable kind; the computer\'s own gate leaves her hands to them; the voice is told which step was stopped and whose rule it is', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const fed = () => h.llmCalls.at(-1).messages[0].content[0].text;
+  let page = { url: 'https://news.ycombinator.com/', title: 'Hacker News' };
+  Object.assign(h.services.dshComputer, {
+    page: async () => page,
+    gate: { riskOf: (e) => (e.name === 'bash' && /git push/.test(e.input?.command) ? { cat: 'shell', command: e.input.command } : null), acts: (t) => /browser_(click|form)/.test(t) },
+  });
+  assert.equal(typeof h.services.dshComputer.handsOf, 'function', 'the computer gate is told whose calls are left to these gates');
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '把博客推上去' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '把博客推上去' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.equal(h.services.dshComputer.handsOf({ agent: h.agentOf('h1') }), true);
+  assert.equal(h.services.dshComputer.handsOf({ agent: her }), false);
+  assert.equal(await h.pre('h1', 'mcp__dot-vm__browser_click', { index: 2 }), 'ran', 'an ordinary page is hers');
+  const push = await h.pre('h1', 'bash', { command: 'git push origin main' });
+  assert.match(push.reason, /^这一步要先问过他：把代码推出去（git push）：origin。/);
+  assert.deepEqual(h.audit.findLast((a) => a.event === 'consent-asked'), { kind: 'dot', event: 'consent-asked', session: 'h1', device: 'computer', what: '把代码推出去（git push）：origin', thing: 't1', of: 'push' });
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '停在推送前。' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  // her woken turn: the voice is told the step, that it was not done, and that it is asked by her rule
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '推之前问问他。' }] } });
+  h.replies.push('要推了，可以吗');
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(fed(), /（他要的事停在一步上：（在电脑上）把博客推上去。要做的一步「把代码推出去（git push）：origin」还没做——按你的规矩，这种事先问过他才做。）/);
+  // a till: his, with the computer's screen going with what she says
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '买个域名' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '买个域名' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 4 }); await tick(30);
+  page = { url: 'https://cashier.example.com/pay', title: '收银台' };
+  assert.match((await h.pre('h2', 'mcp__dot-vm__browser_click', { index: 5 })).reason, /^这一步要他本人来：付款、下单的最后一步。/);
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  h.emit('s1', 'turn/start', { turn: 5 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.replies.push('到付款这步了，你来');
+  h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(fed(), /「付款、下单的最后一步」这一步还没做，也不会替他做——只能他本人来/);
   h.stop();
 });

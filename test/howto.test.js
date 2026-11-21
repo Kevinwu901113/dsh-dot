@@ -65,7 +65,8 @@ test('howto: long runs are worth it only when clearly above the usual; notes onc
   h.keep('小黑盒', { notes: '## 教训\n- 搜索框要先点', task: '搜游戏' }, third.id);
   const [fourth] = run(19, 'done', 8000);
   h.keep('小黑盒', { notes: '## 教训\n- 搜索框要先点', task: '搜游戏' }, fourth.id);
-  assert.deepEqual(h.tasks('小黑盒'), [{ task: '搜游戏', runs: 3, done: 2, steps: [10, 19], tokens: [30000, 8000] }]);
+  const swipes = Array(10).fill('swipe_on_screen()');
+  assert.deepEqual(h.tasks('小黑盒'), [{ task: '搜游戏', runs: 3, done: 2, steps: [10, 19], tokens: [30000, 8000], route: swipes, walked: 1 }]);
   const got = h.take('s9', '小黑盒');
   assert.equal(got.notes, '## 教训\n- 搜索框要先点');
   assert.match(got.recent, /^「搜游戏」做成 2\/3 次，步数 10→19；/);
@@ -75,7 +76,7 @@ test('howto: long runs are worth it only when clearly above the usual; notes onc
   const input = h.input({ app: '小黑盒', task: '搜浮游世界', outcome: 'done', steps: 3, errors: [], calls: ['a'], tokens: 5 });
   assert.equal(input.notesNow, '新的');
   assert.equal(input.thingWas, '搜浮游世界');
-  assert.deepEqual(input.knownTasks, [{ task: '搜游戏', runs: 3, done: 2, steps: [10, 19] }]);
+  assert.deepEqual(input.knownTasks, [{ task: '搜游戏', runs: 3, done: 2, steps: [10, 19], route: swipes, walked: 1 }]);
   assert.deepEqual(h.summary().map((p) => [p.app, p.notes, p.tasks.length]), [['小黑盒', true, 1]]);
 });
 
@@ -111,4 +112,33 @@ test('howto: an old log\'s "worked" is read once as the outcome; notes from befo
   const f = createHowto({ dir: fresh });
   f.keep('QQ', { notes: '新记的' });
   assert.ok(existsSync(join(fresh, '_meta.json')) && !createHowto({ dir: fresh }).needsReview('QQ'), 'a new folder has nothing to read over');
+});
+
+test('howto: a done run keeps its way (words typed left out); the shortest way of a task is its shortcut, with how often it was walked; the hands\' name for a thing is kept', () => {
+  let t = Date.now();
+  const h = createHowto({ dir: dirOf(), minSteps: 99, cooldownMs: 0, now: () => t });
+  let n = 0;
+  const run = (taps, { outcome = 'done', name = '看消息', fail = false } = {}) => {
+    const sid = `r${++n}`;
+    h.step(sid, 'QQ', `${P}mobile_launch_app`, { packageName: 'com.tencent.mobileqq' });
+    for (const [x, y] of taps) h.step(sid, 'QQ', `${P}mobile_click_on_screen_at_coordinates`, { x, y });
+    h.step(sid, 'QQ', `${P}mobile_type_keys`, { text: '验证码 123456' });
+    if (fail) h.step(sid, 'QQ', `${P}mobile_click_on_screen_at_coordinates`, { x: 9, y: 9 }, { isError: true, error: 'Error: element not found' });
+    t += 1000;
+    return h.end(sid, { thing: `t${n}`, name, outcome });
+  };
+  run([[100, 200], [300, 400], [500, 600]]);
+  run([[102, 198], [301, 405]], { fail: true });   // shorter, a failed step is not part of the way
+  run([[99, 201], [305, 399]]);
+  run([[100, 200]], { outcome: 'failed' });           // not done: no way kept
+  const [task] = h.tasks('QQ');
+  assert.equal(task.task, '看消息');
+  assert.deepEqual(task.route, ['launch_app(com.tencent.mobileqq)', 'click_on_screen_at_coordinates(102,198)', 'click_on_screen_at_coordinates(301,405)', 'type_keys(…)']);
+  assert.equal(task.walked, 2, 'taps a little off are the same way');
+  assert.equal(task.runs, 4);
+  assert.ok(!JSON.stringify(h.recent('QQ', 10)).includes('123456'), 'words typed are not kept');
+  const last = h.recent('QQ', 1)[0];
+  h.keep('QQ', { notes: '## 教训\n- x', task: '别的名' }, last.id);
+  assert.equal(h.recent('QQ', 1)[0].task, '看消息', 'the hands named it: a reflection does not rename it');
+  assert.match(h.take('s', 'QQ').recent, /捷径（这样走成过 2 次）：launch_app\(com\.tencent\.mobileqq\) → /);
 });

@@ -17,7 +17,7 @@
 //   start({ device, task })  → { status: 'started' } at once; or 'busy' (what they are on) / 'failed'.
 //   add(text)                → one more thing said to the hands at work, read between two of their steps.
 //   ask(question)            ← from the hands' own tool: this round ends as a question to her.
-//   finish({ summary, detail }) ← from the hands' own tool: the thing is done, and this is what came of it.
+//   finish({ summary, detail, task }) ← from the hands' own tool: the thing is done, what came of it, and its short name.
 //   stop({ by, cause })      → the thing ends now, stopped; what waited behind it is let go with it.
 // How a thing ends is told as facts (ledger.js): its outcome, who stopped it, why, the hands' summary and details.
 // Nothing here writes a sentence for anyone: each reader words them for itself.
@@ -75,7 +75,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     if (running && (outcome === 'stopped' || outcome === 'timeout' || (outcome === 'done' && t.result))) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
     // What came of it: their own summary and details when they gave them (finish), else what they last said, as details.
     const summary = String(t.result?.summary ?? '').trim(), detail = headTail(t.result ? t.result.detail : t.said, maxChars);
-    const facts = { outcome, by, ...(cause ? { cause } : {}), ...(error ? { error: String(error).slice(0, 160) } : {}), ...(summary ? { summary } : {}), ...(detail ? { detail } : {}), ...(outcome === 'stuck' ? { question: t.question, ...(t.ask ? { ask: t.ask } : {}) } : {}) };
+    const facts = { outcome, by, ...(cause ? { cause } : {}), ...(error ? { error: String(error).slice(0, 160) } : {}), ...(summary ? { summary } : {}), ...(detail ? { detail } : {}), ...(t.result?.name ? { name: t.result.name } : {}), ...(outcome === 'stuck' ? { question: t.question, ...(t.ask ? { ask: t.ask } : {}) } : {}) };
     const out = snapshot(t, facts);
     ledger.end(t.entry, facts);
     audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, outcome, by, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(cause ? { cause } : {}) });
@@ -159,15 +159,15 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * can do; `ask.screen`: the screen goes with the question). The run under way ends as this question; the first
      * question stands. False when nothing is under way.
      */
-    ask(question, ask = {}) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
+    ask(question, ask = {}) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.tier ? { tier: ask.tier } : {}), ...(ask.what ? { what: String(ask.what) } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
     /**
      * From the hands' own tool: the thing is done, and this is what came of it — `summary` in a line, `detail` for her.
      * It ends here (nothing more is said). False when nothing is under way, or it has already asked.
      */
-    finish({ summary = '', detail = '' } = {}) {
+    finish({ summary = '', detail = '', task = '' } = {}) {
       const t = thing;
       if (!t || t.state !== 'running' || t.question || t.over) return false;
-      t.result = { summary: String(summary ?? '').trim(), detail: String(detail ?? '').trim() };
+      t.result = { summary: String(summary ?? '').trim(), detail: String(detail ?? '').trim(), ...(String(task ?? '').trim() ? { name: String(task).trim().slice(0, 12) } : {}) };
       settle(t, 'done');
       return true;
     },

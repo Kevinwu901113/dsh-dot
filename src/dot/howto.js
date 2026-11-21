@@ -15,8 +15,10 @@
 //            marked ⊘ and is no lesson. Notes from before refusals were told apart (no _meta.json) are read over
 //            once (`review`) before they are given again. One reflection per place at a time; at most one per
 //            place per hour and a few a day.
+//   route    each run that was done keeps its way there (the calls that went through, words typed left out); per
+//            task the shortest way that was done is its shortcut, with how many times it was walked — counted by code
 //   recall   the first time her hands are in a place in a thing, its notes come along with the call's result,
-//            with how the tasks there went — as reference, not instructions
+//            with how the tasks there went and their shortcuts — as reference, not instructions
 // The notes are plain files (<home>/her/howto/<place>.md): she, or he, can edit them.
 import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -39,6 +41,8 @@ export const isRefusal = (e) => wasRefused(e) || /denied|rejected|not allowed|ap
 export const placeName = (app) => (app === 'phone' ? '这台手机（桌面、设置、通知栏、输入法、系统弹窗）' : app === 'computer' ? '这台电脑' : app);
 /** Outcomes that are a run that broke off: worth a lesson even when short. */
 const BROKE = new Set(['failed', 'timeout']);
+/** A way longer than this is no shortcut: not kept as a route. */
+const ROUTE_MAX = 30;
 
 /** One call as it is read back: "launch_app(com.max.xiaoheihe)", "click(421,428)", "type(浮游世界)". */
 export function callLine(tool, input) {
@@ -49,6 +53,18 @@ export function callLine(tool, input) {
   const list = batchSteps(a);
   if (list) bits.push(list.map((s) => String(s?.name ?? s?.tool ?? '').replace(/^mobile_/, '')).join('+'));
   return `${short}(${bits.join(',')})`;
+}
+/** A step of a route: the call without the words typed (they belong to that one time), coordinates as they were. */
+export const routeLine = (tool, input) => callLine(tool, input && typeof input === 'object' && input.text ? { ...input, text: '…' } : input);
+/** Two routes are the same way when their steps match, taps no more than a little off (30 px). */
+const NUM = /(?<=[(,])(\d{1,4})(?=[,)])/g;
+export function sameWay(a, b) {
+  if (a.length !== b.length) return false;
+  return a.every((l, i) => {
+    if (l.replace(NUM, '#') !== b[i].replace(NUM, '#')) return false;
+    const x = l.match(NUM) ?? [], y = b[i].match(NUM) ?? [];
+    return x.every((n, j) => Math.abs(Number(n) - Number(y[j])) <= 30);
+  });
 }
 /** The steps of a mobile_batch_commands call, or null. */
 export const batchSteps = (a) => { const l = a?.steps ?? a?.commands; return Array.isArray(l) ? l : null; };
@@ -113,9 +129,17 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
         const t = by.get(r.task) ?? { task: r.task, runs: 0, done: 0, steps: [], tokens: [] };
         t.runs++;
         if (r.outcome === 'done') { t.done++; t.steps.push(r.steps); if (r.tokens) t.tokens.push(Math.round(r.tokens * (r.share ?? 1))); }
+        if (r.outcome === 'done' && Array.isArray(r.route) && r.route.length) {
+          const ways = (t.ways ??= []), w = ways.find((x) => sameWay(x.route, r.route));
+          if (w) w.n++; else ways.push({ route: r.route, n: 1 });
+        }
         by.set(r.task, t);
       }
-      return [...by.values()];
+      // The shortcut: the shortest way that was done, and how many times it was (most times among equally short).
+      return [...by.values()].map(({ ways, ...t }) => {
+        const best = ways ? [...ways].sort((a, b) => a.route.length - b.route.length || b.n - a.n)[0] : null;
+        return best ? { ...t, route: best.route, walked: best.n } : t;
+      });
     },
     /** The last few runs in `app`: [{ id, at, thing, steps, errors, outcome, task, ms, tokens, share }]. */
     recent: (app, n = 5) => runsOf(app).slice(-n),
@@ -130,13 +154,14 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
       if (!sessionId) return '';
       const run = runs.get(sessionId) ?? new Map();
       runs.set(sessionId, run);
-      const a = run.get(app) ?? { steps: 0, errors: [], calls: [], refused: 0 };
+      const a = run.get(app) ?? { steps: 0, errors: [], calls: [], route: [], refused: 0 };
       const batch = batchSteps(input);
       a.steps += batch ? Math.max(1, batch.length) : 1;
       const failures = [...(isError ? [error] : []), ...(batch ? batchFailures(error) : [])].filter((e) => e && !isRefusal(e)).map(errorType);
       a.errors.push(...failures);
       const refused = isError && !failures.length && isRefusal(error);
       if (refused) a.refused++;
+      if (!failures.length && !refused && a.route.length <= ROUTE_MAX) a.route.push(routeLine(tool, input));
       if (a.calls.length < 60) a.calls.push(`${callLine(tool, input)}${failures.length ? ` ✗ ${failures.join('；')}` : refused ? ' ⊘' : ''}`);
       run.set(app, a);
       return app;
@@ -152,7 +177,7 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
       if (api.needsReview(app)) return null;   // old notes, not read over yet: not given as they are
       seen.add(app); shown.set(sessionId, seen);
       const said = [
-        ...tasks.slice(-6).map((t) => `「${t.task}」做成 ${t.done}/${t.runs} 次${t.steps.length ? `，步数 ${t.steps.slice(-4).join('→')}` : ''}`),
+        ...tasks.slice(-6).map((t) => `「${t.task}」做成 ${t.done}/${t.runs} 次${t.steps.length ? `，步数 ${t.steps.slice(-4).join('→')}` : ''}${t.route ? `；捷径（这样走成过 ${t.walked} 次）：${t.route.join(' → ')}` : ''}`),
         ...last.map((r) => `${day(r.at)} ${r.steps} 步${r.errors ? `、错 ${r.errors} 次` : ''}${r.outcome && r.outcome !== 'done' ? '、没做成' : ''}`),
       ];
       return { app, notes, recent: said.join('；') };
@@ -164,7 +189,7 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
      * long run in a place with no notes yet — and the place not reflected on within cooldownMs, and the day's cap not hit.
      * @param end.task the thing as it was given  @param end.outcome the book's  @param end.ms, end.tokens the whole thing's
      */
-    end(sessionId, { thing = '', task = '', outcome = '', ms = 0, tokens = 0 } = {}) {
+    end(sessionId, { thing = '', task = '', name = '', outcome = '', ms = 0, tokens = 0 } = {}) {
       const run = runs.get(sessionId);
       runs.delete(sessionId); shown.delete(sessionId);
       if (!run) return [];
@@ -176,13 +201,13 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
         const before = runsOf(app).map((r) => r.steps);
         const id = `${now().toString(36)}${(seq++).toString(36)}`;
         const share = Math.round((a.steps / total) * 100) / 100;
-        try { appendFileSync(logFile, `${JSON.stringify({ id, at: now(), ...(thing ? { thing } : {}), app, steps: a.steps, errors: a.errors.length, ...(outcome ? { outcome } : {}), ms: Math.round(ms), tokens: Math.round(tokens), share })}\n`); } catch (error) { void error; }
+        try { appendFileSync(logFile, `${JSON.stringify({ id, at: now(), ...(thing ? { thing } : {}), app, steps: a.steps, errors: a.errors.length, ...(outcome ? { outcome } : {}), ...(name ? { task: clip(noUrls(name), 12) } : {}), ...(outcome === 'done' && a.route.length && a.route.length <= ROUTE_MAX ? { route: a.route } : {}), ms: Math.round(ms), tokens: Math.round(tokens), share })}\n`); } catch (error) { void error; }
         const long = a.steps >= minSteps && (!before.length || !api.notes(app) || a.steps > 1.5 * median(before.slice(-8)));
         const broke = BROKE.has(outcome) && a.steps >= 3;
         if (!(long || broke || a.errors.length)) continue;
         if (now() - (lastReflect.get(app) ?? 0) < cooldownMs || reflectedToday >= dailyReflections) continue;
         lastReflect.set(app, now()); reflectedToday++;
-        out.push({ id, app, task: clip(noUrls(task), 160), outcome, steps: a.steps, errors: a.errors, calls: a.calls, tokens: Math.round(tokens * share) });
+        out.push({ id, app, task: clip(noUrls(task), 160), ...(name ? { name: clip(noUrls(name), 12) } : {}), outcome, steps: a.steps, errors: a.errors, calls: a.calls, tokens: Math.round(tokens * share) });
       }
       try { const all = read(logFile).split('\n').filter(Boolean); if (all.length > keepRuns) writeAtomic(logFile, `${all.slice(-keepRuns).join('\n')}\n`); } catch (error) { void error; }
       return out;
@@ -191,8 +216,8 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
     input(r) {
       if (r.review) return { place: placeName(r.app), notesNow: api.notes(r.app) || null, limits: { notesMaxChars: maxChars } };
       return {
-        place: placeName(r.app), thingWas: r.task, outcome: r.outcome || 'unknown', steps: r.steps, tokens: r.tokens, errors: r.errors, calls: r.calls,
-        notesNow: api.notes(r.app) || null, knownTasks: api.tasks(r.app).map(({ task, runs, done, steps }) => ({ task, runs, done, steps: steps.slice(-4) })),
+        place: placeName(r.app), thingWas: r.task, ...(r.name ? { named: r.name } : {}), outcome: r.outcome || 'unknown', steps: r.steps, tokens: r.tokens, errors: r.errors, calls: r.calls,
+        notesNow: api.notes(r.app) || null, knownTasks: api.tasks(r.app).map(({ task, runs, done, steps, route, walked }) => ({ task, runs, done, steps: steps.slice(-4), ...(route ? { route, walked } : {}) })),
         recentRuns: api.recent(r.app, 8).map(({ steps, errors, outcome, task, tokens, share }) => ({ steps, errors, outcome, ...(task ? { task } : {}), ...(tokens ? { tokens: Math.round(tokens * (share ?? 1)) } : {}) })),
         limits: { notesMaxChars: maxChars },
       };
@@ -207,7 +232,7 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
       reviewed(app);
       if (runId && name) {
         try {
-          const all = read(logFile).split('\n').filter(Boolean).map((l) => { try { const j = JSON.parse(l); if (j.id === runId) return JSON.stringify({ ...j, task: name }); } catch (error) { void error; } return l; });
+          const all = read(logFile).split('\n').filter(Boolean).map((l) => { try { const j = JSON.parse(l); if (j.id === runId && !j.task) return JSON.stringify({ ...j, task: name }); } catch (error) { void error; } return l; });
           writeAtomic(logFile, `${all.join('\n')}\n`);
         } catch (error) { void error; }
       }

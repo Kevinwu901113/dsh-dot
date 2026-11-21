@@ -162,34 +162,50 @@ export function compile(cfg) {
 }
 
 /**
- * Decide for one tool call: null (allow) or the reason to ask. Pure.
+ * What one tool call risks, by these rules: null, or { cat, reason, subject?, command? }. Pure.
+ *   cat: protected · shell · shared · home · file-delete · script · sensitive · browser (mode 'browser')
  * @param {{ name: string, args: string, shared?: string[], cwd?: string }} call - tool name, its
  *   arguments as JSON text, the folders shared with the host as the VM sees them, the shell's working folder.
  */
-export function decide(call, cfg, compiled = compile(cfg)) {
+export function risk(call, cfg, compiled = compile(cfg)) {
   if (cfg.mode === 'off') return null;
   const { name: tool, args } = call;
   const vmTool = tool.startsWith(VM_TOOL_PREFIX) ? tool.slice(VM_TOOL_PREFIX.length) : '';
   if (!vmTool && !cfg.shellTools.includes(tool)) return null;
   // A protected location in any argument of any VM tool is a reason on its own.
-  if (compiled.protectedPaths.some((r) => r.test(args))) return `dsh-computer: touches a protected location in the VM (${vmTool || tool})`;
+  const prot = compiled.protectedPaths.map((r) => r.exec(args)).find(Boolean);
+  if (prot) return { cat: 'protected', subject: prot[0].replace(/^[\s"'=:]+/, ''), reason: `dsh-computer: touches a protected location in the VM (${vmTool || tool})` };
   if (cfg.shellTools.includes(tool)) {
-    if (compiled.shell.some((r) => r.test(args))) return 'dsh-computer: risky shell command in the VM';
-    const hit = sharedTouch(commandOf(args), { shared: call.shared ?? [], cwd: call.cwd, home: cfg.vmHome });
-    return hit ? `dsh-computer: destructive command on ${hit === cfg.vmHome || hit === '/' ? 'her whole computer' : 'a folder shared with the host'} (${hit})` : null;
+    const command = commandOf(args);
+    if (compiled.shell.some((r) => r.test(args))) return { cat: 'shell', command, reason: 'dsh-computer: risky shell command in the VM' };
+    const hit = sharedTouch(command, { shared: call.shared ?? [], cwd: call.cwd, home: cfg.vmHome });
+    if (!hit) return null;
+    const whole = hit === cfg.vmHome || hit === '/';
+    return { cat: whole ? 'home' : 'shared', subject: hit, command, reason: `dsh-computer: destructive command on ${whole ? 'her whole computer' : 'a folder shared with the host'} (${hit})` };
   }
-  if (cfg.fileTools.includes(tool)) return compiled.destructive.some((r) => r.test(args)) ? `dsh-computer: destructive file operation (${vmTool})` : null;
-  if (cfg.readOnlyTools.includes(vmTool)) return cfg.mode === 'browser' && vmTool.startsWith('browser_') ? `dsh-computer: browser action ${vmTool}` : null;
+  if (cfg.fileTools.includes(tool)) {
+    if (!compiled.destructive.some((r) => r.test(args))) return null;
+    let a = {}; try { a = JSON.parse(args); } catch { /* text */ }
+    return { cat: 'file-delete', subject: String(a?.path ?? a?.file ?? a?.target ?? '').slice(0, 120), reason: `dsh-computer: destructive file operation (${vmTool})` };
+  }
+  const browserMode = { cat: 'browser', reason: `dsh-computer: browser action ${vmTool}` };
+  if (cfg.readOnlyTools.includes(vmTool)) return cfg.mode === 'browser' && vmTool.startsWith('browser_') ? browserMode : null;
   // A script that only reads the page is looking, like browser_get_text: it runs. Anything else of these tools asks.
-  if (vmTool === 'browser_evaluate' && readOnlyScript(scriptOf(args))) return cfg.mode === 'browser' ? `dsh-computer: browser action ${vmTool}` : null;
+  if (vmTool === 'browser_evaluate' && readOnlyScript(scriptOf(args))) return cfg.mode === 'browser' ? browserMode : null;
   // Moving the pointer, clicking and scrolling by coordinates is what browser_click does by index: an action like the
   // others below. Keys and typed text through this tool are raw input and ask.
   const pointing = vmTool === 'browser_gui_execute_action' && pointerAction(args);
-  if (cfg.alwaysAskTools.includes(vmTool) && !pointing) return `dsh-computer: ${vmTool} (runs code or raw input in her computer)`;
+  if (cfg.alwaysAskTools.includes(vmTool) && !pointing) return { cat: 'script', reason: `dsh-computer: ${vmTool} (runs code or raw input in her computer)` };
   // Everything else acts on the browser or the desktop — known action tools and unknown tools alike.
-  if (cfg.mode === 'browser') return `dsh-computer: browser action ${vmTool}`;
-  return compiled.sensitive.some((r) => r.test(args)) ? `dsh-computer: sensitive browser action ${vmTool}` : null;
+  if (cfg.mode === 'browser') return browserMode;
+  return compiled.sensitive.some((r) => r.test(args)) ? { cat: 'sensitive', reason: `dsh-computer: sensitive browser action ${vmTool}` } : null;
 }
+
+/** Decide for one tool call: null (allow) or the reason to ask. Pure. */
+export function decide(call, cfg, compiled = compile(cfg)) { return risk(call, cfg, compiled)?.reason ?? null; }
+
+/** Does this VM tool act (on the browser or the desktop), rather than only look? */
+export const acts = (tool, cfg) => { const v = tool.startsWith(VM_TOOL_PREFIX) ? tool.slice(VM_TOOL_PREFIX.length) : ''; return Boolean(v) && !cfg.readOnlyTools.includes(v) && !cfg.fileTools.includes(tool) && !cfg.shellTools.includes(tool) && !v.startsWith('sandbox_'); };
 
 export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...config, ...sectionOf('gate', (m) => ctx.logger?.('dsh-dot/gate')?.warn?.(m)) };
@@ -228,7 +244,8 @@ export function apply(ctx, config = {}) {
     const host = exec.name === 'bash' ? exec.agent?.session?.header?.cwd : '';
     return host ? guest(host) : cfg.vmHome;
   };
-  ctx.on('tools/pre-execute', async (exec, next) => {
+  /** What a call risks by the rules here, with the shared folders and working folder as they are now. */
+  const riskOf = (exec) => {
     const input = exec.input ?? exec.args ?? exec.arguments ?? {};
     const args = typeof input === 'string' ? input : JSON.stringify(input);
     const vmTool = exec.name.startsWith(VM_TOOL_PREFIX) ? exec.name.slice(VM_TOOL_PREFIX.length) : '';
@@ -242,7 +259,15 @@ export function apply(ctx, config = {}) {
     const cwd = shell ? cwdOf(exec, parsed) : '';
     // A bash session folder not shared yet will be by the time the command runs.
     const shared = shell ? [...sharedNow(), ...(exec.name === 'bash' && exec.agent?.session?.header?.cwd ? [cwd] : [])] : [];
-    const reason = decide({ name: exec.name, args, shared, cwd }, cfg, compiled);
+    return risk({ name: exec.name, args, shared, cwd }, cfg, compiled);
+  };
+  // dsh-dot's gates (dot/gates.js) judge the calls of her hands themselves, by four tiers, with what this file finds:
+  // for those calls nothing is asked here.
+  vm.gate = { riskOf, acts: (tool) => acts(tool, cfg) };
+  ctx.effect?.(() => () => { if (vm.gate?.riskOf === riskOf) delete vm.gate; }, 'dsh-dot/gate: shared');
+  ctx.on('tools/pre-execute', async (exec, next) => {
+    if (exec.dotGated || vm.handsOf?.(exec)) return next();
+    const reason = riskOf(exec)?.reason;
     if (!reason) return next();
     audit({ kind: 'approval-asked', tool: exec.name, session: sessionOf(exec), args: clip(exec.arguments, 300), reason });
     return { kind: 'ask', reason: `${reason}${watch()}` };
