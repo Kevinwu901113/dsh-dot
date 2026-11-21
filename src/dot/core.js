@@ -274,7 +274,8 @@ export function apply(ctx, config = {}) {
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: dot.enabled = false)'); return; }
   const computer = () => ctx.get('dshComputer');
   const phone = () => ctx.get('dshPhone');
-  const audit = (event, data = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data });
+  // Every line is kind 'dot' (the activity view sorts by it); a `kind` of the thing recorded is kept as `of`.
+  const audit = (event, { kind, ...data } = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data, ...(kind !== undefined ? { of: kind } : {}) });
   const home = cfg.home || join(homedir(), 'dot');
   configurePrompts({ home, logger });
   const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
@@ -494,7 +495,7 @@ export function apply(ctx, config = {}) {
         ack.timer = setTimeout(() => {
           if (ackHold !== ack) return;
           ackHold = null;
-          if (!hisUnderWay()) { audit('ack-folded', { session: id }); over(); return; }
+          if (!hisUnderWay()) { audit('ack-folded', { session: id }); return; } // told by the turn the result woke
           void tellHim(t, { about: note }).then(over, over);
         }, cfg.ackHoldMs);
         ack.timer.unref?.();

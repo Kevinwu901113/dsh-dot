@@ -33,18 +33,18 @@ dsh runs the conversation, calls the tools and carries the IM. dsh-dot decides *
 - 🎭 **A persona and a voice** — the Canon is the first section of the system prompt: import an HDSI preset from [typ0.space](https://typ0.space) by share code, or write `canon.json` yourself. Every prompt she receives is plain text; `/dot prompts` opens an editor page.
 - 🧠 **Memory** — the words are the evidence, three short notes hold what stays true: every time she wakes, the past turns that bear on it (vector + BM25 candidates, reranked on your machine) come back to her by date; what she knows about you, about herself and what is not over yet is a small note; one card per person. Handoff at 150k tokens, a diary every night at 23:30.
 - 🌙 **A life between conversations** — the interlude, an idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude), implemented independently: she writes down her days, keeps intents and goes to look at what she is curious about. Reaching out to you is off by default and passes four gates when on.
-- 🌱 **She grows** — two stretches of her own time a day, with no task, a token budget and a folder that is hers alone. She tries things she has not done, keeps her own notes on each app, and keeps a ledger of what she did, what it cost and what you said about it. Every Sunday she reviews the week and rewrites her self-portrait; every version is kept and can be rolled back.
+- 🌱 **She grows** — two stretches of her own time a day, with no task, a token budget and a folder that is hers alone. She tries things she has not done; the phone itself, each app and the computer each have a know-how book (steps, errors and cost of every thing she did there, pitfalls and shortcuts written from it), so the same thing gets faster, surer and cheaper; and keeps a ledger of what she did, what it cost and what you said about it. Every Sunday she reviews the week and rewrites her self-portrait; every version is kept and can be rolled back.
 
 ## 🧰 What she has
 
-- 📱 **A phone** — the plugin downloads, builds and boots an Android emulator (no Java / Android Studio, no window of its own; you watch it inside dsh). No app store: **she installs her own apps**. A notification from any app wakes her; she browses, likes, comments, follows and now and then posts.
+- 📱 **A phone** — the plugin downloads, builds and boots an Android emulator (no Java / Android Studio, no window of its own; you watch it inside dsh). No app store: **she installs her own apps** (she asks you first). Someone writing to her wakes her; an app's own pushes don't, she sees them the next time she is up; she browses, likes, comments, follows and now and then posts.
 - 🖥️ **A computer** — a bundled microVM (no Docker): shell, browser, desktop, live view, approval gates, audit log. Her commands run in the VM, not on your machine. It can be turned off.
 - 💬 **A QQ account** — NapCat or SnowLuma (OneBot 11) inside her computer, same account as on her phone. Your message wakes her in **1–2 s**; she replies in several short messages and sends stickers.
 
 The phone and the computer each have a power switch (`/phone off`, `/computer off`, or the top of the dot settings page); off stays off across dsh restarts.
 
 > [!NOTE]
-> **She can look, but never act behind your back.** Looking is read-only; anything with consequences (installing, payments, messaging strangers) goes through approval or isn't allowed at all. Every step she takes is logged.
+> **She can look, but never act behind your back — and there is no approval button to click.** Money (transfers, red packets, finance and payment apps) she never touches; what only you can do (paying, a code sent to your phone, a QR login, a face check) she stops at and brings to you (a QR code is sent to you); installing an app, calling or texting, messaging someone she doesn't know, deleting things — she asks you in the chat first, and does it once you say yes (for that one thing; "from now on that's fine" makes it standing). Which is which is decided by code from the screen, not by what she says. Every step she takes is logged.
 
 ## 🚀 Quick start
 
@@ -142,7 +142,7 @@ flowchart LR
 |---|---|---|---|
 | her | **`interlude`** | Canon persona, the persona card and the checks on what she says, a voice reminder at the end of each turn; her own time; the ledger of what she did on her own · [docs](docs/interlude.md) | `DSH_DOT_INTERLUDE=off` |
 | her | **`memory`** | Transcript + auto-recall (local multilingual-e5-small + bge-reranker-base; SiliconFlow / DashScope optional), three notes (about you / herself / not over yet), people cards, diary, handoff · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
-| her | **`dot`** | The contact layer: notifications and schedules wake her, her hands (a separate session that operates the phone and computer a step at a time), scheduled results → IM, approval and device notices, working rules, her per-app notes, sidebar status panel | `DSH_DOT_CONTACT=off` |
+| her | **`dot`** | The contact layer: notifications and schedules wake her, her hands (a separate session with its own do-only preset, given a whole thing at a time), the book of things, the know-how book, what needs your yes (four tiers by code, asked in the chat), the clean call that writes what she says, scheduled results → IM, device notices, sidebar status panel | `DSH_DOT_CONTACT=off` |
 | her things | **`phone`** | Android emulator exposed as `mcp__dot-phone__*` via [mobile-mcp](https://github.com/mobile-next/mobile-mcp) · [docs](docs/phone.md) | `DSH_DOT_PHONE=off` |
 | her things | **`computer`** | Bundled microVM ([microsandbox](https://github.com/zerocore-ai/microsandbox)) or Docker, exposed as `mcp__dot-vm__*` · [docs](docs/computer.md) | `DSH_DOT_COMPUTER=off` |
 | her things | **`qq`** | Her QQ inside the computer VM, same account as her phone · [docs](docs/qq.md) | `DSH_DOT_QQ=off` |
