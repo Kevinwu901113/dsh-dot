@@ -54,15 +54,25 @@ export function parseSaid(text, { has = () => true, pictures = true } = {}) {
  * @param {string} [o.where] - where the words go when not to him over QQ (a comment box, a group …)
  * @param {boolean} [o.unprompted] - she speaks first: nothing of his is waiting for an answer
  */
-export function sayInput({ dialogue = [], stickers = null, state = '', about = '', meant = '', where = '', unprompted = false } = {}) {
+/**
+ * What is written, made fit to go out: what stands in brackets is a stage direction or a thought and is not said; at
+ * most one sticker; no more lines than a chat message has.
+ */
+export function tidy(parsed, maxLines = 4) {
+  const lines = parsed.lines.map((l) => l.replace(/[（(][^（()）]*[)）]/g, '').trim()).filter(Boolean).slice(0, maxLines);
+  let sticker = false;
+  const images = parsed.images.filter((i) => (!String(i).startsWith('sticker:') ? true : sticker ? false : (sticker = true)));
+  return { lines, images, silent: parsed.silent || (!lines.length && !images.length) };
+}
+
+export function sayInput({ dialogue = [], stickers = null, facts = [], about = '', where = '', unprompted = false } = {}) {
   const parts = [];
   if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((s) => `sticker:${s.id} ${s.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   const said = dialogue.filter((l) => String(l.text ?? '').trim()).map((l) => `${l.who === 'her' ? '你' : '他'}：${String(l.text).replace(/\s*\n+\s*/g, ' / ')}`);
   if (said.length && !where) parts.push(`${prompt(unprompted ? 'dot.say.dialogue.unprompted' : 'dot.say.dialogue').trim()}\n${said.join('\n')}`);
   const notes = [];
-  if (state) notes.push(prompt('dot.say.state', { state }).trim());
+  for (const f of [].concat(facts ?? []).map((x) => String(x ?? '').trim()).filter(Boolean)) notes.push(prompt('dot.say.fact', { fact: f }).trim());
   if (String(about).trim()) notes.push(prompt('dot.say.about', { about: String(about).trim() }).trim());
-  if (String(meant).trim()) notes.push(prompt('dot.say.meant', { meant: String(meant).trim().replace(/\s*\n+\s*/g, ' / ') }).trim());
   notes.push(prompt(where ? 'dot.say.end.where' : unprompted ? 'dot.say.end.unprompted' : 'dot.say.end', { where }).trim());
   parts.push(notes.join('\n'));
   return parts.map((p) => p.trim()).join('\n\n');
@@ -79,14 +89,14 @@ export function sayInput({ dialogue = [], stickers = null, state = '', about = '
  * @param {(to: string) => boolean} deps.unread - has the one this goes to said something she has not read?
  * @param {(o: { to: string, text: string, images: string[] }) => Promise<{ said?: string[], images?: string[], interrupted?: boolean, unsent?: string[] }>} deps.send
  */
-export function createSay({ card, call, recent, state, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12 }) {
+export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12, maxLines = 4 }) {
   /** Write it: the card and what is in front of her. A line the check catches is written once more; the second goes as it is. */
   async function write(input, { has, pictures }) {
     const system = String(card() ?? '').trim();
     if (!system) throw new Error('no persona card');
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = parseSaid(await call({ system, text: input }), { has, pictures });
+      const parsed = tidy(parseSaid(await call({ system, text: input }), { has, pictures }), maxLines);
       const checked = check(parsed.lines.join('\n'));
       out = { ...parsed, lines: checked.lines, silent: parsed.silent || (!checked.lines.length && !parsed.images.length) };
       if (!checked.hits.length) break;
@@ -101,17 +111,16 @@ export function createSay({ card, call, recent, state, stickers, check, unread =
      * @param {object} o
      * @param {string} [o.to] - 'owner' (default), user:<n>, group:<n>
      * @param {string} [o.about] - what she knows that bears on it
-     * @param {string} [o.meant] - what she wrote, in her conversation, that she means to tell him: the sense of it, not the words
      * @param {string[]} [o.images] - pictures her thinking wants sent with it (a screenshot, a file): not the call's to choose
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
      * @param {string} [o.context] - for someone else than him: what they said, where
      */
-    async speak({ to = 'owner', about = '', meant = '', images = [], unprompted = false, context = '' } = {}) {
+    async speak({ to = 'owner', about = '', facts = [], images = [], unprompted = false, context = '' } = {}) {
       const his = to === 'owner';
       if (unread(to)) return { status: 'held' };
       try {
         const mine = stickers();
-        const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, state: his ? state() : '', about: [context, about].filter(Boolean).join('\n'), meant, unprompted });
+        const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted });
         const out = await write(input, { has: (id) => mine.some((s) => s.id === id), pictures: true });
         const pictures = [...out.images, ...[].concat(images ?? []).filter(Boolean)];
         if (out.silent && !pictures.length) { audit('say-silent', { to }); return { status: 'silent' }; }

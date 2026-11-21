@@ -40,6 +40,7 @@ import { background, effortFor, installLlmGate, statusLine as llmGateLine, workE
 import { configure as configurePrompts, overrideNotes, prompt, rebase } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { ago, stamp, today } from '../clock.js';
+import { head } from '../cut.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent } from './text.js';
 export * from './text.js';
 
@@ -82,7 +83,7 @@ export const defaults = {
   // she wants done, the hands do it to the end — or come back with a question that is hers to answer. A stretch of
   // theirs (the thing, or the part after an answer of hers) is cut after handsMaxMs.
   handsMaxMs: 600000,
-  handsAskMs: 1800000,   // a question of theirs she has not answered for this long: the thing is let go (her hands are free again)
+  handsStuckHoldMs: 1800000, // a thing that ended stuck leaves the phone on its page this long (the next thing carries on from there), then it goes home
   // The reasoning effort her hands' requests are sent with ('' or false = whatever dsh's model selector says). They carry a
   // whole thing through by themselves now, on the same model as her; an effort the model does not offer is not sent.
   handsEffort: 'low',
@@ -96,6 +97,7 @@ export const defaults = {
   sayEffort: 'off',
   sayMaxTokens: 600,
   sayLines: 12,
+  sayMaxLines: 4,        // a message of hers has at most this many lines; what the voice writes beyond is not sent
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -372,7 +374,7 @@ export function apply(ctx, config = {}) {
     return back ? c : null;
   };
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
-  const handsLine = () => { const d = hands?.doing?.(); return !d ? '' : d.state === 'asking' ? prompt('dot.hands.asking', { task: d.task, question: d.question }).trim() : prompt('dot.hands.doing', { task: d.task, since: ago(d.startedAt, Date.now()) ? `（${ago(d.startedAt, Date.now())}了）` : '' }).trim(); };
+  const handsLine = () => { const d = hands?.doing?.(); return !d ? '' : prompt('dot.hands.doing', { task: d.task, since: ago(d.startedAt, Date.now()) ? `（${ago(d.startedAt, Date.now())}了）` : '' }).trim(); };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
   const saveReaches = () => { reaches = reaches.slice(-40); store.set('reaches', reaches); };
@@ -444,7 +446,7 @@ export function apply(ctx, config = {}) {
     if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind) && event.data.source.form !== 'turn-note') t.origin ??= event.data.source.form;
     // Her hands came back on something of his: the turn is on his business (a thing she starts from it is his too),
     // and what she tells him in it she says with qq_send.
-    if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') t.forHim = true;
+    if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') { t.forHim = true; if (event.data.source.thing) t.thing = event.data.source.thing; }
     if (event.type === 'assistant/message') {
       const u = event.data?.usage;
       if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
@@ -470,23 +472,21 @@ export function apply(ctx, config = {}) {
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
       if (!t.scheduled && !retired(id)) { t.hisHere = true; }
     }
-    // Nothing she writes leaves as she wrote it. A turn he is in that ends: the words it closes with are what she means
-    // to tell him, and `say` writes the words (say.js) — unless she already said something in it herself, or wrote
-    // nothing: then nothing goes out. (Left to a tool she had to remember, the first thing he said to her on 11-21 was
-    // answered in her conversation and reached no one.) At her window it is on his screen as she wrote it.
+    // Nothing she writes leaves. A turn he is in that ends — his words, or a thing of his that came to its end — is
+    // answered by the voice (say.js), which is given the facts of the book and, as one more thing she knows, the note
+    // this turn closed with. Her note is not a draft: what she "is about to do" is only true if the book has it.
+    // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
-      const meant = !t.spoke && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted' ? (t.closing ?? '') : '';
-      const over = () => {
-        if (!t.spoke) { preempts = 0; audit('silent', { session: id }); }
-      };
-      if (!meant) { over(); return; }
-      void tellHim(t, { meant }).then(async (r) => {
-        over();
-        // What really went out is hers to know: her next turn reads it after what she wrote.
-        if (r.status !== 'said') return;
-        try { (await resolveLive(id))?.agent?.inject?.(createUserMessage({ content: [{ type: 'text', text: saidText(r) }], source: { kind: 'dsh-dot', form: 'said' } })); } catch (err) { logger.debug?.(`said not noted: ${err.message}`); }
-      });
+      // A thing of his that came back and that she took further in this turn (gave her hands the next part, answered
+      // them) is not at its end: there is nothing to tell him yet.
+      const further = !t.fromQq && Boolean(t.opened?.length || t.answered);
+      const speak = !t.spoke && !further && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
+      const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
+      if (!speak) { over(); return; }
+      // A note wholly in brackets is a thought to herself, not something she knows for him.
+      const note = String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '').trim();
+      void tellHim(t, { about: note }).then(over, over);
     }
   });
 
@@ -681,6 +681,8 @@ export function apply(ctx, config = {}) {
   } });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
+  // What went out to him since she was last up, as it was sent: the voice's words, not hers.
+  turnNote({ name: 'dot:said', order: 897, text: ({ agent }) => { if (!saidNote || agent.session.id !== lastSession) return ''; const n = saidNote; saidNote = ''; return n; } });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
@@ -774,14 +776,14 @@ export function apply(ctx, config = {}) {
   // round of her hands on pressing HOME after everything she did). Like a screen that locks itself; a new step on the
   // phone before that keeps it where it is. The app is not closed: opened again, it is on the page it was left on.
   let phoneHomeTimer = null;
-  const armPhoneHome = () => {
+  const armPhoneHome = (afterMs = cfg.phoneHomeAfterMs) => {
     clearTimeout(phoneHomeTimer); phoneHomeTimer = null;
     if (!(cfg.phoneHomeAfterMs > 0)) return;
     phoneHomeTimer = setTimeout(() => {
       phoneHomeTimer = null;
       if (hands?.busy() || !phone()?.isReady) return;
-      Promise.resolve(phone().adbExec?.(['shell', 'input', 'keyevent', 'KEYCODE_HOME'])).then(() => audit('phone-home', { afterMs: cfg.phoneHomeAfterMs })).catch((err) => logger.debug?.(`phone home: ${err.message}`));
-    }, cfg.phoneHomeAfterMs);
+      Promise.resolve(phone().adbExec?.(['shell', 'input', 'keyevent', 'KEYCODE_HOME'])).then(() => audit('phone-home', { afterMs })).catch((err) => logger.debug?.(`phone home: ${err.message}`));
+    }, afterMs);
     phoneHomeTimer.unref?.();
   };
   ctx.effect(() => () => clearTimeout(phoneHomeTimer), 'dsh-dot: phone back to its home screen');
@@ -802,20 +804,19 @@ export function apply(ctx, config = {}) {
     store, ledger,
     // A session her hands are done with is put away: one per thing, so they pile up otherwise.
     retire: async (id) => { try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.debug?.(`hands session not archived: ${err.message}`); } },
-    audit, maxMs: cfg.handsMaxMs, askMs: cfg.handsAskMs,
+    audit, maxMs: cfg.handsMaxMs,
     // The thing is over, or her hands need her: what they said, and the screen as it is now for her own eyes, come
     // to her conversation and wake her. Nothing else of theirs does. What she makes of it — and whether he hears of
     // it — is hers: on his business the message says whose it is, and she tells him with qq_send.
     // A thing stopped on someone's word wakes nobody: whoever said stop knows, and the ledger has how far it got.
     onDone: (r, job) => {
-      if (job.device === 'phone') armPhoneHome();
+      if (job.device === 'phone') armPhoneHome(r.status === 'stuck' ? cfg.handsStuckHoldMs : cfg.phoneHomeAfterMs);
       if (r.status !== 'cut' || outcomeOf(r.status, r.why) !== 'stopped') return handsBack(r, job);
       audit('hands-result', { thing: job.id, status: 'stopped', forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds, woke: false });
       // He stopped it from outside her conversation (/dot stop): she finds a line about it the next time she is up, no more.
       if (/^他/.test(String(r.why))) void noteToConversation('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' }).trim()}`);
       return undefined;
     },
-    onAsk: (r, job) => handsBack(r, job),
   });
   async function handsBack(r, job) {
     stir();
@@ -824,10 +825,10 @@ export function apply(ctx, config = {}) {
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
-      const head = r.question
+      const lead = r.question
         ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.text && r.text !== r.question ? r.text : '' })
         : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' });
-      const content = [{ type: 'text', text: head.trim() + (job.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : '') }];
+      const content = [{ type: 'text', text: lead.trim() + (job.forHim ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
       if (r.status !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
         try {
           const images = ctx.get('attachments');
@@ -836,9 +837,9 @@ export function apply(ctx, config = {}) {
           if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
         } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
       }
-      found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}) } }));
+      found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
       if (job.id) ledger.note(job.id, { told: Date.now() });
-      audit('hands-result', { thing: job.id, session: lastSession, status: r.question ? 'asking' : r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
+      audit('hands-result', { thing: job.id, session: lastSession, status: r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
@@ -879,7 +880,24 @@ export function apply(ctx, config = {}) {
   /** Has he said something she has not read — still in the buffer, or held while her conversation is being handed over? */
   const hisUnread = () => ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner);
   /** What is in her hands, as the call that writes her words is told it: from the code, not from what she says she is doing. */
-  const handsState = () => { const d = hands?.doing?.(); const since = d && ago(d.startedAt, Date.now()); return !d ? prompt('dot.say.state.none').trim() : d.state === 'asking' ? prompt('dot.say.state.asking', { task: d.task }).trim() : prompt('dot.say.state.doing', { task: d.task, since: since ? `（${since}了）` : '' }).trim(); };
+  // What the voice is told about her doings comes from the book, never from what she wrote: one line a thing, no task
+  // text beyond its first clause (11-21: given the whole task, the voice read it out as progress).
+  const titleOf = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
+  const howOf = (e) => handsStatus({ status: e.outcome === 'done' ? 'done' : e.outcome === 'failed' ? 'failed' : 'cut', why: e.why }, e.device);
+  const factsFor = (t) => {
+    const out = [];
+    const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.thing].filter(Boolean));
+    const about = t?.thing ? ledger.get(t.thing) : null;
+    if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: howOf(about), result: about.result ? `结果：${head(about.result, 500)}` : '没有留下结果' }));
+    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), result: e.result ? `停下前说的是：${head(e.result, 200)}` : '停下前没有做出结果' })); }
+    for (const id of t?.opened ?? []) { const e = ledger.get(id); if (e && e.state !== 'ended') out.push(prompt(e.state === 'queued' ? 'dot.say.fact.queued' : 'dot.say.fact.opened', { what: titleOf(e.task) })); }
+    const rest = ledger.unfinished().filter((e) => !mine.has(e.id));
+    for (const e of rest.filter((x) => x.state === 'running')) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
+    const waiting = rest.filter((x) => x.state === 'queued').length;
+    if (waiting) out.push(prompt('dot.say.fact.waiting', { n: waiting }));
+    if (!out.length) out.push(prompt('dot.say.fact.none'));
+    return out.map((x) => x.trim());
+  };
   // What she says (say.js): written by a call that is only her card, checked once, and carried out from here —
   // to his QQ or anyone's (her bubbles one after another; qq.send stops between them when he speaks), to her own
   // window when that is where he is talking to her (the tool's output is what he reads there), or over the IM
@@ -895,11 +913,10 @@ export function apply(ctx, config = {}) {
       return reply.text;
     },
     recent: (n) => { try { return ctx.get('dotMemory')?.recent?.(n) ?? []; } catch { return []; } },
-    state: handsState,
     stickers: () => { try { return ctx.get('dshQq')?.stickerList?.() ?? []; } catch { return []; } },
     check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
     unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && hisUnread(),
-    lines: cfg.sayLines,
+    lines: cfg.sayLines, maxLines: cfg.sayMaxLines,
     audit: (event, data) => audit(event, { session: lastSession, ...data }),
     send: async ({ to, text, images }) => {
       const t = turns.get(lastSession);
@@ -919,19 +936,21 @@ export function apply(ctx, config = {}) {
     },
   });
   /** What went out, told back to her: the lines and pictures as they were sent. */
+  let saidNote = '';
   const saidText = (r) => prompt(r.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(r.said ?? []), ...(r.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (r.unsent ?? []).join('\n') });
   /**
    * Something of hers for him, in turn `t` (the open one, or the one that just ended): what she knows that bears on it
    * (`about`, from the say tool) or what she wrote she means to tell him (`meant`, a turn's closing words). The same
    * call writes it either way; here is what the turn and the day keep of it.
    */
-  async function tellHim(t, { about = '', meant = '', images = [] } = {}) {
+  async function tellHim(t, { about = '', images = [] } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
-    const r = await say.speak({ to: 'owner', about, meant, images, unprompted: !(t?.fromQq || t?.elsewhere) });
+    const r = await say.speak({ to: 'owner', about, facts: factsFor(t), images, unprompted: !(t?.fromQq || t?.elsewhere) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
     if (t) t.spoke = true;
+    saidNote = saidText(r); // hers to know: shown with whatever reaches her next
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
     if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
     return r;
@@ -1072,10 +1091,10 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'answered' ? prompt('dot.hands.answered') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
-        if (args?.stop) return { status: hands.stop('她叫停了') ? 'stopped' : 'idle' };
+        if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const stopped = hands.stop('她叫停了'); const t = turns.get(lastSession); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -1084,18 +1103,18 @@ export function apply(ctx, config = {}) {
           if (!words) return { status: 'failed', why: '这句话她不想说，没有交出去' };
         }
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
-        // Her hands are waiting for her: what she says now is her answer, and they carry on with it.
-        if (hands.asking()) {
-          const his = hands.doing()?.forHim;
-          const answered = hands.answer(given);
-          return answered;
-        }
+        // One more thing for the hands at work: read between two of their steps.
+        if (String(args?.add ?? '').trim()) { const added = hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); const t = turns.get(lastSession); if (t && added.status === 'added') t.answered = true; return added; }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(lastSession);
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
-        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}`, forHim });
+        // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
+        const before = t?.thing ? ledger.get(t.thing) : null;
+        const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.result ? `停下时说的是：${head(before.result, 300)}` : '没有留下话' }).trim()}` : '';
+        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
+        if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
         return started;
       },
     }), 'dsh-dot: hands tool');
@@ -1118,7 +1137,7 @@ export function apply(ctx, config = {}) {
       name: HANDS_ASK_TOOL,
       description: prompt('dot.hands.ask-tool'),
       parameters: { type: 'object', properties: { question: { type: 'string', description: '要她定的事，一两句说清；她要选的东西一条一条列出来' } }, required: ['question'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.ask.idle') }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.idle') }] },
       async execute(args) { return { status: hands.ask(args?.question) ? 'asked' : 'idle' }; },
     }), 'dsh-dot: hands ask tool');
   });

@@ -60,8 +60,8 @@ export const ownerInterruptText = () => prompt('dot.owner-interrupt');
  */
 export function handsStatus(r = {}, device = '') {
   const why = String(r.why ?? '');
-  const base = r.status === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
-    : r.status === 'cut' ? prompt(/太久|too long/.test(why) ? 'dot.hands.status.timeout' : /no answer/.test(why) ? 'dot.hands.status.unanswered' : /^他/.test(why) ? 'dot.hands.status.stopped.his' : 'dot.hands.status.stopped')
+  const base = r.status === 'stuck' ? prompt('dot.hands.status.stuck') : r.status === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
+    : r.status === 'cut' ? prompt(/太久|too long/.test(why) ? 'dot.hands.status.timeout' : /^他/.test(why) ? 'dot.hands.status.stopped.his' : 'dot.hands.status.stopped')
       : prompt('dot.hands.status.failed', { why: why || '没有原因' });
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);
   return [base.trim(), ...notes.map((n) => n.trim())].join('；');

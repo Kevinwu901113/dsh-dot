@@ -34,7 +34,7 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   assert.deepEqual(h.hands.start({ device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true }), { status: 'started', id: 't1' });
   await tick();
   assert.deepEqual(h.sent, [['h1', '打开贴吧，说说首页有什么']]);
-  assert.ok(h.hands.busy() && !h.hands.asking() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
+  assert.ok(h.hands.busy() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
   h.emit('h1', 'tool/call'); h.emit('h1', 'tool/call');
   h.emit('h1', 'tool/result', { message: { content: '显卡又涨价了，纯纯坐牢' } }); h.emit('h1', 'tool/result', { message: { content: [{ text: '猫把杯子推下去了' }] } });
   h.emit('h1', 'assistant/message', { message: { content: '我先看看' } });
@@ -43,7 +43,6 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   const queued = h.hands.start({ device: 'phone', task: '再做一件' });
   assert.deepEqual([queued.status, queued.id, queued.doing.task], ['queued', 't2', '打开贴吧，说说首页有什么']);
   assert.deepEqual(h.ledger.unfinished().map((e) => [e.id, e.state, e.asker]), [['t1', 'running', 'him'], ['t2', 'queued', 'her']]);
-  assert.deepEqual(h.hands.answer('选第一个'), { status: 'idle' });
   h.emit('h1', 'assistant/message', { message: { content: '首页有三个帖子：第一个讲显卡，第二个讲猫' } });
   assert.equal(h.done.length + h.asked.length, 0, 'nothing reaches her while it is under way');
   h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
@@ -84,48 +83,40 @@ test('hands: each thing gets hands that have seen nothing else — what was stop
   assert.deepEqual(h.ledger.recent(2).map((e) => [e.outcome, e.by ?? '']), [['done', ''], ['stopped', 'her']]);
 });
 
-test('hands: they need her — said with their tool, the thing waits for her answer and carries on with it, the same hands', async () => {
+test('hands: they need her — said with their tool, the thing ends there as stuck; what she adds to a thing under way is read between two steps', async () => {
   const h = harness();
   assert.equal(h.hands.ask('问什么'), false, 'nothing under way: nothing to ask about');
   h.hands.start({ device: 'phone', task: '去那个站挑几张猫的贴图存下来', forHim: true }); await tick();
   h.emit('h1', 'tool/call');
   h.emit('h1', 'assistant/message', { message: { content: '这页有三张猫的贴图，你想存哪几张？' } });
   h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
-  assert.equal(h.done[0][0].status, 'done', 'a question in the prose of a report is a report: nobody reads "waiting for her" out of words');
+  assert.equal(h.done[0][0].status, 'done', 'a question in the prose of a report is a report: nobody reads "needs her" out of words');
   h.hands.start({ device: 'phone', task: '去那个站挑几张猫的贴图存下来', forHim: true }); await tick();
   assert.equal(h.hands.ask('这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？'), true);
-  assert.ok(h.hands.asked() && !h.hands.asking(), 'asked, the stretch not yet over');
+  assert.ok(h.hands.asked(), 'asked, the run not yet over');
   h.emit('h2', 'assistant/message', { message: { content: '停在猫的贴图页' } });
   h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
-  assert.equal(h.done.length, 1);
-  const [q, job] = h.asked[0];
-  assert.deepEqual([q.question, q.text, q.rounds, job.forHim], ['这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？', '停在猫的贴图页', 1, true]);
-  assert.ok(h.hands.busy() && h.hands.asking() && !h.hands.asked());
-  assert.deepEqual([h.hands.doing().state, h.hands.doing().question], ['asking', q.question]);
-  assert.equal(h.hands.has('喝咖啡的那张，备注写「续命」'), false);
-  assert.deepEqual(h.hands.answer('喝咖啡的那张，备注写「续命」'), { status: 'answered' });
+  const [q, job] = h.done[1];
+  assert.deepEqual([q.status, q.question, q.text, job.forHim], ['stuck', '这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？', '停在猫的贴图页', true]);
+  assert.ok(!h.hands.busy(), 'nothing waits half-open: her hands are free');
+  const e = h.ledger.get(job.id);
+  assert.deepEqual([e.state, e.outcome, e.question, e.result], ['ended', 'stuck', q.question, '停在猫的贴图页']);
+  // what she decides is a new thing, which knows which one it carries on
+  const next = h.hands.start({ device: 'phone', task: '喝咖啡的那张，备注写「续命」', forHim: true, after: job.id }); await tick();
+  assert.deepEqual([h.ledger.get(next.id).after, h.sent.at(-1)[0]], [job.id, 'h3']);
+  // one more thing for the hands at work
+  assert.equal(h.hands.has('再存一张发呆的'), false);
+  assert.deepEqual(h.hands.add('再存一张发呆的'), { status: 'added', id: next.id });
   await tick();
-  assert.deepEqual(h.sent.at(-1), ['h2', '喝咖啡的那张，备注写「续命」'], 'the same hands: they know where they stopped');
-  assert.ok(h.hands.has('续命') && h.hands.has('去那个站'), 'her answer is hers to type from, like the task');
-  assert.ok(!h.hands.asking() && !h.hands.asked());
-  h.emit('h2', 'assistant/message', { message: { content: '存好了' } });
-  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
-  assert.deepEqual([h.done[1][0].status, h.done[1][0].text, h.done[1][0].rounds], ['done', '存好了', 2]);
-  // stopped while it waits for her: over, and no turn of theirs to cancel
-  h.hands.start({ device: 'phone', task: '第三件' }); await tick();
-  h.hands.ask('要不要登录？'); h.emit('h3', 'turn/end', { reason: { kind: 'completed' } });
-  const before = h.cancelled.length;
-  assert.equal(h.hands.stop('他叫停了'), true);
-  assert.deepEqual([h.done[2][0].status, h.done[2][0].why, h.cancelled.length], ['cut', '他叫停了', before]);
-  // a question she never answers does not hold her hands for good
-  const late = harness({ askMs: 20 });
-  late.hands.start({ device: 'phone', task: '登录小黑盒' }); await tick();
-  late.hands.ask('要验证码'); late.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
-  assert.ok(late.hands.asking());
-  await tick(50);
-  assert.deepEqual([late.hands.busy(), late.done[0][0].status, late.done[0][0].why], [false, 'cut', 'no answer']);
+  assert.deepEqual(h.sent.at(-1), ['h3', '再存一张发呆的'], 'into the run under way');
+  assert.ok(h.hands.has('再存一张发呆的') && h.hands.has('续命'), 'what she added is hers to type from, like the task');
+  assert.deepEqual(h.ledger.get(next.id).added, ['再存一张发呆的']);
+  h.emit('h3', 'assistant/message', { message: { content: '存好了' } });
+  h.emit('h3', 'turn/end', { reason: { kind: 'completed' } });
+  assert.deepEqual([h.done[2][0].status, h.done[2][0].text], ['done', '存好了']);
+  assert.deepEqual(h.hands.add('还有一张'), { status: 'idle' }, 'nothing under way: nothing to add to');
   const { handsStatus } = await import('../src/dot/core.js');
-  assert.match(handsStatus(late.done[0][0]), /一直没等到回答/);
+  assert.match(handsStatus(q), /卡在一个要你定的地方/);
 });
 
 test('hands: stopped, cut for taking too long, ended by someone else; what a restart cut off is told once', async () => {
