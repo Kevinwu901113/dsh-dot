@@ -24,7 +24,7 @@ export const SYSTEM_PKG = /^(android|com\.android\.|com\.google\.android\.)/;
 /**
  * Parse `dumpsys notification --noredact` into the active notifications (archive excluded).
  * @param {string} dump
- * @returns {{key: string, pkg: string, title: string, text: string}[]}
+ * @returns {{key: string, pkg: string, title: string, text: string, category?: string}[]} category: Android's (msg, call, email, social, promo, …) when the app set one
  */
 export function parseShade(dump) {
   // Everything after the archive marker is history, not the shade.
@@ -43,7 +43,8 @@ export function parseShade(dump) {
     if (!title && !text) continue;
     // mUpdateTimeMs: when the app last posted or rewrote it — against our clock this is the detection lag.
     const postedAt = Number(/\bmUpdateTimeMs=(\d+)/.exec(block)?.[1] ?? /\bmCreationTimeMs=(\d+)/.exec(block)?.[1] ?? 0) || undefined;
-    out.push({ key, pkg, title, text, postedAt });
+    const category = /\bcategory=([a-z_]+)/.exec(block)?.[1];
+    out.push({ key, pkg, title, text, postedAt, ...(category ? { category } : {}) });
   }
   return out;
 }

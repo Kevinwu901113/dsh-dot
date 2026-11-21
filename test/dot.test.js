@@ -124,7 +124,7 @@ test('scope: a session an IM bot opened elsewhere is dot\'s too; the desktop UI 
   stop(h);
 });
 
-test('a phone notification wakes her latest session with the notification text; nothing is relayed', async () => {
+test('someone writing to her wakes her latest session with the notification text; an app\'s own push is held and shown with what reaches her next; nothing is relayed', async () => {
   const { notificationText, PHONE_NOTIFICATION_SOURCE } = await import('../src/dot/core.js');
   const h = harness();
   const followups = [];
@@ -145,15 +145,26 @@ test('a phone notification wakes her latest session with the notification text; 
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
   onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '你关注的游戏更新了' });
   await wait(40);
-  assert.equal(followups.length, 1, 'what arrives together is shown to her together, whatever app it is from: nothing sorts it');
+  assert.equal(followups.length, 1, 'a person writing wakes her');
   assert.equal(followups[0].id, 's1');
   assert.deepEqual(followups[0].m.source, PHONE_NOTIFICATION_SOURCE);
   assert.match(followups[0].m.content[0].text, STAMP);
-  assert.deepEqual(unstamp(followups[0].m.content[0].text).split('\n').slice(0, 3), ['[手机通知] 2 个对话', '· QQ · 宽：你会主动给我发消息吗', '· 小黑盒 · 小黑盒：你关注的游戏更新了']);
-  onNotification({ pkg: 'com.max.xiaoheihe', title: '签到提醒', text: '今日未签到' });
+  assert.equal(unstamp(followups[0].m.content[0].text).split('\n')[0], '[手机通知] QQ · 宽：你会主动给我发消息吗');
+  onNotification({ key: 'p1', pkg: 'com.max.xiaoheihe', title: '签到提醒', text: '今日未签到' });
   await wait(40);
-  assert.equal(followups.length, 2, 'a notice an app sends everyone is shown too: whether it is worth a look is hers to say');
-  assert.match(unstamp(followups[1].m.content[0].text), /^\[手机通知\] 小黑盒 · 签到提醒：今日未签到/);
+  assert.equal(followups.length, 1, 'an app\'s own push wakes no one');
+  assert.ok(h.audit.some((e) => e.event === 'notification-held' && e.why === 'not a person'));
+  onNotification({ pkg: 'com.google.android.apps.messaging', title: '10086', text: '您的话费余额', category: 'msg' });
+  await wait(40);
+  assert.equal(followups.length, 2, 'what the app calls a message is someone writing');
+  // the pushes come with whatever reaches her next, once
+  const agent = { session: { id: 's1', header: { cwd: h.home } } };
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return contentText(d.messages.at(-1).content); };
+  h.emit(h.home, 'turn/start', { turn: 9 });
+  assert.match(await note(), /手机上这段时间的推送（App 自己发的，不是人发来的，没叫醒你）：\n· 小黑盒 · 小黑盒：你关注的游戏更新了\n· 小黑盒 · 签到提醒：今日未签到\n（想看就用 hands 打开/);
+  assert.doesNotMatch(await note(), /推送/, 'once');
+  h.emit(h.home, 'turn/end', { turn: 9, reason: 'completed' });
+  await wait(20);
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '在吗' });
   await wait(40);
   assert.equal(followups.length, 3);
@@ -172,7 +183,7 @@ test('a phone notification wakes her latest session with the notification text; 
   h.emit(h.home, 'turn/end', { turn: 2, reason: 'completed' });
   await wait(120);
   assert.equal(followups.length, 4);
-  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] 2 个对话\n· QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n· 小黑盒 · 小黑盒：有人回复了你\n（你上一轮期间来的。要回就去 App 里回（用 hands，要说的话写在 say 里）；不想理就什么都不用做。）');
+  assert.equal(unstamp(followups[3].m.content[0].text), '[手机通知] QQ · 宽：\n- 对\n- 刚刚在帮你测试延迟\n（你上一轮期间来的。要回就去 App 里回（用 hands，要说的话写在 say 里）；不想理就什么都不用做。）');
   assert.match(notificationText({ pkg: 'x.y', title: '', text: '' }), /x\.y：（无内容）/);
   assert.equal(h.sent.length, 0);
   stop(h);

@@ -42,7 +42,7 @@ import { configure as configurePrompts, overrideNotes, prompt, rebase } from '..
 import { runPendingReset } from '../reset.js';
 import { ago, stamp, today } from '../clock.js';
 import { head } from '../cut.js';
-import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
+import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
 
 export const name = 'dsh-dot';
@@ -58,6 +58,7 @@ export const defaults = {
   budgetPollSeconds: 15,
   autoUnblockDaily: true,
   notifyBatchMs: 1000,  // notifications arriving within this window wake her once, together
+  pushesKept: 12,      // an app's own pushes (not a person writing) wake no one: the latest this many are shown with what reaches her next
   // His messages have their own buffer: delivered once he has been quiet this long (every message
   // restarts it), but never later than ownerMaxWaitMs after the first; while QQ says he is typing
   // (NapCat input_status), up to ownerTypingMaxMs. Mid-turn they are steered into her running turn.
@@ -650,6 +651,8 @@ export function apply(ctx, config = {}) {
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
   // What went out to him since she was last up, as it was sent: the voice's words, not hers.
   turnNote({ name: 'dot:said', order: 897, text: ({ agent }) => { if (!saidNote || agent.session.id !== lastSession) return ''; const n = saidNote; saidNote = ''; return n; } });
+  // Her phone's pushes held since she was last up (see wake): once, with whatever woke her.
+  turnNote({ name: 'dot:pushes', order: 898, text: ({ agent }) => { if (!pushes.length || agent.session.id !== lastSession) return ''; const t = pushesText(pushes); pushes = []; audit('pushes-shown', { count: t ? t.split('\n').length - 2 : 0 }); return t; } });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
@@ -690,6 +693,7 @@ export function apply(ctx, config = {}) {
       audit('effort-set', { session: agent.session?.id, model: `${cur.provider}/${cur.model}`, was: cur.reasoningEffort ?? 'default', effort, why });
     } catch (err) { logger.warn(`reasoning effort not set: ${err.message}`); }
   };
+  let pushes = []; // her phone's pushes that no one sent (see wake): shown with the next thing that reaches her
   let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; // assigned below, used by flush/releaseHeld
@@ -1181,7 +1185,8 @@ export function apply(ctx, config = {}) {
     if (ownerTyping) ownerTypingSeen = true;
     armOwner();
   };
-  const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat' };
+  // Apps whose notification title is who wrote (or called): a conversation with someone.
+  const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat', 'com.google.android.apps.messaging': 'sms', 'com.android.mms': 'sms', 'com.android.messaging': 'sms', 'com.google.android.dialer': 'call', 'com.android.dialer': 'call' };
   const wake = (n) => {
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
@@ -1213,8 +1218,14 @@ export function apply(ctx, config = {}) {
       armOwner();
       return;
     }
-    // Whatever her phone or her QQ shows is shown to her as it is — which app, what it says. Whether it is worth
-    // opening is hers to decide (a turn that ends in DOT_SILENT); nothing here sorts notifications by app or wording.
+    // Someone writing to her wakes her: a chat whose sender is known (her QQ, a chat app's conversation), or what
+    // the app itself calls a message or a call. An app's own push wakes no one: it is held (the latest few) and
+    // shown with whatever reaches her next (dot:pushes). What it says is shown as it is; opening it is hers to decide.
+    if (!n.handles && n.category !== 'msg' && n.category !== 'call') {
+      pushes = [...pushes.filter((p) => p.key !== n.key || !n.key), n].slice(-cfg.pushesKept);
+      audit('notification-held', { pkg: n.pkg, why: 'not a person', category: n.category ?? '' });
+      return;
+    }
     batch.push(n);
     if (!awake()) { audit('notification-held', { pkg: n.pkg, why: 'asleep' }); return; }
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }

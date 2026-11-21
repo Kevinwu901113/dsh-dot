@@ -105,3 +105,18 @@ test('policy: every non-system app unless muted; `only` narrows; apps seen are c
   assert.ok(!only.wanted({ pkg: 'com.tencent.mobileqq' }) && only.wanted({ pkg: 'com.tencent.mm' }) && !only.wanted({ pkg: 'com.x' }));
   assert.deepEqual(only.muted(), ['com.x']);
 });
+
+test('parseShade: the category an app set comes along (msg, call: someone writing to her; the rest are the app\'s own)', () => {
+  const dump = [
+    'Notification List:',
+    'NotificationRecord(0x1: pkg=com.google.android.apps.messaging user=UserHandle{0} id=1 tag=null importance=4 key=0|com.google.android.apps.messaging|1|null|10001: Notification(channel=c pri=1 contentView=null vibrate=null sound=null defaults=0x0 flags=0x10 color=0x0 category=msg vis=PRIVATE))',
+    '      android.title=String (10086)',
+    '      android.text=String (话费余额)',
+    'NotificationRecord(0x2: pkg=com.max.xiaoheihe user=UserHandle{0} id=2 tag=null importance=3 key=0|com.max.xiaoheihe|2|null|10002: Notification(channel=d pri=0 contentView=null vibrate=null sound=null defaults=0x0 flags=0x10 color=0x0 vis=PRIVATE))',
+    '      android.title=String (签到提醒)',
+    '      android.text=String (今日未签到)',
+  ].join('\n');
+  const [sms, push] = parseShade(dump);
+  assert.equal(sms.category, 'msg');
+  assert.equal(push.category, undefined);
+});

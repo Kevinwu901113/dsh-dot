@@ -168,6 +168,11 @@ export function notificationText(list, { whileBusy = false, now = Date.now() } =
   const how = prompt(viaQq ? (groups.every((g) => g.pkg === 'qq') ? 'dot.notification.how-qq' : 'dot.notification.how-mixed') : 'dot.notification.how-app');
   return prompt('dot.notification', { stamp: stamp(firstAt(items, now), now), messages, when, how, silent: SILENT });
 }
+/** What her phone showed that no one sent her (an app's own push): held, and shown with whatever reaches her next. */
+export function pushesText(items) {
+  const lines = groupNotifications(items).map((g) => `· ${appName(g.pkg)}${g.title ? ` · ${g.title}` : ''}：${g.texts.slice(-3).join(' / ') || '（无内容）'}`);
+  return lines.length ? prompt('dot.pushes', { list: lines.join('\n') }) : '';
+}
 /** The whole message that wakes her: the notifications, the people she remembers in them, the unverified-name warning. */
 export function wakeText(items, { whileBusy = false, cards = '', now = Date.now() } = {}) {
   const text = `${notificationText(items, { whileBusy, now })}${cards ? `\n${prompt('dot.notification.cards', { cards })}` : ''}`;
