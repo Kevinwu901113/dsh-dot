@@ -20,10 +20,11 @@ import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, howtoTool } from './howto.js';
-import { HANDS_SOURCE, createHands } from './hands.js';
+import { HANDS_SOURCE, createHands, outcomeOf } from './hands.js';
+import { createLedger } from './ledger.js';
 import { createSay } from './say.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
-import { closeSync, mkdirSync, openSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
 import { get as httpGet } from 'node:http';
 import { homedir } from 'node:os';
@@ -784,6 +785,8 @@ export function apply(ctx, config = {}) {
     phoneHomeTimer.unref?.();
   };
   ctx.effect(() => () => clearTimeout(phoneHomeTimer), 'dsh-dot: phone back to its home screen');
+  // The book of things (ledger.js): every thing she gives her hands, and what came of it.
+  const ledger = createLedger({ store });
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
     create: async (cwd) => {
@@ -796,14 +799,22 @@ export function apply(ctx, config = {}) {
     onEvent: (fn) => ctx.on('session/event', fn),
     message: (text) => createUserMessage({ content: [{ type: 'text', text }], source: HANDS_SOURCE }),
     textOf: contentText,
-    store,
+    store, ledger,
     // A session her hands are done with is put away: one per thing, so they pile up otherwise.
     retire: async (id) => { try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.debug?.(`hands session not archived: ${err.message}`); } },
     audit, maxMs: cfg.handsMaxMs, askMs: cfg.handsAskMs,
     // The thing is over, or her hands need her: what they said, and the screen as it is now for her own eyes, come
     // to her conversation and wake her. Nothing else of theirs does. What she makes of it — and whether he hears of
     // it — is hers: on his business the message says whose it is, and she tells him with qq_send.
-    onDone: (r, job) => { if (job.device === 'phone') armPhoneHome(); return handsBack(r, job); },
+    // A thing stopped on someone's word wakes nobody: whoever said stop knows, and the ledger has how far it got.
+    onDone: (r, job) => {
+      if (job.device === 'phone') armPhoneHome();
+      if (r.status !== 'cut' || outcomeOf(r.status, r.why) !== 'stopped') return handsBack(r, job);
+      audit('hands-result', { thing: job.id, status: 'stopped', forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds, woke: false });
+      // He stopped it from outside her conversation (/dot stop): she finds a line about it the next time she is up, no more.
+      if (/^他/.test(String(r.why))) void noteToConversation('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: r.text || '（没说什么）' }).trim()}`);
+      return undefined;
+    },
     onAsk: (r, job) => handsBack(r, job),
   });
   async function handsBack(r, job) {
@@ -821,15 +832,17 @@ export function apply(ctx, config = {}) {
         try {
           const images = ctx.get('attachments');
           const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
+          if (png?.length && job.id) { try { const dir = join(dshHome(), 'dsh-dot-things'); mkdirSync(dir, { recursive: true }); const shot = join(dir, `${job.id}.png`); writeFileSync(shot, png); ledger.note(job.id, { shot }); const kept = new Set(ledger.recent(100).map((e) => `${e.id}.png`)); for (const f of readdirSync(dir)) if (!kept.has(f)) rmSync(join(dir, f), { force: true }); } catch (err) { logger.debug?.(`thing ${job.id}: screen not kept: ${err.message}`); } }
           if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
         } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
       }
       found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}) } }));
-      audit('hands-result', { session: lastSession, status: r.question ? 'asking' : r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
+      if (job.id) ledger.note(job.id, { told: Date.now() });
+      audit('hands-result', { thing: job.id, session: lastSession, status: r.question ? 'asking' : r.status, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
-  ctx.effect(() => { const t = setTimeout(() => { const cut = hands.interrupted(); if (cut) void handsBack({ status: 'failed', why: '重启打断了', text: '', steps: 0, rounds: 0 }, cut); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
+  ctx.effect(() => { const t = setTimeout(() => { for (const cut of hands.interrupted()) void handsBack({ status: 'failed', why: '重启打断了', text: '', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
   const deliver = (all, whileBusy, target) => {
     const controller = ctx.get('sessionController');
     const pkgs = [...new Set(all.map((n) => n.pkg))];
@@ -1060,7 +1073,7 @@ export function apply(ctx, config = {}) {
       name: 'hands',
       description: prompt('dot.hands-tool'),
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, stop: { type: 'boolean', description: '手上的事不做了' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'answered' ? prompt('dot.hands.answered') : v?.status === 'busy' ? prompt('dot.hands.busy', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'answered' ? prompt('dot.hands.answered') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt('dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
         if (args?.stop) return { status: hands.stop('她叫停了') ? 'stopped' : 'idle' };
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
@@ -1447,6 +1460,8 @@ export function apply(ctx, config = {}) {
     turn: (id) => turnInfo(id),
     /** Every open turn of hers. */
     turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
+    /** The book of things (ledger.js), newest first: what she set out to do and what came of each. */
+    things: (n = 20) => ledger.recent(n),
     /** Approvals waiting in her sessions. */
     approvals: () => [...approvals.values()].map((a) => ({ session: a.session, tool: a.tool, reason: a.reason, since: a.since, retired: retired(a.session), ...(a.timedOutAt ? { timedOutAt: a.timedOutAt } : {}) })),
     /** His messages waiting in the buffer; flushOwner() delivers them now. */

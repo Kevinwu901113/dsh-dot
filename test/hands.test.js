@@ -5,30 +5,33 @@ import { mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHands } from '../src/dot/hands.js';
+import { createLedger, headTail } from '../src/dot/ledger.js';
 
 function harness(opts = {}) {
   const listeners = new Set(), sent = [], cancelled = [], kv = new Map(opts.kv ?? []), audits = [], done = [], asked = [], retired = [];
   let n = 0;
   const agents = new Map();
   const dir = join(mkdtempSync(join(tmpdir(), 'hands-')), 'hands');
+  const store = { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) };
+  const ledger = createLedger({ store });
   const hands = createHands({
-    dir,
+    dir, ledger,
     create: async () => { const id = `h${++n}`; agents.set(id, { followup: (m) => sent.push([id, m]), cancel: (c) => cancelled.push([id, c.reason]) }); return id; },
     agentFor: async (id) => agents.get(id) ?? null,
     onEvent: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     message: (text) => text, textOf: (c) => c,
-    store: { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) },
+    store,
     onDone: (r, j) => done.push([r, j]), onAsk: (r, j) => asked.push([r, j]), retire: (id) => retired.push(id),
     audit: (event, data) => audits.push({ event, ...data }), ...opts,
   });
   const emit = (id, type, data) => { for (const fn of [...listeners]) fn({ id }, { type, data }); };
-  return { hands, sent, cancelled, emit, audits, kv, dir, done, asked, retired, listeners };
+  return { hands, ledger, sent, cancelled, emit, audits, kv, dir, done, asked, retired, listeners };
 }
 const tick = (ms = 5) => new Promise((r) => setTimeout(r, ms));
 
 test('hands: a thing starts at once and is not waited for; nothing comes back until it is over, then what the hands said last with what it was', async () => {
   const h = harness({ maxChars: 12 });
-  assert.deepEqual(h.hands.start({ device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true }), { status: 'started' });
+  assert.deepEqual(h.hands.start({ device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true }), { status: 'started', id: 't1' });
   await tick();
   assert.deepEqual(h.sent, [['h1', '打开贴吧，说说首页有什么']]);
   assert.ok(h.hands.busy() && !h.hands.asking() && h.hands.isHands('h1') && h.hands.isHands('', join(h.dir, 'x')) && !h.hands.isHands('s1', '/home/her'));
@@ -36,19 +39,33 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   h.emit('h1', 'tool/result', { message: { content: '显卡又涨价了，纯纯坐牢' } }); h.emit('h1', 'tool/result', { message: { content: [{ text: '猫把杯子推下去了' }] } });
   h.emit('h1', 'assistant/message', { message: { content: '我先看看' } });
   assert.deepEqual([h.hands.doing().task, h.hands.doing().state, h.hands.doing().said, h.hands.doing().steps], ['打开贴吧，说说首页有什么', 'running', '我先看看', 2]);
-  // one pair of hands, one thing: a second is not started, and what she said is not taken for an answer nobody asked for
-  const busy = h.hands.start({ device: 'phone', task: '再做一件' });
-  assert.equal(busy.status, 'busy'); assert.equal(busy.doing.task, '打开贴吧，说说首页有什么');
+  // one pair of hands, one thing at a time: a second waits its turn, and what she said is not taken for an answer nobody asked for
+  const queued = h.hands.start({ device: 'phone', task: '再做一件' });
+  assert.deepEqual([queued.status, queued.id, queued.doing.task], ['queued', 't2', '打开贴吧，说说首页有什么']);
+  assert.deepEqual(h.ledger.unfinished().map((e) => [e.id, e.state, e.asker]), [['t1', 'running', 'him'], ['t2', 'queued', 'her']]);
   assert.deepEqual(h.hands.answer('选第一个'), { status: 'idle' });
   h.emit('h1', 'assistant/message', { message: { content: '首页有三个帖子：第一个讲显卡，第二个讲猫' } });
   assert.equal(h.done.length + h.asked.length, 0, 'nothing reaches her while it is under way');
   h.emit('h1', 'turn/end', { reason: { kind: 'completed' } });
   const [r, j] = h.done[0];
-  assert.deepEqual([r.status, r.steps, r.rounds, r.text], ['done', 2, 1, '首页有三个帖子：第一个讲…']);
+  assert.deepEqual([r.status, r.steps, r.rounds, r.text], ['done', 2, 1, headTail('首页有三个帖子：第一个讲显卡，第二个讲猫', 12)]);
+  assert.match(r.text, /^首页有三个帖子：\n…（中间略去 \d+ 字）…\n二个讲猫$/, 'the head and the tail, nothing rewritten');
   assert.match(r.shown, /纯纯坐牢[\s\S]*猫把杯子推下去了/, 'what the screen showed them, in full: what a line she keeps is checked against');
-  assert.deepEqual(j, { device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
-  assert.ok(!h.hands.busy() && h.hands.doing() === null && h.listeners.size === 0);
+  assert.deepEqual(j, { id: 't1', device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
   assert.deepEqual(h.retired, ['h1'], 'the session is put away with the thing');
+  const e = h.ledger.get('t1');
+  assert.deepEqual([e.state, e.outcome, e.steps, e.result, e.session], ['ended', 'done', 2, r.text, 'h1'], 'on the book: how it ended and what came of it');
+  // the one that waited is done next, by hands of its own
+  await tick();
+  assert.deepEqual([h.hands.doing().task, h.hands.doing().id, h.sent.at(-1)[0]], ['再做一件', 't2', 'h2']);
+  h.emit('h2', 'assistant/message', { message: { content: '做了', }, usage: { inputTokens: 10, cacheReadTokens: 90, outputTokens: 3 } });
+  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
+  assert.deepEqual(h.ledger.get('t2').tokens, { in: 10, cached: 90, out: 3 }, 'what it cost is on the book');
+  assert.ok(!h.hands.busy() && h.hands.doing() === null && h.listeners.size === 0);
+  // over with nothing said is not a thing done
+  h.hands.start({ device: 'phone', task: '第三件' }); await tick();
+  h.emit('h3', 'turn/end', { reason: { kind: 'completed' } });
+  assert.deepEqual([h.done.at(-1)[0].status, h.done.at(-1)[0].why, h.ledger.get('t3').outcome], ['failed', 'no result', 'failed']);
 });
 
 test('hands: each thing gets hands that have seen nothing else — what was stopped before is not theirs to pick up', async () => {
@@ -61,8 +78,10 @@ test('hands: each thing gets hands that have seen nothing else — what was stop
   h.emit('h1', 'turn/end', { reason: { kind: 'aborted' } });
   assert.ok(h.hands.busy() && h.done.length === 1 && h.done[0][0].status === 'cut');
   assert.ok(h.hands.isHands('h1') && h.hands.isHands('h2'), 'the old one is still her hands');
+  h.emit('h2', 'assistant/message', { message: { content: '开了' } });
   h.emit('h2', 'turn/end', { reason: { kind: 'completed' } });
   assert.deepEqual(h.done.map(([r]) => r.status), ['cut', 'done']);
+  assert.deepEqual(h.ledger.recent(2).map((e) => [e.outcome, e.by ?? '']), [['done', ''], ['stopped', 'her']]);
 });
 
 test('hands: they need her — said with their tool, the thing waits for her answer and carries on with it, the same hands', async () => {
@@ -83,9 +102,9 @@ test('hands: they need her — said with their tool, the thing waits for her ans
   assert.deepEqual([q.question, q.text, q.rounds, job.forHim], ['这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？', '停在猫的贴图页', 1, true]);
   assert.ok(h.hands.busy() && h.hands.asking() && !h.hands.asked());
   assert.deepEqual([h.hands.doing().state, h.hands.doing().question], ['asking', q.question]);
-  assert.equal(h.hands.start({ device: 'phone', task: '另一件' }).status, 'busy', 'still one thing');
   assert.equal(h.hands.has('喝咖啡的那张，备注写「续命」'), false);
   assert.deepEqual(h.hands.answer('喝咖啡的那张，备注写「续命」'), { status: 'answered' });
+  await tick();
   assert.deepEqual(h.sent.at(-1), ['h2', '喝咖啡的那张，备注写「续命」'], 'the same hands: they know where they stopped');
   assert.ok(h.hands.has('续命') && h.hands.has('去那个站'), 'her answer is hers to type from, like the task');
   assert.ok(!h.hands.asking() && !h.hands.asked());
@@ -113,27 +132,37 @@ test('hands: stopped, cut for taking too long, ended by someone else; what a res
   const h = harness({ maxMs: 30 });
   h.hands.start({ task: '登录' });
   await tick();
-  assert.deepEqual(h.kv.get('handsThing').task, '登录', 'on record while it is under way');
+  assert.deepEqual(h.ledger.unfinished().map((e) => e.task), ['登录'], 'on the book while it is under way');
   h.emit('h1', 'assistant/message', { message: { content: '停在验证码' } });
   assert.equal(h.hands.stop('她叫停了'), true);
   assert.deepEqual([h.done[0][0].status, h.done[0][0].text, h.done[0][0].why], ['cut', '停在验证码', '她叫停了']);
+  await tick();
   assert.deepEqual(h.cancelled[0], ['h1', 'dot-hands: 她叫停了']);
-  assert.equal(h.kv.get('handsThing'), null);
+  assert.deepEqual(h.ledger.unfinished(), []);
   assert.equal(h.hands.stop(), false, 'nothing under way');
+  // stop is for everything in her hands: what waited goes with what was under way
+  h.hands.start({ task: '甲' }); h.hands.start({ task: '乙' }); await tick();
+  assert.equal(h.hands.stop('他叫停了'), true);
+  assert.deepEqual(h.ledger.recent(2).map((e) => [e.task, e.outcome, e.by]), [['乙', 'stopped', 'him'], ['甲', 'stopped', 'him']]);
+  h.done.splice(1); await tick();
   h.hands.start({ task: '第二件' });
   await tick(60);
-  assert.deepEqual([h.done[1][0].status, h.done[1][0].why], ['cut', 'took too long']);
+  assert.deepEqual([h.done[1][0].status, h.done[1][0].why, h.ledger.recent(1)[0].outcome], ['cut', 'took too long', 'timeout']);
   h.hands.start({ task: '第三件' });
-  await tick(); h.emit('h3', 'turn/end', { reason: { kind: 'aborted' } });
+  await tick(); h.emit(h.sent.at(-1)[0], 'turn/end', { reason: { kind: 'aborted' } });
   assert.deepEqual([h.done[2][0].status, h.done[2][0].why], ['failed', 'interrupted'], 'not done, and not hers to answer');
   assert.equal(h.hands.start({ task: '' }).status, 'failed');
-  assert.equal(h.hands.interrupted(), null);
+  assert.deepEqual(h.hands.interrupted(), []);
   // a restart in the middle: the next start of the plugin finds it, tells it once, and the old single session is still her hands
   const again = harness({ kv: [['handsThing', { device: 'phone', task: '存贴图', forHim: true, startedAt: 1 }], ['handsSession', 'old1'], ['handsPast', ['old0']]] });
   assert.ok(again.hands.isHands('old0') && again.hands.isHands('old1') && !again.hands.busy());
-  assert.deepEqual(again.hands.interrupted(), { device: 'phone', task: '存贴图', forHim: true, startedAt: 1 });
-  assert.equal(again.hands.interrupted(), null);
   assert.equal(again.kv.get('handsThing'), null);
+  // a thing the book had as under way when the plugin starts was cut by the restart: ended as such, told once
+  const kv = new Map(); const first = createLedger({ store: { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) } });
+  first.begin(first.open({ asker: 'him', device: 'phone', task: '存贴图' }));
+  const after = harness({ kv: [...kv] });
+  assert.deepEqual(after.hands.interrupted().map((e) => [e.task, e.asker, e.outcome, e.why]), [['存贴图', 'him', 'failed', 'restart']]);
+  assert.deepEqual(after.hands.interrupted(), []);
 });
 
 test('hands: what they type is hers or was shown to them — never their own words', async () => {

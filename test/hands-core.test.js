@@ -63,11 +63,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   await tick();
   const hands = h.agentOf('h1');
   assert.equal(text(hands.got[0]), '（在手机上）去 emojiset 挑几张猫的贴图存下来，挑之前把候选列给我');
-  // asking again while it is under way: she is told it is under way — and is not offered a way to cut it short
-  const busy = await h.tools.hands.execute({ device: 'phone', do: '看看屏幕' });
-  assert.equal(busy.status, 'busy');
-  assert.match(h.shown('hands', busy), /^手上还有一件没完：（在手机上）去 emojiset.*会叫你/);
-  assert.doesNotMatch(h.shown('hands', busy) + h.shown('hands', started), /stop|秒/);
+  assert.doesNotMatch(h.shown('hands', started), /stop|秒/);
   h.emit('s1', 'turn/end', { turn: 2 });
   assert.equal(her.got.length, 0, 'nothing of theirs reaches her in between');
   // asking her is the hands' own: not hers to call, and once asked their stretch is over
@@ -87,6 +83,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '手机有点卡，我再等等' }, { type: 'tool-call', name: 'hands' }] } });
   const answered = await h.tools.hands.execute({ device: 'phone', do: '喝咖啡的那张' });
   assert.equal(answered.status, 'answered');
+  await tick();
   assert.equal(text(hands.got[1]), '喝咖啡的那张', 'her words as they are, to the hands that asked');
   h.emit('s1', 'turn/end', { turn: 3 });
   await tick(30);
@@ -115,19 +112,30 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   assert.deepEqual(await h.command('stop'), { kind: 'success', text: '她手上现在没有事' });
   await h.tools.hands.execute({ device: 'phone', do: '逛逛贴吧' }); await tick();
   assert.deepEqual(await h.command('stop'), { kind: 'success', text: '停下了：（在手机上）逛逛贴吧' });
-  assert.deepEqual(h.agentOf('h1').cancels, ['dot-hands: 他叫停了']);
   await tick();
-  assert.match(text(her.got[0]), /（他叫停的：[^\n]*到此为止，不要接着做）/);
-  assert.equal(her.got[0].source.for, undefined, 'her own time: not his business');
+  assert.deepEqual(h.agentOf('h1').cancels, ['dot-hands: 他叫停了']);
+  assert.equal(her.got.length, 0, 'a thing stopped on his word does not wake her');
+  assert.match(text(her.noted[0]), /（他叫停的：[^\n]*到此为止，不要接着做）/, 'she finds a line about it, the next time she is up');
+  // her own stop: she knows, nothing comes back; and a thing given while one is under way waits its turn
+  await h.tools.hands.execute({ device: 'phone', do: '甲' }); await tick();
+  const queued = await h.tools.hands.execute({ device: 'web', do: '乙' });
+  assert.equal(queued.status, 'queued');
+  assert.match(h.shown('hands', queued), /^排上了，前面还有一件没完：（在手机上）甲。/);
+  assert.deepEqual(await h.tools.hands.execute({ stop: true }), { status: 'stopped' });
+  await tick();
+  assert.deepEqual([her.got.length, her.noted.length], [0, 1]);
+  assert.equal(h.shown('hands', { status: 'stopped' }), '停下了，手上没有事了。');
   // handed over while her hands are on something: the old conversation is cancelled (its inbox with it), the result waits for the new one
   await h.tools.hands.execute({ device: 'phone', do: '看看小黑盒首页' }); await tick();
   const release = h.services.dshDot.freeze();
-  h.emit('h2', 'turn/end', { reason: { kind: 'completed' } }); await tick();
-  assert.equal(her.got.length, 1, 'not delivered into the conversation she is leaving');
+  const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
+  h.emit(hid, 'assistant/message', { message: { content: [{ type: 'text', text: '首页是推荐流' }] } });
+  h.emit(hid, 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  assert.equal(her.got.length, 0, 'not delivered into the conversation she is leaving');
   h.services.dshDot.setSession('s2');
   assert.deepEqual(her.cancels, ['dot: her conversation moved on']);
   release(); await tick();
-  assert.equal(her.got.length, 1);
+  assert.equal(her.got.length, 0);
   assert.match(text(h.agentOf('s2').got[0]), /刚才那件事做完了：（在手机上）看看小黑盒首页/);
   h.stop();
 });

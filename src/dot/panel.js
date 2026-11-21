@@ -47,7 +47,7 @@ export async function collectState(ctx, opts = {}) {
       qq: qq ? await safe(() => qq.status()) : null,
       computer: computer ? await safe(() => computer.status()) : null,
     },
-    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], approvals: dot.approvals?.() ?? [] } : null,
+    dot: dot ? { session: dot.session?.() || '', today: dot.stats?.() ?? null, turns: dot.turns?.() ?? [], approvals: dot.approvals?.() ?? [], things: dot.things?.(20) ?? [] } : null,
     interlude: interlude ? await safe(() => interlude.status()) : null,
     memory: memory ? await safe(() => memory.panel()) : null,
     // The last N scenes (one wake until its turn ended), read back from the records that exist.
@@ -169,6 +169,13 @@ function render(s){
     h+='</div>';
     $('now').innerHTML=h;
   } else $('now').innerHTML='<span class="mute">人设组件未加载</span>';
+  if(dot&&dot.things&&dot.things.length){
+    const word={done:'做完',stopped:'被停',failed:'没做成',timeout:'太久',stuck:'卡住'};
+    let h='<div class="kv">';
+    for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.tokens?(e.tokens.in||0)+(e.tokens.cached||0)+(e.tokens.out||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?' · '+fmt(tk)+' token':'')+'</span></span>';}
+    h+='</div>';
+    $('now').innerHTML+=h;
+  }
   let t='';
   if(it){t+=tile((it.doings&&it.doings.today?it.doings.today.doings:0),'自己做的事');}
   if(dot&&dot.today){t+=tile(dot.today.woke,'通知叫醒')+tile(dot.today.owner,'你的消息');}
