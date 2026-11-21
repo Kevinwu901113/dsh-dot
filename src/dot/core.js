@@ -28,6 +28,7 @@ import { createOutlet } from './outlet.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { get as httpGet } from 'node:http';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute, dirname } from 'node:path';
@@ -919,6 +920,8 @@ export function apply(ctx, config = {}) {
   const say = createSay({
     card: () => { try { return ctx.get('dshInterlude')?.cardText?.() ?? ''; } catch { return ''; } },
     call: async ({ system, text }) => {
+      // What this side sends (compare with the model gate's say-request: the same system, nothing added on the way).
+      audit('say-call', { systemChars: system.length, systemSha: createHash('sha256').update(system).digest('hex').slice(0, 12), userChars: text.length });
       const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
       const llm = ctx.get('llm');
       if (!sel || !llm?.stream) throw new Error('no model to say it with');

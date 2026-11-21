@@ -36,6 +36,7 @@
 //     when its signal aborts (the adapter then ends it with dsh's own aborted finish);
 //   - `holdRetries`: see holdFor() — the one case a foreground request is touched;
 //   - nothing in here may break a model call: any error in the bookkeeping lets the request through.
+import { createHash } from 'node:crypto';
 import { sectionOf } from './settings.js';
 
 export const defaults = {
@@ -347,6 +348,14 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     config: cfg,
     /** The `llm/stream` listener body: delays (when it must) and observes one request. */
     wrap(options, next) {
+      // What reaches the model when dot's voice writes her words (dot/say.js), as this listener sees it: the system's
+      // length and fingerprint, how many tools, which roles — to check that nothing is put in front of her card.
+      try {
+        if (options?.messages?.[0]?.source?.form === 'say') {
+          const sys = String(options.system ?? '');
+          note('say-request', { systemChars: sys.length, systemSha: createHash('sha256').update(sys).digest('hex').slice(0, 12), tools: Array.isArray(options.tools) ? options.tools.length : 0, roles: options.messages.map((m) => m.role).join(','), userChars: options.messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.reduce((k, c) => k + String(c?.text ?? '').length, 0) : String(m.content ?? '').length), 0) });
+        }
+      } catch { /* never in the way */ }
       let booked;
       try { booked = begin(options); } catch (err) { debug(`llm gate: ${err.message}; request let through`); return next(); }
       const { rec, wait } = booked;
