@@ -17,7 +17,7 @@ test('say: what the call wrote is what goes out — lines, stickers she has, fac
 
 test('say: the one message the call is given — her stickers first, the conversation as it went, what is in her hands, what she knows', () => {
   const text = sayInput({ dialogue: [{ who: 'owner', text: '开机' }, { who: 'her', text: '醒啦\n我在呢' }, { who: 'owner', text: '在干嘛呀' }], stickers: [{ id: '31d44003ce', note: '开心猫' }], facts: ['你手上没有在做的事，这一轮也没有开始做任何事'], about: '刚把余额提醒脚本写好了' });
-  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你这会儿知道的：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息，一行一条。不想回就只写 \[不回\]。）$/);
+  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你这会儿知道的：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息，一行一条，平时一句就够。[^\n]*不想回就只写 \[不回\]。）$/);
   assert.match(sayInput({ stickers: [], facts: ['x'] }), /^（你的表情包夹现在是空的。/);
   assert.doesNotMatch(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'] }), /你这会儿知道的/, 'nothing to tell: no such line');
   assert.match(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'], unprompted: true }), /（你和他在 QQ 上最近的对话）[\s\S]*（他这会儿没说话，是你有事要告诉他。/);

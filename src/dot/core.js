@@ -41,7 +41,7 @@ import { configure as configurePrompts, overrideNotes, prompt, rebase } from '..
 import { runPendingReset } from '../reset.js';
 import { ago, stamp, today } from '../clock.js';
 import { head } from '../cut.js';
-import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent } from './text.js';
+import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
 
 export const name = 'dsh-dot';
@@ -485,7 +485,7 @@ export function apply(ctx, config = {}) {
       const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
       if (!speak) { over(); return; }
       // A note wholly in brackets is a thought to herself, not something she knows for him.
-      const note = String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '').trim();
+      const note = stripSilent(String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '')).replace(new RegExp(SILENT, 'g'), '').trim();
       void tellHim(t, { about: note }).then(over, over);
     }
   });
@@ -945,7 +945,9 @@ export function apply(ctx, config = {}) {
    */
   async function tellHim(t, { about = '', images = [] } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
-    const r = await say.speak({ to: 'owner', about, facts: factsFor(t), images, unprompted: !(t?.fromQq || t?.elsewhere) });
+    const facts = factsFor(t);
+    audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
+    const r = await say.speak({ to: 'owner', about, facts, images, unprompted: !(t?.fromQq || t?.elsewhere) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
