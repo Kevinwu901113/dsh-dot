@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, isSilent, stripSilent, contentText, spokenOf, reachText } from '../src/dot/core.js';
 import { unstamp } from '../src/clock.js';
+import { hookTable } from './hooks.js';
 
 const STAMP = /^\[\d{2}-\d{2} \d{2}:\d{2}[\] ]/; // every message that wakes her starts with one
 
@@ -15,7 +16,8 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   process.env.DSH_HOME = dsh;
   writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify(state));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
-  const effects = [], audit = [], sent = [], listeners = [], hooks = {};
+  const effects = [], audit = [], sent = [], listeners = [];
+  const { hooks, add: addHook } = hookTable();
   const budgetSvc = { blockedScopes: [...blocked], status() { return { blockedScopes: this.blockedScopes }; }, unblock(s) { this.blockedScopes = this.blockedScopes.filter((x) => x !== s); } };
   const dshIm = {
     listBots: async () => [{ botId: 'bot_1', channel: 'qq' }],
@@ -24,7 +26,7 @@ function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 
   };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
-    on: (name, fn, opts) => { if (name === 'session/event') listeners.push(fn); else hooks[name] = Object.assign(fn, { opts }); },
+    on: (name, fn, opts) => { if (name === 'session/event') listeners.push(fn); else addHook(name, fn, opts); },
     effect(fn) { effects.push(fn()); },
     prompts: [], sections: [],
     systemPrompt: { context(c) { ctx.prompts.push(c); }, section(c) { ctx.sections.push(c); return () => {}; }, getSectionOrder: () => 0 },
@@ -511,9 +513,7 @@ async function turnNoteOf(h, { id = 's1', cwd = h.home, messages = [{ role: 'use
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
 function ownerHarness(cfg = {}) {
   const h = harness();
-  const hooks = {};
-  const on0 = h.ctx.on;
-  h.ctx.on = (name, fn) => { hooks[name] = fn; on0(name, fn); };
+  const hooks = h.hooks;
   const calls = [];
   const agent = {
     session: { id: 's1' }, inbox: { nextStep: [], nextTurn: [] },

@@ -6,6 +6,7 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, ownerSource } from '../src/dot/core.js';
+import { hookTable } from './hooks.js';
 
 const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 const text = (m) => m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -15,7 +16,8 @@ function harness(cfg = {}) {
   process.env.DSH_HOME = dsh;
   writeFileSync(join(dsh, 'dsh-dot-state.json'), '{}');
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
-  const listeners = [], hooks = {}, effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
+  const { hooks, add: addHook } = hookTable();
+  const listeners = [], effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
   let command, n = 0;
   const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, noted: [], inject(m) { this.noted.push(m); }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
   const services = {
@@ -36,7 +38,7 @@ function harness(cfg = {}) {
   };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
-    on: (name, fn) => { if (name === 'session/event') listeners.push(fn); else hooks[name] = fn; },
+    on: (name, fn, opts) => { if (name === 'session/event') listeners.push(fn); else addHook(name, fn, opts); },
     effect(fn) { effects.push(fn()); },
     systemPrompt: { context() {}, section() { return () => {}; }, getSectionOrder: () => 0 },
     inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
