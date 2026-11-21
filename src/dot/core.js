@@ -31,12 +31,13 @@ import { join, relative, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
+import { watchBudget } from './budget.js';
 import { doctorFor, report as doctorReport } from '../doctor.js';
 import { sectionOf, setValues } from '../settings.js';
 import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, overrideNotes, prompt, rebase } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
-import { ago, stamp } from '../clock.js';
+import { ago, stamp, today } from '../clock.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, ownWords, replyCheckText, spokenOf, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent } from './text.js';
 export * from './text.js';
 
@@ -214,7 +215,6 @@ export function promptsPage({ home, port, timeoutMs = 20000 }) {
   };
 }
 
-const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
 
 function createStore(file) {
   let data = {};
@@ -684,32 +684,8 @@ export function apply(ctx, config = {}) {
   /** What she is busy with right now (an interlude task records it when it has to wait). */
   const busyWith = () => (turns.has(lastSession) ? prompt('dot.busy.chat') : '');
 
-  // 3. Budget.
-  let blocked = store.get('blocked') ?? []; // persisted so a standing block is not re-announced after a restart
-  async function pollBudget() {
-    const budget = ctx.get('budget');
-    if (!budget?.status) return;
-    let now;
-    try { now = budget.status().blockedScopes ?? []; } catch (error) { void error; return; }
-    if (cfg.autoUnblockDaily && now.includes('daily') && store.get('blockedOn') && store.get('blockedOn') !== today()) {
-      try { budget.unblock('daily'); now = now.filter((s) => s !== 'daily'); } catch (error) { logger.warn(`auto-unblock failed: ${error.message}`); }
-      audit('budget-auto-unblock', { scope: 'daily' });
-      await im.send('✅ dot: 新的一天，昨天的日预算阻断已自动解除，定时任务照常运行。', 'plain');
-    }
-    const added = now.filter((s) => !blocked.includes(s));
-    if (added.length) {
-      store.set('blockedOn', today());
-      audit('budget-blocked', { scopes: now });
-      await im.send(`⛔ dot: 预算已用完，已暂停（${now.join('、')}）。\n在 DeepSeek Harness 里发送 /budget unblock ${added[0]} 可立即恢复${cfg.autoUnblockDaily && added.includes('daily') ? '；日预算会在明天零点自动恢复' : ''}。`, 'plain');
-    }
-    if (blocked.length && !now.length) { audit('budget-unblocked'); await im.send('▶️ dot: 预算阻断已解除，恢复工作。', 'plain'); }
-    if (String(blocked) !== String(now)) store.set('blocked', now);
-    blocked = now;
-  }
-  ctx.effect(() => {
-    const timer = setInterval(() => { void pollBudget().catch((e) => logger.warn(e.message)); }, cfg.budgetPollSeconds * 1000);
-    return () => clearInterval(timer);
-  }, 'dsh-dot: budget watch');
+  // 3. Budget (budget.js).
+  const budget = watchBudget({ ctx, cfg, store, audit, im, logger });
 
   // 4. Device health (whichever devices are installed; they may come up after dot).
   ctx.inject(['dshComputer'], (c) => c.effect(() => c.dshComputer.onStatus?.((s) => {
@@ -1437,7 +1413,7 @@ export function apply(ctx, config = {}) {
           `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
           `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
           ...statusLiveness(),
-          `budget: ${ctx.get('budget') ? (blocked.length ? `BLOCKED (${blocked.join(', ')})` : 'ok') : 'not installed (optional)'}`,
+          `budget: ${ctx.get('budget') ? (budget.blocked().length ? `BLOCKED (${budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
           (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
           `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
         ];

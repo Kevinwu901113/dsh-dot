@@ -73,3 +73,6 @@ export function calendar(from, to, { before = 7, after = 21, now = to } = {}) {
   }
   return lines.join('\n');
 }
+
+/** The local calendar day as a key ("2026-11-21" without padding): what counts as "the same day" for a daily count. */
+export const today = (d = new Date()) => `${d.getFullYear()}-${d.getMonth() + 1}-${d.getDate()}`;
