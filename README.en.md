@@ -18,166 +18,206 @@ She remembers you, keeps living between your conversations, and has her own phon
 
 [简体中文](README.md) · **English**
 
-[Who she is](#-who-she-is) · [What she has](#-what-she-has) · [Quick start](#-quick-start) · [Settings](#%EF%B8%8F-settings) · [Architecture](#-architecture) · [Commands](#%EF%B8%8F-commands) · [Coexistence](#-coexisting-with-other-plugins)
+[What makes her different](#-what-makes-her-different) · [What she has](#-what-she-has) · [Quick start](#-quick-start) · [FAQ](#-faq) · [How it works](#-how-it-works) · [Usage guide (zh)](docs/USAGE.md) · [Settings (zh)](docs/SETTINGS.md)
 
 <img src="docs/demo.gif" alt="dsh-dot demo" width="820">
 
 </div>
 
+> [!TIP]
+> Quickest install: in dsh, open **Settings → Plugin market**, search `dsh-dot` and install it. Restart, then click **"dot 设置"** (dot settings) in the left sidebar and walk through the steps. Other ways are under [Quick start](#-quick-start).
+
 ---
 
-## ✨ Who she is
+## ✨ What makes her different
 
-dsh runs the conversation, calls the tools and carries the IM. dsh-dot decides **who is in that conversation**. In her sessions (the `~/dot` workspace and sessions opened by IM bots), dsh's own "You are an AI agent" opening is removed and replaced by her persona, her memory and the stretch of life she has just lived. In any other workspace dsh stays the dsh you know.
-
-- 🎭 **A persona and a voice** — the Canon is the first section of the system prompt: import an HDSI preset from [typ0.space](https://typ0.space) by share code, or write `canon.json` yourself. Every prompt she receives is plain text; `/dot prompts` opens an editor page.
-- 🧠 **Memory** — the words are the evidence, three short notes hold what stays true: every time she wakes, the past turns that bear on it (vector + BM25 candidates, reranked on your machine) come back to her by date; what she knows about you, about herself and what is not over yet is a small note; one card per person. Handoff at 150k tokens, a diary every night at 23:30.
-- 🌙 **A life between conversations** — the interlude, an idea from [HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude), implemented independently: she writes down her days, keeps intents and goes to look at what she is curious about. Reaching out to you is off by default and passes four gates when on.
-- 🌱 **She grows** — two stretches of her own time a day, with no task, a token budget and a folder that is hers alone. She tries things she has not done; the phone itself, each app and the computer each have a know-how book (steps, errors and cost of every thing she did there, pitfalls and shortcuts written from it), so the same thing gets faster, surer and cheaper; and keeps a ledger of what she did, what it cost and what you said about it. Every Sunday she reviews the week and rewrites her self-portrait; every version is kept and can be rolled back.
+- 🎭 **She sounds like herself.** The step that writes her words reads only her persona card and your recent conversation: no tools, and none of dsh's own agent prompt. The card is a Markdown file; import a community preset or write your own, and she speaks by the new one as soon as you save it.
+- 📒 **Things have an outcome.** Everything you ask of her goes into a book: under way, queued, done, stuck, not done, stopped by whom, what it cost. She reports progress only from that book. If it didn't work, she says so. She doesn't make progress up.
+- 🛠️ **She gets better at her phone and computer.** Each app, the phone itself and the computer have a know-how book. Pitfalls become lessons; a route that worked becomes a shortcut, with a count of how many times it has worked. The same task gets faster, more accurate and cheaper.
+- 🔒 **Nothing behind your back.** Money is off-limits. Steps only you can take (paying, codes, QR sign-ins, face checks) are left for you. Installing apps, calling, deleting, signing up and the like are asked about in the chat first, and done only once you say yes. Code decides which is which from the screen, not from what she says. There is no approve button.
+- 🌙 **She has a life between conversations.** She keeps hours: past her usual time and after a quiet spell she falls asleep, writes the day's diary and tidies her notes. Your message wakes her; anything else waits until she is up. Twice a day she gets time of her own, with no task and a folder that is hers alone. She remembers what you said and the people around you, and the people she meets herself.
 
 ## 🧰 What she has
 
-- 📱 **A phone** — the plugin downloads, builds and boots an Android emulator (no Java / Android Studio, no window of its own; you watch it inside dsh). No app store: **she installs her own apps** (she asks you first). Someone writing to her wakes her; an app's own pushes don't, she sees them the next time she is up; she browses, likes, comments, follows and now and then posts.
-- 🖥️ **A computer** — a bundled microVM (no Docker): shell, browser, desktop, live view, approval gates, audit log. Her commands run in the VM, not on your machine. It can be turned off.
-- 💬 **A QQ account** — NapCat or SnowLuma (OneBot 11) inside her computer, same account as on her phone. Your message wakes her in **1–2 s**; she replies in several short messages and sends stickers.
+- 📱 **A phone.** The plugin downloads and builds an Android emulator (no Java or Android Studio); you watch it inside dsh. She installs her own apps (asking you first) and stays signed in. Messages from people wake her; apps' own pushes don't, and are shown to her the next time she is up.
+- 🖥️ **A computer.** A bundled microVM (no Docker needed): shell, browser, desktop, live view. Her commands run inside it, not on your machine. Scheduled jobs push to your IM when there is a result, and stay quiet when there isn't.
+- 💬 **A QQ account.** QQ runs on her computer, the same account as on her phone. Your message wakes her in 1–2 seconds; she replies in several short messages, sends stickers and saves pictures people send. You choose when group chats wake her.
 
-The phone and the computer each have a power switch (`/phone off`, `/computer off`, or the top of the dot settings page); off stays off across dsh restarts.
-
-> [!NOTE]
-> **She can look, but never act behind your back — and there is no approval button to click.** Money (transfers, red packets, finance and payment apps) she never touches; what only you can do (paying, a code sent to your phone, a QR login, a face check) she stops at and brings to you (a QR code is sent to you); installing an app, calling or texting, messaging someone she doesn't know, deleting things — she asks you in the chat first, and does it once you say yes (for that one thing; "from now on that's fine" makes it standing). Which is which is decided by code from the screen, not by what she says. Every step she takes is logged.
+The phone and the computer each have a power switch (`/phone off`, `/computer off`, or the top of the dot settings page); off stays off across restarts.
 
 ## 🚀 Quick start
 
-**Easiest: install from [DSH Market](https://dsh.market/).** With the market installed, open Settings → Plugin Market in dsh, search `dsh-dot` and click install:
+### Which setup do you want?
+
+| You want | Do this |
+|---|---|
+| **All of her**: persona, memory, phone, computer, QQ | Install below, then walk through "dot 设置" |
+| **Just a phone and a computer**, no character | After installing, turn off the dot / memory / interlude / qq components on the plugin page; the tools stay `mcp__dot-phone__*` / `mcp__dot-vm__*` |
+| **Already using [qq-bridge](https://github.com/Derpyu520/qq-bridge)** | Just install; the plugin keeps the two apart on its own. See [docs/qq-bridge.md](docs/qq-bridge.md) |
+
+### Install
+
+Needs dsh ≥ 0.2.1 and hardware virtualization (Apple silicon / Intel Mac; KVM on Linux; WHPX on Windows).
+
+**From [DSH Market](https://dsh.market/) (recommended):** once the market is installed, search `dsh-dot` under Settings → Plugin market.
 
 ```bash
 dsh plugin --profile web add dshmarket
 ```
 
-Without the market, use the command line below.
+**From the command line:** quit the dsh desktop app first.
 
-Requires dsh ≥ 0.2.1 and hardware virtualization (Apple silicon / Intel Mac, Linux with KVM, Windows with WHPX). Quit the dsh desktop app first:
+<details open>
+<summary><b>macOS</b></summary>
 
 ```bash
-# macOS
 "/Applications/DeepSeek Harness.app/Contents/Resources/runtime/cli/bin/dsh" plugin --profile desktop add \
   dsh-dot-life @xmanrui/dsh-im
+open -a "DeepSeek Harness"
 ```
+</details>
+
+<details>
+<summary><b>Windows (PowerShell)</b></summary>
 
 ```powershell
-# Windows
 & "$env:LOCALAPPDATA\Programs\DeepSeek Harness\resources\runtime\cli\bin\dsh.cmd" plugin --profile desktop add `
   dsh-dot-life @xmanrui/dsh-im
 ```
+</details>
 
-Web: `dsh plugin --profile web add dsh-dot-life`. From source: use `github:Kevinwu901113/dsh-dot`.
+<details>
+<summary><b>Web / from source</b></summary>
 
-Reopen dsh and click **"dot 设置" (dot settings)** in the left sidebar. It walks you through it: check this machine → pick components → phone → computer → persona → QQ. Settings, the doctor (with one-click fixes) and a diagnostics export live on the same page.
+```bash
+dsh plugin --profile web add dsh-dot-life
+dsh plugin --profile desktop add github:Kevinwu901113/dsh-dot   # from source
+```
+</details>
 
-The same thing as commands:
+### First setup
+
+Reopen dsh and click **"dot 设置"** in the left sidebar, then go step by step: check this computer → pick components → phone → computer → persona → QQ. Settings, the health check (with one-click fixes) and the diagnostics bundle are on the same page.
+
+<details>
+<summary><b>What each step does</b></summary>
+
+1. **Persona**: she reads the persona card `~/dot/persona.md`. Generate it from a community preset with `/interlude preset <share code>` ([typ0.space](https://typ0.space)), or write it yourself. The card is split by its `## ` headings; which part goes to whom is in `~/dot/persona/parts.json`.
+2. **Phone**: once you accept the Android SDK license, the plugin downloads the emulator and system image (about 2 GB, usually 10–30 minutes) and boots it. Keep chatting meanwhile. Storage size can only be set before it is built.
+3. **Apps and sign-ins**: use the phone view like a real phone, or let her install apps herself. She signs in from her own account book; codes, QR scans and face checks need you, and she stops and asks.
+4. **QQ**: she signs in to QQ on her computer by scanning with the phone camera; see [docs/qq.md](docs/qq.md). Or connect WeChat, Feishu or an official bot through dsh-im.
+5. **Computer**: on by default; set `DSH_DOT_COMPUTER=off` to skip it. Watching the live view from outside: [docs/computer.md](docs/computer.md).
+
+The same in commands:
 
 ```text
-/interlude preset 6QA0-1PD6 # who she is: import an HDSI persona from typ0.space
-/phone doctor               # check this machine: virtualization, disk, memory, ports, downloads, the phone network (one-click fixes: /phone doctor fix <id>)
-/phone accept               # accept the Android SDK license; the phone installs itself (~2 GB)
-/qq install → /qq account <alt account> → /qq start → /qq qr
+/interlude preset 6QA0-1PD6 # import a persona; use any share code you like
+/phone doctor               # health check: virtualization, disk, memory, ports, mirrors; fixable ones via /phone doctor fix <id>
+/phone accept               # accept the Android SDK license; the phone installs itself (/phone accept 32 for 32 GB storage)
+/qq install → /qq account <spare account> → /qq start → /qq qr
 ```
 
-**Use alt accounts.** No platform's terms allow automation.
+</details>
 
-> [!TIP]
-> **No character, just a phone and a computer for dsh?** Turn off the dot / memory / interlude / qq components on the plugins page; the rest keeps running and the tools are still `mcp__dot-phone__*` / `mcp__dot-vm__*`.
+All personal settings live in one file, `~/.dsh/dsh-dot.json`; the dot settings page edits it, and upgrades never overwrite it. Every key is described in [docs/SETTINGS.md](docs/SETTINGS.md) (Chinese).
 
-## ⚙️ Settings
+## ❓ FAQ
 
-Every personal setting lives in **one file**: `~/.dsh/dsh-dot.json` (Windows: `%USERPROFILE%\.dsh\dsh-dot.json`), one section per component. Upgrades never overwrite it. The dot settings page edits this same file; after editing it by hand, restart dsh.
+<details>
+<summary><b>Can my computer run it?</b></summary>
 
-```json
-{
-  "phone":     { "dataGb": 32 },
-  "computer":  { "rootDisk": "32G", "memory": "6G" },
-  "interlude": { "activeHours": "09:00-01:00", "freeTimesPerDay": 2 }
-}
-```
+It needs hardware virtualization. The phone defaults to 3 GB of memory and 16 GB of storage (about 2 GB to download first); the computer's VM is capped at 4 GB of memory (about 0.5 GB idle) and needs about 10 GB of disk. With both on, plan for roughly 8 GB of memory and 30 GB of disk. Using only one? Turn the other off.
 
-Every key, which ones only apply to a newly created phone / VM, and rules for agents editing the file: **[docs/SETTINGS.md](docs/SETTINGS.md)** (Chinese). Or just ask dsh: "follow docs/SETTINGS.md and set dsh-dot's phone storage to 32 GB".
+</details>
 
-The model requests of her background life (memory consolidation, her hands operating the phone and computer) wait behind your ongoing conversation so they do not use up its requests-per-minute budget; if a chat still gets a 429, lower `llm.backgroundRpm`.
+<details>
+<summary><b>Can her accounts get banned?</b></summary>
 
-## 🧩 Architecture
+Yes, it is possible. Platforms' terms forbid automation. **Give her spare accounts**, QQ included.
 
-One plugin, seven components: three are her, three are her things, one is for living next to other plugins. Each can be turned off on its own; the rest keep running.
+</details>
+
+<details>
+<summary><b>Will she touch my stuff?</b></summary>
+
+Her commands run in her own VM and emulator, not on your computer, except folders you share with her. On her own devices, anything with consequences falls into four tiers: money is never touched; what only you can do (paying, codes, QR, face) waits for you; installing apps, calling, texting, deleting, signing up, messaging strangers, connecting out from the computer or changing your shared files are asked about in the chat first; the rest is hers. A "yes" covers that one thing; "from now on, fine" makes it standing. Every step she takes is in the audit log.
+
+</details>
+
+<details>
+<summary><b>Will she burn through tokens?</b></summary>
+
+Her daily spend is shown in the dot panel on the right. A thing that costs more than its cap (600k tokens by default) stops and asks you whether to go on; her own time has a per-session and a daily cap; the same error over and over gets the thing stopped by code. All caps are in [docs/SETTINGS.md](docs/SETTINGS.md).
+
+</details>
+
+<details>
+<summary><b>I get 429s while chatting</b></summary>
+
+Her background requests (memory upkeep, operating the phone and computer) queue behind your conversation and don't take your quota. If you still hit 429, lower `llm.backgroundRpm`.
+
+</details>
+
+<details>
+<summary><b>How do I change what she says or her prompts?</b></summary>
+
+Edit `~/dot/persona.md` for the persona. Every prompt the plugin gives her is editable too: send `/dot prompts` in dsh and open the local address it returns; edits are saved to `~/dot/prompts/` and override the built-in ones.
+
+</details>
+
+## 🧩 How it works
+
+dsh runs the conversation, calls the tools and carries the IM. dsh-dot decides **who is in that conversation**. In her sessions, dsh's own agent preamble is replaced with her persona, her memory and the days she has just lived; in other workspaces dsh is still dsh.
 
 ```mermaid
 flowchart LR
     you(["👤 You<br/>QQ / WeChat / Feishu"])
-    subgraph self["her"]
-        direction TB
-        interlude["interlude<br/>persona · her own time"]
-        memory["memory<br/>transcript · notes · diary"]
-        contact["dot<br/>wake · her hands · notices"]
-    end
-    session(["dot's session<br/>run by dsh"])
-    subgraph things["her things"]
-        direction TB
-        phone["phone<br/>Android emulator"]
-        computer["computer<br/>microVM"]
-        qq["qq<br/>NapCat / SnowLuma"]
-    end
+    decide["She decides<br/>persona · memory · book"]
+    hands["Her hands<br/>one session per thing"]
+    voice["She speaks<br/>persona card only"]
+    book[("Book of things")]
+    phone["📱 Phone"]
+    computer["🖥️ Computer"]
 
-    you <-->|messages| qq
-    you <-->|dsh-im| contact
-    interlude -->|persona + her days| session
-    memory -->|notes + recall| session
-    contact -->|wake · rules| session
-    session -->|mcp__dot-phone__*| phone
-    session -->|mcp__dot-vm__*| computer
-    session -->|qq_send| qq
-    phone -->|notifications wake| session
-    qq -->|wake in 1–2 s| session
-    qq -.runs in.-> computer
+    you -->|message| decide
+    decide -->|hand over a thing| hands
+    hands --> phone & computer
+    hands -->|done / not done / needs a decision| book
+    book --> decide
+    book --> voice
+    decide -->|what she wants to say| voice
+    voice -->|one way out| you
 ```
 
-| | Component | What it is | Off switch |
-|---|---|---|---|
-| her | **`interlude`** | Canon persona, the persona card and the checks on what she says, a voice reminder at the end of each turn; her own time; the ledger of what she did on her own · [docs](docs/interlude.md) | `DSH_DOT_INTERLUDE=off` |
-| her | **`memory`** | Transcript + auto-recall (local multilingual-e5-small + bge-reranker-base; SiliconFlow / DashScope optional), three notes (about you / herself / not over yet), people cards, diary, handoff · [docs](docs/memory.md) | `DSH_DOT_MEMORY=off` |
-| her | **`dot`** | The contact layer: notifications and schedules wake her, her hands (a separate session with its own do-only preset, given a whole thing at a time), the book of things, the know-how book, what needs your yes (four tiers by code, asked in the chat), the clean call that writes what she says, scheduled results → IM, device notices, sidebar status panel | `DSH_DOT_CONTACT=off` |
-| her things | **`phone`** | Android emulator exposed as `mcp__dot-phone__*` via [mobile-mcp](https://github.com/mobile-next/mobile-mcp) · [docs](docs/phone.md) | `DSH_DOT_PHONE=off` |
-| her things | **`computer`** | Bundled microVM ([microsandbox](https://github.com/zerocore-ai/microsandbox)) or Docker, exposed as `mcp__dot-vm__*` · [docs](docs/computer.md) | `DSH_DOT_COMPUTER=off` |
-| her things | **`qq`** | Her QQ inside the computer VM, same account as her phone · [docs](docs/qq.md) | `DSH_DOT_QQ=off` |
-| neighbours | **`compat`** | Living next to other plugins: whose session is this, which tools it sees, where its commands run; knows [qq-bridge](https://github.com/Derpyu520/qq-bridge) today · [docs (zh)](docs/qq-bridge.md) | `DSH_DOT_COMPAT=off` |
+- **Deciding**: her conversation reads her persona, memory and the book, and decides what to do and what to say.
+- **Doing**: each thing goes to a session of its own that only operates the phone and computer, with no persona. It comes back only when the thing is done, not done, or waiting on a decision.
+- **Speaking**: a separate call with only her persona card writes the words for you, and they leave by a single way out.
 
-## ⌨️ Commands
+There are seven components (persona and her own time, memory, the contact layer, phone, computer, QQ, and coexistence with other plugins), each of which can be turned off. Details in [docs/USAGE.md](docs/USAGE.md) (Chinese).
 
-```text
-/dot [doctor|test|check|prompts [stop]|howto [app]]
-/dot memory [now|diary|handoff|recall …]
-/dot people [approve <id>|merge <a> <b>|forget <name>]
-/interlude [preset <code>|canon|doings|feedback [#id] <text>|free]
-/phone [on|off|doctor [fix <id>]|accept [GB]|size <GB>|number <digits>|restart|retry|screenshot|notifications|notify [mute|wake <pkg>]]
-/computer [on|off]
-/qq [install [snowluma]|backend|account|owner|start|stop|qr|log|clean [napcat]|stickers [sync]|group <mention|all|none|score>]
-```
+## 💡 Design principles
 
-Two pages: "dot 设置" in the left sidebar is for setup, settings, the doctor and diagnostics; the **◎** button at the top of a conversation opens the dot panel in the right sidebar, which is her life: device status, handoff progress, what she's doing now, today's tokens, and her **last 30 scenes**.
+- **She is the subject.** Persona, memory and days come first; devices come after. Getting things done is a by-product.
+- **What code can decide, the model doesn't.** Which step needs you, whether a thing was done, how many times the same error came up: code counts and decides.
+- **One account of each thing.** Results come only from the book; neither she nor the step that speaks for her makes up another.
+- **Don't do for her what is hers to do.** She installs her own apps and lives her own days.
+- **The best code is no code.** Google's emulator + mobile-mcp for the phone, microsandbox for the computer, dsh-im for IM, dsh's own scheduler.
+- **Auditable.** Every tool call and every token spent is on record.
 
-## 🤝 Coexisting with other plugins
+## 🙏 Acknowledgements
 
-- With the computer on, dsh-dot replaces the subprocess provider, sets `sandbox-policy` to `danger-full-access` (the VM is the boundary) and rewrites permission presets — don't combine with other sandbox / subprocess / permission plugins, or set `DSH_DOT_COMPUTER=off`.
-- MCP tools are namespaced: `mcp__dot-vm__*`, `mcp__dot-phone__*`.
-- Memory coexistence (`DSH_DOT_MEMORY_COEXIST=auto`) drops to `people-only` when another memory service is found.
-- One QQ account, one responder. `bash` also passes the computer gate.
-- [qq-bridge](https://github.com/Derpyu520/qq-bridge) is detected and lived with (`compat` settings, [docs/qq-bridge.md](docs/qq-bridge.md)): none of dot's tools in its sessions, its folder never shared into her VM, its bot never answered; its closed-agent owner chat gets her phone and computer.
-
-See the [Chinese README](README.md#-与其他插件共存) for injected message `source` tags (for context-compression plugins) and upgrade notes.
+[HDS-Interlude](https://github.com/REcklessNOLOve117/HDS-Interlude) · [mobile-mcp](https://github.com/mobile-next/mobile-mcp) · [microsandbox](https://github.com/zerocore-ai/microsandbox) · [NapCatQQ](https://github.com/NapNeko/NapCatQQ) · [SnowLuma](https://github.com/SnowLuma/SnowLuma) · [dsh-im](https://github.com/xmanrui/dsh-im) · [Moltbook](https://www.moltbook.com/heartbeat.md) · [chat-memory-benchmark](https://github.com/Ornn8/chat-memory-benchmark)
 
 ## 📄 License
 
-[MIT](LICENSE). Versions 0.3 through 0.22 were released under AGPL-3.0-only (the interlude then used a translation of HDS-Interlude's prompts) and stay AGPL; from 0.23 on the interlude prompts are rewritten from scratch, nothing of HDS-Interlude's code or text is included, and the whole package is MIT.
+[MIT](LICENSE). Versions 0.3 to 0.22 were released under AGPL-3.0-only (the interlude then used translated prompts from HDS-Interlude) and remain under AGPL; from 0.23 the interlude prompts are rewritten from scratch, contain no HDS-Interlude code or text, and the whole package is MIT.
 
 <div align="center">
 
-If she made you smile, leave a ⭐
+---
+
+If she made you smile, a ⭐ helps
+
+[![Star History Chart](https://api.star-history.com/svg?repos=Kevinwu901113/dsh-dot&type=Date)](https://star-history.com/#Kevinwu901113/dsh-dot&Date)
 
 </div>
