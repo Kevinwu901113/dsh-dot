@@ -73,6 +73,7 @@ export const SCHEMA = [
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '手艺簿：记下她的手在手机本身、各个 App、电脑上做事的经验，下次到那里时给它'),
   e('dot', 'thingCostCap', 'dot', 'int', 'restart-dsh', '一件事花到这么多 token（缓存命中按十分之一算）就停下问你要不要接着做（0 = 不管）', { min: 0 }),
   e('dot', 'ackHoldMs', 'dot', 'int', 'restart-dsh', '你的话让她去做一件事时，回你之前等多久：这之前做完的，只回一次、带着结果（毫秒，0 = 马上回）', { min: 0, max: 120000 }),
+  e('dot', 'sayDetailChars', 'dot', 'int', 'restart-dsh', '一件事做完，替她说话那次调用拿到的细节最多多少字（结果只从事情簿来）', { min: 0, max: 4000 }),
   e('dot', 'pushesKept', 'dot', 'int', 'restart-dsh', 'App 自己的推送（不是人发来的）不叫醒她：留最近几条，下次她醒着有事时一起给她看', { min: 0, max: 50 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
   e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（整理记忆、用法笔记、她的手）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
