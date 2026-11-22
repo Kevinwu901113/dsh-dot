@@ -17,7 +17,9 @@
 //   start({ device, task })  → { status: 'started' } at once; or 'busy' (what they are on) / 'failed'.
 //   add(text)                → one more thing said to the hands at work, read between two of their steps.
 //   ask(question)            ← from the hands' own tool: this round ends as a question to her.
-//   finish({ summary, detail, task }) ← from the hands' own tool: the thing is done, what came of it, and its short name.
+//   finish({ summary, detail, task, reached }) ← from the hands' own tool: it is over, what came of it, its short name, and
+//                            whether what was wanted was reached (not reached: the thing failed)
+//   fail({ cause, error })   → the code ends it as failed (the same error over and over)
 //   stop({ by, cause })      → the thing ends now, stopped; what waited behind it is let go with it.
 // How a thing ends is told as facts (ledger.js): its outcome, who stopped it, why, the hands' summary and details.
 // Nothing here writes a sentence for anyone: each reader words them for itself.
@@ -72,7 +74,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     const running = thing === t && t.state === 'running';
     if (thing === t) thing = null; else { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
     // A run still going is ended here: stopped or too long, or done by their own word (their tool, nothing more to say).
-    if (running && (outcome === 'stopped' || outcome === 'timeout' || (outcome === 'done' && t.result))) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
+    if (running && (outcome === 'stopped' || outcome === 'timeout' || t.result || cause === 'same-error')) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
     // What came of it: their own summary and details when they gave them (finish), else what they last said, as details.
     const summary = String(t.result?.summary ?? '').trim(), detail = headTail(t.result ? t.result.detail : t.said, maxChars);
     const facts = { outcome, by, ...(cause ? { cause } : {}), ...(error ? { error: String(error).slice(0, 160) } : {}), ...(summary ? { summary } : {}), ...(detail ? { detail } : {}), ...(t.result?.name ? { name: t.result.name } : {}), ...(outcome === 'stuck' ? { question: t.question, ...(t.ask ? { ask: t.ask } : {}) } : {}) };
@@ -164,11 +166,22 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * From the hands' own tool: the thing is done, and this is what came of it — `summary` in a line, `detail` for her.
      * It ends here (nothing more is said). False when nothing is under way, or it has already asked.
      */
-    finish({ summary = '', detail = '', task = '' } = {}) {
+    finish({ summary = '', detail = '', task = '', reached = true } = {}) {
       const t = thing;
       if (!t || t.state !== 'running' || t.question || t.over) return false;
       t.result = { summary: String(summary ?? '').trim(), detail: String(detail ?? '').trim(), ...(String(task ?? '').trim() ? { name: String(task).trim().slice(0, 12) } : {}) };
-      settle(t, 'done');
+      // Ending is not succeeding: what was wanted not reached is a thing that failed, in their own words.
+      if (reached === false) settle(t, 'failed', { cause: 'not-reached' }); else settle(t, 'done');
+      return true;
+    },
+    /**
+     * The code ends the thing under way as failed (the same error over and over: `cause` 'same-error', `error` its
+     * type). What the hands said last is kept as details. False when nothing is under way.
+     */
+    fail({ cause = 'same-error', error = '' } = {}) {
+      const t = thing;
+      if (!t || t.state !== 'running' || t.over) return false;
+      settle(t, 'failed', { cause, error });
       return true;
     },
     /**

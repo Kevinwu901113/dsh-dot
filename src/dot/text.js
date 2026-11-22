@@ -66,7 +66,7 @@ export function handsStatus(r = {}, device = '') {
   return [base.trim(), ...notes.map((n) => n.trim())].join('；');
 }
 /** Why a thing failed, in her words (a cause without its own words: it broke off). */
-const CAUSE_WORDS = { restart: 'dot.hands.cause.restart', 'no-session': 'dot.hands.cause.no-session', interrupted: 'dot.hands.cause.interrupted', 'broke-off': 'dot.hands.cause.broke-off', 'no-result': 'dot.hands.cause.no-result' };
+const CAUSE_WORDS = { restart: 'dot.hands.cause.restart', 'no-session': 'dot.hands.cause.no-session', interrupted: 'dot.hands.cause.interrupted', 'broke-off': 'dot.hands.cause.broke-off', 'no-result': 'dot.hands.cause.no-result', 'not-reached': 'dot.hands.cause.not-reached', 'same-error': 'dot.hands.cause.same-error' };
 /**
  * How a thing ended, for the call that writes her words: facts in a few words (with its full stop; '' when the summary
  * says it), nothing to look at (it has no picture) and nothing to do. From the book's facts only.

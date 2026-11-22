@@ -511,3 +511,44 @@ test('her computer has the same gates: a till page is his, leaving the machine i
   assert.match(fed(), /「付款、下单的最后一步」这一步还没做，也不会替他做——只能他本人来/);
   h.stop();
 });
+
+test('the same error over and over is counted by code: told to change course at the third, ended as not done at the sixth; "not reached" is said as not done, from the book alone', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const fed = () => h.llmCalls.at(-1).messages[0].content[0].text;
+  const post = (id, name, result) => h.hooks['tools/post-execute']({ name, callId: `c${Math.random()}`, input: {}, agent: h.agentOf(id) }, result, async () => ({ kind: 'accept' }));
+  const failed = (url) => ({ isError: true, content: [{ type: 'text', text: `Error: Navigation failed net::ERR_CONNECTION_CLOSED at ${url}` }] });
+  const ok = { isError: false, content: [{ type: 'text', text: 'ok' }] };
+  const NAV = 'mcp__dot-vm__browser_navigate';
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '开一下B站' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '打开 B 站' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  await post('h1', NAV, failed('https://www.bilibili.com'));
+  await post('h1', NAV, failed('https://m.bilibili.com/'));
+  await post('h1', NAV, ok); // something went through: counted again from nothing
+  await post('h1', NAV, failed('https://www.bilibili.com/'));
+  await post('h1', NAV, failed('https://www.zhihu.com/'));
+  const third = await post('h1', NAV, failed('https://www.baidu.com/'));
+  assert.match(text(third.additionalContexts.at(-1)), /同一个错已经连着出了 3 次：[^。]*ERR_CONNECTION_CLOSED[\s\S]*reached 填 false/, 'addresses aside, the same error');
+  // the hands end it honestly: not reached
+  await h.tools.done.execute({ summary: 'B 站打不开，ERR_CONNECTION_CLOSED', detail: '换了几个地址都一样', reached: false }); await tick();
+  assert.deepEqual([h.audit.findLast((a) => a.event === 'hands-thing').outcome], ['failed']);
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: 'B站连不上，试了好几个地址都是 ERR_CONNECTION_CLOSED。' }] } });
+  h.replies.push('B站连不上');
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节：换了几个地址都一样）/);
+  assert.doesNotMatch(fed(), /你这会儿知道的/, 'her note is not a second account of the result');
+  assert.ok(h.audit.some((a) => a.event === 'say-note-dropped'));
+  // never ended by the hands: the code ends it at the sixth
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '再试试' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '再开一次 B 站' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 4 }); await tick(30);
+  for (let i = 0; i < 6; i++) await post('h2', NAV, failed(`https://www.bilibili.com/${i}`));
+  await tick();
+  const ended = h.audit.findLast((a) => a.event === 'hands-thing');
+  assert.deepEqual([ended.thing, ended.outcome, ended.cause], ['t2', 'failed', 'same-error']);
+  assert.ok(h.audit.some((a) => a.event === 'same-error-stop' && a.n === 6));
+  assert.match(text(her.got.at(-1)), /同一个错一直出，被停下了/);
+  h.stop();
+});

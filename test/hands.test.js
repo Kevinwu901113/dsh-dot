@@ -230,3 +230,21 @@ test('whom her answer goes to is said by the message that woke her, not read off
   assert.equal(addressed({ kind: 'dsh-dot', form: 'phone-notification' }), '');
   assert.equal(addressed({ kind: 'schedule' }), '');
 });
+
+test('hands: ending is not succeeding — "not reached" is a thing that failed, in their own words; the code can end one as failed (the same error over and over)', async () => {
+  const h = harness();
+  h.hands.start({ device: 'computer', task: '打开 B 站' }); await tick();
+  assert.equal(h.hands.finish({ summary: 'B 站打不开，ERR_CONNECTION_CLOSED', detail: '标签页都关了', task: '开B站', reached: false }), true);
+  const [r] = h.done.at(-1);
+  assert.deepEqual([r.outcome, r.cause, r.summary, r.detail, r.name], ['failed', 'not-reached', 'B 站打不开，ERR_CONNECTION_CLOSED', '标签页都关了', '开B站']);
+  await tick();
+  assert.deepEqual(h.cancelled.at(-1), ['h1', 'dot-hands: failed'], 'their word ends the run');
+  h.hands.start({ device: 'computer', task: '再开一次' }); await tick();
+  h.emit('h2', 'assistant/message', { message: { content: '再试一次' } });
+  assert.equal(h.hands.fail({ cause: 'same-error', error: 'net::ERR_CONNECTION_CLOSED' }), true);
+  const [s] = h.done.at(-1);
+  assert.deepEqual([s.outcome, s.cause, s.error, s.detail, h.ledger.get('t2').outcome], ['failed', 'same-error', 'net::ERR_CONNECTION_CLOSED', '再试一次', 'failed']);
+  await tick();
+  assert.deepEqual(h.cancelled.at(-1), ['h2', 'dot-hands: failed']);
+  assert.equal(h.hands.fail({}), false, 'nothing under way');
+});

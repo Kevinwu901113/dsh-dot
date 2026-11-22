@@ -18,7 +18,7 @@ import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREF
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
-import { batchLaunch, createHowto, howtoTool, placeName } from './howto.js';
+import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { createLedger, headTail } from './ledger.js';
 import { approvalKind, classify, classifyComputer, KINDS, HIM_KINDS } from './gates.js';
@@ -104,7 +104,9 @@ export const defaults = {
   // With thinking it wrote longer (11-21 replays), and length is what he minds most.
   sayEffort: 'off',
   sayMaxTokens: 600,
-  sayDetailChars: 800, // a thing's details as the voice gets them (the book is where results come from; her own words carry her stance)
+  sayDetailChars: 800,
+  sameErrorNudge: 3, // her hands hit the same error this many times in a row: told to change course or end it (not reached)
+  sameErrorStop: 6,  // … this many: the code ends the thing as failed (same-error); 0 = never // a thing's details as the voice gets them (the book is where results come from; her own words carry her stance)
   sayLines: 12,
   sayMaxLines: 4,        // a message of hers has at most this many lines; what the voice writes beyond is not sent
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
@@ -538,7 +540,7 @@ export function apply(ctx, config = {}) {
       } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
     }
     const asked = askedCalls.get(exec?.callId);
-    const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null].filter(Boolean);
+    const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null, exec?.name ? sameErrorFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
     if (asked === undefined && !note) return next();
     if (asked !== undefined) askedCalls.delete(exec.callId);
@@ -584,6 +586,30 @@ export function apply(ctx, config = {}) {
       given.push(prompt('dot.howto.given', { app: placeName(place), notes: got.notes, recent: got.recent || '—' }).trim());
     }
     return given.join('\n\n') || null;
+  };
+  // The same error over and over (11-22: nine tries at a page the browser could not reach): counted by code, per thing,
+  // by its type (addresses left out); anything that goes through, or a refusal of ours, starts the count again. At
+  // sameErrorNudge the hands are told to change course or end it as not reached; at sameErrorStop the code ends it.
+  const errorRuns = new Map(); // thing id → { type, n }
+  const sameErrorFor = (exec, result) => {
+    const t = hands?.doing(), sid = exec.agent?.session?.id;
+    if (!t || !sid || t.session !== sid || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_ASK_TOOL) return null;
+    const raw = result?.isError ? contentText(result?.content ?? []) || String(result?.error?.message ?? result?.error ?? '') : '';
+    const type = raw && !isRefusal(raw) ? errorType(raw) : '';
+    if (!type) { errorRuns.delete(t.id); return null; }
+    const before = errorRuns.get(t.id), run = { type, n: before?.type === type ? before.n + 1 : 1 };
+    errorRuns.set(t.id, run);
+    if (cfg.sameErrorStop > 0 && run.n >= cfg.sameErrorStop) {
+      errorRuns.delete(t.id);
+      audit('same-error-stop', { session: sid, thing: t.id, n: run.n, error: type });
+      hands.fail({ cause: 'same-error', error: type });
+      return null;
+    }
+    if (cfg.sameErrorNudge > 0 && run.n === cfg.sameErrorNudge) {
+      audit('same-error-nudge', { session: sid, thing: t.id, n: run.n, error: type });
+      return prompt('dot.hands.same-error', { n: run.n, error: type, max: Math.max(1, cfg.sameErrorStop - run.n) });
+    }
+    return null;
   };
   /** The thing in her hands is over: its steps go into the book, with what the ledger has of it. */
   const learnFrom = (job) => {
@@ -953,6 +979,9 @@ export function apply(ctx, config = {}) {
   async function tellHim(t, { about = '', images = [] } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
     const facts = factsFor(t);
+    // A thing of this turn just ended: what came of it is told from the book alone — her note is not given (it would
+    // be a second account of the same result).
+    if (t?.thing && ledger.get(t.thing)?.state === 'ended' && about) { audit('say-note-dropped', { thing: t.thing, chars: String(about).length }); about = ''; }
     audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
     const ended = t?.thing ? ledger.get(t.thing) : null;
@@ -1181,9 +1210,9 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: HANDS_DONE_TOOL,
       description: prompt('dot.hands.done-tool'),
-      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' } }, required: ['summary'], additionalProperties: false },
+      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : 'dot.hands.idle') }] },
-      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task }) ? 'done' : 'idle' }; },
+      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args?.reached !== false }) ? 'done' : 'idle' }; },
     }), 'dsh-dot: hands done tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {

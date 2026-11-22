@@ -15,7 +15,7 @@
 import { head as headOf, tail as tailOf } from '../cut.js';
 
 /** Why a thing ended, when that is not plain from its outcome. */
-export const CAUSES = ['restart', 'no-session', 'interrupted', 'broke-off', 'no-result', 'timeout', 'stopped', 'command', 'over-cap'];
+export const CAUSES = ['restart', 'no-session', 'interrupted', 'broke-off', 'no-result', 'timeout', 'stopped', 'command', 'over-cap', 'not-reached', 'same-error'];
 
 /** An entry from before the book kept facts only (a `why` sentence, a `result` text): read once as fields. */
 export function factsOf(e) {
