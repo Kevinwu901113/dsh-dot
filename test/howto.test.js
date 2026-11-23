@@ -143,25 +143,28 @@ test('howto: a done run keeps its way (words typed left out); the shortest way o
   assert.match(h.take('s', 'QQ').recent, /捷径（这样走成过 2 次）：launch_app\(com\.tencent\.mobileqq\) → /);
 });
 
-test('nightcheck: a lesson is worth the records behind it — a guess is reworded to what was seen or dropped, a contradicted one is dropped against the run that contradicts it, a shortcut needs a way on record; the runs named must exist', async () => {
+test('nightcheck: a lesson\'s why is a guess and is taken out of it; one is dropped only against a run whose steps are on record; a record that is missing proves nothing; shortcuts are left alone', async () => {
   const { settle, linesOf, checkInput, report } = await import('../src/dot/nightcheck.js');
-  const notes = '## 教训\n- 这台是模拟器，短信发得出去但收不到运营商回信\n- 收起通知栏用小的滑动距离会报 Command failed，换成 up,540,2200 就成\n- 搜索框点不开\n- 没人判的一条\n\n## 捷径\n- 发短信查流量：list_available_devices()\n- 看电量：press_button(HOME) → swipe_on_screen(down,540,20)';
-  const records = [{ id: 'a1', outcome: 'done', steps: 39 }, { id: 'a2', outcome: 'done', steps: 5, calls: ['swipe_on_screen(up,540,600) ✗ Command failed', 'swipe_on_screen(up,540,2200)'] }, { id: 'a3', outcome: 'done', steps: 4 }];
-  assert.deepEqual(checkInput({ place: 'p', notes, records }).lessons.map((l) => l.n), [1, 2, 3, 4]);
-  assert.equal(linesOf(notes)[7].kind, 'shortcut');
-  const r = settle({ notes, records, tasks: [{ task: '看电量', route: ['press_button(HOME)'] }, { task: '发短信查流量' }], judged: [
-    { n: 1, is: 'guess', text: '发出短信后等了三分钟没有回信', runs: ['a1'], why: '记录里只有没回' },
-    { n: 2, is: 'seen', runs: ['a2', 'zz'] },
-    { n: 3, is: 'stale', runs: ['nope'] },   // names no run that is on record: not dropped
+  const notes = '## 教训\n- 这台是模拟器，短信收不到运营商回信：16:50 发的到 16:53 都没人回\n- 收起通知栏用小的滑动距离会报 Command failed，换成 up,540,2200 就成\n- 搜索框点不开\n- 没人判的一条\n- 多半是网不好\n\n## 捷径\n- 发短信查流量：list_available_devices()';
+  const records = [{ id: 'a1', outcome: 'done', steps: 39 }, { id: 'a2', outcome: 'done', steps: 5, calls: ['swipe_on_screen(up,540,600) ✗ Command failed', 'swipe_on_screen(up,540,2200)'] }, { id: 'a3', outcome: 'done', steps: 4, route: ['click(搜索框)'] }];
+  assert.deepEqual(checkInput({ place: 'p', notes, records }).lessons.map((l) => l.n), [1, 2, 3, 4, 5]);
+  assert.equal(linesOf(notes)[8].kind, 'shortcut');
+  const r = settle({ notes, records, judged: [
+    { n: 1, is: 'cause', text: '发出短信后三分钟没有回信', why: '是模拟器所以收不到是推测' },
+    { n: 2, is: 'ok', runs: ['a2', 'zz'] },
+    { n: 3, is: 'stale', runs: ['a1'] },   // a1 has only counts: contradicts nothing, the line stays
+    { n: 5, is: 'cause' },                 // nothing but a guess: goes
   ] });
-  assert.deepEqual(r.ops.map((o) => [o.n, o.op, o.is, o.runs]), [[1, 'reword', 'guess', ['a1']], [3, 'keep', 'unsupported', []], [4, 'keep', 'unjudged', []], [7, 'drop', 'no-route', []]]);
-  assert.equal(r.notes, '## 教训\n- 发出短信后等了三分钟没有回信\n- 收起通知栏用小的滑动距离会报 Command failed，换成 up,540,2200 就成\n- 搜索框点不开\n- 没人判的一条\n\n## 捷径\n- 看电量：press_button(HOME) → swipe_on_screen(down,540,20)');
-  assert.equal(r.changed, true);
-  assert.match(report('手机', r), /改写（是推测，记录 a1）：这台是模拟器[\s\S]*→ 发出短信后等了三分钟没有回信[\s\S]*去掉（没有走成过的记录）：发短信查流量/);
-  // a guess with nothing left of it goes; a stale one goes against the run named; nothing judged, nothing changed
-  const g = settle({ notes: '- 多半是网不好\n- 点图片会跳走', records, judged: [{ n: 0, is: 'guess' }, { n: 1, is: 'stale', runs: ['a3'] }] });
-  assert.equal(g.notes, ''); assert.deepEqual(g.ops.map((o) => o.op), ['drop', 'drop']);
-  assert.equal(settle({ notes: '- 一条', records, judged: [{ n: 0, is: 'seen', runs: ['a1'] }] }).changed, false);
+  assert.deepEqual(r.ops.map((o) => [o.n, o.op, o.is]), [[1, 'reword', 'cause'], [5, 'drop', 'cause']]);
+  assert.equal(r.notes, '## 教训\n- 发出短信后三分钟没有回信\n- 收起通知栏用小的滑动距离会报 Command failed，换成 up,540,2200 就成\n- 搜索框点不开\n- 没人判的一条\n\n## 捷径\n- 发短信查流量：list_available_devices()');
+  assert.equal(r.unsupported, 2, 'kept lines with no run on record behind them are counted, not touched');
+  assert.match(report('信息', r), /信息：（另有 2 条背后没有在册的记录，没动）\n  改写（里面有原因的推测）：这台是模拟器[\s\S]*→ 发出短信后三分钟没有回信[\s\S]*去掉（里面有原因的推测）：多半是网不好/);
+  // against a run whose way is on record, a stale line goes
+  const st = settle({ notes: '- 搜索框点不开', records, judged: [{ n: 0, is: 'stale', runs: ['a3'] }] });
+  assert.deepEqual(st.ops.map((o) => [o.op, o.runs]), [['drop', ['a3']]]);
+  // nothing judged (the call failed): nothing changes
+  const none = settle({ notes, records, judged: [] });
+  assert.equal(none.changed, false); assert.equal(none.notes, notes.trim());
 });
 
 test('howto: a thing is known where most of it happened; a run the notes are written from keeps its steps, without the words typed', () => {

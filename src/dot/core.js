@@ -766,7 +766,7 @@ export function apply(ctx, config = {}) {
       const effort = await workEffort(ctx, sel);
       const reply = await collectReply(llm.stream(background({
         provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
-        system: prompt(r.review ? 'dot.howto.review' : 'dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
+        system: prompt(r.review ? 'dot.howto.review' : 'dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 12000, // thinking counts too: cut short, the notes came back as half a JSON (howto-failed, "Unexpected end of JSON input")
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
       })));
       seen = { text: String(reply.text ?? ''), args: String(reply.args ?? '') };
@@ -788,8 +788,8 @@ export function apply(ctx, config = {}) {
         if (!p.changed) continue;
         if (hashOf(howto.notes(p.app)) !== p.hash) { done.push(`${p.app}：笔记在核对之后变过，没动（再核对一次）`); continue; }
         howto.amend(p.app, p.notes);
-        audit('nightcheck-applied', { app: p.app, ops: p.ops.filter((o) => o.op !== 'keep').length });
-        done.push(`${p.app}：改了 ${p.ops.filter((o) => o.op !== 'keep').length} 条`);
+        audit('nightcheck-applied', { app: p.app, ops: p.ops.length });
+        done.push(`${p.app}：改了 ${p.ops.length} 条`);
       }
       return done.length ? done.join('\n') : '上次核对没有要改的';
     }
@@ -798,7 +798,7 @@ export function apply(ctx, config = {}) {
     const places = [], said = [];
     for (const app of howto.apps()) {
       const notes = howto.notes(app);
-      if (!notes) continue;
+      if (!notes || app.startsWith('_')) continue; // files of the book's own keeping are not places
       const records = howto.records(app), input = checkInput({ place: placeName(app), notes, records });
       let judged = [], failed = '';
       if (input.lessons.length && sel && llm?.stream) {
@@ -806,16 +806,16 @@ export function apply(ctx, config = {}) {
           const effort = await workEffort(ctx, sel);
           const reply = await collectReply(llm.stream(background({
             provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
-            system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 4000,
+            system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 12000, // what it thinks counts too: at 4000 the answer for a place with eight lessons was cut mid-JSON
             messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
           })));
           const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
           judged = Array.isArray(out?.lines) ? out.lines : [];
         } catch (error) { failed = String(error.message).slice(0, 160); }
       }
-      const r = settleCheck({ notes, judged, records, tasks: howto.tasks(app) });
+      const r = settleCheck({ notes, judged, records });
       places.push({ app, hash: hashOf(notes), changed: r.changed, ops: r.ops, notes: r.notes, ...(failed ? { failed } : {}) });
-      audit('nightcheck', { app, lessons: input.lessons.length, records: records.length, reword: r.ops.filter((o) => o.op === 'reword').length, drop: r.ops.filter((o) => o.op === 'drop').length, unsupported: r.ops.filter((o) => o.is === 'unsupported' || o.is === 'unjudged').length, ...(failed ? { failed } : {}) });
+      audit('nightcheck', { app, lessons: input.lessons.length, records: records.length, judged: judged.length, reword: r.ops.filter((o) => o.op === 'reword').length, drop: r.ops.filter((o) => o.op === 'drop').length, unsupported: r.unsupported, ...(failed ? { failed } : {}) });
       said.push(checkReport(app, r) + (failed ? `\n  （这一处的教训没判成：${failed}）` : ''));
     }
     try { writeFileSync(nightFile(), `${JSON.stringify({ at: Date.now(), places }, null, 1)}\n`); } catch (error) { logger.warn(`nightcheck not written: ${error.message}`); }
