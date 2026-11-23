@@ -142,7 +142,7 @@ export async function collectReply(stream) {
     throw new Error(`interlude model call ended with ${finish.kind}: ${finish.failure?.message ?? finish.failure?.code ?? ''}`);
   }
   const args = [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v).find(Boolean) ?? '';
-  return { text, args, usage };
+  return { text, args, usage, finish };
 }
 
 

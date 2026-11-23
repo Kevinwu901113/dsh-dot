@@ -127,6 +127,7 @@ export const defaults = {
   howto: true,
   howtoMinSteps: 12,
   howtoMaxChars: 800,
+  nightcheck: true,      // when she falls asleep her notes are held against the records and amended (nightcheck.js); false: only on /dot nightcheck
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness: a turn with no session event for turnStallMs is stalled (he is told once).
   turnStallMs: 300000,
@@ -800,7 +801,7 @@ export function apply(ctx, config = {}) {
       const notes = howto.notes(app);
       if (!notes || app.startsWith('_')) continue; // files of the book's own keeping are not places
       const records = howto.records(app), input = checkInput({ place: placeName(app), notes, records });
-      let judged = [], failed = '';
+      let judged = [], failed = '', seen = null; // seen: what the call gave back, said when it cannot be read
       if (input.lessons.length && sel && llm?.stream) {
         try {
           const effort = await workEffort(ctx, sel);
@@ -809,9 +810,10 @@ export function apply(ctx, config = {}) {
             system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 12000, // what it thinks counts too: at 4000 the answer for a place with eight lessons was cut mid-JSON
             messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
           })));
+          seen = { finish: reply.finish?.kind ?? '', text: String(reply.text ?? '').length, args: String(reply.args ?? '').length, out: reply.usage?.outputTokens ?? 0 };
           const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
           judged = Array.isArray(out?.lines) ? out.lines : [];
-        } catch (error) { failed = String(error.message).slice(0, 160); }
+        } catch (error) { failed = `${String(error.message).slice(0, 120)}${seen ? `（finish ${seen.finish || '?'}，正文 ${seen.text} 字，参数 ${seen.args} 字，输出 ${seen.out} token）` : ''}`; }
       }
       const r = settleCheck({ notes, judged, records });
       places.push({ app, hash: hashOf(notes), changed: r.changed, ops: r.ops, notes: r.notes, ...(failed ? { failed } : {}) });
@@ -898,6 +900,12 @@ export function apply(ctx, config = {}) {
   // Her sleep (sleep.js): asleep, only he wakes her; what her phone and her QQ show waits, and is shown when she wakes.
   const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => quiet(),
     onWake: () => { if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); } } });
+  // Each night, once she is asleep: checked, then amended where the check would change something. What was there
+  // before stays in the check's file (each op carries the line as it was), and every change is in the audit log.
+  ctx.effect(() => sleep.onSleep(() => {
+    if (!cfg.nightcheck) return;
+    void (async () => { try { await nightcheck(); const done = await nightcheck({ apply: true }); audit('nightcheck-night', { done: String(done).slice(0, 300) }); } catch (error) { logger.warn(`nightcheck failed: ${error.message}`); audit('nightcheck-failed', { error: String(error.message).slice(0, 200) }); } })();
+  }), 'dsh-dot: nightcheck when she falls asleep');
   const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
   const sleeps = sleepsAtAll(cfg.awakeHours);
   turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === lastSession ? sleep.wokeNote() : '') });
