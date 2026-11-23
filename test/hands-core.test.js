@@ -240,7 +240,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(3), /（这一轮刚开始做一件事：（在手机上）打开小黑盒找表情包。才开始，还没有任何结果）\n（(?!你自己想说的意思)/);
+  assert.match(fed(3), /（他刚说：[^\n]*）\n（把下面【】里的话用你平时跟他说话的口气说出来[^\n]*\n【这件事我去做了，现在还在做，还没有结果，有结果了告诉你。】$/, 'a report: the book\'s sentence and his last words, not the conversation');
   assert.doesNotMatch(fed(3), /从不同帖子/, 'the task itself is not read out to the voice');
   // asked how it is going: the book says it is under way and has no result
   h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在干嘛呀' }] });
@@ -257,7 +257,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('收到！');
   h.emit('s1', 'turn/end', { turn: 7, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(5), /（这一轮刚停下一件事：（在手机上）打开小黑盒找表情包。他叫停了）/);
+  assert.match(fed(5), /【「打开小黑盒找表情包」停下了：你叫停了。】$/);
   assert.equal(her.got.length, 0, 'the stopped thing wakes nobody');
   // a thing of his comes to its end: the voice is given the book's result for it
   h.emit('s1', 'turn/start', { turn: 8 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查下明天天气' }] });
@@ -271,7 +271,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
   h.replies.push('明天多云，十八到二十四度');
   h.emit('s1', 'turn/end', { turn: 9, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节（他要的东西在这里面，就照这里给全；他没要的经过不提）：后天转晴）/, 'their summary and details: the result comes from the book');
+  assert.match(fed(7), /【「查明天广州天气」做完了。结果：明天多云，18 到 24 度。】\n〔后天转晴〕$/, 'their summary is what is said; their details are hers to give when asked for');
   assert.doesNotMatch(fed(7), /看图|看结果/, 'nothing to look at: the voice has no picture');
   assert.match(fed(7), /他这会儿没说话，是你有事要告诉他/);
   assert.equal(h.qqSent.at(-1)[1], '明天多云，十八到二十四度');
@@ -507,7 +507,7 @@ test('her computer has the same gates: a till page is his, leaving the machine i
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '推之前问问他。' }] } });
   h.replies.push('要推了，可以吗');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（他要的事停在一步上：（在电脑上）把博客推上去。要做的一步「把代码推出去（git push）：origin」还没做——按你的规矩，这种事先问过他才做。这次就是要问他：这一步做不做。）/);
+  assert.match(fed(), /【「把博客推上去」停在一步上：「把代码推出去（git push）：origin」还没做。这种事要先问过你：这一步做不做？】$/);
   // a till: his, with the computer's screen going with what she says
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '买个域名' }] });
   await h.tools.hands.execute({ device: 'computer', do: '买个域名' }); await tick();
@@ -518,7 +518,7 @@ test('her computer has the same gates: a till page is his, leaving the machine i
   h.emit('s1', 'turn/start', { turn: 5 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
   h.replies.push('到付款这步了，你来');
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /「付款、下单的最后一步」这一步还没做，也不会替他做——只能他本人来/);
+  assert.match(fed(), /「付款、下单的最后一步」这一步我不能替你做，得你自己来。】/);
   h.stop();
 });
 
@@ -547,7 +547,7 @@ test('the same error over and over is counted by code: told to change course at 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: 'B站连不上，试了好几个地址都是 ERR_CONNECTION_CLOSED。' }] } });
   h.replies.push('B站连不上');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节（他要的东西在这里面，就照这里给全；他没要的经过不提）：换了几个地址都一样）/);
+  assert.match(fed(), /【「打开 B 站」没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED】\n〔换了几个地址都一样〕$/);
   assert.doesNotMatch(fed(), /你自己想说的意思/, 'what she wrote in her conversation is not passed on: the result has one account');
   // never ended by the hands: the code ends it at the sixth
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '再试试' }] });
@@ -718,7 +718,7 @@ test('an answer someone owes a thing is a record on it, not her hands\' time: th
   h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
   h.replies.push('问了，他还没回');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（这件事发出去之后在等 小明 回，现在还没回；回了会再告诉他）/);
+  assert.match(fed(), /现在在等 小明 回，还没回，回了告诉你。】/);
   assert.match(await note(), /在等回复：（在手机上）在微信上问小明周末来不来——等 小明 回/);
   // someone else writes: not the answer
   const before = her.got.length;
@@ -734,7 +734,7 @@ test('an answer someone owes a thing is a record on it, not her hands\' time: th
   h.emit('s1', 'turn/start', { turn: 5 }); h.emit('s1', 'user/message', { source: woke.source, content: woke.content });
   h.replies.push('小明说来，周六下午到');
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（这件事在等的 小明 回了，原话：来，周六下午到）/);
+  assert.match(fed(), /小明 回了，原话：来，周六下午到】/);
   assert.doesNotMatch(await note(), /在等回复/, 'answered: no longer waited for');
   // a thing in which a step that reaches someone was let through: whether an answer is owed has to be said to end it
   h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '给 10086 发条短信' }] });

@@ -90,6 +90,55 @@ export function sayInput({ dialogue = [], stickers = null, facts = [], about = '
 }
 
 /**
+ * A report from the book, to be said in her voice. What is said is the code's: `must` are plain sentences made from
+ * the book (ledger.js) — complete, true, and sayable as they are; `may` is the thing's detail, hers to give when it is
+ * what he asked for. How it is said is the card's. The call is given his last words and these sentences, not the
+ * conversation: 11-24, measured on one input — written as "the next line of this conversation" with the fact beside it,
+ * the voice said a thing just begun was done in 5 of 10 tries (9 of 10 at worst, whatever the wording of the fact);
+ * asked to say a given sentence its own way, without the conversation, it added something in 3 of 160.
+ */
+export function reportInput({ his = '', must = [], may = [], about = '', stickers = null, unprompted = false } = {}) {
+  const parts = [];
+  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((x) => `sticker:${x.id} ${x.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  const notes = [String(his).trim() && !unprompted ? prompt('dot.say.report.his', { his: String(his).trim().replace(/\s*\n+\s*/g, ' / ') }).trim() : prompt('dot.say.report.unprompted').trim()];
+  if (String(about).trim()) notes.push(prompt('dot.say.report.about', { about: String(about).trim() }).trim());
+  notes.push(prompt('dot.say.report').trim());
+  if (may.length) notes.push(prompt('dot.say.report.may').trim());
+  notes.push(`【${must.join('\n')}】`);
+  if (may.length) notes.push(`〔${may.join('\n')}〕`);
+  parts.push(notes.join('\n'));
+  return parts.map((p) => p.trim()).join('\n\n');
+}
+
+/** A figure in what is written (a time, a count, a hash, a version): anything with a digit in it. */
+const FIGURE = /[A-Za-z0-9._:\/-]*\d[A-Za-z0-9._:\/-]*/g;
+/**
+ * What code can hold a report against its sentences: every figure in it is one it was given (in the sentences, the
+ * detail, his words or hers). → the figures that are not. Wording cannot be checked by code — and a model asked to
+ * judge it missed 14 of 50 claims of "done" (11-24) — so this is the part that is checked, and no more is claimed.
+ */
+export function unfounded(lines, given) {
+  const strip = (f) => f.replace(/^[._:\/-]+|[._:\/-]+$/g, '');
+  const src = (String(given ?? '').toLowerCase().match(FIGURE) ?? []).map(strip);
+  const out = [];
+  for (const f of unfold(lines.join('\n')).toLowerCase().match(FIGURE) ?? []) {
+    const x = strip(f);
+    // The same figure, or a good part of a longer one (the head of a hash): a "2" inside "2c7" is not it.
+    if (x && !src.includes(x) && !(x.length >= 4 && src.some((g) => g.includes(x))) && !out.includes(x)) out.push(x);
+  }
+  return out;
+}
+
+/**
+ * Of a thing still being done: words that say it is over, or what was seen of it or heard back. A list of surface
+ * marks, not a reading — on 112 replies marked by hand (11-24) it caught all 50 that said so and 16 of the 62 that did
+ * not (a reply caught wrongly is written once more, nothing worse); the same model asked yes or no missed 14 of the
+ * 50. (cf. "False Success", arXiv 2606.09863: a surface detector beat every model judge at this.)
+ */
+const OVER = /(?<![去在要])发(了|完|好|啦)(?=[，,。 /]|$)|发(出去|过去|下去)(了|啦)|(又|再|刚|已经).{0,3}发了|完了|好了|搞定|点了.{0,4}发送|敲了一遍|没回|回音|回信|回复|回执|等(它|他|对方)?回|等了|没动静|没反应|石沉|卡在|加载|开着呢|看了眼|命令行.{0,3}敲|没找到|找到了|晾在|催下去/;
+export const saysOver = (lines) => OVER.test(unfold(lines.join(' / ')));
+
+/**
  * @param {object} deps
  * @param {() => string} deps.card - her card, as she reads it ('' = none: nothing can be said)
  * @param {(o: { system: string, text: string }) => Promise<string>} deps.call - one model call: that system, that message, no tools
@@ -126,15 +175,32 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
      * @param {string} [o.about] - what she knows that bears on it
      * @param {string[]} [o.images] - pictures her thinking wants sent with it (a screenshot, a file): not the call's to choose
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
+     * @param {{ his: string, must: string[], may?: string[], underway?: boolean }} [o.plan] - a report from the book (reportInput): said from these sentences, not from the conversation
      * @param {string} [o.context] - for someone else than him: what they said, where
      */
-    async speak({ to = 'owner', about = '', facts = [], images = [], unprompted = false, context = '' } = {}) {
+    async speak({ to = 'owner', about = '', facts = [], plan = null, images = [], unprompted = false, context = '' } = {}) {
       const his = to === 'owner';
       if (unread(to)) return { status: 'held' };
       try {
         const mine = stickers();
-        const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted });
-        const out = await write(input, { has: (id) => mine.some((s) => s.id === id), pictures: true });
+        const has = (id) => mine.some((s) => s.id === id);
+        let out;
+        if (his && plan?.must?.length) {
+          // A report: the book's sentences in her voice. A figure nobody gave it is written once more; the second
+          // time the sentences go as they are — plain, and true.
+          const input = reportInput({ his: plan.his, must: plan.must, may: plan.may ?? [], about, stickers: mine, unprompted });
+          const given = [plan.his, about, ...plan.must, ...(plan.may ?? [])].join('\n');
+          for (let attempt = 0; attempt < 2; attempt++) {
+            out = await write(input, { has, pictures: true });
+            const extra = out.silent ? ['(nothing)'] : [...unfounded(out.lines, given), ...(plan.underway && saysOver(out.lines) ? ['(says it is over)'] : [])];
+            if (!extra.length) break;
+            audit('say-unfounded', { extra: extra.slice(0, 8), attempt });
+            if (attempt === 1) { out = tidy(parseSaid(plan.must.join('\n'), { has, pictures: false })); audit('say-plain', { lines: out.lines.length }); }
+          }
+        } else {
+          const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted });
+          out = await write(input, { has, pictures: true });
+        }
         const pictures = [...out.images, ...[].concat(images ?? []).filter(Boolean)];
         if (out.silent && !pictures.length) { audit('say-silent', { to }); return { status: 'silent' }; }
         if (unread(to)) { audit('say-held', { to, lines: out.lines.length }); return { status: 'held' }; }

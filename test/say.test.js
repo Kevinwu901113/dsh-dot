@@ -94,3 +94,34 @@ test('how much she says is hers: no count cuts it; lines she fences are one mess
   assert.ok(report.lines[1].includes(WITHIN) && !report.lines[1].includes('\n'));
   assert.deepEqual(tidy(parseSaid('```text\na\nb')).lines.map(unfold), ['a\nb'], 'a fence left open: what follows is the block');
 });
+
+test('a report from the book is said from its sentences, not from the conversation; a figure nobody gave it is written once more, then the sentences go as they are', async () => {
+  const { reportInput, unfounded, createSay } = await import('../src/dot/say.js');
+  const input = reportInput({ his: '把最近三条提交列给我', must: ['「看提交」做完了。结果：当前分支 dev'], may: ['460d2c7 The voice\n2d26055 Whether'], stickers: [] });
+  assert.match(input, /（他刚说：把最近三条提交列给我）\n（把下面【】里的话[^\n]*\n（〔〕里是这件事的细节[^\n]*\n【「看提交」做完了。结果：当前分支 dev】\n〔460d2c7 The voice\n2d26055 Whether〕$/);
+  assert.doesNotMatch(input, /刚才的对话/, 'the conversation is not given');
+  assert.match(reportInput({ must: ['x'], unprompted: true }), /^（他这会儿没说话，是你有事要告诉他。）/);
+  assert.deepEqual(unfounded(['等了 2 分钟，16:50 发的', '分支 dev，460d2c7'], '460d2c7 分支 dev'), ['2', '16:50']);
+  assert.deepEqual(unfounded(['好了，在 dev 上'], '当前分支 dev'), []);
+  const mk = (replies) => { const sent = [], audits = []; const say = createSay({ card: () => '# 卡', call: async () => replies.shift() ?? '好', recent: () => [{ who: 'owner', text: '以前的话' }], stickers: () => [], check: (t) => ({ lines: String(t).split('\n').filter(Boolean), hits: [] }), send: async (o) => { sent.push(o.text); return { said: o.text.split('\n') }; }, audit: (e, d) => audits.push([e, d]) }); return { say, sent, audits }; };
+  const plan = { his: '发了吗', must: ['「发短信」这件事我去做了，现在还在做，还没有结果，有结果了告诉你。'] };
+  const ok = mk(['去弄了\n有结果跟你说']);
+  await ok.say.speak({ plan });
+  assert.deepEqual(ok.sent, ['去弄了\n有结果跟你说']);
+  const twice = mk(['发了，16:50 发的', '发了，等了 3 分钟没回']);
+  await twice.say.speak({ plan });
+  assert.deepEqual(twice.sent, ['「发短信」这件事我去做了，现在还在做，还没有结果，有结果了告诉你。'], 'what cannot be held to the book is not sent: the book\'s own sentence is');
+  assert.deepEqual(twice.audits.filter(([e]) => e === 'say-unfounded' || e === 'say-plain').map(([e]) => e), ['say-unfounded', 'say-unfounded', 'say-plain']);
+  // of a thing still being done: a reply that says it is over is written once more, then the sentence goes as it is
+  const { saysOver } = await import('../src/dot/say.js');
+  assert.equal(saysOver(['发了，还在等回音']), true); assert.equal(saysOver(['好，我去发', '有结果了跟你说']), false);
+  const over = mk(['发啦\n还没回', '去发了\n有结果跟你说']);
+  await over.say.speak({ plan: { ...plan, underway: true } });
+  assert.deepEqual(over.sent, ['去发了\n有结果跟你说']);
+  const done = mk(['发完了，没回']);
+  await done.say.speak({ plan: { his: '发了吗', must: ['「发短信」做完了。结果：发出去了，没回'] } });
+  assert.deepEqual(done.sent, ['发完了，没回'], 'of a thing that is over, saying so is the report');
+  const once = mk(['发了，16:50 发的', '去弄了']);
+  await once.say.speak({ plan });
+  assert.deepEqual(once.sent, ['去弄了']);
+});

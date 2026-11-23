@@ -198,9 +198,9 @@ test('hands: how a thing ended is worded for each reader from the facts — for 
   assert.match(handsStatus({ outcome: 'failed', cause: 'broke-off', error: '400' }), /做到一半断了（400）/);
   assert.match(handsStatus({ outcome: 'done', notes: ['own-words', 'own-words', 'reply-check'] }), /^手收尾了.*；要打一段你没写的字.*；你写的那句话被退回了/);
   // the voice has no picture and nothing to do: facts in a few words
-  assert.deepEqual(['done', 'timeout', 'failed'].map((o) => voiceHow({ outcome: o })), ['', '做太久停下了，可能只做了一部分。', '没做成。']);
-  assert.equal(voiceHow({ outcome: 'stopped', by: 'him' }), '他叫停了。');
-  assert.equal(voiceHow({ outcome: 'failed', cause: 'restart' }), '没做完，中途被重启打断了。');
+  assert.deepEqual(['done', 'timeout', 'failed'].map((o) => voiceHow({ outcome: o })), ['', '做太久停下了，可能只做了一部分', '没做成']);
+  assert.equal(voiceHow({ outcome: 'stopped', by: 'him' }), '你叫停了', 'said to him, in the first person');
+  assert.equal(voiceHow({ outcome: 'failed', cause: 'restart' }), '没做完，中途被重启打断了');
   for (const o of ['done', 'timeout', 'stopped', 'failed']) assert.doesNotMatch(voiceHow({ outcome: o }), /图|看/, 'nothing to look at');
   const h = harness();
   h.hands.start({ device: 'phone', task: '回一句' }); await tick();

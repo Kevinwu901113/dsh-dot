@@ -571,7 +571,7 @@ export function apply(ctx, config = {}) {
         const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
         if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
         // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
-        if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[voiceHow(e), e.summary].filter(Boolean).join('') || '没有留下结果'}`).join('\n'), c);
+        if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
       }
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
@@ -914,7 +914,7 @@ export function apply(ctx, config = {}) {
     const out = [];
     for (const k of spec.cases ?? []) {
       const said = await Promise.all(Array.from({ length: Math.min(20, spec.times ?? 5) }, async () => {
-        try { const e = k.effort ? (await effortFor(ctx, sel, k.effort)).effort : effort; return (await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(e ? { reasoningEffort: e } : {}), system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] }))).text; } catch (error) { return `!! ${error.message}`; }
+        try { const e = k.effort ? (await effortFor(ctx, sel, k.effort)).effort : effort; return (await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(e ? { reasoningEffort: e } : {}), system: k.system || system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] }))).text; } catch (error) { return `!! ${error.message}`; }
       }));
       out.push({ name: k.name, said });
     }
@@ -1147,16 +1147,38 @@ export function apply(ctx, config = {}) {
   // What the voice is told about her doings comes from the book, never from what she wrote: one line a thing, no task
   // text beyond its first clause (11-21: given the whole task, the voice read it out as progress).
   const titleOf = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
+  // What the voice is given comes in two shapes, by what the book has for this turn.
+  // A report (planFor): a thing of this turn ended, was stopped, or was begun — the book's own sentences, plain and in
+  // the first person, which the voice says her way and to which it adds nothing (say.js reportInput). `must` is what
+  // is said; `may` is the thing's detail, given when it is what he asked for.
+  // Talk (factsFor): nothing of this turn is in the book — she is talking with him; the voice has the conversation,
+  // and is told what is in her hands so that it does not make up doings.
+  const nameOf = (task) => titleOf(String(task ?? '').replace(/^（[^）]*）/, ''));
+  const planFor = (t) => {
+    const must = [], may = [];
+    const about = t?.thing ? ledger.get(t.thing) : null;
+    if (about?.state === 'ended') {
+      const what = nameOf(about.task);
+      if (about.ask?.tier && about.ask.what) must.push(prompt(about.ask.tier === 'him' ? 'dot.plain.gate.him' : 'dot.plain.gate.ask', { what, step: about.ask.what }));
+      else if (about.question) must.push(prompt('dot.plain.stuck', { what, question: about.question }));
+      else if (about.outcome === 'done') must.push(about.summary ? prompt('dot.plain.done', { what, summary: about.summary }) : prompt('dot.plain.done.bare', { what }));
+      else must.push(prompt('dot.plain.notdone', { what, how: voiceHow(about), summary: about.summary ? prompt('dot.plain.summary', { summary: about.summary }).trim() : '' }));
+      if (about.detail && !about.question) may.push(headTail(about.detail, cfg.sayDetailChars));
+      if (about.awaiting?.from) must.push(prompt(about.awaiting.answeredAt ? 'dot.plain.answered' : 'dot.plain.awaiting', { from: about.awaiting.from, text: about.awaiting.text ?? '' }));
+    }
+    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) must.push(prompt('dot.plain.stopped', { what: nameOf(e.task), how: voiceHow(e) || prompt('dot.plain.how.stopped.her').trim() })); }
+    // Of things just given to her hands nothing is said but that they are being done — not even what they are: he has
+    // just said it himself, and with the task in front of it the voice told it as done (11-24: 12 of 20 with the task
+    // named, 1 of 20 without).
+    const said = must.length;
+    const going = (t?.opened ?? []).map((id) => ledger.get(id)).filter((e) => e && e.state !== 'ended');
+    if (going.length > 1) must.push(prompt('dot.plain.opened.many', { n: going.length }));
+    else if (going.length) must.push(prompt(going[0].state === 'queued' ? 'dot.plain.queued' : 'dot.plain.opened'));
+    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said } : null;
+  };
   const factsFor = (t) => {
     const out = [];
     const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.thing].filter(Boolean));
-    const about = t?.thing ? ledger.get(t.thing) : null;
-    // A step one of the gates stopped (gates.js): which step, that it was not done, and whose rule it is — from the book, so the voice has nothing to fill in.
-    if (about?.state === 'ended' && about.ask?.tier && about.ask.what) out.push(prompt(about.ask.tier === 'him' ? 'dot.say.fact.gate.him' : 'dot.say.fact.gate.ask', { what: titleOf(about.task), step: about.ask.what }));
-    else if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: voiceHow(about), summary: about.summary ? prompt('dot.say.fact.summary', { summary: about.summary }).trim() + (about.detail ? prompt('dot.say.fact.detail', { detail: headTail(about.detail, cfg.sayDetailChars) }).trimEnd() : '') : prompt('dot.say.fact.no-summary').trim() }));
-    if (about?.state === 'ended' && about.awaiting?.from) out.push(prompt(about.awaiting.answeredAt ? 'dot.say.fact.answered' : 'dot.say.fact.awaiting', { from: about.awaiting.from, text: about.awaiting.text ?? '' }));
-    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), how: voiceHow(e).replace(/。$/, '') })); }
-    for (const id of t?.opened ?? []) { const e = ledger.get(id); if (e && e.state !== 'ended') out.push(prompt(e.state === 'queued' ? 'dot.say.fact.queued' : 'dot.say.fact.opened', { what: titleOf(e.task) })); }
     const rest = ledger.unfinished().filter((e) => !mine.has(e.id));
     for (const e of rest.filter((x) => x.state === 'running')) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
     const waiting = rest.filter((x) => x.state === 'queued').length;
@@ -1203,12 +1225,12 @@ export function apply(ctx, config = {}) {
    */
   async function tellHim(t, { about = '', images = [] } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
-    const facts = factsFor(t);
-    audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
+    const plan = planFor(t), facts = plan ? [] : factsFor(t);
+    audit('say-facts', { facts: (plan ? plan.must : facts).map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160), ...(plan ? { report: true, may: plan.may.length } : {}) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
     const ended = t?.thing ? ledger.get(t.thing) : null;
     const shots = ended?.outcome === 'stuck' && ended.ask?.screen && (ended.device === 'phone' || ended.device === 'computer') ? [`${ended.device}:screen`] : [];
-    const r = await say.speak({ to: 'owner', about, facts, images: [...[].concat(images ?? []), ...shots], unprompted: !(t?.fromQq || t?.elsewhere) });
+    const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !(t?.fromQq || t?.elsewhere) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
