@@ -36,6 +36,8 @@ export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_
     },
     /** Something to ask him about that has no thing (yet). */
     ask({ kind, subject = '', what = '' }) { if (!asks.some((a) => a.kind === kind && a.subject === subject)) asks.push({ kind, subject, what, at: now() }); },
+    /** His words have been read since these were put to him: what was asked before `at` is not waiting any more. */
+    settle(at = now()) { for (let i = asks.length - 1; i >= 0; i--) if (asks[i].at < at) asks.splice(i, 1); },
     /** What is waiting for his yes (the last hour). */
     asking: () => asks.filter((a) => now() - a.at <= 3600000).map((a) => ({ ...a })),
     /** His standing yeses. */

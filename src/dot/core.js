@@ -499,8 +499,6 @@ export function apply(ctx, config = {}) {
       const u = event.data?.usage;
       if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
       if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
-      // The words a turn closes with: its last message, when that one calls no tool (what she writes beside a tool call is thinking aloud at work).
-      if (!event.data?.interrupted) { const c = event.data?.message?.content; t.closing = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : contentText(c).trim(); }
     }
     // The turn broke (the model call failed, a prompt could not be put together): not her silence. Nothing is written
     // in her name about a turn that did not happen; he is told by the plugin when the turn was his.
@@ -510,6 +508,13 @@ export function apply(ctx, config = {}) {
       taken(id);
       turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: Boolean(lost || ((t.fromQq || t.hisHere || t.forHim) && !t.scheduled)) });
     }
+    // A question of hers to him is waiting until his next words have been read: the turn they open either keeps his
+    // yes (his_ok) or does not — said no, said something else — and after it the question is not waiting any more
+    // (11-23: a yes was matched to yesterday's text message he had called off).
+    if (ended && t.his && !broke) {
+      for (const e of ledger.recent(10)) if (e.outcome === 'stuck' && e.ask?.for === 'him' && !e.askSettled && (e.told ?? e.endedAt ?? 0) < t.startedAt) ledger.note(e.id, { askSettled: Date.now() });
+      consent.settle(t.startedAt);
+    }
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
       // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
@@ -517,7 +522,8 @@ export function apply(ctx, config = {}) {
       if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.forHim))) {
         const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
         if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
-        if (!hands?.busy()) finishTask(taskRunning, 'done', stripSilent(String(t.last ?? '').trim()), c);
+        // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
+        if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[voiceHow(e), e.summary].filter(Boolean).join('') || '没有留下结果'}`).join('\n'), c);
       }
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
@@ -528,9 +534,12 @@ export function apply(ctx, config = {}) {
       // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
       if (!t.scheduled && !retired(id)) { t.hisHere = true; }
     }
-    // Nothing she writes leaves. A turn he is in that ends — his words, or a thing of his that came to its end — is
-    // answered by the voice (say.js), which is given the facts of the book and, as one more thing she knows, the note
-    // this turn closed with. Her note is not a draft: what she "is about to do" is only true if the book has it.
+    // Nothing she writes leaves, and nothing she writes is read: a turn he is in that ends — his words, or a thing of
+    // his that came to its end — is answered by the voice (say.js) from their conversation and the facts of the book.
+    // What she herself has for him (a view, a question, something that does not match the picture) she gives with
+    // say's `about`, a field, in that turn. Until 11-23 the turn's closing words were passed on as "what she knows":
+    // she was asked to write them every turn, wrote "发出去了" before her hands had moved, and 0.25.1 then had to drop
+    // them whenever a thing had just ended — taking her real questions with them.
     // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
@@ -543,8 +552,6 @@ export function apply(ctx, config = {}) {
       // The call that writes her words failed: that is not her choosing to say nothing.
       const told = (r) => { if (r?.status === 'failed') { preempts = 0; turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
       if (!speak) { over(); return; }
-      // A note wholly in brackets is a thought to herself, not something she knows for him.
-      const note = stripSilent(String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '')).replace(new RegExp(SILENT, 'g'), '').trim();
       // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
       // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.
       // His next words call the wait off (that turn answers all of it).
@@ -555,14 +562,14 @@ export function apply(ctx, config = {}) {
           if (ackHold !== ack) return;
           ackHold = null;
           if (!hisUnderWay()) { audit('ack-folded', { session: id }); return; } // told by the turn the result woke
-          void tellHim(t, { about: note }).then(told, over);
+          void tellHim(t).then(told, over);
         }, cfg.ackHoldMs);
         ack.timer.unref?.();
         ackHold = ack;
         audit('ack-held', { session: id, things: t.opened });
         return;
       }
-      void tellHim(t, { about: note }).then(told, over);
+      void tellHim(t).then(told, over);
     }
   });
 
@@ -1041,9 +1048,6 @@ export function apply(ctx, config = {}) {
   async function tellHim(t, { about = '', images = [] } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
     const facts = factsFor(t);
-    // A thing of this turn just ended: what came of it is told from the book alone — her note is not given (it would
-    // be a second account of the same result).
-    if (t?.thing && ledger.get(t.thing)?.state === 'ended' && about) { audit('say-note-dropped', { thing: t.thing, chars: String(about).length }); about = ''; }
     audit('say-facts', { facts: facts.map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
     const ended = t?.thing ? ledger.get(t.thing) : null;
@@ -1257,7 +1261,7 @@ export function apply(ctx, config = {}) {
         // him about. With none waiting there is nothing for it to be a yes to.
         const since = Date.now() - 6 * 3600_000;
         const waiting = [
-          ...ledger.recent(10).filter((e) => e.outcome === 'stuck' && e.ask?.for === 'him' && e.ask.tier !== 'him' && e.ask.kind === kind && (e.endedAt ?? 0) >= since).map((e) => ({ at: e.endedAt, subject: e.ask.subject ?? '' })),
+          ...ledger.recent(10).filter((e) => e.outcome === 'stuck' && e.ask?.for === 'him' && e.ask.tier !== 'him' && e.ask.kind === kind && !e.askSettled && (e.endedAt ?? 0) >= since).map((e) => ({ at: e.endedAt, subject: e.ask.subject ?? '' })),
           ...consent.asking().filter((a) => a.kind === kind).map((a) => ({ at: a.at, subject: a.subject ?? '' })),
         ].sort((a, b) => b.at - a.at)[0];
         // Nothing has stopped to ask him: he asked for this himself, in the words of this turn. That counts as his yes

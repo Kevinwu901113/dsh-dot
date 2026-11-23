@@ -188,7 +188,7 @@ test('what she writes in her conversation goes to no one; what she says is writt
   const call = h.llmCalls[0];
   assert.equal(call.system, '# 你是 小点\n话不多。', 'the system prompt is her card and nothing else');
   assert.ok(!('tools' in call) && call.reasoningEffort === 'off' && !('sessionId' in call), 'no tools, no thinking, nobody\'s session');
-  assert.match(call.messages[0].content[0].text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫[\s\S]*他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你这会儿知道的：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息/);
+  assert.match(call.messages[0].content[0].text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫[\s\S]*他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息/);
   assert.match(h.shown('say', r), /^说出去了：\n在整你交代的那个余额的事\n\[sticker:31d44003ce\]$/);
   h.emit('s1', 'turn/end', { turn: 2 });
   await tick(30);
@@ -216,7 +216,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'completed' } });
   await tick(30);
   assert.deepEqual(h.qqSent, [['owner', '醒着呢', []]]);
-  assert.match(fed(0), /（你手上没有在做的事，这一轮也没有开始做任何事）\n（你这会儿知道的：他问睡了没，还醒着。）\n（下面写你这次发给他的消息/);
+  assert.match(fed(0), /（你手上没有在做的事，这一轮也没有开始做任何事）\n（下面写你这次发给他的消息/);
   assert.equal(h.llmCalls[0].system, '# 你是 小点\n话不多。');
   assert.equal(her.noted.length, 0, 'nothing is put into her conversation for it');
   // she says she will go and do it, and gives her hands nothing: the voice is told nothing was begun
@@ -240,7 +240,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(3), /（这一轮刚开始做一件事：（在手机上）打开小黑盒找表情包。才开始，还没有任何结果）\n（你这会儿知道的：交出去了。）/);
+  assert.match(fed(3), /（这一轮刚开始做一件事：（在手机上）打开小黑盒找表情包。才开始，还没有任何结果）\n（(?!你自己想说的意思)/);
   assert.doesNotMatch(fed(3), /从不同帖子/, 'the task itself is not read out to the voice');
   // asked how it is going: the book says it is under way and has no result
   h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在干嘛呀' }] });
@@ -271,7 +271,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
   h.replies.push('明天多云，十八到二十四度');
   h.emit('s1', 'turn/end', { turn: 9, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节：后天转晴）/, 'their summary and details: the result comes from the book');
+  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节（他问到才说，没问到的不提）：后天转晴）/, 'their summary and details: the result comes from the book');
   assert.doesNotMatch(fed(7), /看图|看结果/, 'nothing to look at: the voice has no picture');
   assert.match(fed(7), /他这会儿没说话，是你有事要告诉他/);
   assert.equal(h.qqSent.at(-1)[1], '明天多云，十八到二十四度');
@@ -300,7 +300,7 @@ test('where he is talking to her is where her words show; words her hands type f
   const started = await h.tools.hands.execute({ device: 'phone', do: '在这条帖子下面评论', say: '想说自己就住在 DSH 里' }); await tick();
   assert.equal(started.status, 'started');
   assert.equal(h.agentOf('h1').got[0].content[0].text, '（在手机上）在这条帖子下面评论\n要打的字（原样打，一个字不改）：\n住这儿的人路过');
-  assert.match(h.llmCalls[1].messages[0].content[0].text, /^（你这会儿知道的：想说自己就住在 DSH 里）\n（在这条帖子下面评论。这里发不了表情包。下面只写要打上去的原话/);
+  assert.match(h.llmCalls[1].messages[0].content[0].text, /^（你自己想说的意思：想说自己就住在 DSH 里）\n（在这条帖子下面评论。这里发不了表情包。下面只写要打上去的原话/);
   assert.equal(await h.pre('h1', 'phone_type', { text: '住这儿的人路过' }), 'ran', 'the words are hers to type from');
   assert.equal((await h.pre('h1', 'phone_type', { text: '哈哈确实，我也这么觉得' })).kind, 'deny', 'their own are not');
   // she would rather not say it: nothing is handed over
@@ -547,9 +547,8 @@ test('the same error over and over is counted by code: told to change course at 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: 'B站连不上，试了好几个地址都是 ERR_CONNECTION_CLOSED。' }] } });
   h.replies.push('B站连不上');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节：换了几个地址都一样）/);
-  assert.doesNotMatch(fed(), /你这会儿知道的/, 'her note is not a second account of the result');
-  assert.ok(h.audit.some((a) => a.event === 'say-note-dropped'));
+  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节（他问到才说，没问到的不提）：换了几个地址都一样）/);
+  assert.doesNotMatch(fed(), /你自己想说的意思/, 'what she wrote in her conversation is not passed on: the result has one account');
   // never ended by the hands: the code ends it at the sixth
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '再试试' }] });
   await h.tools.hands.execute({ device: 'computer', do: '再开一次 B 站' }); await tick();
@@ -616,5 +615,25 @@ test('her hands have a shell and files only inside her computer: with none runni
   delete h.services.dshComputer;
   assert.equal((await h.pre('h1', 'bash', { command: 'rm -rf ~' })).kind, 'deny', 'no computer component at all');
   assert.equal(await h.pre('h1', 'web_search', { query: 'x' }), 'ran', 'looking things up needs no computer');
+  h.stop();
+});
+
+test('a question to him waits until his next words have been read: called off, it is not what a later yes answers', async () => {
+  const h = harness();
+  const fg = 'com.android.packageinstaller/.Install';
+  h.services.dshPhone = { lastScreen: { items: [{ words: '安装', x: 10, y: 10 }], at: Date.now() }, foreground: async () => fg };
+  const granted = () => h.audit.filter((a) => a.event === 'consent-granted');
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装个小红书' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '装小红书' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.equal((await h.pre('h1', 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 10, y: 10 })).kind, 'deny');
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick(30);
+  // he says no: the turn his words open ends without a yes
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '算了不装了' }] });
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  // later he asks again himself: a yes ahead, in the words of that turn — not an answer to the question he had called off
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '还是装上吧' }] });
+  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'ok', kind: 'install' });
+  assert.equal(granted().length, 1); assert.equal(granted()[0].ahead, true); assert.equal(granted()[0].words, '还是装上吧');
   h.stop();
 });

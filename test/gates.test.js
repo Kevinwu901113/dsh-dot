@@ -123,6 +123,9 @@ test('consent: a yes covers one thing (bound on first use) and lets go unused; "
   c.grant({ kind: 'message', words: '跟他说一声', ahead: true });
   assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), true);
   assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), false, 'with no thing to keep it, once');
+  // what was put to him before his words were read is not waiting after them
+  c.ask({ kind: 'send-file', subject: 'user:3', what: 'x' }); assert.equal(c.asking().length, 1);
+  c.settle(now + 1); assert.equal(c.asking().length, 0);
   assert.deepEqual(kept.map((g) => g.kind), ['message'], 'only a standing yes is kept');
   const again = createConsent({ store, now: () => 1e9 });
   assert.equal(again.allows({ kind: 'message', subject: 'user:1' }), true, 'across a restart');
