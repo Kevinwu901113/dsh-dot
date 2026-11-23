@@ -41,13 +41,14 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
    * Where a command from this cwd goes: 'vm' (hers and everyone else's: into her computer),
    * 'vm-noshare' (a qq-bridge session: into the VM, but its folder is never shared in — sharing
    * re-creates the VM and her QQ inside it would drop, and nothing under qq-bridge's state/ belongs
-   * in there), or 'host' (a qq-bridge owner chat with compat.ownerComputer 'host': dsh's own local
-   * runner, as if this plugin were not installed).
+   * in there), or 'host' (a qq-bridge owner chat with compat.ownerComputer 'host', or a thing her hands
+   * were given on this machine itself: dsh's own local runner, as if this plugin were not installed).
    */
   routeFor(cwd) {
     const c = this.compat();
     const owner = c?.ownerOfCwd?.(cwd) ?? 'other';
     if (owner === 'qqb-owner' && c.ownerComputer === 'host') return 'host';
+    if (owner === 'hands:host') return 'host'; // a thing her hands do on this machine itself (dot/core.js: the hands' host folder)
     return owner === 'qqb-owner' || owner === 'qqb-sandbox' ? 'vm-noshare' : 'vm';
   }
 

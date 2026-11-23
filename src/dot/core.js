@@ -21,7 +21,7 @@ import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { createLedger, headTail } from './ledger.js';
-import { approvalKind, classify, classifyComputer, KINDS, HIM_KINDS } from './gates.js';
+import { approvalKind, classify, classifyComputer, classifyHost, KINDS, HIM_KINDS } from './gates.js';
 import { createConsent } from './consent.js';
 import { createSay } from './say.js';
 import { createOutlet } from './outlet.js';
@@ -31,7 +31,7 @@ import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { get as httpGet } from 'node:http';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute, dirname } from 'node:path';
+import { join, relative, isAbsolute, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { mountPanel } from './panel.js';
@@ -903,9 +903,16 @@ export function apply(ctx, config = {}) {
   const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
   // Which device each of her hands' sessions is for: they are offered that device's tools and no other's (compat).
   const handsDevices = new Map(); let handsMaking = '';
+  // A thing on this machine itself (device 'host') is done from its own folder under the hands': a command is routed by
+  // the folder it comes from (computer/subprocess.js), and that folder says "here, not in her computer".
+  const handsHostDir = resolve(join(dshHome(), 'dsh-dot-hands', 'host'));
+  const atHandsHost = (cwd) => { if (!cwd) return false; const p = resolve(String(cwd)); return p === handsHostDir || p.startsWith(handsHostDir + sep); };
+  const handsPlace = (id, cwd) => (atHandsHost(cwd) ? 'host' : id ? handsDevices.get(id) ?? handsMaking : '');
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
-    create: async (cwd, device = '') => {
+    create: async (dir, device = '') => {
+      const cwd = device === 'host' ? handsHostDir : dir;
+      if (device === 'host') { try { mkdirSync(cwd, { recursive: true }); } catch (error) { void error; } }
       const controller = ctx.get('sessionController');
       if (!controller) return '';
       handsMaking = device; // the session being made now is for this device (compat asks, before its id is known here)
@@ -958,7 +965,7 @@ export function apply(ctx, config = {}) {
         ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
         : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) });
       const content = [{ type: 'text', text: lead.trim() + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
-      if (r.outcome !== 'failed' && job.device !== 'web') { // looking something up leaves no screen to show
+      if (r.outcome !== 'failed' && job.device !== 'web' && job.device !== 'host') { // looking something up, or a shell on this machine, leaves no screen to show
         try {
           const images = ctx.get('attachments');
           const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
@@ -1222,7 +1229,7 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web'], description: 'phone / computer：在那台设备上做；web：查资料，不碰设备' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web', 'host'], description: 'phone / computer：在你的那台设备上做；web：查资料，不碰设备；host：在他这台电脑本机上用命令行做（他开口要的才交）' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
         if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(lastSession); const stopped = hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
@@ -1236,16 +1243,18 @@ export function apply(ctx, config = {}) {
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // One more thing for the hands at work: read between two of their steps.
         if (String(args?.add ?? '').trim()) { const added = hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); const t = turns.get(lastSession); if (t && added.status === 'added') t.answered = true; return added; }
-        const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : 'phone';
+        const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(lastSession);
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
+        // This machine is his: her hands go there on his business only, never in her own time.
+        if (device === 'host' && !forHim) { audit('hands-host-refused', { session: lastSession }); return { status: 'failed', why: prompt('dot.hands.host.his').trim() }; }
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
         // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
         const before = t?.thing ? ledger.get(t.thing) : args?.after ? ledger.recent(10).find((e) => e.device === device) : null;
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
-        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
+        const started = await hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : device === 'host' ? 'dot.hands.where.host' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
         return started;
       },
@@ -1513,7 +1522,15 @@ export function apply(ctx, config = {}) {
     }
     // On her computer the same tiers (gates.js classifyComputer), from what the computer's own rules find in the call
     // (computer/gate.js, which then asks nothing of its own for it) and the page her browser is on now.
-    if (theirs && (exec.name === 'bash' || exec.name.startsWith(VM_TOOL_PREFIX))) {
+    // On this machine itself (a thing given with device 'host'): only looking is theirs; anything else is asked of him
+    // (gates.js classifyHost). Every call of theirs there is judged, whatever the tool.
+    const onHost = theirs && handsPlace(id, exec.agent?.session?.header?.cwd) === 'host';
+    if (onHost) {
+      exec.dotGated = true;
+      const stop = gateHands(classifyHost({ tool: exec.name, input: args }), id, 'host');
+      if (stop) return stop;
+    }
+    if (theirs && !onHost && (exec.name === 'bash' || exec.name.startsWith(VM_TOOL_PREFIX))) {
       const pc = computer();
       const doing = Boolean(pc?.gate?.acts?.(exec.name));
       const page = doing ? (await pc?.page?.()) ?? null : null;
@@ -1704,8 +1721,8 @@ export function apply(ctx, config = {}) {
     hers: (id, cwd) => isDotSession(id, cwd) || retired(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
-    /** The device a session of her hands is for: 'phone' | 'computer' | 'web' ('' when not known). */
-    handsDevice: (id) => handsDevices.get(id) ?? handsMaking,
+    /** The device a session of her hands is for: 'phone' | 'computer' | 'web' | 'host' ('' when not known); a host thing is known by its folder alone. */
+    handsDevice: (id, cwd) => handsPlace(id, cwd),
     busy: (id) => turns.has(id),
     /** Add a part to the short message that goes with what has just reached her ({ name, order, text({ agent, messages }) → string | Promise }); returns its disposer. */
     turnNote,

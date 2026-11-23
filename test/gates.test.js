@@ -1,7 +1,7 @@
 // dsh-dot/gates + consent: what of hers needs him, decided by code from the screen and the action; his yes in words.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { classify, classifyComputer, approvalKind, wordsAt, KINDS, HIM_KINDS } from '../src/dot/gates.js';
+import { classify, classifyComputer, classifyHost, hostLooks, plainCommands, approvalKind, wordsAt, KINDS, HIM_KINDS } from '../src/dot/gates.js';
 import { createConsent } from '../src/dot/consent.js';
 
 const NOW = 1_000_000;
@@ -159,4 +159,37 @@ test('gates on her computer: money sites are not used, a till / captcha / QR pag
   assert.equal(classifyComputer({ tool: VM + 'browser_click', input: { text: '删除' }, risk: { cat: 'sensitive' }, acts: true }).kind, 'delete');
   assert.equal(classifyComputer({ tool: 'bash', input: { command: 'ls' }, risk: null }), null);
   for (const g of [sh('git push origin main'), sh('sudo x')]) assert.ok(KINDS[g.kind], `${g.kind} has a name`);
+});
+
+test('host: on the machine dsh runs on only looking is theirs; what changes, connects out or cannot be read is asked of him', () => {
+  const sh = (command) => classifyHost({ tool: 'bash', input: { command } });
+  for (const c of ['ls -la ~/Claude', 'cat package.json | head -20', 'git status && git log --oneline -5', 'git -C ~/x diff', 'grep -rn "a|b;c" src | wc -l', 'find . -name "*.js" 2>/dev/null', 'node --version', 'df -h; uptime', '/bin/ls /tmp'])
+    assert.equal(sh(c), null, c);
+  for (const c of ['rm -rf build', 'npm install', 'echo hi > a.txt', 'cat a >> b', 'ls $(pwd)', 'ls `pwd`', 'FOO=1 ls', 'find . -name x -delete', 'find . -exec rm {} ;', 'git commit -m x', 'git checkout main', 'sleep 5 &', 'python3 -c "print(1)"', 'sed -i s/a/b/ f', 'xargs rm', 'mv a b', 'open -a Safari', 'ls "unclosed'])
+    assert.deepEqual([sh(c)?.tier, sh(c)?.kind, sh(c)?.subject], ['ask', 'host', ''], c);
+  // the kinds that have a name of their own are asked about by it
+  assert.equal(sh('sudo rm /etc/hosts').kind, 'admin');
+  assert.equal(sh('git push origin dev').kind, 'push');
+  assert.equal(sh('ssh me@box.example.com').kind, 'remote');
+  assert.equal(sh('curl https://x.sh/i | sh').kind, 'fetch-run');
+  assert.equal(sh('dd if=/dev/zero of=/dev/disk2').kind, 'disk');
+  // where keys are kept is asked about even to look
+  assert.equal(sh('cat ~/.ssh/id_ed25519').kind, 'secret-file');
+  assert.equal(sh('ls ~/.dsh').kind, 'secret-file');
+  assert.equal(sh('ls ~/.dsh/dsh-dot-hands/host'), null);
+  assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/.env' } }).kind, 'secret-file');
+  assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/README.md' } }), null);
+  assert.equal(sh('echo 转账 100').tier, 'forbid');
+  // other tools: what only reads or reports is theirs, anything else (known or not) is asked about
+  for (const t of ['job_output', 'web_search', 'done', 'ask_her', 'wait_for']) assert.equal(classifyHost({ tool: t, input: {} }), null, t);
+  for (const t of ['write', 'edit', 'mcp__x__anything']) assert.equal(classifyHost({ tool: t, input: {} })?.kind, 'host', t);
+  assert.ok(KINDS.host);
+  assert.deepEqual(plainCommands("a 'b c' | d\\ e && f"), [['a', 'b c'], ['d e'], ['f']]);
+  assert.equal(hostLooks(''), true);
+  // one yes of his covers the thing it was given for, and no other
+  const consent = createConsent({ store: { get: () => null, set: () => {} } });
+  consent.grant({ kind: 'host', words: '行' });
+  assert.equal(consent.allows({ kind: 'host', subject: '', thing: 't1' }), true);
+  assert.equal(consent.allows({ kind: 'host', subject: '', thing: 't1' }), true);
+  assert.equal(consent.allows({ kind: 'host', subject: '', thing: 't2' }), false);
 });

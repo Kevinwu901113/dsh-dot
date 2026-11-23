@@ -140,7 +140,7 @@ export function readBridge(root, env = process.env) {
  */
 export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
   const m = BRIDGE_ID_RE.exec(String(id));
-  if (!m && hers?.hands?.(id, cwd)) { const device = String(hers.handsDevice?.(id) ?? ''); return ['phone', 'computer', 'web'].includes(device) ? `hands:${device}` : 'hands'; }
+  if (!m && hers?.hands?.(id, cwd)) { const device = String(hers.handsDevice?.(id, cwd) ?? ''); return ['phone', 'computer', 'web', 'host'].includes(device) ? `hands:${device}` : 'hands'; }
   if (!m && hers?.(id, cwd)) return 'dot';
   if (m) {
     if (m[1] !== 'p') return 'qqb-sandbox';
@@ -185,18 +185,22 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
     // Her hands: her devices, her accounts, asking her, and the few host tools that are doing (HANDS_HOST_TOOLS) —
     // nothing else, whatever is registered now or later (no memory, no QQ, no subagents, no schedules, no bridge tools).
-    // Each thing is on one device ('hands:phone' / 'hands:computer' / 'hands:web'): they are offered that device's tools
+    // Each thing is in one place ('hands:phone' / 'hands:computer' / 'hands:web' / 'hands:host'): they are offered that place's tools
     // and not the other's — every step resends the tool list, and a thing on her phone has no use for her computer's
     // thirty tools. Of her phone's server only what they use (PHONE_HANDS_TOOLS). 'hands' alone (the device not
     // known): both devices, as before.
     if (owner === 'hands' || owner.startsWith('hands:')) {
       const device = owner.slice(6);
       const phone = n === PHONE_TYPE_TOOL || n === PHONE_ZOOM_TOOL || (n.startsWith(PHONE_TOOL_PREFIX) && PHONE_HANDS_TOOLS.includes(n.slice(PHONE_TOOL_PREFIX.length)));
-      const pc = n.startsWith(VM_TOOL_PREFIX) || (HANDS_HOST_TOOLS.includes(n) && HANDS_COMPUTER_HOST_TOOLS.includes(n));
+      // The shell, its jobs and reading files: where they run is the thing's place (her computer, or — 'hands:host' —
+      // the machine dsh runs on: computer/subprocess.js routes by the session's folder).
+      const shell = HANDS_HOST_TOOLS.includes(n) && HANDS_COMPUTER_HOST_TOOLS.includes(n);
+      const pc = n.startsWith(VM_TOOL_PREFIX) || shell;
       const ok = n === HANDS_ASK_TOOL || n === HANDS_DONE_TOOL || n === HANDS_WAIT_TOOL || HANDS_WEB_TOOLS.includes(n)
-        || (device !== 'web' && n === 'account')
+        || (device !== 'web' && device !== 'host' && n === 'account')
         || ((device === 'phone' || !device) && phone)
-        || ((device === 'computer' || !device) && pc);
+        || ((device === 'computer' || !device) && pc)
+        || (device === 'host' && shell);
       if (!ok) out.push(n);
       continue;
     }
@@ -221,7 +225,7 @@ export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...config, ...sectionOf('compat', (m) => logger.warn(m)) };
   const hers = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.hers?.(id, cwd)); } catch { return false; } };
   hers.hands = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.isHands?.(id, cwd)); } catch { return false; } };
-  hers.handsDevice = (id) => { try { return ctx.get('dshDot')?.handsDevice?.(id) ?? ''; } catch { return ''; } };
+  hers.handsDevice = (id, cwd) => { try { return ctx.get('dshDot')?.handsDevice?.(id, cwd) ?? ''; } catch { return ''; } };
 
   let cached = null, cachedAt = 0, root = '', announced = false;
   const bridge = () => {
@@ -239,7 +243,8 @@ export function apply(ctx, config = {}) {
     return cached;
   };
   const owner = (id, cwd, preset) => classify({ id, cwd, preset }, bridge(), hers);
-  const ownerOfCwd = (cwd) => classify({ cwd }, bridge(), (i, c) => hers('', c));
+  const byCwd = Object.assign((i, c) => hers('', c), { hands: (i, c) => hers.hands('', c), handsDevice: (i, c) => hers.handsDevice('', c) });
+  const ownerOfCwd = (cwd) => classify({ cwd }, bridge(), byCwd);
 
   /** Whose session is the one a system-prompt `text: (c) => …` is being built for. */
   const ownerOf = (c) => { const s = c?.agent?.session; return owner(s?.id ?? '', s?.header?.cwd ?? '', s?.header?.agentPreset); };

@@ -22,6 +22,8 @@ export const KINDS = {
   remote: '让电脑连到别的机器（ssh、scp）', push: '把代码推出去（git push）', 'fetch-run': '下载一段东西直接跑', admin: '用管理员权限（sudo）',
   disk: '动整块磁盘', 'secret-file': '碰密钥、登录信息所在的文件', 'shared-delete': '删改他共享过来的文件夹', 'page-script': '在网页里跑脚本、直接按键',
   browser: '电脑浏览器上的操作',
+  // the machine dsh runs on (classifyHost)
+  host: '在他这台电脑本机上改动、安装或联网',
 };
 export const HIM_KINDS = { pay: '付款、下单的最后一步', identity: '实名、人脸或身份证', captcha: '人机验证（滑块、点图）', qr: '扫码登录', code: '发到他手机上的验证码' };
 
@@ -209,3 +211,94 @@ export function classifyComputer({ tool, input, risk = null, acts = false, page 
   }
 }
 
+
+// ── the machine dsh itself runs on: his ──────────────────────────────────────────────────────────────────────────
+// Her phone and her computer are hers; this machine is his, and nothing fences it off (with her computer on, the
+// host's own sandbox is off). So the list kept here is of what only looks (11-23, his choice): a command that is not
+// on it — or that cannot be read as a plain row of commands — is asked about, never let through for being unknown.
+// One yes of his covers the thing it was given for (kind 'host' names no subject); the kinds that have their own name
+// (sudo, git push, ssh, download-and-run, whole disks, files that hold keys) are asked about by that name.
+const HOST_LOOK = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', 'fgrep', 'rg', 'find', 'fd', 'pwd', 'echo', 'printf', 'date', 'whoami', 'id', 'uname',
+  'hostname', 'df', 'du', 'ps', 'pgrep', 'which', 'type', 'file', 'stat', 'uptime', 'sw_vers', 'sort', 'uniq', 'cut', 'tr', 'jq', 'tree', 'basename', 'dirname',
+  'realpath', 'readlink', 'diff', 'cmp', 'md5', 'md5sum', 'shasum', 'sha256sum', 'nproc', 'free', 'vm_stat', 'column', 'nl', 'cd', 'true', 'test', '[', 'mdfind', 'mdls']);
+const HOST_GIT_LOOK = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file', 'blame', 'describe', 'shortlog']);
+const HOST_FIND_ACTS = /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
+const HOST_SECRET = /(?:^|[\s/'"=~])(\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.env(?:\.\w+)?|id_rsa\w*|id_ed25519\w*|\.dsh(?!\/dsh-dot-hands))(?=$|[\s/'"])|(credentials?|secrets?|keychains?|passwords?|tokens?|cookies)\b/i;
+const HOST_FREE_TOOLS = new Set(['read', 'read_image', 'job_output', 'job_list', 'job_kill', 'web_search', 'web_fetch', 'ask_her', 'done', 'wait_for']);
+
+/** A command line as a row of commands, each a row of words — or null when it is more than that (a redirect, a substitution, something left running). */
+export function plainCommands(command) {
+  const s = String(command ?? '').replace(/\d*>\s*\/dev\/null|\d*>&\d+/g, ' ');
+  const rows = [[]]; let word = null, quote = '';
+  const end = () => { if (word !== null) { rows[rows.length - 1].push(word); word = null; } };
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i], two = s.slice(i, i + 2);
+    if (quote) {
+      if (c === quote) quote = '';
+      else if (quote === '"' && (c === '`' || two === '$(')) return null;
+      else word += c;
+      continue;
+    }
+    if (c === "'" || c === '"') { quote = c; word ??= ''; }
+    else if (c === '\\') { if (s[i + 1] === '\n' || i + 1 >= s.length) return null; word = (word ?? '') + s[++i]; }
+    else if (c === '`' || c === '<' || c === '>' || two === '$(' || two === '${') return null;
+    else if (two === '&&' || two === '||') { end(); rows.push([]); i++; }
+    else if (c === '&') return null;
+    else if (c === ';' || c === '|' || c === '\n') { end(); rows.push([]); }
+    else if (/\s/.test(c)) end();
+    else word = (word ?? '') + c;
+  }
+  if (quote) return null;
+  end();
+  return rows.filter((r) => r.length);
+}
+
+/** Does this command line only look (every command in it is on the list of what only looks)? */
+export function hostLooks(command) {
+  const rows = plainCommands(command);
+  if (!rows) return false;
+  return rows.every(([head, ...rest]) => {
+    if (/^\w+=/.test(head)) return false;
+    const name = head.replace(/^.*\//, '');
+    if (rest.length === 1 && /^(?:--version|-v|-V|version)$/.test(rest[0])) return true; // asking a program what it is
+    if (name === 'git') {
+      const words = [...rest];
+      while (words[0] === '-C' || words[0] === '--no-pager') words.splice(0, words[0] === '-C' ? 2 : 1);
+      return HOST_GIT_LOOK.has(words[0] ?? '') && !words.some((x) => /^--output\b/.test(x));
+    }
+    if (name === 'find' || name === 'fd') return !rest.some((x) => HOST_FIND_ACTS.test(x) || /^(?:-x|--exec|--exec-batch|-X)$/.test(x));
+    return HOST_LOOK.has(name);
+  });
+}
+
+/**
+ * What a call of her hands on the machine dsh runs on is. → null (looking: theirs) or { tier, kind, what, subject? }
+ * @param {object} a
+ * @param {string} a.tool
+ * @param {any} a.input
+ */
+export function classifyHost({ tool, input }) {
+  const t = short(tool), args = argsOf(input);
+  const where = '他这台电脑本机上';
+  if (t === 'bash') {
+    const cmd = String(args.command ?? ''), shown = cmd.replace(/\s+/g, ' ').trim().slice(0, 60);
+    if (FORBIDDEN_WORDS.test(cmd)) return { tier: 'forbid', kind: 'money', what: '转账、提现一类的操作' };
+    const secret = HOST_SECRET.exec(cmd);
+    if (secret) { const subject = secret[1] ?? secret[2]; return { tier: 'ask', kind: 'secret-file', what: `${KINDS['secret-file']}（${where}）：${subject}`, subject }; }
+    if (hostLooks(cmd)) return null;
+    for (const [re, kind] of SHELL_KINDS) {
+      const m = re.exec(cmd);
+      if (!m || (kind === 'disk' && !m[1] && m[0].startsWith('>'))) continue; // writing to a file is not a whole disk
+      const subject = (m[1] ?? '').replace(/^-.*/, '');
+      return { tier: 'ask', kind, what: `${KINDS[kind]}（${where}）${subject ? `：${subject}` : ''}`, subject };
+    }
+    return { tier: 'ask', kind: 'host', what: `在${where}：${shown}`, subject: '' };
+  }
+  if (t === 'read' || t === 'read_image') {
+    const secret = HOST_SECRET.exec(String(args.path ?? args.file_path ?? args.file ?? ''));
+    if (secret) { const subject = secret[1] ?? secret[2]; return { tier: 'ask', kind: 'secret-file', what: `${KINDS['secret-file']}（${where}）：${subject}`, subject }; }
+    return null;
+  }
+  if (HOST_FREE_TOOLS.has(t)) return null;
+  return { tier: 'ask', kind: 'host', what: `在${where}：${t}`, subject: '' };
+}

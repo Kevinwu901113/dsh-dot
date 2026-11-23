@@ -59,7 +59,7 @@ export const ownerInterruptText = () => prompt('dot.owner-interrupt');
  */
 export function handsStatus(r = {}, device = '') {
   const o = r.outcome;
-  const base = o === 'stuck' ? prompt('dot.hands.status.stuck') : o === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : 'dot.hands.status.done')
+  const base = o === 'stuck' ? prompt('dot.hands.status.stuck') : o === 'done' ? prompt(device === 'web' ? 'dot.hands.status.done.web' : device === 'host' ? 'dot.hands.status.done.host' : 'dot.hands.status.done')
     : o === 'timeout' ? prompt('dot.hands.status.timeout') : o === 'stopped' ? prompt(r.by === 'him' ? 'dot.hands.status.stopped.his' : 'dot.hands.status.stopped')
       : prompt('dot.hands.status.failed', { why: `${prompt(CAUSE_WORDS[r.cause] ?? CAUSE_WORDS['broke-off']).trim()}${r.error ? `（${r.error}）` : ''}` });
   const notes = [...new Set(r.notes ?? [])].map((n) => (n === 'own-words' ? prompt('dot.hands.status.own-words') : n === 'reply-check' ? prompt('dot.hands.status.reply-check') : '')).filter(Boolean);

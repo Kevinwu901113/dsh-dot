@@ -657,3 +657,28 @@ test('waiting is one step: wait_for watches the screen and the notifications by 
   assert.equal(h.audit.filter((a) => a.event === 'same-screen').length, 2);
   h.stop();
 });
+
+test('this machine is a place for her hands too, and his: only on his business; looking is theirs, anything else is asked of him once a thing', async () => {
+  const h = harness();
+  // in her own time: not given
+  const own = await h.tools.hands.execute({ device: 'host', do: '看看他的项目' });
+  assert.equal(own.status, 'failed');
+  assert.match(h.shown('hands', own), /本机是他的电脑/);
+  // his words opened the turn: given, and done from the hands' host folder
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '帮我看下 dsh-dot 仓库有没有没提交的改动，再装一下依赖' }] });
+  const started = await h.tools.hands.execute({ device: 'host', do: '看 ~/Claude/dsh-dot-src 有没有没提交的改动，再 npm install' }); await tick();
+  assert.equal(started.status, 'started');
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.equal(h.ctx.get('dshDot').handsDevice('h1'), 'host');
+  assert.equal(h.ctx.get('dshDot').handsDevice('', join(process.env.DSH_HOME, 'dsh-dot-hands', 'host')), 'host', 'known by its folder alone');
+  assert.equal(h.ctx.get('dshDot').handsDevice('', join(process.env.DSH_HOME, 'dsh-dot-hands')), '');
+  assert.match(text(h.agentOf('h1').got[0]), /^（在他的电脑本机上，用命令行；不碰你的手机和电脑）看 ~\/Claude/);
+  assert.equal(await h.pre('h1', 'bash', { command: 'git -C ~/Claude/dsh-dot-src status' }), 'ran');
+  assert.equal(await h.pre('h1', 'read', { path: '/Users/me/Claude/dsh-dot-src/package.json' }), 'ran');
+  const install = await h.pre('h1', 'bash', { command: 'cd ~/Claude/dsh-dot-src && npm install' });
+  assert.match(install.reason, /^这一步要先问过他：在他这台电脑本机上：cd ~\/Claude\/dsh-dot-src && npm install。/);
+  assert.deepEqual(h.audit.findLast((a) => a.event === 'consent-asked'), { kind: 'dot', event: 'consent-asked', session: 'h1', device: 'host', what: '在他这台电脑本机上：cd ~/Claude/dsh-dot-src && npm install', thing: 't1', of: 'host' });
+  const write = await h.pre('h1', 'write', { path: '/Users/me/x', content: 'y' });
+  assert.ok(write.reason, 'nothing more is done once they have asked');
+  h.stop();
+});

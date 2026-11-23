@@ -244,6 +244,8 @@ test('hiddenFor: her hands are offered the tools of the device the thing is on, 
   assert.deepEqual(seen('hands:phone'), ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'phone_type', 'phone_zoom', `${P}mobile_click_on_screen_at_coordinates`, `${P}mobile_double_tap_on_screen`, `${P}mobile_batch_commands`, `${P}mobile_list_elements_on_screen`]);
   assert.deepEqual(seen('hands:computer'), ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image', `${V}browser_click`, `${V}sandbox_execute_bash`]);
   assert.deepEqual(seen('hands:web'), ['ask_her', 'done', 'web_search', 'web_fetch']);
+  // on the machine dsh runs on: the shell and reading, none of her devices and none of her accounts
+  assert.deepEqual(seen('hands:host'), ['ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image']);
   // the device not known: both devices, still only what they use of her phone
   assert.ok(seen('hands').includes(`${V}browser_click`) && seen('hands').includes('phone_type') && !seen('hands').includes(`${P}mobile_login_to_cloud_provider`));
   // which device: asked of dot by the session's id
@@ -251,4 +253,12 @@ test('hiddenFor: her hands are offered the tools of the device the thing is on, 
   assert.equal(classify({ id: 'h1', cwd: '/x' }, null, hers), 'hands:phone');
   assert.equal(classify({ id: 'h2', cwd: '/x' }, null, hers), 'hands:web');
   assert.equal(classify({ id: 'h3', cwd: '/x' }, null, hers), 'hands');
+  // a thing on this machine is known by its folder alone (all the subprocess provider sees), and runs here
+  const byCwd = Object.assign(() => false, { hands: (i, c) => c.startsWith('/h'), handsDevice: (i, c) => (c.startsWith('/h/host') ? 'host' : '') });
+  assert.equal(classify({ cwd: '/h/host' }, null, byCwd), 'hands:host');
+  assert.equal(classify({ cwd: '/h' }, null, byCwd), 'hands');
+  const sp = Object.create(DshComputerSubprocess.prototype);
+  sp.compat = () => ({ ownerOfCwd: (cwd) => classify({ cwd }, null, byCwd), ownerComputer: 'vm' });
+  assert.equal(sp.routeFor('/h/host'), 'host');
+  assert.equal(sp.routeFor('/h'), 'vm');
 });
