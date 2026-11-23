@@ -163,9 +163,9 @@ test('gates on her computer: money sites are not used, a till / captcha / QR pag
 
 test('host: on the machine dsh runs on only looking is theirs; what changes, connects out or cannot be read is asked of him', () => {
   const sh = (command) => classifyHost({ tool: 'bash', input: { command } });
-  for (const c of ['ls -la ~/Claude', 'cat package.json | head -20', 'git status && git log --oneline -5', 'git -C ~/x diff', 'grep -rn "a|b;c" src | wc -l', 'find . -name "*.js" 2>/dev/null', 'node --version', 'df -h; uptime', '/bin/ls /tmp'])
+  for (const c of ['ls -la ~/Claude', 'cat package.json | head -20', 'git status && git log --oneline -5', 'git -C ~/x diff', 'grep -rn "a|b;c" src | wc -l', 'find . -name "*.js" 2>/dev/null', 'node --version', 'df -h; uptime', '/bin/ls /tmp', 'git branch --show-current', 'git branch -a', 'git remote -v', 'git stash list', 'git tag -l', 'git config --get user.name'])
     assert.equal(sh(c), null, c);
-  for (const c of ['rm -rf build', 'npm install', 'echo hi > a.txt', 'cat a >> b', 'ls $(pwd)', 'ls `pwd`', 'FOO=1 ls', 'find . -name x -delete', 'find . -exec rm {} ;', 'git commit -m x', 'git checkout main', 'sleep 5 &', 'python3 -c "print(1)"', 'sed -i s/a/b/ f', 'xargs rm', 'mv a b', 'open -a Safari', 'ls "unclosed'])
+  for (const c of ['rm -rf build', 'npm install', 'echo hi > a.txt', 'cat a >> b', 'ls $(pwd)', 'ls `pwd`', 'FOO=1 ls', 'find . -name x -delete', 'find . -exec rm {} ;', 'git commit -m x', 'git checkout main', 'git branch new', 'git branch -D old', 'git remote add o u', 'git stash', 'git tag v1', 'git config user.name x', 'sleep 5 &', 'python3 -c "print(1)"', 'sed -i s/a/b/ f', 'xargs rm', 'mv a b', 'open -a Safari', 'ls "unclosed'])
     assert.deepEqual([sh(c)?.tier, sh(c)?.kind, sh(c)?.subject], ['ask', 'host', ''], c);
   // the kinds that have a name of their own are asked about by it
   assert.equal(sh('sudo rm /etc/hosts').kind, 'admin');
@@ -180,6 +180,8 @@ test('host: on the machine dsh runs on only looking is theirs; what changes, con
   assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/.env' } }).kind, 'secret-file');
   assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/README.md' } }), null);
   assert.equal(sh('echo 转账 100').tier, 'forbid');
+  // where it starts is what sends it here: a folder given beside the command is not taken
+  assert.deepEqual([classifyHost({ tool: 'bash', input: { command: 'git status', workdir: '/Users/me/x' } }).tier, classifyHost({ tool: 'bash', input: { command: 'git status', workdir: '/Users/me/x' } }).kind], ['refuse', 'elsewhere']);
   // other tools: what only reads or reports is theirs, anything else (known or not) is asked about
   for (const t of ['job_output', 'web_search', 'done', 'ask_her', 'wait_for']) assert.equal(classifyHost({ tool: t, input: {} }), null, t);
   for (const t of ['write', 'edit', 'mcp__x__anything']) assert.equal(classifyHost({ tool: t, input: {} })?.kind, 'host', t);

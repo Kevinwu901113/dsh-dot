@@ -222,6 +222,14 @@ const HOST_LOOK = new Set(['ls', 'cat', 'head', 'tail', 'wc', 'grep', 'egrep', '
   'hostname', 'df', 'du', 'ps', 'pgrep', 'which', 'type', 'file', 'stat', 'uptime', 'sw_vers', 'sort', 'uniq', 'cut', 'tr', 'jq', 'tree', 'basename', 'dirname',
   'realpath', 'readlink', 'diff', 'cmp', 'md5', 'md5sum', 'shasum', 'sha256sum', 'nproc', 'free', 'vm_stat', 'column', 'nl', 'cd', 'true', 'test', '[', 'mdfind', 'mdls']);
 const HOST_GIT_LOOK = new Set(['status', 'log', 'diff', 'show', 'rev-parse', 'ls-files', 'ls-tree', 'cat-file', 'blame', 'describe', 'shortlog']);
+// git subcommands that look only in some of their forms: the form is told by its words (no name given to make, move or delete).
+const HOST_GIT_FORMS = {
+  branch: (w) => w.every((x) => /^(?:-a|-r|-v|-vv|-l|--all|--remotes|--list|--show-current|--merged|--no-merged|--contains|--sort=.*)$/.test(x)),
+  remote: (w) => !w.length || /^(?:-v|show|get-url)$/.test(w[0]),
+  stash: (w) => /^(?:list|show)$/.test(w[0] ?? ''),
+  tag: (w) => w.every((x) => /^(?:-l|--list|-n\d*|--sort=.*)$/.test(x)),
+  config: (w) => /^(?:--get|--get-all|--list|-l)$/.test(w[0] ?? ''),
+};
 const HOST_FIND_ACTS = /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
 const HOST_SECRET = /(?:^|[\s/'"=~])(\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.env(?:\.\w+)?|id_rsa\w*|id_ed25519\w*|\.dsh(?!\/dsh-dot-hands))(?=$|[\s/'"])|(credentials?|secrets?|keychains?|passwords?|tokens?|cookies)\b/i;
 const HOST_FREE_TOOLS = new Set(['read', 'read_image', 'job_output', 'job_list', 'job_kill', 'web_search', 'web_fetch', 'ask_her', 'done', 'wait_for']);
@@ -264,6 +272,7 @@ export function hostLooks(command) {
     if (name === 'git') {
       const words = [...rest];
       while (words[0] === '-C' || words[0] === '--no-pager') words.splice(0, words[0] === '-C' ? 2 : 1);
+      if (HOST_GIT_FORMS[words[0]]) return HOST_GIT_FORMS[words[0]](words.slice(1));
       return HOST_GIT_LOOK.has(words[0] ?? '') && !words.some((x) => /^--output\b/.test(x));
     }
     if (name === 'find' || name === 'fd') return !rest.some((x) => HOST_FIND_ACTS.test(x) || /^(?:-x|--exec|--exec-batch|-X)$/.test(x));
@@ -280,6 +289,10 @@ export function hostLooks(command) {
 export function classifyHost({ tool, input }) {
   const t = short(tool), args = argsOf(input);
   const where = '他这台电脑本机上';
+  // A command is sent to this machine or into her computer by the folder it starts in (computer/subprocess.js), and a
+  // thing here starts in the hands' own host folder: one given another folder to start in would run in her computer
+  // (11-23: three git commands with a workdir did, and his repository was shared into it). Where to go is in the command.
+  if (args.workdir ?? args.cwd ?? args.exec_dir) return { tier: 'refuse', kind: 'elsewhere', what: '本机上的命令不填 workdir：要去的目录写进命令里（cd 那个目录 && …）' };
   if (t === 'bash') {
     const cmd = String(args.command ?? ''), shown = cmd.replace(/\s+/g, ' ').trim().slice(0, 60);
     if (FORBIDDEN_WORDS.test(cmd)) return { tier: 'forbid', kind: 'money', what: '转账、提现一类的操作' };
