@@ -11,7 +11,7 @@ import { overrideNotes, rebase } from '../prompts.js';
  * @param deps.prompts  the prompts page ({ start, stop })
  * @param deps.status   async (arg) => text — her status ('test' also sends a test message to his IM)
  */
-export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available' }) {
+export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available', voicetest = async () => 'voicetest is not available' }) {
   const ok = (text) => ({ kind: 'success', text });
   const book = (app) => {
     if (app) {
@@ -32,6 +32,9 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status, nigh
       // /dot memory … and /dot people … belong to dsh-dot/memory.
       if (/^(memory|people)\b/.test(arg)) { const mem = memory(); return ok(mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded'); }
       if (/^howto\b/.test(arg)) return ok(book(arg.slice(5).trim()));
+      // The voice run again on inputs kept in a file (for measuring what it says of the same facts); nothing is sent.
+      const vt = /^voicetest (\S+)$/.exec(arg);
+      if (vt) { try { return ok(await voicetest(vt[1])); } catch (err) { return ok(`voicetest failed: ${err.message}`); } }
       // Her notes held against the records: what would change (nothing is changed), or — apply — the changes of the last check.
       if (/^nightcheck\b/.test(arg)) { try { return ok(await nightcheck({ apply: /\bapply$/.test(arg) })); } catch (err) { return ok(`nightcheck failed: ${err.message}`); } }
       if (arg === 'doctor') { try { return ok(await checkup.text()); } catch (err) { return ok(`doctor failed: ${err.message}`); } }

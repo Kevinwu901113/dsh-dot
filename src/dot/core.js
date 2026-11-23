@@ -900,6 +900,28 @@ export function apply(ctx, config = {}) {
   // Her sleep (sleep.js): asleep, only he wakes her; what her phone and her QQ show waits, and is shown when she wakes.
   const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => quiet(),
     onWake: () => { if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); } } });
+  // The voice, run again on inputs kept in a file: what it says of the same facts, several times over — how often it
+  // says more than the facts do is measured this way, not guessed from one message (11-24: "发了" of a thing just
+  // begun). The file: { times, cases: [{ name, text }] }; what came back is written beside it (.out.json). Nothing is sent.
+  async function voicetest(file) {
+    const f = isAbsolute(file) ? file : join(dshHome(), 'dot-replay', file);
+    const spec = JSON.parse(readFileSync(f, 'utf8'));
+    const system = String(ctx.get('dshInterlude')?.cardText?.() ?? '').trim();
+    const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
+    const llm = ctx.get('llm');
+    if (!system || !sel || !llm?.stream) return 'no card or no model';
+    const effort = cfg.sayEffort ? (await effortFor(ctx, sel, cfg.sayEffort)).effort : sel.reasoningEffort;
+    const out = [];
+    for (const k of spec.cases ?? []) {
+      const said = await Promise.all(Array.from({ length: Math.min(20, spec.times ?? 5) }, async () => {
+        try { const e = k.effort ? (await effortFor(ctx, sel, k.effort)).effort : effort; return (await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(e ? { reasoningEffort: e } : {}), system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] }))).text; } catch (error) { return `!! ${error.message}`; }
+      }));
+      out.push({ name: k.name, said });
+    }
+    writeFileSync(`${f}.out.json`, `${JSON.stringify({ at: Date.now(), model: `${sel.provider}/${sel.model}`, effort: effort ?? '', out }, null, 1)}\n`);
+    audit('voicetest', { file: f, cases: out.length });
+    return `${out.length} case(s) → ${f}.out.json`;
+  }
   // Each night, once she is asleep: checked, then amended where the check would change something. What was there
   // before stays in the check's file (each op carries the line as it was), and every change is in the audit log.
   ctx.effect(() => sleep.onSleep(() => {
@@ -1804,7 +1826,7 @@ export function apply(ctx, config = {}) {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
       stop: () => { const d = hands?.doing?.(); return hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
-      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText, nightcheck,
+      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText, nightcheck, voicetest,
     })), 'dsh-dot: /dot command');
   });
 
