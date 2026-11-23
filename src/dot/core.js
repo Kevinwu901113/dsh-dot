@@ -95,6 +95,7 @@ export const defaults = {
   // theirs (the thing, or the part after an answer of hers) is cut after handsMaxMs.
   handsMaxMs: 600000,
   // wait_for (her hands waiting for the screen or a notification): the longest one wait lasts, and how often the code looks.
+  awaitMs: 86400000,    // an answer someone owes a thing is waited for this long (it is a record in the book, not her hands' time)
   waitMaxMs: 120000,
   waitPollMs: 2000,
   handsStuckHoldMs: 1800000, // a thing that ended stuck leaves the phone on its page this long (the next thing carries on from there), then it goes home
@@ -380,6 +381,21 @@ export function apply(ctx, config = {}) {
     wordsJustBack = back;
     return back ? c : null;
   };
+  // A thing that was sent to someone and is done as far as her hands go can still be owed an answer (a text to a
+  // service number, a message, a request). That is a record on the thing — who is to answer, since when, until when —
+  // not hands kept on the page: 11-23 a text to 10086 took 169 s, 135 of them her hands watching for the reply, and
+  // a reply that came later was tied to nothing. When someone by that name writes, the code marks it answered and
+  // wakes her with it as that thing's — his business when the thing was his.
+  const sameName = (a, b) => { const x = String(a ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(), y = String(b ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(); return x.length >= 2 && y.length >= 2 && (x.includes(y) || y.includes(x)); };
+  const awaited = (now = Date.now()) => ledger.recent(40).filter((e) => e.awaiting?.from && !e.awaiting.answeredAt && now < (e.awaiting.until ?? 0));
+  /** Is this message the answer a thing is waiting for? → the thing, marked answered, or null. */
+  const answerTo = (n) => {
+    const e = awaited().find((x) => sameName(x.awaiting.from, n?.name) || sameName(x.awaiting.from, conversationTitle(n?.title)));
+    if (!e) return null;
+    ledger.note(e.id, { awaiting: { ...e.awaiting, answeredAt: Date.now(), text: head(String(n?.text ?? ''), 300) } });
+    audit('awaited-answer', { thing: e.id, from: e.awaiting.from, pkg: n?.pkg ?? '', forHim: e.asker === 'him' });
+    return ledger.get(e.id);
+  };
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
   // delegation ledger): what is under way and waits, and what ended in the last hour that is not just "done".
@@ -392,6 +408,7 @@ export function apply(ctx, config = {}) {
       if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
       else if (e.outcome === 'stuck') lines.push(prompt('dot.things.stuck', { what: title(e.task), question: e.question ?? '' }).trim());
     }
+    for (const e of awaited(now)) lines.push(prompt('dot.things.awaiting', { what: title(e.task), from: e.awaiting.from, since: ago(e.awaiting.since, now) || '刚' }).trim());
     for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
     return lines.join('\n');
   };
@@ -989,7 +1006,9 @@ export function apply(ctx, config = {}) {
         : r.question
         ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
         : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) });
-      const content = [{ type: 'text', text: lead.trim() + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
+      const owed = job.id ? ledger.get(job.id)?.awaiting : null;
+      const owes = !owed?.from ? '' : `\n${prompt(owed.answeredAt ? 'dot.hands.result.answered' : 'dot.hands.result.awaiting', { from: owed.from, text: owed.text ?? '' }).trim()}`;
+      const content = [{ type: 'text', text: lead.trim() + owes + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
       if (r.outcome !== 'failed' && job.device !== 'web' && job.device !== 'host') { // looking something up, or a shell on this machine, leaves no screen to show
         try {
           const images = ctx.get('attachments');
@@ -1025,7 +1044,11 @@ export function apply(ctx, config = {}) {
       if (!items.length) return;
       // The people in these messages, as she remembers them (dsh-dot/memory).
       const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
-      found.agent.followup(createUserMessage({ content: contentFor(wakeText(items, { whileBusy, cards }), items), source: PHONE_NOTIFICATION_SOURCE }));
+      // An answer a thing of his was waiting for makes this turn his business: what comes of it is told to him.
+      const answer = items.find((n) => n.answers);
+      const noted = answer ? `\n${prompt('dot.notification.awaited', { task: head(String(answer.answersTask ?? '').split(/[。\n]/)[0], 60) }).trim()}${answer.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : ''}` : '';
+      const content = contentFor(wakeText(items, { whileBusy, cards }) + noted, items);
+      found.agent.followup(createUserMessage({ content, source: answer ? { ...PHONE_NOTIFICATION_SOURCE, thing: answer.answers, ...(answer.forHim ? { for: 'him' } : {}) } : PHONE_NOTIFICATION_SOURCE }));
       bump('woke', 1);
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
@@ -1054,6 +1077,7 @@ export function apply(ctx, config = {}) {
     // A step one of the gates stopped (gates.js): which step, that it was not done, and whose rule it is — from the book, so the voice has nothing to fill in.
     if (about?.state === 'ended' && about.ask?.tier && about.ask.what) out.push(prompt(about.ask.tier === 'him' ? 'dot.say.fact.gate.him' : 'dot.say.fact.gate.ask', { what: titleOf(about.task), step: about.ask.what }));
     else if (about?.state === 'ended') out.push(about.question ? prompt('dot.say.fact.stuck', { what: titleOf(about.task), question: about.question }) : prompt('dot.say.fact.ended', { what: titleOf(about.task), how: voiceHow(about), summary: about.summary ? prompt('dot.say.fact.summary', { summary: about.summary }).trim() + (about.detail ? prompt('dot.say.fact.detail', { detail: headTail(about.detail, cfg.sayDetailChars) }).trimEnd() : '') : prompt('dot.say.fact.no-summary').trim() }));
+    if (about?.state === 'ended' && about.awaiting?.from) out.push(prompt(about.awaiting.answeredAt ? 'dot.say.fact.answered' : 'dot.say.fact.awaiting', { from: about.awaiting.from, text: about.awaiting.text ?? '' }));
     for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) out.push(prompt('dot.say.fact.stopped', { what: titleOf(e.task), how: voiceHow(e).replace(/。$/, '') })); }
     for (const id of t?.opened ?? []) { const e = ledger.get(id); if (e && e.state !== 'ended') out.push(prompt(e.state === 'queued' ? 'dot.say.fact.queued' : 'dot.say.fact.opened', { what: titleOf(e.task) })); }
     const rest = ledger.unfinished().filter((e) => !mine.has(e.id));
@@ -1382,10 +1406,24 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: HANDS_DONE_TOOL,
       description: prompt('dot.hands.done-tool'),
-      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
+      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, awaiting: { type: 'string', description: '发出去了、要等对方回的事才填：对方在屏幕上显示的名字或号码（会话标题那样）。回了会带着这件事叫她，不用守着' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : v?.status === 'unsaid' ? 'dot.hands.done.unsaid' : 'dot.hands.idle') }] },
       // Whether what was wanted was reached is theirs to say and nobody's to guess: left out, the thing is not ended either way.
-      async execute(args) { if (typeof args?.reached !== 'boolean') return { status: 'unsaid' }; return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached }) ? 'done' : 'idle' }; },
+      async execute(args) {
+        if (typeof args?.reached !== 'boolean') return { status: 'unsaid' };
+        // Sent, and an answer is owed: written on the thing before it ends (its end is told from the book). Whoever
+        // has answered meanwhile — a notification since the thing began — is on the record as the answer.
+        const doing = hands.doing(), from = String(args?.awaiting ?? '').trim().slice(0, 60);
+        if (doing?.id && from && args.reached) {
+          const began = ledger.get(doing.id)?.startedAt ?? Date.now();
+          const got = [...seenNotes].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
+          ledger.note(doing.id, { awaiting: { from, since: Date.now(), until: Date.now() + cfg.awaitMs, ...(got ? { answeredAt: got.at, text: head(got.text, 300) } : {}) } });
+          audit('awaiting', { thing: doing.id, from, answered: Boolean(got) });
+        }
+        const ended = hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached });
+        if (!ended && doing?.id && from) ledger.note(doing.id, { awaiting: null });
+        return { status: ended ? 'done' : 'idle' };
+      },
     }), 'dsh-dot: hands done tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
@@ -1452,6 +1490,9 @@ export function apply(ctx, config = {}) {
         mem?.touch?.({ handles: n.handles, platform: n.platform, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
       }
     }
+    // The answer a thing was waiting for (see `awaited`): it wakes her whatever kind of notification carries it, as
+    // that thing's — and as his business when the thing was his.
+    if (!n.fromOwner) { const e = answerTo(n); if (e) n = { ...n, answers: e.id, answersTask: e.task, forHim: e.asker === 'him', handles: n.handles ?? [`${n.pkg}:name:${conversationTitle(n.title)}`] }; }
     if (n.fromOwner) {
       dropAck('he spoke');
       if (!ownerBatch.length) ownerFirstAt = Date.now();

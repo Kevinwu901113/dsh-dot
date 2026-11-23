@@ -702,3 +702,39 @@ test('where a thing is done is hers to judge, from what the book has: things lik
   assert.doesNotMatch(await note(), /做过相近的/);
   h.stop();
 });
+
+test('an answer someone owes a thing is a record on it, not her hands\' time: the thing ends as sent, and when they write she is woken with it as that thing\'s — his business when the thing was his', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const fed = () => h.llmCalls.at(-1).messages[0].content[0].text;
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '问问小明周末来不来' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '在微信上问小明周末来不来' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  await h.tools.done.execute({ summary: '问过小明了，还没回', reached: true, awaiting: '小明' }); await tick();
+  assert.deepEqual(h.audit.findLast((a) => a.event === 'awaiting'), { kind: 'dot', event: 'awaiting', thing: 't1', from: '小明', answered: false });
+  // she is woken with the result, told the answer is owed and will come to her
+  assert.match(text(her.got.at(-1)), /（发出去了，在等 小明 回：这记在事情簿上，回了会带着这件事再叫你。）/);
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.replies.push('问了，他还没回');
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(fed(), /（这件事发出去之后在等 小明 回，现在还没回；回了会再告诉他）/);
+  assert.match(await note(), /在等回复：（在手机上）在微信上问小明周末来不来——等 小明 回/);
+  // someone else writes: not the answer
+  const before = her.got.length;
+  h.services.qqMessage({ kind: 'private', userId: '30009', who: '小红', text: '在吗', at: new Date().toISOString() }); await tick(30);
+  assert.doesNotMatch(text(her.got.at(-1)), /在等的回复/);
+  assert.ok(her.got.length > before);
+  // he writes: marked answered, and she is woken with it as that thing's, on his business
+  h.services.qqMessage({ kind: 'private', userId: '30003', who: '小明', text: '来，周六下午到', at: new Date().toISOString() }); await tick(30);
+  const woke = her.got.at(-1);
+  assert.match(text(woke), /小明[\s\S]*来，周六下午到[\s\S]*（这是「（在手机上）在微信上问小明周末来不来」那件事在等的回复。）\n（这是他要的事。/);
+  assert.equal(woke.source.for, 'him'); assert.equal(woke.source.thing, 't1'); assert.equal(woke.source.form, 'phone-notification');
+  assert.deepEqual(h.audit.findLast((a) => a.event === 'awaited-answer'), { kind: 'dot', event: 'awaited-answer', thing: 't1', from: '小明', pkg: 'qq', forHim: true });
+  h.emit('s1', 'turn/start', { turn: 5 }); h.emit('s1', 'user/message', { source: woke.source, content: woke.content });
+  h.replies.push('小明说来，周六下午到');
+  h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(fed(), /（这件事在等的 小明 回了，原话：来，周六下午到）/);
+  assert.doesNotMatch(await note(), /在等回复/, 'answered: no longer waited for');
+  h.stop();
+});
