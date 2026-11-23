@@ -736,5 +736,14 @@ test('an answer someone owes a thing is a record on it, not her hands\' time: th
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } }); await tick(30);
   assert.match(fed(), /（这件事在等的 小明 回了，原话：来，周六下午到）/);
   assert.doesNotMatch(await note(), /在等回复/, 'answered: no longer waited for');
+  // a thing in which a step that reaches someone was let through: whether an answer is owed has to be said to end it
+  h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '给 10086 发条短信' }] });
+  await h.tools.his_ok.execute({ kind: 'call' });
+  await h.tools.hands.execute({ device: 'phone', do: '给 10086 发短信 CXLL' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 6 }); await tick(30);
+  assert.equal(await h.pre(h.ctx.get('dshDot').handsSession?.() ?? 'h2', 'mcp__dot-phone__mobile_launch_app', { packageName: 'com.google.android.apps.messaging' }), 'ran');
+  assert.deepEqual(await h.tools.done.execute({ summary: '发了', reached: true }), { status: 'unsaid-awaiting' });
+  assert.match(h.shown('done', { status: 'unsaid-awaiting' }), /awaiting 要填/);
+  assert.deepEqual(await h.tools.done.execute({ summary: '发了，还没回', reached: true, awaiting: '10086' }), { status: 'done' });
   h.stop();
 });

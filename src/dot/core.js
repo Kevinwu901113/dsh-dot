@@ -1461,14 +1461,15 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.tools.register({
       name: HANDS_DONE_TOOL,
       description: prompt('dot.hands.done-tool'),
-      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, awaiting: { type: 'string', description: '发出去了、要等对方回的事才填：对方在屏幕上显示的名字或号码（会话标题那样）。回了会带着这件事叫她，不用守着' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : v?.status === 'unsaid' ? 'dot.hands.done.unsaid' : 'dot.hands.idle') }] },
+      parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, awaiting: { type: 'string', description: '这件事里给谁发了东西（短信、消息、申请）就要填：还在等对方回，填对方在屏幕上显示的名字或号码（会话标题那样）——回了会带着这件事叫她，不用守着；不用等谁回（对方已经回了、或者本来就不会回），填空字符串' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : v?.status === 'unsaid' ? 'dot.hands.done.unsaid' : v?.status === 'unsaid-awaiting' ? 'dot.hands.done.unsaid-awaiting' : 'dot.hands.idle') }] },
       // Whether what was wanted was reached is theirs to say and nobody's to guess: left out, the thing is not ended either way.
       async execute(args) {
         if (typeof args?.reached !== 'boolean') return { status: 'unsaid' };
         // Sent, and an answer is owed: written on the thing before it ends (its end is told from the book). Whoever
         // has answered meanwhile — a notification since the thing began — is on the record as the answer.
         const doing = hands.doing(), from = String(args?.awaiting ?? '').trim().slice(0, 60);
+        if (doing?.id && args.reached && reached.has(doing.id) && typeof args?.awaiting !== 'string') return { status: 'unsaid-awaiting' };
         if (doing?.id && from && args.reached) {
           const began = ledger.get(doing.id)?.startedAt ?? Date.now();
           const got = [...seenNotes].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
@@ -1587,6 +1588,12 @@ export function apply(ctx, config = {}) {
   // buffer goes in right away, so her next step has it.
   // Also: a loop (the same call over and over in one turn) is stopped, and an errand never talks to him.
   /** A call of her hands one of the gates stopped (gates.js): ended as a question for him, refused; null when it goes on. */
+  // Things in which a step that reaches someone was let through (a text, a call, a message, a request to be added):
+  // whether an answer is owed is then a fact of the thing, and only her hands know it — like whether what was wanted
+  // was reached, it is theirs to say and nobody's to guess (11-24: told how, they still left it out, and the reply
+  // would again have been tied to nothing).
+  const REACHES = new Set(['call', 'message', 'friend', 'send-file']);
+  const reached = new Set();
   const gateHands = (g, id, device) => {
     if (!g) return null;
     const thing = hands.doing()?.id ?? '';
@@ -1605,6 +1612,7 @@ export function apply(ctx, config = {}) {
       return deny(prompt('dot.gates.ask', { what: g.what }));
     }
     audit('consent-used', { session: id, device, kind: g.kind, thing });
+    if (thing && REACHES.has(g.kind)) { reached.add(thing); if (reached.size > 50) reached.delete(reached.values().next().value); }
     return null;
   };
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
