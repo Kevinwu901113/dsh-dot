@@ -126,6 +126,10 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
       const by = new Map();
       for (const r of runsOf(app)) {
         if (!r.task) continue;
+        // A thing is known where most of it happened: the two steps it took on the way through another place are
+        // not "how it is done" there (11-23: 「发短信查流量」, 39 steps in the messaging app, stood on the phone
+        // itself as done in 2 steps by listing the devices).
+        if (typeof r.share === 'number' && r.share < 0.5) continue;
         const t = by.get(r.task) ?? { task: r.task, runs: 0, done: 0, steps: [], tokens: [] };
         t.runs++;
         if (r.outcome === 'done') { t.done++; t.steps.push(r.steps); if (r.tokens) t.tokens.push(Math.round(r.tokens * (r.share ?? 1))); }
@@ -162,7 +166,8 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
       const refused = isError && !failures.length && isRefusal(error);
       if (refused) a.refused++;
       if (!failures.length && !refused && a.route.length <= ROUTE_MAX) a.route.push(routeLine(tool, input));
-      if (a.calls.length < 60) a.calls.push(`${callLine(tool, input)}${failures.length ? ` ✗ ${failures.join('；')}` : refused ? ' ⊘' : ''}`);
+      const mark = failures.length ? ` ✗ ${failures.join('；')}` : refused ? ' ⊘' : '';
+      if (a.calls.length < 60) { a.calls.push(`${callLine(tool, input)}${mark}`); (a.kept ??= []).push(`${routeLine(tool, input)}${mark}`); } // kept: the same steps with the words typed left out
       run.set(app, a);
       return app;
     },
@@ -201,11 +206,13 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
         const before = runsOf(app).map((r) => r.steps);
         const id = `${now().toString(36)}${(seq++).toString(36)}`;
         const share = Math.round((a.steps / total) * 100) / 100;
-        try { appendFileSync(logFile, `${JSON.stringify({ id, at: now(), ...(thing ? { thing } : {}), app, steps: a.steps, errors: a.errors.length, ...(outcome ? { outcome } : {}), ...(name ? { task: clip(noUrls(name), 12) } : {}), ...(outcome === 'done' && a.route.length && a.route.length <= ROUTE_MAX ? { route: a.route } : {}), ms: Math.round(ms), tokens: Math.round(tokens), share })}\n`); } catch (error) { void error; }
         const long = a.steps >= minSteps && (!before.length || !api.notes(app) || a.steps > 1.5 * median(before.slice(-8)));
         const broke = BROKE.has(outcome) && a.steps >= 3;
-        if (!(long || broke || a.errors.length)) continue;
-        if (now() - (lastReflect.get(app) ?? 0) < cooldownMs || reflectedToday >= dailyReflections) continue;
+        const reflect = Boolean(long || broke || a.errors.length) && now() - (lastReflect.get(app) ?? 0) >= cooldownMs && reflectedToday < dailyReflections;
+        // A run the notes are written from keeps its steps as they were (calls): what the notes say can be held
+        // against them later (nightcheck.js) — notes with nothing on record behind them are only someone's say-so.
+        try { appendFileSync(logFile, `${JSON.stringify({ id, at: now(), ...(thing ? { thing } : {}), app, steps: a.steps, errors: a.errors.length, ...(outcome ? { outcome } : {}), ...(name ? { task: clip(noUrls(name), 12) } : {}), ...(outcome === 'done' && a.route.length && a.route.length <= ROUTE_MAX ? { route: a.route } : {}), ms: Math.round(ms), tokens: Math.round(tokens), share, ...(reflect ? { calls: a.kept ?? [] } : {}) })}\n`); } catch (error) { void error; }
+        if (!reflect) continue;
         lastReflect.set(app, now()); reflectedToday++;
         out.push({ id, app, task: clip(noUrls(task), 160), ...(name ? { name: clip(noUrls(name), 12) } : {}), outcome, steps: a.steps, errors: a.errors, calls: a.calls, tokens: Math.round(tokens * share) });
       }
@@ -236,6 +243,15 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
           writeAtomic(logFile, `${all.join('\n')}\n`);
         } catch (error) { void error; }
       }
+      return true;
+    },
+    /** What is on record about a place, for holding its notes against (nightcheck.js): its last runs, with their steps where kept. */
+    records: (app, n = 30) => runsOf(app).slice(-n).map(({ id, at, task, outcome, steps, errors, route, calls, share }) => ({ id, day: day(at), ...(task ? { task } : {}), outcome: outcome || 'unknown', steps, errors, ...(typeof share === 'number' ? { share } : {}), ...(calls ? { calls } : route ? { route } : {}) })),
+    /** The notes of a place, rewritten by the code from a check of them (not by a model's rewriting): given again on the next visit. */
+    amend(app, text) {
+      const t = noUrls(text).trim();
+      writeAtomic(join(dir, fileOf(app)), t ? `${t}\n` : '');
+      for (const seen of shown.values()) seen.delete(app);
       return true;
     },
     /** For the panel: each place, whether it has notes, how its tasks went. */

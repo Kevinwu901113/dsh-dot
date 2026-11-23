@@ -21,6 +21,7 @@ import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { createLedger, headTail } from './ledger.js';
+import { checkInput, checkTool, settle as settleCheck, report as checkReport, hashOf } from './nightcheck.js';
 import { approvalKind, classify, classifyComputer, classifyHost, KINDS, HIM_KINDS } from './gates.js';
 import { createConsent } from './consent.js';
 import { createSay } from './say.js';
@@ -773,6 +774,52 @@ export function apply(ctx, config = {}) {
       if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
       if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, outcome: r.outcome, ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
     } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200), ...(seen ? { chars: seen.text.length, args: seen.args.length } : {}) }); }
+  }
+  // Her notes held against the records (nightcheck.js). The check writes what it would do to a file and changes
+  // nothing; applying is asked for separately, and only where the notes are still the ones that were checked.
+  const nightFile = () => join(howto.dir, '_nightcheck.json');
+  async function nightcheck({ apply = false } = {}) {
+    if (apply) {
+      let last = null;
+      try { last = JSON.parse(readFileSync(nightFile(), 'utf8')); } catch (error) { void error; }
+      if (!last?.places?.length) return '还没有核对过：先 /dot nightcheck';
+      const done = [];
+      for (const p of last.places) {
+        if (!p.changed) continue;
+        if (hashOf(howto.notes(p.app)) !== p.hash) { done.push(`${p.app}：笔记在核对之后变过，没动（再核对一次）`); continue; }
+        howto.amend(p.app, p.notes);
+        audit('nightcheck-applied', { app: p.app, ops: p.ops.filter((o) => o.op !== 'keep').length });
+        done.push(`${p.app}：改了 ${p.ops.filter((o) => o.op !== 'keep').length} 条`);
+      }
+      return done.length ? done.join('\n') : '上次核对没有要改的';
+    }
+    const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
+    const llm = ctx.get('llm');
+    const places = [], said = [];
+    for (const app of howto.apps()) {
+      const notes = howto.notes(app);
+      if (!notes) continue;
+      const records = howto.records(app), input = checkInput({ place: placeName(app), notes, records });
+      let judged = [], failed = '';
+      if (input.lessons.length && sel && llm?.stream) {
+        try {
+          const effort = await workEffort(ctx, sel);
+          const reply = await collectReply(llm.stream(background({
+            provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
+            system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 4000,
+            messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
+          })));
+          const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
+          judged = Array.isArray(out?.lines) ? out.lines : [];
+        } catch (error) { failed = String(error.message).slice(0, 160); }
+      }
+      const r = settleCheck({ notes, judged, records, tasks: howto.tasks(app) });
+      places.push({ app, hash: hashOf(notes), changed: r.changed, ops: r.ops, notes: r.notes, ...(failed ? { failed } : {}) });
+      audit('nightcheck', { app, lessons: input.lessons.length, records: records.length, reword: r.ops.filter((o) => o.op === 'reword').length, drop: r.ops.filter((o) => o.op === 'drop').length, unsupported: r.ops.filter((o) => o.is === 'unsupported' || o.is === 'unjudged').length, ...(failed ? { failed } : {}) });
+      said.push(checkReport(app, r) + (failed ? `\n  （这一处的教训没判成：${failed}）` : ''));
+    }
+    try { writeFileSync(nightFile(), `${JSON.stringify({ at: Date.now(), places }, null, 1)}\n`); } catch (error) { logger.warn(`nightcheck not written: ${error.message}`); }
+    return places.length ? `${said.join('\n')}\n\n什么都还没改：这是会做的改动，记在 ${nightFile()}。要照着改：/dot nightcheck apply` : '手艺簿里还没有笔记';
   }
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.on('system-prompt/assemble', async (_a, c, next) => {
@@ -1741,7 +1788,7 @@ export function apply(ctx, config = {}) {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
       stop: () => { const d = hands?.doing?.(); return hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
-      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText,
+      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText, nightcheck,
     })), 'dsh-dot: /dot command');
   });
 

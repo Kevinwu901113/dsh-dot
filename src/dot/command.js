@@ -6,11 +6,12 @@ import { overrideNotes, rebase } from '../prompts.js';
  * @param deps.stop     () => text — stop what is in her hands, on his word
  * @param deps.memory   () => dsh-dot/memory's service (its /dot memory and /dot people) or null
  * @param deps.howto    the know-how book (howto.js)
+ * @param deps.nightcheck async ({ apply }) => text — her notes held against the records (nightcheck.js)
  * @param deps.checkup  checkup.js
  * @param deps.prompts  the prompts page ({ start, stop })
  * @param deps.status   async (arg) => text — her status ('test' also sends a test message to his IM)
  */
-export function dotCommand({ stop, memory, howto, checkup, prompts, status }) {
+export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available' }) {
   const ok = (text) => ({ kind: 'success', text });
   const book = (app) => {
     if (app) {
@@ -24,13 +25,15 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status }) {
   return {
     name: 'dot',
     description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
-    input: { hint: '[stop | doctor | test | check | howto [<app>] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+    input: { hint: '[stop | doctor | test | check | howto [<app>] | nightcheck [apply] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
     handler: async ({ rawInput }) => {
       const arg = String(rawInput ?? '').trim();
       if (arg === 'stop') return ok(stop());
       // /dot memory … and /dot people … belong to dsh-dot/memory.
       if (/^(memory|people)\b/.test(arg)) { const mem = memory(); return ok(mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded'); }
       if (/^howto\b/.test(arg)) return ok(book(arg.slice(5).trim()));
+      // Her notes held against the records: what would change (nothing is changed), or — apply — the changes of the last check.
+      if (/^nightcheck\b/.test(arg)) { try { return ok(await nightcheck({ apply: /\bapply$/.test(arg) })); } catch (err) { return ok(`nightcheck failed: ${err.message}`); } }
       if (arg === 'doctor') { try { return ok(await checkup.text()); } catch (err) { return ok(`doctor failed: ${err.message}`); } }
       if (arg === 'prompts stop') return ok((await prompts.stop()) ? 'prompts page stopped' : 'prompts page was not running');
       const rb = /^prompts rebase (\S+)( --reset)?$/.exec(arg);
