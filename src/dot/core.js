@@ -433,7 +433,8 @@ export function apply(ctx, config = {}) {
     scored.sort((a, b) => b[0] - a[0] || (b[1].endedAt ?? 0) - (a[1].endedAt ?? 0));
     return scored.slice(0, max).map(([, e]) => {
       const from = e.after ? all.find((x) => x.id === e.after) : null;
-      const more = `${e.ask?.for === 'him' ? prompt('dot.things.like.asked').trim() : ''}${from?.device && from.device !== e.device ? prompt('dot.things.like.moved', { from: from.device }).trim() : ''}`;
+      const took = e.startedAt && e.endedAt ? Math.round((e.endedAt - e.startedAt) / 1000) : 0;
+      const more = `${took ? prompt('dot.things.like.took', { seconds: took }).trim() : ''}${e.waited?.n ? prompt(e.waited.met ? 'dot.things.like.waited.met' : 'dot.things.like.waited', { seconds: e.waited.seconds, n: e.waited.n }).trim() : ''}${e.awaiting?.from ? prompt(e.awaiting.answeredAt ? 'dot.things.like.answered' : 'dot.things.like.awaiting', { from: e.awaiting.from }).trim() : ''}${e.ask?.for === 'him' ? prompt('dot.things.like.asked').trim() : ''}${from?.device && from.device !== e.device ? prompt('dot.things.like.moved', { from: from.device }).trim() : ''}`;
       return e.outcome === 'done'
         ? prompt('dot.things.like.done', { what: title(e.task), device: e.device, steps: e.steps ?? 0, more }).trim()
         : prompt('dot.things.like.not', { what: title(e.task), device: e.device, why: head(String(e.question || e.summary || e.cause || e.outcome || ''), 40), steps: e.steps ?? 0, more }).trim();
@@ -1496,6 +1497,9 @@ export function apply(ctx, config = {}) {
         }
         if (!items.length) items = await look();
         const seconds = Math.round((Date.now() - began) / 1000);
+        // How long a thing spent waiting, and whether what was waited for came, is kept on it: what she is shown of
+        // things like the one in front of her (thingsLike) then says what waiting cost and what it got.
+        if (mine?.id) { const e = ledger.get(mine.id); ledger.note(mine.id, { waited: { n: (e?.waited?.n ?? 0) + 1, seconds: (e?.waited?.seconds ?? 0) + seconds, met: (e?.waited?.met ?? 0) + (met ? 1 : 0) } }); }
         audit('hands-wait', { thing: mine.id, met: Boolean(met), seconds, ...(want.text ? { text: true } : {}), ...(want.gone ? { gone: true } : {}), ...(want.note ? { notification: true } : {}) });
         return { status: met ? 'met' : any ? 'timeout' : 'waited', what: met || [want.text && `「${want.text}」出现`, want.gone && `「${want.gone}」消失`, want.note && `「${want.note}」的通知`].filter(Boolean).join('、'), seconds, screen: onPhone ? screenLines(items) : '' };
       },
