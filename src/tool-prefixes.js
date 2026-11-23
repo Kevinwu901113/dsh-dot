@@ -25,6 +25,8 @@ export const SAY_TOOL = 'say';
 export const HANDS_ASK_TOOL = 'ask_her';
 /** Her hands' one way of saying a thing is done, and what came of it (dot/hands.js finish). */
 export const HANDS_DONE_TOOL = 'done';
+/** Her hands' one way of waiting for something (dot/core.js): a condition and a limit, watched by code — one step, not a look every few seconds. */
+export const HANDS_WAIT_TOOL = 'wait_for';
 /** His yes to something of hers that needs it (src/dot/consent.js): she records it, in a turn his words opened. */
 export const HIS_OK_TOOL = 'his_ok';
 // What her hands keep (compat hides the rest from their sessions): her devices' tools and her accounts come from this
@@ -51,7 +53,7 @@ export const PHONE_HANDS_TOOLS = ['mobile_list_available_devices', 'mobile_list_
 //   DOT_TOOLS / DOT_TOOL_PREFIXES: hers alone — her memory, her accounts, her QQ (qq_send and her
 //                                  SnowLuma actions), her day. Never in another plugin's session.
 //   DEVICE_TOOL_PREFIXES:          her phone and her computer — hers, and a qq-bridge owner chat's.
-export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
+export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL, HANDS_DONE_TOOL, HANDS_WAIT_TOOL, HIS_OK_TOOL, SAY_TOOL, 'keep_line', 'qq_send', 'qq_sticker_keep'];
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
 /** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
 export const HER_PRESET = 'dot';

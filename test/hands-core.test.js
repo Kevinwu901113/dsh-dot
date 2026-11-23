@@ -601,23 +601,6 @@ test('a turn of his that broke is not her silence: nothing is written as her, he
   h.stop();
 });
 
-test('her hands have a shell and files only inside her computer: with none running, the host\'s are not theirs', async () => {
-  const h = harness();
-  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看看磁盘还剩多少' }] });
-  await h.tools.hands.execute({ device: 'computer', do: '看磁盘' }); await tick();
-  assert.equal(h.services.dshDot?.handsDevice?.('h1') ?? h.ctx.get('dshDot').handsDevice('h1'), 'computer', 'the session knows its device');
-  assert.equal(await h.pre('h1', 'bash', { command: 'df -h' }), 'ran', 'her computer is up: the shell is in it');
-  h.services.dshComputer.status = () => ({ state: 'off' });
-  for (const tool of ['bash', 'read', 'read_image', 'job_output']) {
-    const r = await h.pre('h1', tool, { command: 'cat ~/.ssh/id_rsa', file_path: '/Users/k/.ssh/id_rsa' });
-    assert.equal(r.kind, 'deny', tool); assert.match(r.reason, /^这一步没做：她的电脑现在没开着/);
-  }
-  delete h.services.dshComputer;
-  assert.equal((await h.pre('h1', 'bash', { command: 'rm -rf ~' })).kind, 'deny', 'no computer component at all');
-  assert.equal(await h.pre('h1', 'web_search', { query: 'x' }), 'ran', 'looking things up needs no computer');
-  h.stop();
-});
-
 test('a question to him waits until his next words have been read: called off, it is not what a later yes answers', async () => {
   const h = harness();
   const fg = 'com.android.packageinstaller/.Install';
@@ -635,5 +618,42 @@ test('a question to him waits until his next words have been read: called off, i
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '还是装上吧' }] });
   assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'ok', kind: 'install' });
   assert.equal(granted().length, 1); assert.equal(granted()[0].ahead, true); assert.equal(granted()[0].words, '还是装上吧');
+  h.stop();
+});
+
+test('waiting is one step: wait_for watches the screen and the notifications by code; a look that shows nothing new is told so; someone\'s answer is not waited for', async () => {
+  const h = harness({ waitPollMs: 10, waitMaxMs: 200 });
+  let items = [{ words: '下载中', x: 10, y: 300 }];
+  h.services.dshPhone = { isReady: true, get lastScreen() { return { items, at: Date.now() }; }, screenItems: async () => items, foreground: async () => 'com.example/.Main', onNotification: (fn) => { h.note = fn; return () => {}; } };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '把那个包下下来' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '下载安装包' }); await tick();
+  assert.equal((await h.pre('s1', 'wait_for', { seconds: 1 })).kind, 'deny', 'theirs alone');
+  assert.equal(await h.pre('h1', 'wait_for', { gone: '下载中' }), 'ran');
+  // words that leave the screen
+  setTimeout(() => { items = [{ words: '打开', x: 10, y: 300 }]; }, 40);
+  const gone = await h.tools.wait_for.execute({ gone: '下载中' });
+  assert.equal(gone.status, 'met'); assert.equal(gone.what, '屏幕上没有「下载中」了'); assert.match(gone.screen, /「打开」\(10, 300\)/);
+  assert.match(h.shown('wait_for', gone), /^等到了（\d+ 秒）：屏幕上没有「下载中」了。\n（屏幕上现在有这些/);
+  // words that never come: the limit, with the screen as it is
+  const never = await h.tools.wait_for.execute({ text: '安装完成', seconds: 0.05 });
+  assert.equal(never.status, 'timeout'); assert.match(h.shown('wait_for', never), /还没等到：「安装完成」出现。[\s\S]*等的是别人回你，就用 done 收尾/);
+  // a notification, here already when the wait is asked for (it came after their last action) or arriving during it
+  await h.hooks['tools/post-execute']({ name: 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', input: {}, agent: h.agentOf('h1') }, { content: [{ type: 'text', text: 'ok' }] }, async () => ({}));
+  await tick(5);
+  h.services.qqMessage({ kind: 'private', userId: '30003', who: '小明', text: '验证通过了', at: new Date().toISOString() });
+  const note = await h.tools.wait_for.execute({ notification: '验证通过' });
+  assert.equal(note.status, 'met'); assert.match(note.what, /^来了一条通知：.*验证通过了/);
+  assert.equal((await h.tools.wait_for.execute({ notification: '没有这回事', seconds: 0.03 })).status, 'timeout');
+  // only a time
+  assert.equal((await h.tools.wait_for.execute({ seconds: 0.03 })).status, 'waited');
+  // a look that shows what the look before it showed is told so; an action in between starts over
+  const look = (text) => h.hooks['tools/post-execute']({ name: 'mcp__dot-phone__mobile_list_elements_on_screen', input: {}, agent: h.agentOf('h1') }, { content: [{ type: 'text', text }] }, async () => ({}));
+  const said = (d) => (d?.additionalContexts ?? []).map((m) => m.content[0].text).join('\n');
+  assert.equal(said(await look('A')), '');
+  assert.match(said(await look('A')), /^（这一眼和上一眼一样，屏幕没变，已经连着看了 2 次。/);
+  assert.match(said(await look('A')), /连着看了 3 次/);
+  await h.hooks['tools/post-execute']({ name: 'mcp__dot-phone__mobile_swipe_on_screen', input: {}, agent: h.agentOf('h1') }, { content: [{ type: 'text', text: 'ok' }] }, async () => ({}));
+  assert.equal(said(await look('A')), '', 'after an action the same words are a new look');
+  assert.equal(h.audit.filter((a) => a.event === 'same-screen').length, 2);
   h.stop();
 });

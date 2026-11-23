@@ -14,7 +14,7 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET, HANDS_COMPUTER_HOST_TOOLS } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -47,6 +47,7 @@ import { runPendingReset } from '../reset.js';
 import { ago, stamp, today, unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
 import { head } from '../cut.js';
+import { screenLines } from '../phone/typing.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, voiceHow, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
 
@@ -92,6 +93,9 @@ export const defaults = {
   // she wants done, the hands do it to the end — or come back with a question that is hers to answer. A stretch of
   // theirs (the thing, or the part after an answer of hers) is cut after handsMaxMs.
   handsMaxMs: 600000,
+  // wait_for (her hands waiting for the screen or a notification): the longest one wait lasts, and how often the code looks.
+  waitMaxMs: 120000,
+  waitPollMs: 2000,
   handsStuckHoldMs: 1800000, // a thing that ended stuck leaves the phone on its page this long (the next thing carries on from there), then it goes home
   // The reasoning effort her hands' requests are sent with ('' or false = whatever dsh's model selector says). They carry a
   // whole thing through by themselves now, on the same model as her; an effort the model does not offer is not sent.
@@ -602,7 +606,7 @@ export function apply(ctx, config = {}) {
       } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
     }
     const asked = askedCalls.get(exec?.callId);
-    const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null, exec?.name ? sameErrorFor(exec, result) : null].filter(Boolean);
+    const notes = [cfg.howto && exec?.name ? await howtoFor(exec, result) : null, exec?.name ? sameErrorFor(exec, result) : null, exec?.name ? sameScreenFor(exec, result) : null].filter(Boolean);
     const note = notes.join('\n\n');
     if (asked === undefined && !note) return next();
     if (asked !== undefined) askedCalls.delete(exec.callId);
@@ -672,6 +676,25 @@ export function apply(ctx, config = {}) {
       return prompt('dot.hands.same-error', { n: run.n, error: type, max: Math.max(1, cfg.sameErrorStop - run.n) });
     }
     return null;
+  };
+  // Looking again at a screen that has not changed (11-23: 24 of a thing's 39 steps were looks, waiting for a text
+  // message to be answered): counted by code, per thing. A look that shows what the look before it showed, with no
+  // action in between, is told so — to wait with wait_for, or to end the thing if what it waits for is someone's answer.
+  const lookRuns = new Map(); // thing id → { seen: { tool: text }, n }
+  let handsActedAt = 0;       // when her hands last did something (wait_for counts notifications from then on)
+  const sameScreenFor = (exec, result) => {
+    const t = hands?.doing(), sid = exec.agent?.session?.id;
+    if (!t || !sid || t.session !== sid) return null;
+    const name = shortTool(exec.name);
+    if (!PHONE_LOOK_TOOLS.includes(name) || name === 'phone_zoom') { if (exec.name !== HANDS_WAIT_TOOL) handsActedAt = Date.now(); lookRuns.delete(t.id); return null; }
+    const text = result?.isError ? '' : contentText(result?.content ?? []);
+    const run = lookRuns.get(t.id) ?? { seen: {}, n: 0 };
+    run.n = text && run.seen[name] === text ? run.n + 1 : 0;
+    run.seen[name] = text;
+    lookRuns.set(t.id, run);
+    if (run.n < 1) return null;
+    audit('same-screen', { session: sid, thing: t.id, tool: name, n: run.n + 1 });
+    return prompt('dot.hands.same-screen', { n: run.n + 1 });
   };
   /** The thing in her hands is over: its steps go into the book, with what the ledger has of it. */
   const learnFrom = (job) => {
@@ -1286,6 +1309,40 @@ export function apply(ctx, config = {}) {
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.idle') }] },
       async execute(args) { return { status: hands.ask(args?.question, { for: args?.for, kind: args?.for === 'him' ? (/验证码|校验码|动态码/.test(String(args?.question ?? '')) ? 'code' : 'him') : undefined, screen: args?.screen }) ? 'asked' : 'idle' }; },
     }), 'dsh-dot: hands ask tool');
+    // Her hands' one way of waiting (11-23): what they wait for is said as a condition the code can see — words that
+    // come onto the screen, words that leave it, a notification — with a limit. The code looks; they pay one step,
+    // and get the screen as it is when the wait ends. Someone's answer (a reply, a receipt) is not waited for here:
+    // it reaches her as a notification, whenever it comes.
+    scope.effect(() => scope.tools.register({
+      name: HANDS_WAIT_TOOL,
+      description: prompt('dot.hands.wait-tool', { max: Math.round(cfg.waitMaxMs / 1000) }),
+      parameters: { type: 'object', properties: { text: { type: 'string', description: '等屏幕上出现这几个字' }, gone: { type: 'string', description: '等屏幕上这几个字消失（"加载中""下载中"）' }, notification: { type: 'string', description: '等一条通知：填 App 名、标题或内容里的几个字' }, seconds: { type: 'number', description: '最多等多少秒；只填它就是单纯等这么久' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'idle' ? prompt('dot.hands.idle') : prompt(v?.status === 'met' ? 'dot.hands.wait.met' : v?.status === 'waited' ? 'dot.hands.wait.waited' : 'dot.hands.wait.timeout', { what: v?.what ?? '', seconds: v?.seconds ?? 0, screen: v?.screen || '（屏幕上的字读不出来）' }) }] },
+      async execute(args) {
+        const mine = hands.doing();
+        if (!mine) return { status: 'idle' };
+        const want = { text: String(args?.text ?? '').trim(), gone: String(args?.gone ?? '').trim(), note: String(args?.notification ?? '').trim() };
+        const any = Boolean(want.text || want.gone || want.note);
+        const limit = Math.max(1000, Math.min(cfg.waitMaxMs, (Number(args?.seconds) > 0 ? Number(args.seconds) * 1000 : any ? cfg.waitMaxMs : 5000)));
+        // What came since they last did something counts: the notification may be here before the wait is asked for.
+        const since = handsActedAt || Date.now(), began = Date.now();
+        const onPhone = mine.device === 'phone' && Boolean(phone()?.isReady);
+        const look = async () => { try { return onPhone ? await phone().screenItems() : []; } catch { return []; } };
+        const words = (items) => items.map((it) => it.words ?? '').join('\n');
+        let items = [], met = '';
+        for (;;) {
+          if (hands.doing()?.id !== mine.id) return { status: 'idle' }; // the thing was stopped meanwhile
+          if (want.note) { const n = seenNotes.find((x) => x.at >= since && `${x.pkg}\n${x.title}\n${x.text}`.toLowerCase().includes(want.note.toLowerCase())); if (n) met = `来了一条通知：${[n.title, n.text].filter(Boolean).join('：').slice(0, 200)}`; }
+          if (!met && (want.text || want.gone) && onPhone) { items = await look(); const w = words(items); if (want.text && w.includes(want.text)) met = `屏幕上出现了「${want.text}」`; else if (want.gone && items.length && !w.includes(want.gone)) met = `屏幕上没有「${want.gone}」了`; }
+          if (met || Date.now() - began >= limit) break;
+          await new Promise((r) => setTimeout(r, Math.min(cfg.waitPollMs, Math.max(50, limit - (Date.now() - began)))));
+        }
+        if (!items.length) items = await look();
+        const seconds = Math.round((Date.now() - began) / 1000);
+        audit('hands-wait', { thing: mine.id, met: Boolean(met), seconds, ...(want.text ? { text: true } : {}), ...(want.gone ? { gone: true } : {}), ...(want.note ? { notification: true } : {}) });
+        return { status: met ? 'met' : any ? 'timeout' : 'waited', what: met || [want.text && `「${want.text}」出现`, want.gone && `「${want.gone}」消失`, want.note && `「${want.note}」的通知`].filter(Boolean).join('、'), seconds, screen: onPhone ? screenLines(items) : '' };
+      },
+    }), 'dsh-dot: hands wait tool');
     // Her hands' one way of saying a thing is done (hands.js): what came of it, as a line and as details. The book keeps
     // both; each reader words them for itself (the voice gets the line, she gets both with the screen).
     scope.effect(() => scope.tools.register({
@@ -1336,7 +1393,9 @@ export function apply(ctx, config = {}) {
   };
   // Apps whose notification title is who wrote (or called): a conversation with someone.
   const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat', 'com.google.android.apps.messaging': 'sms', 'com.android.mms': 'sms', 'com.android.messaging': 'sms', 'com.google.android.dialer': 'call', 'com.android.dialer': 'call' };
+  const seenNotes = []; // the last notifications of her phone, with when they came: what wait_for looks through
   const wake = (n) => {
+    seenNotes.push({ at: Date.now(), pkg: String(n?.pkg ?? ''), title: String(n?.title ?? ''), text: String(n?.text ?? '') }); if (seenNotes.length > 60) seenNotes.shift();
     // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
     if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
     // Who this is: one registry for every channel (dsh-dot/memory). Her computer QQ gives the
@@ -1435,11 +1494,8 @@ export function apply(ctx, config = {}) {
     if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
     // Her hands: asking her is theirs alone, and once they have asked, this stretch of theirs is over — nothing more is done until she answers.
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
-    if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
+    if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_WAIT_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
-    // Her hands have a shell and files only inside her computer. With no computer running, the host's own shell and
-    // file tools would act on his machine: not theirs, whatever the session's sandbox says.
-    if (theirs && HANDS_COMPUTER_HOST_TOOLS.includes(exec.name) && computer()?.status?.().state !== 'ready') { audit('gate-no-computer', { session: id, tool: exec.name }); return deny(prompt('dot.gates.no-computer')); }
     // Her phone is reached with its own tools, where the gates look: not through the shell.
     if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
     // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
