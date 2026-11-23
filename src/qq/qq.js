@@ -1256,6 +1256,7 @@ export function apply(ctx, config = {}, deps = {}) {
   const sendNow = async (target, to, text, images) => {
     const action = target.group_id ? 'send_group_msg' : 'send_private_msg';
     // What she wrote goes out as she wrote it, a line a bubble: how she sounds is her card's business, not this file's.
+    // (Lines she meant as one message come here joined by U+2028 — dot/say.js WITHIN — and are one bubble.)
     let parts = String(text ?? '').split(/<sep\s*\/>|\n/i).map((t) => t.trim()).filter(Boolean);
     // Transcript notation typed as words ("[图片]", "[图片×2]", "[表情包 sticker:ab12]", "[图 phone:latest]"):
     // not chat. A marker that names an image becomes that image; a bare picture marker is dropped.
@@ -1275,7 +1276,7 @@ export function apply(ctx, config = {}, deps = {}) {
       if (i && cfg.typingMsPerChar > 0) await new Promise((r) => setTimeout(r, Math.min(2500, part.length * cfg.typingMsPerChar)));
       // He spoke while she was typing these out: stop, she reads him first.
       if (i && toOwner && qq.ownerSaidSince(started)) { unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; break; }
-      try { ids.push(own((await call(action, { ...target, message: [{ type: 'text', data: { text: part } }] }))?.message_id)); } catch (err) {
+      try { ids.push(own((await call(action, { ...target, message: [{ type: 'text', data: { text: part.replaceAll('\u2028', '\n') } }] }))?.message_id)); } catch (err) {
         if (!ids.length) throw err; // nothing delivered yet: an ordinary failure
         // Some bubbles are already with them: say what went out and what did not, instead of failing the whole send.
         unsent = [...parts.slice(i), ...refs.map((r) => imageMarker(sentRef(r).slice(0, 80)))]; cutBy = err.message; break;

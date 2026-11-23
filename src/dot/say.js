@@ -19,6 +19,11 @@ import { prompt } from '../prompts.js';
 const STICKER = /\[表情包?\s*sticker:([a-f0-9]{6,12})[^\]]*\]/gi;
 const FACE = /\[face:(\d{1,3})\]/gi;
 const SILENT = /^\[\s*不回\s*\]$/;
+const FENCE = /^```[\w-]*$/;
+/** A line break inside one message: everything on the way out counts a message a line, so it travels as this and is put back where it is sent (qq.js). */
+export const WITHIN = '\u2028';
+/** One message as it is read: its line breaks back in place. */
+export const unfold = (text) => String(text ?? '').replaceAll(WITHIN, '\n');
 /** A line that is only a marker gone wrong ("[表情包 [sticker:…"): nothing to say and nothing to send. */
 const BROKEN = /^\[[^\]]*(sticker|face|表情)[\s\S]*$/i;
 
@@ -30,8 +35,12 @@ const BROKEN = /^\[[^\]]*(sticker|face|表情)[\s\S]*$/i;
  */
 export function parseSaid(text, { has = () => true, pictures = true } = {}) {
   const lines = [], images = [];
-  let silent = false;
+  let silent = false, block = null;
   for (const raw of String(text ?? '').split('\n')) {
+    // Several lines that are one message (a report, a list, a table) stand between two fence lines: they go out as
+    // one bubble, as written. Everything else is a line a bubble.
+    if (FENCE.test(raw.trim())) { if (block) { const body = block.join('\n').replace(/^\n+|\n+$/g, ''); if (body.trim()) lines.push(body.replace(/\n/g, WITHIN)); block = null; } else block = []; continue; }
+    if (block) { block.push(raw.replace(/\s+$/, '')); continue; }
     let line = raw.trim();
     if (!line) continue;
     if (SILENT.test(line)) { silent = true; continue; }
@@ -40,6 +49,7 @@ export function parseSaid(text, { has = () => true, pictures = true } = {}) {
     if (!line || BROKEN.test(line)) continue;
     lines.push(line);
   }
+  if (block) { const body = block.join('\n').replace(/^\n+|\n+$/g, ''); if (body.trim()) lines.push(body.replace(/\n/g, WITHIN)); } // a fence never closed: what follows it is the block
   return { lines, images, silent: silent && !lines.length && !images.length };
 }
 
@@ -55,11 +65,12 @@ export function parseSaid(text, { has = () => true, pictures = true } = {}) {
  * @param {boolean} [o.unprompted] - she speaks first: nothing of his is waiting for an answer
  */
 /**
- * What is written, made fit to go out: what stands in brackets is a stage direction or a thought and is not said; at
- * most one sticker; no more lines than a chat message has.
+ * What is written, made fit to go out: in a line of chat what stands in brackets is a stage direction or a thought and
+ * is not said (in a block she fenced, brackets are part of what she wrote); at most one sticker. How much she says is
+ * hers to judge (11-23: no count here — a list he asked for lost its last line to one).
  */
-export function tidy(parsed, maxLines = 4) {
-  const lines = parsed.lines.map((l) => l.replace(/[（(][^（()）]*[)）]/g, '').trim()).filter(Boolean).slice(0, maxLines);
+export function tidy(parsed) {
+  const lines = parsed.lines.map((l) => (l.includes(WITHIN) ? l : l.replace(/[（(][^（()）]*[)）]/g, '').trim())).filter(Boolean);
   let sticker = false;
   const images = parsed.images.filter((i) => (!String(i).startsWith('sticker:') ? true : sticker ? false : (sticker = true)));
   return { lines, images, silent: parsed.silent || (!lines.length && !images.length) };
@@ -89,18 +100,20 @@ export function sayInput({ dialogue = [], stickers = null, facts = [], about = '
  * @param {(to: string) => boolean} deps.unread - has the one this goes to said something she has not read?
  * @param {(o: { to: string, text: string, images: string[] }) => Promise<{ said?: string[], images?: string[], interrupted?: boolean, unsent?: string[] }>} deps.send
  */
-export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12, maxLines = 4 }) {
+export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12 }) {
   /** Write it: the card and what is in front of her. A line the check catches is written once more; the second goes as it is. */
   async function write(input, { has, pictures }) {
     const system = String(card() ?? '').trim();
     if (!system) throw new Error('no persona card');
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = tidy(parseSaid(await call({ system, text: input }), { has, pictures }), maxLines);
-      const checked = check(parsed.lines.join('\n'));
-      out = { ...parsed, lines: checked.lines, silent: parsed.silent || (!checked.lines.length && !parsed.images.length) };
-      if (!checked.hits.length) break;
-      audit('say-rewritten', { hits: checked.hits, attempt });
+      const parsed = tidy(parseSaid(await call({ system, text: input }), { has, pictures }));
+      // Her card's check reads chat a line at a time; a block she fenced goes as she wrote it.
+      const lines = [], hits = [];
+      for (const l of parsed.lines) { if (l.includes(WITHIN)) { lines.push(l); continue; } const c = check(l); lines.push(...c.lines); hits.push(...c.hits); }
+      out = { ...parsed, lines, silent: parsed.silent || (!lines.length && !parsed.images.length) };
+      if (!hits.length) break;
+      audit('say-rewritten', { hits, attempt });
     }
     return out;
   }
@@ -133,7 +146,7 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
     /** Words for her hands to type somewhere (a comment, a post, a reply in an app): the text only, '' when she would rather not. */
     async compose({ about = '', where = '' } = {}) {
       const out = await write(sayInput({ about, where: where || '手机上的一个输入框' }), { has: () => false, pictures: false });
-      return out.silent ? '' : out.lines.join('\n');
+      return out.silent ? '' : unfold(out.lines.join('\n'));
     },
   };
 }

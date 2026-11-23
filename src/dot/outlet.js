@@ -8,9 +8,12 @@
  * @param deps.here     () => true when he is talking to her in her own window (not over QQ)
  * @param deps.herSaid  (text) — her transcript gets what reached him
  */
+import { unfold } from './say.js';
+
 export function createOutlet({ qq, im, here, herSaid }) {
   let chain = Promise.resolve(), out = 0;
-  const whole = (text) => ({ said: String(text).split('\n').filter(Boolean), images: [] });
+  // A message of several lines (say.js WITHIN) is one entry of `said`, with its line breaks back in place.
+  const whole = (text) => ({ said: String(text).split('\n').filter(Boolean).map(unfold), images: [] });
   return {
     /** Her bubbles are going out right now. */
     busy: () => out > 0,
@@ -18,7 +21,7 @@ export function createOutlet({ qq, im, here, herSaid }) {
     settled: () => chain,
     /** → { said: [lines], images: [names], interrupted?, unsent? }; throws when there is no way to reach them. */
     async send({ to, text, images = [] }) {
-      if (to === 'owner' && here()) { herSaid(text); return whole(text); }
+      if (to === 'owner' && here()) { herSaid(unfold(text)); return whole(text); }
       const q = qq();
       if (q?.connected) {
         out++;
@@ -27,8 +30,8 @@ export function createOutlet({ qq, im, here, herSaid }) {
         try { return await job; } finally { out--; }
       }
       if (to !== 'owner') throw new Error('her QQ is not connected');
-      if (!(await im.send(text))) throw new Error('no way to reach him: her QQ is not connected and there is no IM target');
-      herSaid(text);
+      if (!(await im.send(unfold(text)))) throw new Error('no way to reach him: her QQ is not connected and there is no IM target');
+      herSaid(unfold(text));
       return whole(text);
     },
   };

@@ -114,7 +114,6 @@ export const defaults = {
   sameErrorNudge: 3, // her hands hit the same error this many times in a row: told to change course or end it (not reached)
   sameErrorStop: 6,  // … this many: the code ends the thing as failed (same-error); 0 = never // a thing's details as the voice gets them (the book is where results come from; her own words carry her stance)
   sayLines: 12,
-  sayMaxLines: 4,        // a message of hers has at most this many lines; what the voice writes beyond is not sent
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped
@@ -1089,7 +1088,7 @@ export function apply(ctx, config = {}) {
     stickers: () => { try { return ctx.get('dshQq')?.stickerList?.() ?? []; } catch { return []; } },
     check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
     unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && hisUnread(),
-    lines: cfg.sayLines, maxLines: cfg.sayMaxLines,
+    lines: cfg.sayLines,
     audit: (event, data) => audit(event, { session: lastSession, ...data }),
     send: (m) => outlet.send(m),
   });

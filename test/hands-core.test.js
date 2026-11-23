@@ -271,7 +271,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
   h.replies.push('明天多云，十八到二十四度');
   h.emit('s1', 'turn/end', { turn: 9, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节（他问到才说，没问到的不提）：后天转晴）/, 'their summary and details: the result comes from the book');
+  assert.match(fed(7), /（他要的事到头了：（查资料，不碰手机和电脑）查明天广州天气。结果：明天多云，18 到 24 度。\n细节（他要的东西在这里面，就照这里给全；他没要的经过不提）：后天转晴）/, 'their summary and details: the result comes from the book');
   assert.doesNotMatch(fed(7), /看图|看结果/, 'nothing to look at: the voice has no picture');
   assert.match(fed(7), /他这会儿没说话，是你有事要告诉他/);
   assert.equal(h.qqSent.at(-1)[1], '明天多云，十八到二十四度');
@@ -547,7 +547,7 @@ test('the same error over and over is counted by code: told to change course at 
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: 'B站连不上，试了好几个地址都是 ERR_CONNECTION_CLOSED。' }] } });
   h.replies.push('B站连不上');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节（他问到才说，没问到的不提）：换了几个地址都一样）/);
+  assert.match(fed(), /（他要的事到头了：（在电脑上）打开 B 站。没做成。结果：B 站打不开，ERR_CONNECTION_CLOSED\n细节（他要的东西在这里面，就照这里给全；他没要的经过不提）：换了几个地址都一样）/);
   assert.doesNotMatch(fed(), /你自己想说的意思/, 'what she wrote in her conversation is not passed on: the result has one account');
   // never ended by the hands: the code ends it at the sixth
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '再试试' }] });

@@ -17,7 +17,7 @@ test('say: what the call wrote is what goes out — lines, stickers she has, fac
 
 test('say: the one message the call is given — her stickers first, the conversation as it went, what is in her hands, what she knows', () => {
   const text = sayInput({ dialogue: [{ who: 'owner', text: '开机' }, { who: 'her', text: '醒啦\n我在呢' }, { who: 'owner', text: '在干嘛呀' }], stickers: [{ id: '31d44003ce', note: '开心猫' }], facts: ['你手上没有在做的事，这一轮也没有开始做任何事'], about: '刚把余额提醒脚本写好了' });
-  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息，一行一条，平时一句就够[^\n]*不想回就只写 \[不回\]。）$/);
+  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息。说多少、怎么说，你自己看场合[^\n]*不想回就只写 \[不回\]。）$/);
   assert.match(sayInput({ stickers: [], facts: ['x'] }), /^（你的表情包夹现在是空的。/);
   assert.doesNotMatch(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'] }), /你自己想说的意思/, 'nothing to tell: no such line');
   assert.match(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'], unprompted: true }), /（你和他在 QQ 上最近的对话）[\s\S]*（他这会儿没说话，是你有事要告诉他。/);
@@ -82,4 +82,15 @@ test('say: words for her hands to type are written the same way — the card, no
   assert.doesNotMatch(h.calls[0].text, /表情包夹|他：在吗|你手上/);
   assert.equal(h.sent.length, 0, 'composed, not sent: her hands type it');
   assert.equal(await harness({ replies: ['[不回]'] }).say.compose({ about: 'x' }), '');
+});
+
+test('how much she says is hers: no count cuts it; lines she fences are one message, as written', async () => {
+  const { parseSaid, tidy, WITHIN, unfold } = await import('../src/dot/say.js');
+  const chat = tidy(parseSaid('一\n二\n三\n四\n五\n六（小声）'));
+  assert.deepEqual(chat.lines, ['一', '二', '三', '四', '五', '六'], 'six lines of chat are six bubbles; a stage direction is not said');
+  const report = tidy(parseSaid('查好了\n```\n分支  dev\n提交  269dc67 (HEAD)\n      37b8176\n\n      1fe8c5e\n```\n就这些'));
+  assert.equal(report.lines.length, 3);
+  assert.equal(unfold(report.lines[1]), '分支  dev\n提交  269dc67 (HEAD)\n      37b8176\n\n      1fe8c5e', 'the block keeps its lines, its spacing and its brackets');
+  assert.ok(report.lines[1].includes(WITHIN) && !report.lines[1].includes('\n'));
+  assert.deepEqual(tidy(parseSaid('```text\na\nb')).lines.map(unfold), ['a\nb'], 'a fence left open: what follows is the block');
 });
