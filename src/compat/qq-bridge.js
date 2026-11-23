@@ -35,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { sectionOf, dshHome } from '../settings.js';
-import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS, HANDS_ASK_TOOL, HANDS_DONE_TOOL, HANDS_HOST_TOOLS, PHONE_PASTE_TOOLS } from '../tool-prefixes.js';
+import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS, HANDS_ASK_TOOL, HANDS_DONE_TOOL, HANDS_HOST_TOOLS, PHONE_HANDS_TOOLS, HANDS_COMPUTER_HOST_TOOLS, HANDS_WEB_TOOLS, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 
 export const name = 'dsh-dot/compat';
 export const inject = [];
@@ -140,7 +140,7 @@ export function readBridge(root, env = process.env) {
  */
 export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
   const m = BRIDGE_ID_RE.exec(String(id));
-  if (!m && hers?.hands?.(id, cwd)) return 'hands';
+  if (!m && hers?.hands?.(id, cwd)) { const device = String(hers.handsDevice?.(id) ?? ''); return ['phone', 'computer', 'web'].includes(device) ? `hands:${device}` : 'hands'; }
   if (!m && hers?.(id, cwd)) return 'dot';
   if (m) {
     if (m[1] !== 'p') return 'qqb-sandbox';
@@ -165,11 +165,6 @@ export function classify({ id = '', cwd = '', preset } = {}, bridge, hers) {
 export const isDotTool = (n) => DOT_TOOLS.includes(n) || DOT_TOOL_PREFIXES.some((p) => n.startsWith(p));
 /** Is this tool her phone's or her computer's (mcp__dot-phone__*, mcp__dot-vm__*, phone_zoom)? */
 export const isDeviceTool = (n) => n === PHONE_ZOOM_TOOL || n === PHONE_TYPE_TOOL || DEVICE_TOOL_PREFIXES.some((p) => n.startsWith(p));
-/** The phone server's own ways of putting text in (clipboard and paste under the hood): not offered, phone_type is the one way. */
-const PASTE_TOOLS = PHONE_PASTE_TOOLS.map((n) => `${PHONE_TOOL_PREFIX}${n}`);
-/** Not for the hands: after each action the screen comes back as text, and a picture of the whole screen every step is
- * what made them slow. To look at a picture or a layout they enlarge the part they mean (phone_zoom). */
-const WHOLE_SCREEN_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_take_screenshot`];
 /** Is this tool qq-bridge's? */
 export const isBridgeTool = (n) => BRIDGE_TOOL_PREFIXES.some((p) => n.startsWith(p));
 
@@ -190,7 +185,21 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
     // Her hands: her devices and her accounts, nothing else of hers (no memory, no QQ, no handing off) and no bridge tools.
     // Her hands: her devices, her accounts, asking her, and the few host tools that are doing (HANDS_HOST_TOOLS) —
     // nothing else, whatever is registered now or later (no memory, no QQ, no subagents, no schedules, no bridge tools).
-    if (owner === 'hands') { if (!(n === 'account' || n === HANDS_ASK_TOOL || n === HANDS_DONE_TOOL || HANDS_HOST_TOOLS.includes(n) || isDeviceTool(n)) || PASTE_TOOLS.includes(n) || WHOLE_SCREEN_TOOLS.includes(n)) out.push(n); continue; }
+    // Each thing is on one device ('hands:phone' / 'hands:computer' / 'hands:web'): they are offered that device's tools
+    // and not the other's — every step resends the tool list, and a thing on her phone has no use for her computer's
+    // thirty tools. Of her phone's server only what they use (PHONE_HANDS_TOOLS). 'hands' alone (the device not
+    // known): both devices, as before.
+    if (owner === 'hands' || owner.startsWith('hands:')) {
+      const device = owner.slice(6);
+      const phone = n === PHONE_TYPE_TOOL || n === PHONE_ZOOM_TOOL || (n.startsWith(PHONE_TOOL_PREFIX) && PHONE_HANDS_TOOLS.includes(n.slice(PHONE_TOOL_PREFIX.length)));
+      const pc = n.startsWith(VM_TOOL_PREFIX) || (HANDS_HOST_TOOLS.includes(n) && HANDS_COMPUTER_HOST_TOOLS.includes(n));
+      const ok = n === HANDS_ASK_TOOL || n === HANDS_DONE_TOOL || HANDS_WEB_TOOLS.includes(n)
+        || (device !== 'web' && n === 'account')
+        || ((device === 'phone' || !device) && phone)
+        || ((device === 'computer' || !device) && pc);
+      if (!ok) out.push(n);
+      continue;
+    }
     if (isDotTool(n)) { out.push(n); continue; }
     if (isDeviceTool(n) && (owner === 'qqb-sandbox' || (owner === 'qqb-owner' && !ownerDevices))) out.push(n);
   }
@@ -212,6 +221,7 @@ export function apply(ctx, config = {}) {
   const cfg = { ...defaults, ...config, ...sectionOf('compat', (m) => logger.warn(m)) };
   const hers = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.hers?.(id, cwd)); } catch { return false; } };
   hers.hands = (id, cwd) => { try { return Boolean(ctx.get('dshDot')?.isHands?.(id, cwd)); } catch { return false; } };
+  hers.handsDevice = (id) => { try { return ctx.get('dshDot')?.handsDevice?.(id) ?? ''; } catch { return ''; } };
 
   let cached = null, cachedAt = 0, root = '', announced = false;
   const bridge = () => {

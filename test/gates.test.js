@@ -63,6 +63,8 @@ test('gates: every press is a press, a batch is its steps, and a tool with no ru
   assert.equal(batch([step('mobile_open_url', { url: 'tel:10086' })]).kind, 'call');
   assert.equal(batch([step('mobile_type_keys', { text: '你好' })]).tier, 'refuse', 'typing has one way');
   assert.equal(batch([step('mobile_clipboard', { action: 'set', text: 'x' })]).tier, 'refuse');
+  assert.equal(batch([step('mobile_login_to_cloud_provider')]).kind, 'not-theirs', 'what they are not offered alone is not theirs in a batch');
+  assert.equal(batch([step('mobile_start_screen_recording')]).tier, 'refuse');
   // what is under a second press is not on the screen yet
   const two = batch([step('mobile_click_on_screen_at_coordinates', { x: 900, y: 100 }), step('mobile_click_on_screen_at_coordinates', { x: 900, y: 200 })]);
   assert.equal(two.tier, 'refuse'); assert.match(two.what, /看了新的屏幕再点/);
@@ -113,6 +115,14 @@ test('consent: a yes covers one thing (bound on first use) and lets go unused; "
   c.grant({ kind: 'push', words: '推吧' });
   assert.equal(c.allows({ kind: 'push', subject: 'origin' }), false, 'a yes that names nothing covers only what names nothing');
   assert.equal(c.allows({ kind: 'push' }), true);
+  // a yes he gave ahead (he asked for the thing himself): any subject of that kind, for the next thing once
+  c.grant({ kind: 'call', words: '给10086发条短信', ahead: true });
+  assert.equal(c.allows({ kind: 'call', subject: '10086', thing: 't7' }), true);
+  assert.equal(c.allows({ kind: 'call', thing: 't7' }), true, 'the thing keeps it');
+  assert.equal(c.allows({ kind: 'call', thing: 't8' }), false, 'not the thing after');
+  c.grant({ kind: 'message', words: '跟他说一声', ahead: true });
+  assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), true);
+  assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), false, 'with no thing to keep it, once');
   assert.deepEqual(kept.map((g) => g.kind), ['message'], 'only a standing yes is kept');
   const again = createConsent({ store, now: () => 1e9 });
   assert.equal(again.allows({ kind: 'message', subject: 'user:1' }), true, 'across a restart');

@@ -10,7 +10,7 @@
 // judged by the words under it; when the screen cannot be read, or the app in front is not known, it is asked about
 // too. A batch is its steps, each judged the same way.
 // The lists are here and nowhere else: a word added to a list is the whole change.
-import { PHONE_LOOK_TOOLS, PHONE_PASTE_TOOLS, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
+import { PHONE_LOOK_TOOLS, PHONE_PASTE_TOOLS, PHONE_HANDS_TOOLS, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 
 export const KINDS = {
   message: '给不熟的人或群发消息', 'send-file': '把设备上的文件发给别人', install: '在手机上装 App', delete: '删除、清空或卸载',
@@ -125,7 +125,10 @@ export function classify({ tool, input, screen, fg = '', now = Date.now() }) {
   let worst = null;
   for (const step of [].concat(args.steps ?? args.commands ?? [])) {
     const name = short(step?.name ?? step?.tool), a = argsOf(step?.arguments ?? step?.args ?? {});
-    const r = PHONE_PASTE_TOOLS.includes(name) ? { tier: 'refuse', kind: 'paste', what: `${name} 不能用：打字用 phone_type，一次打一处` } : judge(name, a, seen);
+    // A step is a tool they are offered when called alone: what is kept from them is not theirs inside a batch either.
+    const r = PHONE_PASTE_TOOLS.includes(name) ? { tier: 'refuse', kind: 'paste', what: `${name} 不能用：打字用 phone_type，一次打一处` }
+      : !PHONE_HANDS_TOOLS.includes(name) && !PHONE_LOOK_TOOLS.includes(name) ? { tier: 'refuse', kind: 'not-theirs', what: `${name || '这一步'} 不在你能用的工具里` }
+      : judge(name, a, seen);
     if (r && (!worst || SEVERITY[r.tier] < SEVERITY[worst.tier])) worst = r;
     if (!PHONE_LOOK_TOOLS.includes(name)) seen.moved = true;
   }

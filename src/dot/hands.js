@@ -39,7 +39,7 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
 
 /**
  * @param deps.dir        the hands' working folder (outside her home)
- * @param deps.create     async (cwd) => session id ('' when the host cannot make one)
+ * @param deps.create     async (cwd, device) => session id ('' when the host cannot make one)
  * @param deps.agentFor   async (id) => the agent handle ({ followup, cancel? }) or null — asked for each time it is used: the
  *                        handle of a session that is not running is a thinner one, and goes stale
  * @param deps.ledger     the book of things (ledger.js)
@@ -98,7 +98,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     void (async () => {
       try {
         try { mkdirSync(dir, { recursive: true }); } catch (error) { void error; }
-        const id = mine.id = await create(dir);
+        const id = mine.id = await create(dir, mine.device);
         if (id) { remember(id); audit('hands-opened', { session: id, thing: mine.entry }); }
         ledger.begin(mine.entry, { session: id });
         if (mine.over) return;

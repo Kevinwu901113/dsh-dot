@@ -232,3 +232,22 @@ test('hiddenFor: a lean conversation of hers sees only her own tools and her QQ 
   assert.deepEqual(names.filter((n) => !hidden.includes(n)), ['hands', 'say', 'memory', 'recall', 'keep_line', 'qq_sticker_keep', 'schedule_create', 'create_goal', 'read', 'write', 'mcp__dot-qq__invoke_action']);
   assert.ok(hiddenFor('dot', names).length < hidden.length, 'a conversation begun before keeps what its history was written with');
 });
+
+test('hiddenFor: her hands are offered the tools of the device the thing is on, and of her phone only what they use', () => {
+  const P = 'mcp__dot-phone__', V = 'mcp__dot-vm__';
+  const all = ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'job_list', 'read', 'read_image', 'write', 'edit', 'phone_type', 'phone_zoom',
+    `${P}mobile_click_on_screen_at_coordinates`, `${P}mobile_double_tap_on_screen`, `${P}mobile_batch_commands`, `${P}mobile_list_elements_on_screen`,
+    `${P}mobile_take_screenshot`, `${P}mobile_type_keys`, `${P}mobile_clipboard`, `${P}mobile_login_to_cloud_provider`, `${P}mobile_start_screen_recording`, `${P}mobile_get_device_logs`, `${P}get_more_tools`,
+    `${V}browser_click`, `${V}sandbox_execute_bash`, 'memory', 'hands', 'say'];
+  const seen = (owner) => all.filter((n) => !hiddenFor(owner, all).includes(n));
+  assert.deepEqual(seen('hands:phone'), ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'phone_type', 'phone_zoom', `${P}mobile_click_on_screen_at_coordinates`, `${P}mobile_double_tap_on_screen`, `${P}mobile_batch_commands`, `${P}mobile_list_elements_on_screen`]);
+  assert.deepEqual(seen('hands:computer'), ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image', `${V}browser_click`, `${V}sandbox_execute_bash`]);
+  assert.deepEqual(seen('hands:web'), ['ask_her', 'done', 'web_search', 'web_fetch']);
+  // the device not known: both devices, still only what they use of her phone
+  assert.ok(seen('hands').includes(`${V}browser_click`) && seen('hands').includes('phone_type') && !seen('hands').includes(`${P}mobile_login_to_cloud_provider`));
+  // which device: asked of dot by the session's id
+  const hers = Object.assign(() => false, { hands: () => true, handsDevice: (id) => ({ h1: 'phone', h2: 'web' })[id] ?? '' });
+  assert.equal(classify({ id: 'h1', cwd: '/x' }, null, hers), 'hands:phone');
+  assert.equal(classify({ id: 'h2', cwd: '/x' }, null, hers), 'hands:web');
+  assert.equal(classify({ id: 'h3', cwd: '/x' }, null, hers), 'hands');
+});

@@ -32,6 +32,19 @@ export const HIS_OK_TOOL = 'his_ok';
 // Everything else the host offers — subagents, workflows, schedules, messages, plugin management, asking the user —
 // is not theirs: they do one thing she gave them and come back.
 export const HANDS_HOST_TOOLS = ['bash', 'job_output', 'job_kill', 'web_search', 'web_fetch', 'read', 'read_image'];
+/** Of those, the ones that run in her computer (the shell, its jobs, files): theirs only for a thing on her computer, and only while it is up. */
+export const HANDS_COMPUTER_HOST_TOOLS = ['bash', 'job_output', 'job_kill', 'job_list', 'read', 'read_image', 'write', 'edit'];
+/** Looking things up: theirs whatever the thing is on. */
+export const HANDS_WEB_TOOLS = ['web_search', 'web_fetch'];
+/**
+ * What her hands are offered of her phone's own server, alone or as a step of a batch: looking, pressing, swiping,
+ * keys, apps, links. The rest of what that server has (its cloud devices, recording, device logs, folding, location,
+ * whatever it adds later) is not theirs — a positive list, so a new tool is not offered until it is put here.
+ */
+export const PHONE_HANDS_TOOLS = ['mobile_list_available_devices', 'mobile_list_apps', 'mobile_launch_app', 'mobile_terminate_app', 'mobile_list_elements_on_screen',
+  'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_set_orientation', 'mobile_get_foreground_app', 'mobile_click_on_screen_at_coordinates',
+  'mobile_double_tap_on_screen', 'mobile_long_press_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button', 'mobile_open_url',
+  'mobile_install_app', 'mobile_uninstall_app', 'mobile_batch_commands'];
 
 // Every model-facing tool this plugin registers, by who may use it (src/compat/qq-bridge.js hides the
 // rest per session; test/compat.test.js checks the list against the register() calls in src/).

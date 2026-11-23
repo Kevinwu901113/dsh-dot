@@ -14,11 +14,13 @@ export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_
   const fresh = (g) => g.always || now() - g.at <= (g.thing ? thingMs : holdMs);
   // A yes is for the kind of thing and for whom or what it was asked about: one given about user:1 says nothing of
   // user:2, and one given with nothing named covers only what names nothing.
-  const fits = (g, kind, subject) => g.kind === kind && g.subject === String(subject ?? '');
+  // A yes given ahead (he asked for the thing himself, before anything stopped to ask him: `ahead`) names no subject
+  // and is for the next thing of that kind, once: the first thing that uses it keeps it, and with no thing it is used up.
+  const fits = (g, kind, subject) => g.kind === kind && (g.ahead || g.subject === String(subject ?? ''));
   return {
-    /** His yes: { kind, subject?, words, always? }. */
-    grant({ kind, subject = '', words = '', always = false }) {
-      const g = { kind, subject: String(subject ?? ''), words: String(words ?? '').slice(0, 200), at: now(), always: Boolean(always), thing: '' };
+    /** His yes: { kind, subject?, words, always?, ahead? }. */
+    grant({ kind, subject = '', words = '', always = false, ahead = false }) {
+      const g = { kind, subject: String(subject ?? ''), words: String(words ?? '').slice(0, 200), at: now(), always: Boolean(always), thing: '', ...(ahead && !always ? { ahead: true } : {}) };
       grants = [...grants.filter(fresh), g];
       for (let i = asks.length - 1; i >= 0; i--) if (fits(g, asks[i].kind, asks[i].subject)) asks.splice(i, 1);
       save();
@@ -29,6 +31,7 @@ export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_
       const g = grants.find((x) => fresh(x) && fits(x, kind, subject) && (x.always || !x.thing || x.thing === thing));
       if (!g) return false;
       if (!g.always && !g.thing && thing) g.thing = thing;
+      else if (g.ahead && !thing) grants = grants.filter((x) => x !== g); // said ahead, used with no thing to keep it: once
       return true;
     },
     /** Something to ask him about that has no thing (yet). */

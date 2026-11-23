@@ -360,12 +360,13 @@ test('what needs him: code reads the screen; an ask ends the thing for him, his 
   assert.equal(h.shown('his_ok', { status: 'refused' }), '没记：要他自己刚说的话里同意了才能记。');
   h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装吧' }] });
-  // a yes answers a question: with nothing of that kind waiting for him there is nothing to keep
-  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'friend', always: true }), { status: 'nothing', kind: 'friend' });
-  assert.match(h.shown('his_ok', { status: 'nothing', kind: 'friend' }), /^没记：现在没有哪件「加好友、进群」的事在等他点头/);
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '他说可以装' }] } });
   assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'ok', kind: 'install' });
-  assert.equal(h.audit.filter((a) => a.event === 'consent-granted').length, 1);
+  assert.deepEqual(h.audit.filter((a) => a.event === 'consent-granted').map((a) => [a.of ?? a.kind, Boolean(a.ahead)]), [['install', false]], 'the yes to what stopped to ask him');
+  // with nothing of that kind waiting, it is something he asked for himself in this turn: a yes ahead, in his words, for the next such thing once
+  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'friend', always: true }), { status: 'ok', kind: 'friend' });
+  const ahead = h.audit.filter((a) => a.event === 'consent-granted').at(-1);
+  assert.equal(ahead.ahead, true); assert.equal(ahead.always, false, 'a yes ahead is for this once'); assert.equal(ahead.words, '装吧', 'his words, not hers');
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '好' }, { type: 'tool-call', name: 'hands' }] } });
   await h.tools.hands.execute({ device: 'phone', do: '接着装', after: true }); await tick();
   assert.match(text(h.agentOf('h2').got[0]), /^（在手机上）接着装\n（接着刚才那件：（在手机上）装小红书\n问过：要他点头：装一个 App。屏幕还停在那时的地方/);
@@ -506,7 +507,7 @@ test('her computer has the same gates: a till page is his, leaving the machine i
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '推之前问问他。' }] } });
   h.replies.push('要推了，可以吗');
   h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
-  assert.match(fed(), /（他要的事停在一步上：（在电脑上）把博客推上去。要做的一步「把代码推出去（git push）：origin」还没做——按你的规矩，这种事先问过他才做。）/);
+  assert.match(fed(), /（他要的事停在一步上：（在电脑上）把博客推上去。要做的一步「把代码推出去（git push）：origin」还没做——按你的规矩，这种事先问过他才做。这次就是要问他：这一步做不做。）/);
   // a till: his, with the computer's screen going with what she says
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '买个域名' }] });
   await h.tools.hands.execute({ device: 'computer', do: '买个域名' }); await tick();
@@ -598,5 +599,22 @@ test('a turn of his that broke is not her silence: nothing is written as her, he
   h.emit('s1', 'turn/end', { turn: 4, reason: { kind: 'completed' } });
   await tick(200);
   assert.equal(failed().length, before, 'taken by a turn: nothing failed');
+  h.stop();
+});
+
+test('her hands have a shell and files only inside her computer: with none running, the host\'s are not theirs', async () => {
+  const h = harness();
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看看磁盘还剩多少' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '看磁盘' }); await tick();
+  assert.equal(h.services.dshDot?.handsDevice?.('h1') ?? h.ctx.get('dshDot').handsDevice('h1'), 'computer', 'the session knows its device');
+  assert.equal(await h.pre('h1', 'bash', { command: 'df -h' }), 'ran', 'her computer is up: the shell is in it');
+  h.services.dshComputer.status = () => ({ state: 'off' });
+  for (const tool of ['bash', 'read', 'read_image', 'job_output']) {
+    const r = await h.pre('h1', tool, { command: 'cat ~/.ssh/id_rsa', file_path: '/Users/k/.ssh/id_rsa' });
+    assert.equal(r.kind, 'deny', tool); assert.match(r.reason, /^这一步没做：她的电脑现在没开着/);
+  }
+  delete h.services.dshComputer;
+  assert.equal((await h.pre('h1', 'bash', { command: 'rm -rf ~' })).kind, 'deny', 'no computer component at all');
+  assert.equal(await h.pre('h1', 'web_search', { query: 'x' }), 'ran', 'looking things up needs no computer');
   h.stop();
 });

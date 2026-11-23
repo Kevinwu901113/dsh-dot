@@ -14,7 +14,7 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET, HANDS_COMPUTER_HOST_TOOLS } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -130,7 +130,7 @@ export const defaults = {
   failureNoticeMs: 600000,
   // What one thing of her hands may cost before it stops and he is asked (tokens: new input + output + a tenth of the
   // cached input, as DeepSeek prices them). 0: no limit.
-  thingCostCap: 600000,
+  thingCostCap: 1500000,
 };
 
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
@@ -683,6 +683,7 @@ export function apply(ctx, config = {}) {
     return p;
   }
   async function reflectOnce(r) {
+    let seen = null; // what the call gave back, for the audit when it cannot be read
     try {
       if (r.review && !howto.needsReview(r.app)) return; // read over meanwhile
       // Not injected into dsh-dot (it would wait on them): taken when needed.
@@ -695,10 +696,11 @@ export function apply(ctx, config = {}) {
         system: prompt(r.review ? 'dot.howto.review' : 'dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 4000,
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
       })));
+      seen = { text: String(reply.text ?? ''), args: String(reply.args ?? '') };
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
       if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
       if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, outcome: r.outcome, ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
-    } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200) }); }
+    } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200), ...(seen ? { chars: seen.text.length, args: seen.args.length } : {}) }); }
   }
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.on('system-prompt/assemble', async (_a, c, next) => {
@@ -869,17 +871,22 @@ export function apply(ctx, config = {}) {
   // What he said yes to (consent.js).
   const consent = createConsent({ store });
   const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
+  // Which device each of her hands' sessions is for: they are offered that device's tools and no other's (compat).
+  const handsDevices = new Map(); let handsMaking = '';
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
-    create: async (cwd) => {
+    create: async (cwd, device = '') => {
       const controller = ctx.get('sessionController');
       if (!controller) return '';
+      handsMaking = device; // the session being made now is for this device (compat asks, before its id is known here)
       // With their own preset (only the host tools doing takes); a host that does not know it refuses it — then as before.
       let made = null;
       try { made = await controller.create({ cwd, agentPreset: HANDS_PRESET }); } catch (err) { audit('hands-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
       try { made ??= await controller.create({ cwd }); } catch (err) { logger.warn(`hands session not created: ${err.message}`); return ''; }
       const { sessionId } = made ?? {};
       try { await controller.rename?.({ sessionId, title: 'dot · 手' }); } catch (error) { void error; }
+      if (sessionId) { handsDevices.set(sessionId, device); if (handsDevices.size > 40) handsDevices.delete(handsDevices.keys().next().value); }
+      handsMaking = '';
       return sessionId ?? '';
     },
     agentFor: handsAgent,
@@ -1241,7 +1248,7 @@ export function apply(ctx, config = {}) {
       name: HIS_OK_TOOL,
       description: prompt('dot.gates.ok-tool'),
       parameters: { type: 'object', properties: { kind: { type: 'string', enum: Object.keys(KINDS), description: Object.entries(KINDS).map(([k, v]) => `${k}：${v}`).join('；') }, always: { type: 'boolean', description: '他明说以后这种都行才填 true' } }, required: ['kind'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : v?.status === 'nothing' ? 'dot.gates.ok.nothing' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
       async execute(args) {
         const t = turns.get(lastSession);
         const kind = String(args?.kind ?? '');
@@ -1253,7 +1260,14 @@ export function apply(ctx, config = {}) {
           ...ledger.recent(10).filter((e) => e.outcome === 'stuck' && e.ask?.for === 'him' && e.ask.tier !== 'him' && e.ask.kind === kind && (e.endedAt ?? 0) >= since).map((e) => ({ at: e.endedAt, subject: e.ask.subject ?? '' })),
           ...consent.asking().filter((a) => a.kind === kind).map((a) => ({ at: a.at, subject: a.subject ?? '' })),
         ].sort((a, b) => b.at - a.at)[0];
-        if (!waiting) { audit('consent-refused', { session: lastSession, kind, why: 'nothing asked' }); return { status: 'nothing', kind }; }
+        // Nothing has stopped to ask him: he asked for this himself, in the words of this turn. That counts as his yes
+        // (11-23, his decision) — for the next thing of this kind, once. Whether his words do ask for it is her reading:
+        // the code has his words on record with it, not a check of them.
+        if (!waiting) {
+          const g = consent.grant({ kind, words: t.hisWords ?? '', ahead: true });
+          audit('consent-granted', { session: lastSession, kind, subject: '', always: false, ahead: true, words: g.words.slice(0, 80) });
+          return { status: 'ok', kind };
+        }
         const g = consent.grant({ kind, subject: waiting.subject, words: t.hisWords ?? '', always: Boolean(args?.always) });
         audit('consent-granted', { session: lastSession, kind, subject: g.subject, always: g.always });
         return { status: 'ok', kind };
@@ -1419,6 +1433,9 @@ export function apply(ctx, config = {}) {
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
+    // Her hands have a shell and files only inside her computer. With no computer running, the host's own shell and
+    // file tools would act on his machine: not theirs, whatever the session's sandbox says.
+    if (theirs && HANDS_COMPUTER_HOST_TOOLS.includes(exec.name) && computer()?.status?.().state !== 'ready') { audit('gate-no-computer', { session: id, tool: exec.name }); return deny(prompt('dot.gates.no-computer')); }
     // Her phone is reached with its own tools, where the gates look: not through the shell.
     if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
     // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
@@ -1627,6 +1644,8 @@ export function apply(ctx, config = {}) {
     hers: (id, cwd) => isDotSession(id, cwd) || retired(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
+    /** The device a session of her hands is for: 'phone' | 'computer' | 'web' ('' when not known). */
+    handsDevice: (id) => handsDevices.get(id) ?? handsMaking,
     busy: (id) => turns.has(id),
     /** Add a part to the short message that goes with what has just reached her ({ name, order, text({ agent, messages }) → string | Promise }); returns its disposer. */
     turnNote,
