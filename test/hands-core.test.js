@@ -68,6 +68,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   assert.equal(her.got.length, 0, 'nothing of theirs reaches her in between');
   // asking her is the hands' own: not hers to call, and once asked their stretch is over
   assert.equal((await h.pre('s1', 'ask_her', { question: 'x' })).kind, 'deny');
+  h.services.dshPhone = { lastScreen: { items: [{ words: '首页', x: 1, y: 2 }], at: Date.now() }, foreground: async () => 'com.example.app/.Main' };
   assert.equal(await h.pre('h1', 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 1, y: 2 }), 'ran');
   assert.deepEqual(await h.tools.ask_her.execute({ question: '这页有三张：竖大拇指的猫、喝咖啡的猫、发呆的猫。存哪几张？' }), { status: 'asked' });
   assert.match((await h.pre('h1', 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 1, y: 2 })).reason, /^记下了。这件事到此为止/);
@@ -91,7 +92,10 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   await tick(30);
   assert.deepEqual(h.qqSent, [['owner', '好', []]], 'only the answer to his own words went out: a thing of his she took further is not at its end');
   // it is over: once
-  await h.tools.done.execute({ summary: '存好了，喝咖啡的猫在相册里。' });
+  // whether it was reached is theirs to say: left out, the thing is not ended either way
+  assert.deepEqual(await h.tools.done.execute({ summary: '存好了' }), { status: 'unsaid' });
+  assert.match(h.shown('done', { status: 'unsaid' }), /^没收尾：reached 没填/);
+  await h.tools.done.execute({ summary: '存好了，喝咖啡的猫在相册里。', reached: true });
   await tick();
   assert.equal(her.got.length, 2);
   assert.match(text(her.got[1]), /刚才那件事做完了：（在手机上）存喝咖啡的那张[\s\S]*\n（手收尾了[^\n]*\n结果：存好了，喝咖啡的猫在相册里。\n（这是他要的事/);
@@ -106,7 +110,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   assert.equal(text(h.agentOf('h3').got[1]), '顺便看看有没有狗的');
   assert.equal(h.shown('hands', { status: 'added' }), '补上了，它下一步之前就会看到。');
   h.emit('s1', 'turn/end', { turn: 4 });
-  await h.tools.done.execute({ summary: '有猫有狗' }); await tick();
+  await h.tools.done.execute({ summary: '有猫有狗', reached: true }); await tick();
   assert.deepEqual(her.got[2].source, { kind: 'dsh-dot', form: 'hands-result', for: 'him', thing: 't3' });
   h.stop();
 });
@@ -134,7 +138,7 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   await h.tools.hands.execute({ device: 'phone', do: '看看小黑盒首页' }); await tick();
   const release = h.services.dshDot.freeze();
   const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
-  await h.tools.done.execute({ summary: '首页是推荐流' }); await tick();
+  await h.tools.done.execute({ summary: '首页是推荐流', reached: true }); await tick();
   assert.equal(her.got.length, 0, 'not delivered into the conversation she is leaving');
   h.services.dshDot.setSession('s2');
   assert.deepEqual(her.cancels, ['dot: her conversation moved on']);
@@ -152,12 +156,12 @@ test('her hands and she think at their own effort: the session\'s own selection,
   const hands = h.agentOf('h1');
   assert.deepEqual(hands.selected, [low]);
   assert.equal(hands.got.length, 1, 'and then the thing is sent');
-  await h.tools.done.execute({ summary: '看了' }); await tick(); await tick();
+  await h.tools.done.execute({ summary: '看了', reached: true }); await tick(); await tick();
   const her = h.agentOf('s1');
   assert.deepEqual(her.selected, [low], 'her own conversation, when what her hands did comes back to it');
   assert.equal(her.got.length, 1);
   await h.tools.hands.execute({ device: 'phone', do: '再看一眼' }); await tick();
-  await h.tools.done.execute({ summary: '看了' }); await tick(); await tick();
+  await h.tools.done.execute({ summary: '看了', reached: true }); await tick(); await tick();
   assert.deepEqual(her.selected, [low], 'already so: nothing is done');
   assert.ok(h.audit.some((a) => a.event === 'effort-set' && a.session === 's1' && a.was === 'off' && a.effort === 'low'));
   h.stop();
@@ -261,7 +265,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 8, reason: { kind: 'completed' } }); await tick(30);
   const hid = h.audit.findLast((e) => e.event === 'hands-opened').session;
-  await h.tools.done.execute({ summary: '明天多云，18 到 24 度。', detail: '后天转晴', task: '查天气' }); await tick();
+  await h.tools.done.execute({ summary: '明天多云，18 到 24 度。', detail: '后天转晴', task: '查天气', reached: true }); await tick();
   assert.equal(her.got.length, 1);
   h.emit('s1', 'turn/start', { turn: 9 }); h.emit('s1', 'user/message', { source: her.got[0].source, content: her.got[0].content });
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '查到了。' }] } });
@@ -356,7 +360,12 @@ test('what needs him: code reads the screen; an ask ends the thing for him, his 
   assert.equal(h.shown('his_ok', { status: 'refused' }), '没记：要他自己刚说的话里同意了才能记。');
   h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
   h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装吧' }] });
+  // a yes answers a question: with nothing of that kind waiting for him there is nothing to keep
+  assert.deepEqual(await h.tools.his_ok.execute({ kind: 'friend', always: true }), { status: 'nothing', kind: 'friend' });
+  assert.match(h.shown('his_ok', { status: 'nothing', kind: 'friend' }), /^没记：现在没有哪件「加好友、进群」的事在等他点头/);
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '他说可以装' }] } });
   assert.deepEqual(await h.tools.his_ok.execute({ kind: 'install' }), { status: 'ok', kind: 'install' });
+  assert.equal(h.audit.filter((a) => a.event === 'consent-granted').length, 1);
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '好' }, { type: 'tool-call', name: 'hands' }] } });
   await h.tools.hands.execute({ device: 'phone', do: '接着装', after: true }); await tick();
   assert.match(text(h.agentOf('h2').got[0]), /^（在手机上）接着装\n（接着刚才那件：（在手机上）装小红书\n问过：要他点头：装一个 App。屏幕还停在那时的地方/);
@@ -410,7 +419,7 @@ test('the know-how book: every device call of a thing is a step where it happene
   await post('s1', 'mcp__dot-phone__mobile_press_button', { button: 'HOME' }); // not her hands: nothing recorded
   h.replies.length = 0;
   h.replies.push(JSON.stringify({ task: '搜游戏', notes: '## 教训\n- 搜索框要先点一下\n## 捷径\n- 搜游戏（在首页时）：点右上角搜索 → 输入 {游戏名} → 回车' }));
-  await h.tools.done.execute({ summary: '搜到了。' });
+  await h.tools.done.execute({ summary: '搜到了。', reached: true });
   for (let i = 0; i < 30 && !h.audit.some((e) => e.event === 'howto-learned'); i++) await tick();
   assert.ok(h.audit.some((e) => e.event === 'howto-learned' && e.app === '小黑盒' && e.steps === 3 && e.outcome === 'done' && e.task === '搜游戏'));
   const input = JSON.parse(h.llmCalls.find((c) => /手艺簿/.test(c.system)).messages[0].content[0].text);
@@ -449,7 +458,7 @@ test('his words opened a thing: the answer waits a moment — a quick thing is a
   await his(2, '明天广州天气怎样', ['查明天广州天气']);
   await tick(20);
   assert.deepEqual(h.qqSent, [], 'held');
-  await h.tools.done.execute({ summary: '明天多云 22 度' }); await tick();
+  await h.tools.done.execute({ summary: '明天多云 22 度', reached: true }); await tick();
   await tick(80);
   assert.deepEqual(h.qqSent, [], 'nothing of his under way when the wait was over: folded into the result');
   assert.ok(h.audit.some((e) => e.event === 'ack-folded'));
@@ -550,5 +559,44 @@ test('the same error over and over is counted by code: told to change course at 
   assert.deepEqual([ended.thing, ended.outcome, ended.cause], ['t2', 'failed', 'same-error']);
   assert.ok(h.audit.some((a) => a.event === 'same-error-stop' && a.n === 6));
   assert.match(text(her.got.at(-1)), /同一个错一直出，被停下了/);
+  h.stop();
+});
+
+test('a turn of his that broke is not her silence: nothing is written as her, he is told by the plugin once, /dot says so; a failed voice call and words no turn took are told the same way', async () => {
+  const h = harness({ ownerLostMs: 40, failureNoticeMs: 0 });
+  const notices = () => h.qqSent.filter(([, t]) => /^⚠️ dot/.test(t)).map(([, t]) => t);
+  const failed = () => h.audit.filter((a) => a.event === 'turn-failed');
+  // the turn broke: no call writes her words, the plugin says so in its own name
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在吗' }] });
+  h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '他问在不在。' }] } });
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'error', error: { message: 'prompt file gone since dsh started: phone.hers' } } });
+  await tick(30);
+  assert.equal(h.llmCalls.length, 0, 'the voice is not asked to answer for a turn that did not happen');
+  assert.deepEqual(notices(), ['⚠️ dot：她这一轮出错了，没有回你。\n原因：prompt file gone since dsh started: phone.hers']);
+  assert.equal(failed().length, 1); assert.equal(failed()[0].lost, false);
+  assert.equal(h.audit.filter((a) => a.event === 'silent').length, 0, 'not counted as her choosing to say nothing');
+  assert.match((await h.command('')).text, /last failed turn: her conversation s1 · 0 min ago · prompt file gone since dsh started: phone\.hers/);
+  // the call that writes her words failed (no card): told, not "silent"
+  const card = h.services.dshInterlude.cardText; h.services.dshInterlude.cardText = () => '';
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '喂' }] });
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } });
+  await tick(30);
+  assert.match(notices().at(-1), /^⚠️ dot：她这一轮出错了，没有回你。\n原因：替她写话的那次调用没成：no persona card/);
+  assert.equal(h.audit.filter((a) => a.event === 'silent').length, 0);
+  h.services.dshInterlude.cardText = card;
+  // his words reach QQ, are handed to her conversation, and no turn ever takes them
+  h.services.qqMessage({ kind: 'private', userId: '20002', who: '宽', text: '还在吗', fromOwner: true, at: new Date().toISOString() });
+  await tick(200);
+  assert.equal(h.audit.filter((a) => a.event === 'owner-message').length, 1, 'handed to her conversation');
+  assert.match(notices().at(-1), /^⚠️ dot：你刚才那句她没接到，等好了请再发一次。\n原因：她的对话没有接到这句话/);
+  assert.equal(failed().at(-1).lost, true);
+  // words a turn does take are not lost
+  const before = failed().length;
+  h.services.qqMessage({ kind: 'private', userId: '20002', who: '宽', text: '喂喂', fromOwner: true, at: new Date().toISOString() });
+  await tick(20);
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '喂喂' }] });
+  h.emit('s1', 'turn/end', { turn: 4, reason: { kind: 'completed' } });
+  await tick(200);
+  assert.equal(failed().length, before, 'taken by a turn: nothing failed');
   h.stop();
 });

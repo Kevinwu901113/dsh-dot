@@ -17,8 +17,8 @@ export const KEYBOARD = Object.freeze({
 /** `text` in pieces of `size` characters (code points, so an emoji is never cut in two). */
 export const chunks = (text, size = 3) => { const cp = [...String(text ?? '')], out = []; for (let i = 0; i < cp.length; i += size) out.push(cp.slice(i, i + size).join('')); return out; };
 
-// What is on the screen, as a list of things with words on them: [{ words, x, y, focused, password }] (x, y: where
-// to tap it). Two ways to get it, the same shape from both: the phone server's own reader (mobilecli `dump ui`, what
+// What is on the screen, as a list of things with words on them: [{ words, x, y, w?, h?, focused, password }] (x, y: where
+// to tap it; w, h: how big it is, when the reader says). Two ways to get it, the same shape from both: the phone server's own reader (mobilecli `dump ui`, what
 // mobile_list_elements_on_screen shows) and, where that is not there, uiautomator's XML.
 const attr = (tag, name) => { const m = new RegExp(`\\b${name}="([^"]*)"`).exec(tag); return m ? m[1].replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&#10;/g, '\n').replace(/&amp;/g, '&') : undefined; };
 /** From a `uiautomator dump`. */
@@ -29,7 +29,7 @@ export function itemsFromXml(xml) {
     const focused = attr(m[0], 'focused') === 'true';
     const words = (attr(m[0], 'text') || attr(m[0], 'content-desc') || '').replace(/\s+/g, ' ').trim();
     if (!words && !focused) continue;
-    out.push({ words, x: b ? Math.round((Number(b[1]) + Number(b[3])) / 2) : 0, y: b ? Math.round((Number(b[2]) + Number(b[4])) / 2) : 0, focused, password: attr(m[0], 'password') === 'true' });
+    out.push({ words, x: b ? Math.round((Number(b[1]) + Number(b[3])) / 2) : 0, y: b ? Math.round((Number(b[2]) + Number(b[4])) / 2) : 0, ...(b ? { w: Number(b[3]) - Number(b[1]), h: Number(b[4]) - Number(b[2]) } : {}), focused, password: attr(m[0], 'password') === 'true' });
   }
   return out;
 }
@@ -41,7 +41,7 @@ export function itemsFromElements(elements) {
     const words = String(e.text || e.value || e.label || e.name || '').replace(/\s+/g, ' ').trim();
     const r = e.rect ?? {};
     const focused = e.focused === true;
-    if (words || focused) out.push({ words, x: Math.round((Number(r.x) || 0) + (Number(r.width) || 0) / 2), y: Math.round((Number(r.y) || 0) + (Number(r.height) || 0) / 2), focused, password: /password|secure/i.test(String(e.type ?? '')) });
+    if (words || focused) out.push({ words, x: Math.round((Number(r.x) || 0) + (Number(r.width) || 0) / 2), y: Math.round((Number(r.y) || 0) + (Number(r.height) || 0) / 2), ...(Number(r.width) > 0 && Number(r.height) > 0 ? { w: Number(r.width), h: Number(r.height) } : {}), focused, password: /password|secure/i.test(String(e.type ?? '')) });
     for (const c of Array.isArray(e.children) ? e.children : []) walk(c);
   };
   for (const e of Array.isArray(elements) ? elements : []) walk(e);

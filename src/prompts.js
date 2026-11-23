@@ -10,6 +10,7 @@ import { homedir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { sectionOf } from './settings.js';
+import { LOADED } from './integrity.js';
 
 export const BUILTIN = join(dirname(fileURLToPath(import.meta.url)), 'prompts');
 const ID = /^[a-z][a-z0-9-]*(\.[a-z0-9-]+)*$/;
@@ -82,7 +83,11 @@ export async function withDraft(id, text, fn) {
 
 /** The file's text as is (override first), no placeholders filled. Unknown id → throws. */
 export function raw(id) {
-  if (!ID.test(id) || !statSync(builtinPath(id), { throwIfNoEntry: false })) throw new Error(`unknown prompt: ${id}`);
+  if (!ID.test(id) || !statSync(builtinPath(id), { throwIfNoEntry: false })) {
+    // A file that was here when dsh started and is gone now: the plugin's files were replaced under the running process.
+    if (LOADED.prompts.has(id)) throw new Error(`prompt file gone since dsh started: ${id} (the plugin's files were changed on disk — quit dsh and open it again)`);
+    throw new Error(`unknown prompt: ${id}`);
+  }
   return drafts.get(id) ?? readText(overridePath(id))?.replace(MARK, '') ?? readText(builtinPath(id));
 }
 

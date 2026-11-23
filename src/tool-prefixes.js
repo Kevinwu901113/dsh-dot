@@ -11,6 +11,12 @@ export const QQ_SERVER = 'dot-qq';
 export const QQ_TOOL_PREFIX = `mcp__${QQ_SERVER}__`;
 // dot's own phone tool (phone.js): a part of the screen, enlarged. Read-only, so observation turns allow it.
 export const PHONE_ZOOM_TOOL = 'phone_zoom';
+// Her phone's tools, by what they are, in one place (dot/gates.js judges by these; compat hides by these).
+/** Only looking: nothing on the phone changes. Every other phone tool is an action, whatever it is called. */
+export const PHONE_LOOK_TOOLS = ['mobile_list_elements_on_screen', 'mobile_take_screenshot', 'mobile_get_screen_size', 'mobile_get_orientation',
+  'mobile_list_apps', 'mobile_list_available_devices', 'mobile_get_foreground_app', 'mobile_list_crashes', 'mobile_get_crash', 'mobile_get_device_logs', PHONE_ZOOM_TOOL];
+/** The phone server's own ways of putting text in (clipboard and paste under the hood): not offered to her hands, alone or as a step of a batch — phone_type is the one way. */
+export const PHONE_PASTE_TOOLS = ['mobile_type_keys', 'mobile_clipboard'];
 /** Typing on her phone, through the input method (src/phone/typing.js): the one way text goes in. */
 export const PHONE_TYPE_TOOL = 'phone_type';
 /** Her one way of saying something to anyone (src/dot/say.js): the words are written by a call that is only her card. */

@@ -204,6 +204,8 @@ export function buildScenes(src, { now = Date.now(), limit = DEFAULT_SCENES, day
         else act(s, 'approval', `${tool.replace(/^.*__/, '')}${e.reason ? ` · ${String(e.reason).split('\n')[0]}` : ''}`);
         touch(s, t); break;
       }
+      // A turn that broke, or his words that no turn took: failed, not done and not her silence.
+      case 'dot:turn-failed': { const s = recent(t, (x) => x.session === e.session); if (s) { s.status = 'failed'; touch(s, t); } break; }
       case 'dot:silent': { const s = recent(t, (x) => x.session === e.session); if (s) { s.quiet = true; touch(s, t); } break; }
       default:
     }

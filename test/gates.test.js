@@ -26,13 +26,60 @@ test('gates: money is not done, his own steps are his, the rest of what needs hi
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_launch_app', input: { packageName: 'com.google.android.apps.messaging' } }).kind, 'call');
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_open_url', input: { url: 'tel:10086' } }).kind, 'call');
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_swipe_on_screen', input: {}, fg: 'com.google.android.dialer/.X' }), null, 'scrolling the call log is looking');
-  // hers: looking, ordinary taps, a tap far from any words, a screen read too long ago
+  // hers: looking, ordinary taps, a tap far from any words on a screen that was read
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_list_elements_on_screen', input: {} }), null);
   assert.equal(classify({ ...tap(10, 10), screen: screen(['点赞', 10, 10]) }), null);
   assert.equal(classify({ ...tap(900, 900), screen: screen(['确认支付', 10, 10]) }), null);
-  assert.equal(classify({ ...tap(10, 10), screen: { items: [{ words: '确认支付', x: 10, y: 10 }], at: NOW - 120_000 } }), null);
+  // what cannot be judged is asked about, never let through: a screen read too long ago, one with nothing readable on it, an app in front that is not known
+  assert.equal(classify({ ...tap(10, 10), screen: { items: [{ words: '确认支付', x: 10, y: 10 }], at: NOW - 120_000 } }).kind, 'blind');
+  assert.deepEqual(classify({ ...tap(10, 10), screen: screen() }), { tier: 'ask', kind: 'blind', what: '屏幕上的字读不出来，要点的地方是什么看不清' });
+  assert.equal(classify({ ...tap(10, 10) }).kind, 'blind', 'no reading at all');
+  assert.equal(classify({ ...tap(10, 10), screen: screen(['点赞', 10, 10]), fg: null }).kind, 'blind');
+  assert.equal(classify({ tool: 'mcp__dot-phone__mobile_swipe_on_screen', input: {}, fg: null }), null, 'scrolling needs no reading');
   assert.equal(wordsAt([{ words: 'a', x: 0, y: 0 }, { words: 'b', x: 50, y: 0 }], 40, 0), 'b');
   assert.deepEqual(classify({ tool: 'mcp__dot-phone__mobile_batch_commands', input: { steps: [{ name: 'mobile_click_on_screen_at_coordinates', arguments: { x: 5, y: 5 } }] }, screen: screen(['删除', 5, 5]), now: NOW }), { tier: 'ask', kind: 'delete', what: '点「删除」' });
+});
+
+test('gates: every press is a press, a batch is its steps, and a tool with no rule is asked about', () => {
+  const P = 'mcp__dot-phone__', pay = screen(['确认支付', 500, 1000], ['转账', 200, 400], ['同意并继续', 500, 1500]);
+  const at = (tool, x, y, s = pay) => classify({ tool: P + tool, input: { x, y }, screen: s, now: NOW });
+  // the same words under a double tap or a long press as under a tap
+  for (const tool of ['mobile_click_on_screen_at_coordinates', 'mobile_double_tap_on_screen', 'mobile_long_press_on_screen_at_coordinates']) {
+    assert.equal(at(tool, 500, 1000).tier, 'him', tool);
+    assert.equal(at(tool, 200, 400).tier, 'forbid', tool);
+    assert.equal(at(tool, 500, 1500).kind, 'terms', tool);
+  }
+  // a wide button is the button wherever it is pressed, when the reader says how big it is
+  const wide = { items: [{ words: '确认支付', x: 540, y: 2000, w: 1000, h: 140 }], at: NOW };
+  assert.equal(at('mobile_click_on_screen_at_coordinates', 80, 2040, wide).kind, 'pay');
+  assert.equal(wordsAt([{ words: '外', x: 500, y: 500, w: 900, h: 900 }, { words: '里', x: 300, y: 300, w: 100, h: 60 }], 310, 310), '里', 'the smallest thing the point is inside');
+  // a batch: each step as if called alone, the worst of them
+  const batch = (steps, s = pay) => classify({ tool: P + 'mobile_batch_commands', input: { steps }, screen: s, now: NOW });
+  const step = (name, a = {}) => ({ name, arguments: a });
+  assert.equal(batch([step('mobile_double_tap_on_screen', { x: 500, y: 1000 })]).kind, 'pay');
+  assert.equal(batch([step('mobile_list_elements_on_screen'), step('mobile_click_on_screen_at_coordinates', { x: 900, y: 100 })]), null, 'looking first changes nothing');
+  assert.equal(batch([step('mobile_launch_app', { packageName: 'com.eg.android.AlipayGphone' })]).tier, 'forbid');
+  assert.equal(batch([step('mobile_install_app', { path: '/x.apk' })]).kind, 'install');
+  assert.equal(batch([step('mobile_open_url', { url: 'tel:10086' })]).kind, 'call');
+  assert.equal(batch([step('mobile_type_keys', { text: '你好' })]).tier, 'refuse', 'typing has one way');
+  assert.equal(batch([step('mobile_clipboard', { action: 'set', text: 'x' })]).tier, 'refuse');
+  // what is under a second press is not on the screen yet
+  const two = batch([step('mobile_click_on_screen_at_coordinates', { x: 900, y: 100 }), step('mobile_click_on_screen_at_coordinates', { x: 900, y: 200 })]);
+  assert.equal(two.tier, 'refuse'); assert.match(two.what, /看了新的屏幕再点/);
+  assert.equal(batch([step('mobile_swipe_on_screen', { direction: 'up' }), step('mobile_click_on_screen_at_coordinates', { x: 900, y: 100 })]).tier, 'refuse');
+  assert.equal(batch([step('mobile_click_on_screen_at_coordinates', { x: 900, y: 100 }), step('mobile_press_button', { button: 'ENTER' })]), null, 'a press, then keys');
+  assert.equal(batch([step('mobile_type_keys', { text: 'x' }), step('mobile_launch_app', { packageName: 'com.icbc' })]).tier, 'forbid', 'the worst step is the batch');
+  // installs are asked about however they are called; a link that pays is not opened; a finance app is left, not used
+  assert.equal(classify({ tool: P + 'mobile_install_app', input: {} }).kind, 'install');
+  assert.equal(classify({ tool: P + 'mobile_uninstall_app', input: {} }).kind, 'delete');
+  assert.equal(classify({ tool: P + 'mobile_open_url', input: { url: 'alipays://platformapi/startapp?appId=20000067' } }).tier, 'forbid');
+  assert.equal(classify({ tool: P + 'mobile_open_url', input: { url: 'https://www.bilibili.com/' } }), null);
+  assert.equal(classify({ tool: P + 'mobile_press_button', input: { button: 'ENTER' }, fg: 'com.icbc/.Pay' }).tier, 'forbid');
+  assert.equal(classify({ tool: P + 'mobile_press_button', input: { button: 'HOME' }, fg: 'com.icbc/.Pay' }), null, 'leaving is hers');
+  // looking is a list; anything not on it and without a rule is asked about by its name
+  for (const look of ['mobile_get_foreground_app', 'mobile_get_device_logs', 'phone_zoom']) assert.equal(classify({ tool: P + look, input: {} }), null, look);
+  assert.deepEqual(classify({ tool: P + 'mobile_login_to_cloud_provider', input: {} }), { tier: 'ask', kind: 'phone-tool', what: '在手机上用 mobile_login_to_cloud_provider', subject: 'mobile_login_to_cloud_provider' });
+  assert.equal(classify({ tool: P + 'mobile_some_new_gesture', input: { x: 500, y: 1000 }, screen: pay, now: NOW }).kind, 'phone-tool');
 });
 
 test('gates: what the host or a plugin gates is named by kind', () => {
@@ -62,6 +109,10 @@ test('consent: a yes covers one thing (bound on first use) and lets go unused; "
   assert.equal(c.asking().length, 0, 'asked and answered');
   assert.equal(c.allows({ kind: 'message', subject: 'user:1' }), true);
   assert.equal(c.allows({ kind: 'message', subject: 'user:2' }), false, 'for whom it was said');
+  assert.equal(c.allows({ kind: 'message' }), false, 'a yes about someone is not a yes about no one in particular');
+  c.grant({ kind: 'push', words: '推吧' });
+  assert.equal(c.allows({ kind: 'push', subject: 'origin' }), false, 'a yes that names nothing covers only what names nothing');
+  assert.equal(c.allows({ kind: 'push' }), true);
   assert.deepEqual(kept.map((g) => g.kind), ['message'], 'only a standing yes is kept');
   const again = createConsent({ store, now: () => 1e9 });
   assert.equal(again.allows({ kind: 'message', subject: 'user:1' }), true, 'across a restart');

@@ -93,7 +93,9 @@ export function contrastCut(scores, k) {
  * whole words elsewhere (case-folded). No tokenizer, so a made-up name splits no worse
  * than a common word.
  */
-const RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|[\p{L}\p{N}]+/gu;
+// A run of CJK, or a run of other letters and digits that stops where CJK begins (\p{L} alone takes Han too, and
+// "github点击注册" or "27号前请他吃饭" came out as one word nothing ever matched).
+const RUN = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]+|(?:(?![\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}])[\p{L}\p{N}])+/gu;
 const CJK1 = /[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}\p{Script=Hangul}]/u;
 export function lexTokens(text) {
   const out = [];

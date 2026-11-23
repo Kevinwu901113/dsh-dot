@@ -42,6 +42,7 @@ import { dotCommand } from './command.js';
 import { sectionOf, setValues } from '../settings.js';
 import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
 import { configure as configurePrompts, prompt } from '../prompts.js';
+import { drift } from '../integrity.js';
 import { runPendingReset } from '../reset.js';
 import { ago, stamp, today, unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
@@ -123,6 +124,10 @@ export const defaults = {
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness: a turn with no session event for turnStallMs is stalled (he is told once).
   turnStallMs: 300000,
+  // His words were handed to her conversation and no turn of hers has taken them after this long (and none is running): they are counted as lost, and he is told.
+  ownerLostMs: 45000,
+  // He is told of a turn that failed at most once in this long (a broken install fails every turn the same way).
+  failureNoticeMs: 600000,
   // What one thing of her hands may cost before it stops and he is asked (tokens: new input + output + a tenth of the
   // cached input, as DeepSeek prices them). 0: no limit.
   thingCostCap: 600000,
@@ -403,6 +408,41 @@ export function apply(ctx, config = {}) {
   };
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
+  // What became of his words. Each message of his ends one of three ways: she answered, she chose not to, or it
+  // failed — the turn broke, the call that writes her words failed, or no turn ever took his words. The third is told
+  // to him by the plugin in its own name (never written as her), shown as failed, and said in /dot; until 11-22 it
+  // did not exist: a broken turn looked like her silence on his side and like "done" on the panel.
+  let owed = null;        // his words handed to her conversation and not yet taken by a turn: { session, timer }
+  let lastFailure = null; // { at, session, error, lost }
+  let failureTold = 0, driftTold = false;
+  const driftLine = () => { const d = drift(); return d ? prompt('dot.drift', { loaded: d.loaded || '?', disk: d.disk || '?', missing: d.missing.length }).trim() : ''; };
+  const turnFailed = (id, why, { lost = false, his = true } = {}) => {
+    const error = String(why ?? '').replace(/\s+/g, ' ').trim().slice(0, 200) || '没有说原因';
+    lastFailure = { at: Date.now(), session: id, error, lost };
+    audit('turn-failed', { session: id, error, lost, his });
+    if (!his || Date.now() - failureTold < cfg.failureNoticeMs) return;
+    failureTold = Date.now();
+    void im.send(prompt(lost ? 'dot.turn-lost' : 'dot.turn-failed', { error, hint: driftLine() }), 'plain');
+  };
+  const taken = (id) => { if (owed?.session === id) { clearTimeout(owed.timer); owed = null; } };
+  const owe = (id) => {
+    if (!(cfg.ownerLostMs > 0)) return;
+    clearTimeout(owed?.timer);
+    const mine = { session: id, timer: null };
+    const check = () => {
+      if (owed !== mine) return;
+      // A turn of hers is running: his words are read at its next step, or by the turn after it.
+      if (turns.has(id)) { mine.timer = setTimeout(check, cfg.ownerLostMs); mine.timer.unref?.(); return; }
+      owed = null;
+      turnFailed(id, '她的对话没有接到这句话', { lost: true });
+    };
+    mine.timer = setTimeout(check, cfg.ownerLostMs); mine.timer.unref?.();
+    owed = mine;
+  };
+  ctx.effect(() => () => clearTimeout(owed?.timer), 'dsh-dot: his words not yet taken');
+  // The plugin's files replaced under the running dsh (integrity.js): said once, before he finds out by her going quiet.
+  const watchDrift = () => { if (driftTold) return; const line = driftLine(); if (!line) return; driftTold = true; audit('plugin-drift', drift() ?? {}); void im.send(`⚠️ dot：${line}`, 'plain'); };
+
   ctx.on('session/event', (session, event) => {
     const id = session?.id;
     const cwd = session?.header?.cwd;
@@ -421,6 +461,7 @@ export function apply(ctx, config = {}) {
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
+      if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'user' && addressed(m.source) === 'qq')) taken(id); // his words are in her inbox's turn
       if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule')) incoming.add(id);
       const from = (event.data?.inserted ?? []).find((m) => ['dsh-dot', 'dsh-interlude'].includes(m?.source?.kind));
       if (from) origins.set(id, from.source.form);
@@ -437,11 +478,14 @@ export function apply(ctx, config = {}) {
     // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
     if (event.type === 'user/message' && addressed(event.data?.source) === 'qq') {
       t.fromQq = true;
+      if (event.data?.source?.kind === 'user') taken(id);
       if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
         t.his = true;
         const said = ownerSaid(unstamp(contentText(event.data?.content))).trim();
         if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
       }
+      // His own words of this turn, as he typed them (t.said goes on to hold what she last wrote): what a yes of his is kept with.
+      if (event.data?.source?.kind === 'user') { const words = ownerSaid(unstamp(contentText(event.data?.content))).trim(); if (words) t.hisWords = [t.hisWords, words].filter(Boolean).join(' ').slice(-200); }
       return;
     }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
@@ -457,6 +501,14 @@ export function apply(ctx, config = {}) {
       if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
       // The words a turn closes with: its last message, when that one calls no tool (what she writes beside a tool call is thinking aloud at work).
       if (!event.data?.interrupted) { const c = event.data?.message?.content; t.closing = Array.isArray(c) && c.some((b) => b?.type === 'tool-call') ? '' : contentText(c).trim(); }
+    }
+    // The turn broke (the model call failed, a prompt could not be put together): not her silence. Nothing is written
+    // in her name about a turn that did not happen; he is told by the plugin when the turn was his.
+    const broke = ended && event.data?.reason?.kind === 'error';
+    if (broke) {
+      const lost = owed?.session === id && !t.fromQq;
+      taken(id);
+      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: Boolean(lost || ((t.fromQq || t.hisHere || t.forHim) && !t.scheduled)) });
     }
     if (ended) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
@@ -482,11 +534,14 @@ export function apply(ctx, config = {}) {
     // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
+      if (broke) return;
       // A thing of his that came back and that she took further in this turn (gave her hands the next part, answered
       // them) is not at its end: there is nothing to tell him yet.
       const further = !t.fromQq && Boolean(t.opened?.length || t.answered);
       const speak = !t.spoke && !further && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
       const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
+      // The call that writes her words failed: that is not her choosing to say nothing.
+      const told = (r) => { if (r?.status === 'failed') { preempts = 0; turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
       if (!speak) { over(); return; }
       // A note wholly in brackets is a thought to herself, not something she knows for him.
       const note = stripSilent(String(t.closing ?? '').replace(/[（(][^（()）]*[)）]/g, '')).replace(new RegExp(SILENT, 'g'), '').trim();
@@ -500,14 +555,14 @@ export function apply(ctx, config = {}) {
           if (ackHold !== ack) return;
           ackHold = null;
           if (!hisUnderWay()) { audit('ack-folded', { session: id }); return; } // told by the turn the result woke
-          void tellHim(t, { about: note }).then(over, over);
+          void tellHim(t, { about: note }).then(told, over);
         }, cfg.ackHoldMs);
         ack.timer.unref?.();
         ackHold = ack;
         audit('ack-held', { session: id, things: t.opened });
         return;
       }
-      void tellHim(t, { about: note }).then(over, over);
+      void tellHim(t, { about: note }).then(told, over);
     }
   });
 
@@ -1031,6 +1086,7 @@ export function apply(ctx, config = {}) {
       } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
     } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
     audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
+    owe(id);
   };
   // The pictures in what wakes her (dsh-dot/qq saved them in the attachment store): image blocks in the
   // message, capped per message by qq's imageSeeMax and the store's imageLimits. Without a store: text only.
@@ -1185,13 +1241,20 @@ export function apply(ctx, config = {}) {
       name: HIS_OK_TOOL,
       description: prompt('dot.gates.ok-tool'),
       parameters: { type: 'object', properties: { kind: { type: 'string', enum: Object.keys(KINDS), description: Object.entries(KINDS).map(([k, v]) => `${k}：${v}`).join('；') }, always: { type: 'boolean', description: '他明说以后这种都行才填 true' } }, required: ['kind'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : v?.status === 'nothing' ? 'dot.gates.ok.nothing' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
       async execute(args) {
         const t = turns.get(lastSession);
         const kind = String(args?.kind ?? '');
         if (!KINDS[kind] || !(t?.fromQq || t?.elsewhere)) { audit('consent-refused', { session: lastSession, kind }); return { status: 'refused', kind }; }
-        const waiting = ledger.recent(10).find((e) => e.ask?.kind === kind && e.ask?.subject) ?? consent.asking().find((a) => a.kind === kind && a.subject);
-        const g = consent.grant({ kind, subject: waiting?.ask?.subject ?? waiting?.subject ?? '', words: t.said ?? '', always: Boolean(args?.always) });
+        // A yes answers a question: the newest thing of this kind that stopped to ask him, or that she was told to ask
+        // him about. With none waiting there is nothing for it to be a yes to.
+        const since = Date.now() - 6 * 3600_000;
+        const waiting = [
+          ...ledger.recent(10).filter((e) => e.outcome === 'stuck' && e.ask?.for === 'him' && e.ask.tier !== 'him' && e.ask.kind === kind && (e.endedAt ?? 0) >= since).map((e) => ({ at: e.endedAt, subject: e.ask.subject ?? '' })),
+          ...consent.asking().filter((a) => a.kind === kind).map((a) => ({ at: a.at, subject: a.subject ?? '' })),
+        ].sort((a, b) => b.at - a.at)[0];
+        if (!waiting) { audit('consent-refused', { session: lastSession, kind, why: 'nothing asked' }); return { status: 'nothing', kind }; }
+        const g = consent.grant({ kind, subject: waiting.subject, words: t.hisWords ?? '', always: Boolean(args?.always) });
         audit('consent-granted', { session: lastSession, kind, subject: g.subject, always: g.always });
         return { status: 'ok', kind };
       },
@@ -1211,8 +1274,9 @@ export function apply(ctx, config = {}) {
       name: HANDS_DONE_TOOL,
       description: prompt('dot.hands.done-tool'),
       parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : 'dot.hands.idle') }] },
-      async execute(args) { return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args?.reached !== false }) ? 'done' : 'idle' }; },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : v?.status === 'unsaid' ? 'dot.hands.done.unsaid' : 'dot.hands.idle') }] },
+      // Whether what was wanted was reached is theirs to say and nobody's to guess: left out, the thing is not ended either way.
+      async execute(args) { if (typeof args?.reached !== 'boolean') return { status: 'unsaid' }; return { status: hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached }) ? 'done' : 'idle' }; },
     }), 'dsh-dot: hands done tool');
   });
   ctx.inject(['systemPrompt'], (scope) => {
@@ -1320,6 +1384,8 @@ export function apply(ctx, config = {}) {
     if (!g) return null;
     const thing = hands.doing()?.id ?? '';
     if (g.tier === 'forbid') { audit('gate-forbid', { session: id, device, kind: g.kind, what: g.what, thing }); return deny(prompt('dot.gates.forbid', { what: g.what })); }
+    // Not done the way it was asked (a batch that has to be cut shorter): said back to her hands, nobody is asked.
+    if (g.tier === 'refuse') { audit('gate-refuse', { session: id, device, kind: g.kind, thing }); return deny(prompt('dot.gates.refuse', { what: g.what })); }
     if (g.tier === 'him') {
       const what = HIM_KINDS[g.kind] ?? g.what;
       hands.ask(prompt('dot.gates.him.q', { what }), { for: 'him', kind: g.kind, tier: 'him', what, ...(g.screen ? { screen: true } : {}) });
@@ -1357,13 +1423,15 @@ export function apply(ctx, config = {}) {
     if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
     // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
     if (theirs && (exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name === PHONE_TYPE_TOOL)) {
-      let fg = '';
-      try { fg = String((await phone()?.foreground?.()) ?? ''); } catch (error) { void error; }
+      // Which app is in front, and what is on the screen: what could not be found out is passed on as not known
+      // (null), and the gates ask about a press they cannot judge — nothing is let through for want of a reading.
+      let fg = null;
+      try { fg = String((await phone()?.foreground?.()) ?? '') || null; } catch (error) { void error; }
       // A tap is judged by the words under it now: a screen read more than a few seconds ago (or never: her hands
       // looked with the phone's own listing tool) is read again first.
-      const seen = phone()?.lastScreen;
-      if (/click|tap|press|batch/.test(exec.name) && (!seen || Date.now() - (seen.at ?? 0) > cfg.gateScreenMs)) { try { await phone()?.screenItems?.(); } catch (error) { void error; } }
-      const stop = gateHands(classify({ tool: exec.name, input: args, screen: phone()?.lastScreen, fg }), id, 'phone');
+      let seen = phone()?.lastScreen ?? null;
+      if (/click|tap|press|batch/.test(exec.name) && (!seen || Date.now() - (seen.at ?? 0) > cfg.gateScreenMs)) { try { await phone()?.screenItems?.(); seen = phone()?.lastScreen ?? null; } catch (error) { void error; seen = null; } }
+      const stop = gateHands(classify({ tool: exec.name, input: args, screen: seen, fg }), id, 'phone');
       if (stop) return stop;
     }
     // On her computer the same tiers (gates.js classifyComputer), from what the computer's own rules find in the call
@@ -1433,7 +1501,7 @@ export function apply(ctx, config = {}) {
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
   };
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
   const checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
   const doctorTell = (why) => checkup.tell(why);
@@ -1480,7 +1548,10 @@ export function apply(ctx, config = {}) {
       const t = turnInfo(id, now);
       if (t && t.state === 'stalled') out.push(`stalled turn: ${who(id)} · no event for ${mins(t.idleMs)} · last: ${t.doing} · not cancelled`);
     }
-    return out.length ? out : [`liveness: nothing waits for his yes, no stalled turn (stalled after ${mins(cfg.turnStallMs)})`];
+    const d = drift();
+    if (d) out.push(`plugin files changed on disk since dsh started: running ${d.loaded || '?'}, on disk ${d.disk || '?'}, ${d.missing.length} prompt file(s) gone · quit dsh and open it again`);
+    if (lastFailure && now - lastFailure.at < 3600000) out.push(`last failed turn: ${who(lastFailure.session)} · ${mins(now - lastFailure.at)} ago · ${lastFailure.lost ? 'his words were not taken · ' : ''}${lastFailure.error}`);
+    return out.length ? out : [`liveness: nothing waits for his yes, no stalled or failed turn (stalled after ${mins(cfg.turnStallMs)})`];
   };
 
   // /dot (command.js): the command's surface; what it reports of her state is said here.

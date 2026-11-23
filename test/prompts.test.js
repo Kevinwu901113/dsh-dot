@@ -208,3 +208,12 @@ test('a table someone overrode before a key was added still has that key: the bu
   rmSync(overridePath('memory.standing'));
   assert.match(table('memory.standing', { n: 0, titles: '' }).words, /^## 你知道的说法/);
 });
+
+test('integrity: the disk as it was when dsh started is remembered; a file gone since then is said as that, not as an unknown prompt', async () => {
+  const { drift, LOADED } = await import('../src/integrity.js');
+  assert.equal(drift(), null);
+  assert.ok(LOADED.prompts.has('phone.hers'));
+  assert.deepEqual(drift({ version: '0.23.2' }), { loaded: LOADED.version, disk: '0.23.2', missing: [] });
+  assert.deepEqual(drift({ prompts: [...LOADED.prompts].filter((id) => id !== 'phone.hers') }).missing, ['phone.hers']);
+  assert.throws(() => prompt('no.such.prompt'), /unknown prompt: no\.such\.prompt/);
+});

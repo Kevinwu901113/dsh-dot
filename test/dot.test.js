@@ -607,7 +607,7 @@ test('visible: dshDot.turn says stalled → running; /dot lists what waits for h
     h.emit(h.home, 'turn/start', { turn: 2 });
     assert.equal(dot.turn('s1').state, 'running');
     assert.equal(dot.turn('nope'), null);
-    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: nothing waits for his yes, no stalled turn \(stalled after 5 min\)/);
+    assert.match((await cmd.handler({ rawInput: '' })).text, /liveness: nothing waits for his yes, no stalled or failed turn \(stalled after 5 min\)/);
     // a step the host gates is refused at once: no button waits, and the turn goes on
     assert.equal(await h.hooks['approval/request']({ agent: { session: { id: 's1', header: { cwd: h.home } } }, toolName: 'mcp__dot-vm__browser_click', callId: 'c1', reason: 'login' }, () => new Promise(() => {})), 'rejected');
     assert.deepEqual(dot.consent().asking.map((a) => a.kind), ['computer']);

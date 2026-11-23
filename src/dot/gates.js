@@ -5,12 +5,19 @@
 //           screen); a code sent to his phone comes from him (her hands type only words she was given)
 //   ask     she asks him in her own words, and goes on once he says yes (his_ok)
 //   (her)   everything else, a password from her account book included
+// On her phone the list that is kept is of what only looks (PHONE_LOOK_TOOLS): any other tool is an action, judged
+// here — one this file has no rule for is asked about, never let through for being unknown. A press at a point is
+// judged by the words under it; when the screen cannot be read, or the app in front is not known, it is asked about
+// too. A batch is its steps, each judged the same way.
 // The lists are here and nowhere else: a word added to a list is the whole change.
+import { PHONE_LOOK_TOOLS, PHONE_PASTE_TOOLS, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
+
 export const KINDS = {
   message: '给不熟的人或群发消息', 'send-file': '把设备上的文件发给别人', install: '在手机上装 App', delete: '删除、清空或卸载',
   register: '注册账号', terms: '同意条款或协议', friend: '加好友、进群', call: '打电话、发短信', account: '改密码、绑定或解绑',
   permission: '给 App 开权限', 'phone-number': '打一个手机号', secret: '打密钥、口令一类的字', computer: '电脑上要他点头的操作',
   spend: '一件事花得比上限多', 'qq-action': 'QQ 上的其他操作', other: '要他点头的操作',
+  blind: '在看不清的屏幕上点按', 'phone-tool': '手机上不常用的操作',
   // her computer (classifyComputer)
   remote: '让电脑连到别的机器（ssh、scp）', push: '把代码推出去（git push）', 'fetch-run': '下载一段东西直接跑', admin: '用管理员权限（sudo）',
   disk: '动整块磁盘', 'secret-file': '碰密钥、登录信息所在的文件', 'shared-delete': '删改他共享过来的文件夹', 'page-script': '在网页里跑脚本、直接按键',
@@ -30,56 +37,99 @@ const ASK_APPS = [[/dialer|incallui|\.telecom|\.contacts$/, 'call'], [/messaging
 const ASK_URL = /^(?:tel|sms|smsto|mms|mmsto):/i;
 const PHONE_NUMBER = /(?<!\d)1[3-9]\d{9}(?!\d)/;
 const SECRET = /\b(?:sk|ak|pk|ghp|gho|xox[bp]|AKIA)[-_]?[A-Za-z0-9_-]{16,}|\b[A-Za-z0-9+/_-]{36,}\b/;
-const LOOKS = /^(mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|phone_zoom)$/;
 const STALE_MS = 60_000;
 
 const short = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 const argsOf = (input) => { if (typeof input !== 'string') return input ?? {}; try { return JSON.parse(input); } catch { return {}; } };
-/** The words on the screen nearest to (x, y), within reach of a finger. */
+/**
+ * The words under a finger at (x, y): of the smallest thing with words that the point is inside, when the screen's
+ * reader said how big things are; else of the nearest thing with words, within reach of a finger.
+ */
 export function wordsAt(items, x, y, reach = 120) {
-  let best = null, bd = Infinity;
-  for (const it of items ?? []) { if (!it?.words) continue; const d = Math.hypot((it.x ?? 0) - x, (it.y ?? 0) - y); if (d < bd) { bd = d; best = it; } }
-  return best && bd <= reach ? String(best.words) : '';
+  let inside = null, area = Infinity, best = null, bd = Infinity;
+  for (const it of items ?? []) {
+    if (!it?.words) continue;
+    const cx = it.x ?? 0, cy = it.y ?? 0;
+    if (it.w > 0 && it.h > 0 && Math.abs(x - cx) <= it.w / 2 && Math.abs(y - cy) <= it.h / 2 && it.w * it.h < area) { inside = it; area = it.w * it.h; }
+    const d = Math.hypot(cx - x, cy - y);
+    if (d < bd) { bd = d; best = it; }
+  }
+  return inside ? String(inside.words) : best && bd <= reach ? String(best.words) : '';
 }
 const match = (rules, text) => { for (const [re, kind] of rules) if (re.test(text)) return kind; return ''; };
 
+const POINT = /^mobile_(click_on_screen_at_coordinates|double_tap_on_screen|long_press_on_screen_at_coordinates)$/;
+const LEAVES = /^(BACK|HOME)$/i; // the buttons that only take her out of where she is
+const PAY_URL = /^(?:alipays?|alipayqr|weixin|wxp|upwrp|uppay|unionpay|mqqwallet|bitcoin|ethereum):/i;
+const SEVERITY = { forbid: 0, him: 1, refuse: 2, ask: 3 };
+
+/** One action on her phone (a tool that is not a batch). `seen`: { items, fg } as they are now; null where not known. */
+function judge(t, args, { items, fg, onScreen, moved }) {
+  if (PHONE_LOOK_TOOLS.includes(t)) return null;
+  const pkg = String(args.packageName ?? args.package ?? args.appId ?? '');
+  const app = String(fg ?? '').split('/')[0];
+  const leaving = (t === 'mobile_press_button' && LEAVES.test(String(args.button ?? ''))) || t === 'mobile_terminate_app';
+  if (t === 'mobile_launch_app' && FORBIDDEN_APPS.test(pkg)) return { tier: 'forbid', kind: 'finance', what: `打开 ${pkg}` };
+  if (t === 'mobile_open_url' && (PAY_URL.test(String(args.url ?? '')) || FORBIDDEN_SITES.test(hostOf(args.url)))) return { tier: 'forbid', kind: 'finance', what: '打开一个付款或理财的链接' };
+  if (FORBIDDEN_APPS.test(app) && !leaving && t !== 'mobile_launch_app') return { tier: 'forbid', kind: 'finance', what: `在 ${app} 里操作` };
+  if (t === 'mobile_open_url' && ASK_URL.test(String(args.url ?? ''))) return { tier: 'ask', kind: 'call', what: '打电话、发短信' };
+  const askApp = (t === 'mobile_launch_app' && match(ASK_APPS, pkg)) || (!leaving && t !== 'mobile_swipe_on_screen' && t !== 'mobile_launch_app' && match(ASK_APPS, app));
+  if (askApp) return { tier: 'ask', kind: askApp, what: '用电话或短信' };
+  if (t === 'mobile_install_app') return { tier: 'ask', kind: 'install', what: '在手机上装 App' };
+  if (t === 'mobile_uninstall_app') return { tier: 'ask', kind: 'delete', what: '在手机上卸载 App' };
+  if (POINT.test(t)) {
+    // What is under a press that follows another action of the same batch is not on the screen yet: it cannot be judged.
+    if (moved) return { tier: 'refuse', kind: 'unseen', what: '这一批里前面的动作会让屏幕变，后面要点的地方现在还看不到：这一批只做到这一下之前，看了新的屏幕再点' };
+    // The screen could not be read, or which app is in front is not known: what the press would do cannot be told.
+    if (fg === null || !items?.length) return { tier: 'ask', kind: 'blind', what: '屏幕上的字读不出来，要点的地方是什么看不清' };
+    const word = wordsAt(items, Number(args.x), Number(args.y));
+    if (word) {
+      if (FORBIDDEN_WORDS.test(word)) return { tier: 'forbid', kind: 'money', what: `点「${word}」` };
+      const him = match(HIM_CLICK, word);
+      if (him) return { tier: 'him', kind: him, what: `点「${word}」` };
+      if (match(HIM_SCREEN, onScreen) === 'qr' && !/密码|账号|返回|取消|关闭|其他方式|换个方式/.test(word)) return { tier: 'him', kind: 'qr', what: '扫码登录', screen: true };
+      if (/permissioncontroller/.test(app) && /允许/.test(word)) return { tier: 'ask', kind: 'permission', what: `给 App 开权限：「${word}」` };
+      if (/packageinstaller/.test(app) && /安装/.test(word)) return { tier: 'ask', kind: 'install', what: '装一个 App' };
+      const ask = match(ASK_CLICK, word);
+      if (ask) return { tier: 'ask', kind: ask, what: `点「${word}」` };
+    }
+    return null;
+  }
+  if (t === 'mobile_swipe_on_screen') return match(HIM_SCREEN, onScreen) === 'captcha' ? { tier: 'him', kind: 'captcha', what: '过人机验证', screen: true } : null;
+  if (t === PHONE_TYPE_TOOL || t === 'mobile_type_keys') {
+    const typed = String(args.text ?? '');
+    if (PHONE_NUMBER.test(typed)) return { tier: 'ask', kind: 'phone-number', what: `打手机号 ${PHONE_NUMBER.exec(typed)[0]}`, subject: PHONE_NUMBER.exec(typed)[0] };
+    if (SECRET.test(typed)) return { tier: 'ask', kind: 'secret', what: '打一串像密钥的字' };
+    return null;
+  }
+  if (/^mobile_(press_button|launch_app|open_url|terminate_app|set_orientation)$/.test(t)) return null;
+  // A tool of her phone this file has no rule for (a new one of the phone server's, its cloud devices, recording …).
+  return { tier: 'ask', kind: 'phone-tool', what: `在手机上用 ${t}`, subject: t };
+}
+
 /**
- * What an action of her hands on her phone is, by the four tiers. → null (hers to do) or { tier, kind, what, subject? }
+ * What an action of her hands on her phone is, by the four tiers. → null (hers to do) or { tier, kind, what, subject? };
+ * tier 'refuse': not done as it was asked (a batch that has to be cut shorter), with `what` saying how.
  * @param {object} a
  * @param {string} a.tool   the tool's name
  * @param {any} a.input     its arguments
- * @param {{ items: object[], at: number }} [a.screen]  what the screen showed last (phone.lastScreen)
- * @param {string} [a.fg]   the app in front (package/activity)
+ * @param {{ items: object[], at: number } | null} [a.screen]  what the screen showed last (phone.lastScreen); null or read too long ago: not known
+ * @param {string | null} [a.fg]   the app in front (package/activity); null: could not be told
  */
 export function classify({ tool, input, screen, fg = '', now = Date.now() }) {
   const t = short(tool), args = argsOf(input);
-  if (LOOKS.test(t)) return null;
-  const pkg = String(args.packageName ?? args.package ?? args.appId ?? '');
-  if (t === 'mobile_launch_app' && FORBIDDEN_APPS.test(pkg)) return { tier: 'forbid', kind: 'finance', what: `打开 ${pkg}` };
-  if (FORBIDDEN_APPS.test(fg) && !/press_button/.test(t)) return { tier: 'forbid', kind: 'finance', what: `在 ${fg.split('/')[0]} 里操作` };
-  if (t === 'mobile_open_url' && ASK_URL.test(String(args.url ?? ''))) return { tier: 'ask', kind: 'call', what: '打电话、发短信' };
-  const askApp = (t === 'mobile_launch_app' && match(ASK_APPS, pkg)) || (!/press_button|swipe/.test(t) && match(ASK_APPS, String(fg).split('/')[0]));
-  if (askApp) return { tier: 'ask', kind: askApp, what: '用电话或短信' };
-  const items = screen && now - (screen.at ?? 0) <= STALE_MS ? screen.items ?? [] : [];
-  const onScreen = items.map((it) => it.words ?? '').join(' ');
-  const clicks = t === 'mobile_click_on_screen_at_coordinates' ? [args] : t === 'mobile_batch_commands' ? [].concat(args.steps ?? args.commands ?? []).filter((s) => /click/.test(String(s?.name ?? s?.tool ?? ''))).map((s) => s.arguments ?? s.args ?? s) : [];
-  for (const c of clicks) {
-    const word = wordsAt(items, Number(c.x), Number(c.y));
-    if (!word) continue;
-    if (FORBIDDEN_WORDS.test(word)) return { tier: 'forbid', kind: 'money', what: `点「${word}」` };
-    const him = match(HIM_CLICK, word);
-    if (him) return { tier: 'him', kind: him, what: `点「${word}」` };
-    if (match(HIM_SCREEN, onScreen) === 'qr' && !/密码|账号|返回|取消|关闭|其他方式|换个方式/.test(word)) return { tier: 'him', kind: 'qr', what: '扫码登录', screen: true };
-    if (/permissioncontroller/.test(fg) && /允许/.test(word)) return { tier: 'ask', kind: 'permission', what: `给 App 开权限：「${word}」` };
-    if (/packageinstaller/.test(fg) && /安装/.test(word)) return { tier: 'ask', kind: 'install', what: '装一个 App' };
-    const ask = match(ASK_CLICK, word);
-    if (ask) return { tier: 'ask', kind: ask, what: `点「${word}」` };
+  const items = screen && now - (screen.at ?? 0) <= STALE_MS ? screen.items ?? [] : null;
+  const seen = { items, fg, onScreen: (items ?? []).map((it) => it.words ?? '').join(' '), moved: false };
+  if (t !== 'mobile_batch_commands') return judge(t, args, seen);
+  // A batch is its steps, in order: each is judged as if called alone. The worst of them is the batch's.
+  let worst = null;
+  for (const step of [].concat(args.steps ?? args.commands ?? [])) {
+    const name = short(step?.name ?? step?.tool), a = argsOf(step?.arguments ?? step?.args ?? {});
+    const r = PHONE_PASTE_TOOLS.includes(name) ? { tier: 'refuse', kind: 'paste', what: `${name} 不能用：打字用 phone_type，一次打一处` } : judge(name, a, seen);
+    if (r && (!worst || SEVERITY[r.tier] < SEVERITY[worst.tier])) worst = r;
+    if (!PHONE_LOOK_TOOLS.includes(name)) seen.moved = true;
   }
-  if (/swipe|drag/.test(t) && match(HIM_SCREEN, onScreen) === 'captcha') return { tier: 'him', kind: 'captcha', what: '过人机验证', screen: true };
-  const typed = /type/.test(t) || t === 'phone_type' ? String(args.text ?? '') : t === 'mobile_batch_commands' ? [].concat(args.steps ?? args.commands ?? []).filter((s) => /type/.test(String(s?.name ?? s?.tool ?? ''))).map((s) => String((s.arguments ?? s.args ?? s)?.text ?? '')).join('\n') : '';
-  if (typed && PHONE_NUMBER.test(typed)) return { tier: 'ask', kind: 'phone-number', what: `打手机号 ${PHONE_NUMBER.exec(typed)[0]}`, subject: PHONE_NUMBER.exec(typed)[0] };
-  if (typed && SECRET.test(typed)) return { tier: 'ask', kind: 'secret', what: '打一串像密钥的字' };
-  return null;
+  return worst;
 }
 
 /** What a request the host (or a plugin) gates is, by kind: { kind, subject?, what }. */

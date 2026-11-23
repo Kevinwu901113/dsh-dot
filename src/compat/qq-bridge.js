@@ -35,7 +35,7 @@ import { existsSync, readdirSync, readFileSync, realpathSync, statSync } from 'n
 import { homedir } from 'node:os';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { sectionOf, dshHome } from '../settings.js';
-import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS, HANDS_ASK_TOOL, HANDS_DONE_TOOL, HANDS_HOST_TOOLS } from '../tool-prefixes.js';
+import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, HER_TOOLS, HANDS_ASK_TOOL, HANDS_DONE_TOOL, HANDS_HOST_TOOLS, PHONE_PASTE_TOOLS } from '../tool-prefixes.js';
 
 export const name = 'dsh-dot/compat';
 export const inject = [];
@@ -166,7 +166,7 @@ export const isDotTool = (n) => DOT_TOOLS.includes(n) || DOT_TOOL_PREFIXES.some(
 /** Is this tool her phone's or her computer's (mcp__dot-phone__*, mcp__dot-vm__*, phone_zoom)? */
 export const isDeviceTool = (n) => n === PHONE_ZOOM_TOOL || n === PHONE_TYPE_TOOL || DEVICE_TOOL_PREFIXES.some((p) => n.startsWith(p));
 /** The phone server's own ways of putting text in (clipboard and paste under the hood): not offered, phone_type is the one way. */
-const PASTE_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_type_keys`, `${PHONE_TOOL_PREFIX}mobile_clipboard`];
+const PASTE_TOOLS = PHONE_PASTE_TOOLS.map((n) => `${PHONE_TOOL_PREFIX}${n}`);
 /** Not for the hands: after each action the screen comes back as text, and a picture of the whole screen every step is
  * what made them slow. To look at a picture or a layout they enlarge the part they mean (phone_zoom). */
 const WHOLE_SCREEN_TOOLS = [`${PHONE_TOOL_PREFIX}mobile_take_screenshot`];

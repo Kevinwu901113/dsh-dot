@@ -1,0 +1,1 @@
+没收尾：reached 没填。要的那个样子到了填 true，没到填 false，再用一次 done。

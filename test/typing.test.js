@@ -8,7 +8,7 @@ const dump = (text, { password = false } = {}) => `<?xml version='1.0'?><hierarc
 test('typing: installs the keyboard once, sends the text in pieces through it, and says whether it arrived', async () => {
   assert.deepEqual(chunks('鲸鱼娘 贴吧😀x', 3), ['鲸鱼娘', ' 贴吧', '😀x']);
   assert.deepEqual(itemsFromXml(dump('a &amp; b')).find((i) => i.focused), { words: 'a & b', x: 0, y: 0, focused: true, password: false });
-  assert.deepEqual(itemsFromElements([{ type: 'View', children: [{ type: 'EditText', text: '鲸鱼娘', focused: true, rect: { x: 100, y: 300, width: 400, height: 100 }, children: [] }, { label: '百度一下', rect: { x: 800, y: 300, width: 200, height: 100 } }] }]), [{ words: '鲸鱼娘', x: 300, y: 350, focused: true, password: false }, { words: '百度一下', x: 900, y: 350, focused: false, password: false }]);
+  assert.deepEqual(itemsFromElements([{ type: 'View', children: [{ type: 'EditText', text: '鲸鱼娘', focused: true, rect: { x: 100, y: 300, width: 400, height: 100 }, children: [] }, { label: '百度一下', rect: { x: 800, y: 300, width: 200, height: 100 } }] }]), [{ words: '鲸鱼娘', x: 300, y: 350, w: 400, h: 100, focused: true, password: false }, { words: '百度一下', x: 900, y: 350, w: 200, h: 100, focused: false, password: false }]);
   const cmds = []; let field = '', installed = 0, hasPkg = false, ime = 'com.google.android.inputmethod.latin/.LatinIME', works = true;
   const shell = async (cmd) => {
     cmds.push(cmd);

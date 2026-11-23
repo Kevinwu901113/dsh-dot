@@ -12,7 +12,9 @@ export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_
   const asks = []; // what she has to ask him about with no thing to hang it on (a message to someone she does not know)
   const save = () => store.set('consent', grants.filter((g) => g.always));
   const fresh = (g) => g.always || now() - g.at <= (g.thing ? thingMs : holdMs);
-  const fits = (g, kind, subject) => g.kind === kind && (!g.subject || !subject || g.subject === subject);
+  // A yes is for the kind of thing and for whom or what it was asked about: one given about user:1 says nothing of
+  // user:2, and one given with nothing named covers only what names nothing.
+  const fits = (g, kind, subject) => g.kind === kind && g.subject === String(subject ?? '');
   return {
     /** His yes: { kind, subject?, words, always? }. */
     grant({ kind, subject = '', words = '', always = false }) {

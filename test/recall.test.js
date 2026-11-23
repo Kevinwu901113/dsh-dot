@@ -427,6 +427,10 @@ test('what recall finds is there for the reply to the words that woke her: the q
 
 test('lexical: bigram tokens; BM25 weighs the rare word', () => {
   assert.deepEqual(lexTokens('阿兰修 OK 好'), ['阿', '阿兰', '兰', '兰修', '修', 'ok', '好']);
+  // letters or digits stop where Chinese begins, whichever comes first
+  assert.deepEqual(lexTokens('github点击注册'), ['github', '点', '点击', '击', '击注', '注', '注册', '册']);
+  assert.deepEqual(lexTokens('27号前请他'), ['27', '号', '号前', '前', '前请', '请', '请他', '他']);
+  assert.deepEqual(lexTokens('点击注册GitHub 10086'), ['点', '点击', '击', '击注', '注', '注册', '册', 'github', '10086']);
   const bm = createBm25();
   // A real transcript: many turns of chat, 咋样了 / 那事 in a few of them, the name in one.
   const topics = ['面试', '猫', '天气', '饭', '腰', '稿子', '车', '房子', '工作', '周末'];
