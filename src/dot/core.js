@@ -47,6 +47,7 @@ import { runPendingReset } from '../reset.js';
 import { ago, stamp, today, unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
 import { head } from '../cut.js';
+import { lexTokens } from '../memory/recall.js';
 import { screenLines } from '../phone/typing.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, voiceHow, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
@@ -394,6 +395,31 @@ export function apply(ctx, config = {}) {
     }
     for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
     return lines.join('\n');
+  };
+  // Where a thing is done is hers to judge, and to learn: the book already has where each thing was done and what came
+  // of it. Things like what he is asking for now (by the words they share) are put before her as they were recorded —
+  // the place, the outcome, the steps, whether it stopped to ask him, whether it had been moved from another place.
+  // Nothing here says where to go: these are records, and the judging is hers.
+  const likeTokens = (text) => new Set(lexTokens(text).filter((x) => x.length >= 2));
+  const thingsLike = (words, max = 3) => {
+    const q = likeTokens(words);
+    if (q.size < 2) return '';
+    const title = (task) => { const t = String(task ?? '').replace(/^（[^）]*）/, '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
+    const all = ledger.recent(100);
+    const scored = [];
+    for (const e of all) {
+      if (e.state !== 'ended' || !e.device || e.outcome === 'stopped' || e.cause === 'restart') continue;
+      let shared = 0; for (const x of likeTokens(title(e.task))) if (q.has(x)) shared++;
+      if (shared >= 2) scored.push([shared, e]);
+    }
+    scored.sort((a, b) => b[0] - a[0] || (b[1].endedAt ?? 0) - (a[1].endedAt ?? 0));
+    return scored.slice(0, max).map(([, e]) => {
+      const from = e.after ? all.find((x) => x.id === e.after) : null;
+      const more = `${e.ask?.for === 'him' ? prompt('dot.things.like.asked').trim() : ''}${from?.device && from.device !== e.device ? prompt('dot.things.like.moved', { from: from.device }).trim() : ''}`;
+      return e.outcome === 'done'
+        ? prompt('dot.things.like.done', { what: title(e.task), device: e.device, steps: e.steps ?? 0, more }).trim()
+        : prompt('dot.things.like.not', { what: title(e.task), device: e.device, why: head(String(e.question || e.summary || e.cause || e.outcome || ''), 40), steps: e.steps ?? 0, more }).trim();
+    }).join('\n');
   };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
@@ -783,7 +809,7 @@ export function apply(ctx, config = {}) {
   // Her clock: "since the last message" counts from the last line said before this turn began.
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
-    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : ''].filter(Boolean).join('\n');
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : '', id === lastSession ? thingsLike(turns.get(id)?.hisWords ?? '') : ''].filter(Boolean).join('\n');
   } });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });

@@ -682,3 +682,23 @@ test('this machine is a place for her hands too, and his: only on his business; 
   assert.ok(write.reason, 'nothing more is done once they have asked');
   h.stop();
 });
+
+test('where a thing is done is hers to judge, from what the book has: things like what he asks for now are put before her as recorded', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看下 dsh-dot 仓库有没有没提交的改动' }] });
+  assert.doesNotMatch(await note(), /做过相近的/, 'nothing like it yet');
+  await h.tools.hands.execute({ device: 'host', do: '看 dsh-dot 仓库有没有没提交的改动' }); await tick();
+  h.emit('h1', 'tool/call', {}); h.emit('h1', 'tool/call', {});
+  await h.tools.done.execute({ summary: '有两处没提交', reached: true }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  // his next words, about something like it: the record is there — the place, the outcome, the steps
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '再看看 dsh-dot 仓库现在的改动' }] });
+  assert.match(await note(), /做过相近的：看 dsh-dot 仓库有没有没提交的改动——在 host 做成了，2 步/);
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  // words that share nothing with it: nothing is shown
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '明天天气怎么样' }] });
+  assert.doesNotMatch(await note(), /做过相近的/);
+  h.stop();
+});
