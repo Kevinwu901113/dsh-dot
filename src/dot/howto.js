@@ -45,7 +45,7 @@ const BROKE = new Set(['failed', 'timeout']);
 const ROUTE_MAX = 30;
 
 /** One call as it is read back: "launch_app(com.max.xiaoheihe)", "click(421,428)", "type(浮游世界)". */
-export function callLine(tool, input) {
+function callLine(tool, input) {
   const short = String(tool).replace(/^.*__/, '').replace(/^mobile_/, '');
   const a = input && typeof input === 'object' ? input : {};
   const bits = [];
@@ -58,7 +58,7 @@ export function callLine(tool, input) {
 export const routeLine = (tool, input) => callLine(tool, input && typeof input === 'object' && input.text ? { ...input, text: '…' } : input);
 /** Two routes are the same way when their steps match, taps no more than a little off (30 px). */
 const NUM = /(?<=[(,])(\d{1,4})(?=[,)])/g;
-export function sameWay(a, b) {
+function sameWay(a, b) {
   if (a.length !== b.length) return false;
   return a.every((l, i) => {
     if (l.replace(NUM, '#') !== b[i].replace(NUM, '#')) return false;

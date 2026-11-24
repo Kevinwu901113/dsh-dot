@@ -220,8 +220,6 @@ export function typedText(tool, input) {
   return steps.filter((st) => /type_keys$/.test(String(st?.name ?? st?.tool ?? ''))).map((st) => String((st.arguments ?? st.args ?? st)?.text ?? '')).filter(Boolean).join('\n');
 }
 
-/** Phone tools an observation turn may use: look, scroll, open an app, go back; never type, install or open URLs. */
-export const OBSERVATION_TOOLS = ['mobile_list_available_devices', 'mobile_get_screen_size', 'mobile_get_orientation', 'mobile_list_apps', 'mobile_launch_app', 'mobile_take_screenshot', 'mobile_list_elements_on_screen', 'mobile_click_on_screen_at_coordinates', 'mobile_swipe_on_screen', 'mobile_press_button'];
 
 
 function withFileLog(logger) {

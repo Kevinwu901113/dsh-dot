@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { createHowto, callLine, fileOf, batchLaunch, batchFailures, errorType, isRefusal, placeName } from '../src/dot/howto.js';
+import { createHowto, fileOf, batchLaunch, batchFailures, errorType, isRefusal, placeName } from '../src/dot/howto.js';
 import { deny } from '../src/refusals.js';
 
 const P = 'mcp__dot-phone__';
@@ -37,8 +37,6 @@ test('howto: steps per place (a batch counts its steps), real errors kept (refus
   t += 2 * 3600000;
   for (let i = 0; i < 3; i++) h.step('s3', '小黑盒', `${P}mobile_swipe_on_screen`, {});
   assert.equal(h.end('s3', { outcome: 'timeout' }).length, 1, 'broke off');
-  assert.equal(callLine(`${P}mobile_type_keys`, { text: '浮游世界' }), 'type_keys(浮游世界)');
-  assert.equal(callLine('mcp__dot-vm__browser_navigate', { url: 'https://a.b/c' }), 'browser_navigate(（链接）)');
   assert.equal(fileOf('a/b c'), 'a_b_c.md');
   assert.equal(placeName('phone'), '这台手机（桌面、设置、通知栏、输入法、系统弹窗）');
   assert.equal(batchLaunch({ steps: [{ name: 'mobile_launch_app', arguments: { packageName: 'com.x' } }] }), 'com.x');

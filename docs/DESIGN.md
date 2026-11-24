@@ -878,3 +878,4 @@ Kevin："感觉现在很难给他长任务。他很容易直接结束然后就�
 
 - 「做过相近的」那几行（`thingsLike`、`likeRecords`、审计 `things-like`、九个 `dot.things.like.*`）：37b8176 加上以后一次也没摆出来过（`things-like` 0 次）。每轮那行提醒是在他的话记下之前做好的，a14e379 也没改变这一点。同样的东西原话召回（`dot:recall`，带「[我刚做的]」那几行）已经放在她面前，549 次提醒里 133 次有。`waited` 仍记在那件事上。
 - `keep_line` 和原话库的 `seen` 行（`[我看到的]`；工具、核对和它要的「给她看过的字」、召回里另选的那一段、`seenPerDay` `seenMaxChars` `recallSeenMax` `recallSeenMin` `recallSeenMaxTokens`、`memory.seen*` `memory.recall.seen`，整理和每天那一次提示词里讲 `[我看到的]` 的话）：168 个会话里调用 0 次，原话库 698 行里 0 行 `seen`，工具说明却每次请求都带着。除了它没有别的东西写 `seen` 行（自己的时间里手逛回来的结果记成 `[我刚做的]`）。手自己核对打的字用的屏幕文字（`hands.js` `has`）照旧。
+- 没人调用的：`dotMemory.forInterlude()`（幕间早就只拿 `herLife`）、`phone.js` 的 `OBSERVATION_TOOLS`（观察那一轮早没了）；`howto.js` 的 `callLine`、`sameWay` 只在文件里用，不再导出。

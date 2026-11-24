@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, existsSync, readFileSync } from 
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { EventEmitter } from 'node:events';
-import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, OBSERVATION_TOOLS, blankPng, screencapRetry, decodePng, encodePng, zoomPng, typedText, typesText } from '../src/phone/phone.js';
+import { apply, resolveDownloads, avdConfig, hostTarget, phoneGate, blankPng, screencapRetry, decodePng, encodePng, zoomPng, typedText, typesText } from '../src/phone/phone.js';
 import { deflateSync } from 'node:zlib';
 
 const REPO_XML = `
@@ -90,7 +90,6 @@ test('phoneGate: installs and sensitive typing ask; looking does not', () => {
   assert.match(phoneGate({ name: 'mcp__dot-phone__mobile_type_keys', input: { text: '我的密码是' } }, cfg), /sensitive/);
   assert.equal(phoneGate({ name: 'mcp__dot-phone__mobile_type_keys', input: { text: '你好' } }, cfg), null);
   assert.equal(phoneGate({ name: 'mcp__dot-vm__browser_click' }, cfg), null);
-  assert.ok(OBSERVATION_TOOLS.includes('mobile_take_screenshot') && !OBSERVATION_TOOLS.includes('mobile_type_keys'));
 });
 
 function harness({ installed = true, license = true, bootAfter = 1, running = false, foreign = false, files = {}, config = {} } = {}) {
