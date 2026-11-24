@@ -1,1 +1,0 @@
-做过相近的：{what}——在 {device} 没做成（{why}），{steps} 步{more}

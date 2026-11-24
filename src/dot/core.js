@@ -48,7 +48,6 @@ import { runPendingReset } from '../reset.js';
 import { ago, stamp, today, unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
 import { head } from '../cut.js';
-import { lexTokens } from '../memory/recall.js';
 import { screenLines } from '../phone/typing.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, voiceHow, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
 export * from './text.js';
@@ -127,7 +126,6 @@ export const defaults = {
   howto: true,
   howtoMinSteps: 12,
   howtoMaxChars: 800,
-  likeRecords: true,     // records of things like the one he asks for now are put before her (thingsLike); false: she decides without them
   nightcheck: true,      // when she falls asleep her notes are held against the records and amended (nightcheck.js); false: only on /dot nightcheck
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness: a turn with no session event for turnStallMs is stalled (he is told once).
@@ -431,33 +429,6 @@ export function apply(ctx, config = {}) {
     for (const e of awaited(now)) lines.push(prompt('dot.things.awaiting', { what: title(e.task), from: e.awaiting.from, since: ago(e.awaiting.since, now) || '刚' }).trim());
     for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
     return lines.join('\n');
-  };
-  // Where a thing is done is hers to judge, and to learn: the book already has where each thing was done and what came
-  // of it. Things like what he is asking for now (by the words they share) are put before her as they were recorded —
-  // the place, the outcome, the steps, whether it stopped to ask him, whether it had been moved from another place.
-  // Nothing here says where to go: these are records, and the judging is hers.
-  const likeTokens = (text) => new Set(lexTokens(text).filter((x) => x.length >= 2));
-  const thingsLike = (words, max = 3) => {
-    if (!cfg.likeRecords) return '';
-    const q = likeTokens(words);
-    if (q.size < 2) return '';
-    const title = (task) => { const t = String(task ?? '').replace(/^（[^）]*）/, '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
-    const all = ledger.recent(100);
-    const scored = [];
-    for (const e of all) {
-      if (e.state !== 'ended' || !e.device || e.outcome === 'stopped' || e.cause === 'restart') continue;
-      let shared = 0; for (const x of likeTokens(title(e.task))) if (q.has(x)) shared++;
-      if (shared >= 2) scored.push([shared, e]);
-    }
-    scored.sort((a, b) => b[0] - a[0] || (b[1].endedAt ?? 0) - (a[1].endedAt ?? 0));
-    return scored.slice(0, max).map(([, e]) => {
-      const from = e.after ? all.find((x) => x.id === e.after) : null;
-      const took = e.startedAt && e.endedAt ? Math.round((e.endedAt - e.startedAt) / 1000) : 0;
-      const more = `${took ? prompt('dot.things.like.took', { seconds: took }).trim() : ''}${e.waited?.n ? prompt(e.waited.met ? 'dot.things.like.waited.met' : 'dot.things.like.waited', { seconds: e.waited.seconds, n: e.waited.n }).trim() : ''}${e.awaiting?.from ? prompt(e.awaiting.answeredAt ? 'dot.things.like.answered' : 'dot.things.like.awaiting', { from: e.awaiting.from }).trim() : ''}${e.ask?.for === 'him' ? prompt('dot.things.like.asked').trim() : ''}${from?.device && from.device !== e.device ? prompt('dot.things.like.moved', { from: from.device }).trim() : ''}`;
-      return e.outcome === 'done'
-        ? prompt('dot.things.like.done', { what: title(e.task), device: e.device, steps: e.steps ?? 0, more }).trim()
-        : prompt('dot.things.like.not', { what: title(e.task), device: e.device, why: head(String(e.question || e.summary || e.cause || e.outcome || ''), 40), steps: e.steps ?? 0, more }).trim();
-    }).join('\n');
   };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
@@ -894,11 +865,9 @@ export function apply(ctx, config = {}) {
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
   });
   // Her clock: "since the last message" counts from the last line said before this turn began.
-  // Shown once a turn, and written down that it was: whether she had them before her is a fact about the turn.
-  const liked = (t) => { if (!t?.hisWords) return ''; if (t.likedFor !== t.hisWords) { t.likedFor = t.hisWords; t.liked = thingsLike(t.hisWords); if (t.liked) audit('things-like', { lines: t.liked.split('\n').length }); } return t.liked; };
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
-    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : '', id === lastSession ? liked(turns.get(id)) : ''].filter(Boolean).join('\n');
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : ''].filter(Boolean).join('\n');
   } });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
@@ -1528,8 +1497,7 @@ export function apply(ctx, config = {}) {
         }
         if (!items.length) items = await look();
         const seconds = Math.round((Date.now() - began) / 1000);
-        // How long a thing spent waiting, and whether what was waited for came, is kept on it: what she is shown of
-        // things like the one in front of her (thingsLike) then says what waiting cost and what it got.
+        // How long a thing spent waiting, and whether what was waited for came, is kept on it.
         if (mine?.id) { const e = ledger.get(mine.id); ledger.note(mine.id, { waited: { n: (e?.waited?.n ?? 0) + 1, seconds: (e?.waited?.seconds ?? 0) + seconds, met: (e?.waited?.met ?? 0) + (met ? 1 : 0) } }); }
         audit('hands-wait', { thing: mine.id, met: Boolean(met), seconds, ...(want.text ? { text: true } : {}), ...(want.gone ? { gone: true } : {}), ...(want.note ? { notification: true } : {}) });
         return { status: met ? 'met' : any ? 'timeout' : 'waited', what: met || [want.text && `「${want.text}」出现`, want.gone && `「${want.gone}」消失`, want.note && `「${want.note}」的通知`].filter(Boolean).join('、'), seconds, screen: onPhone ? screenLines(items) : '' };
