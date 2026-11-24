@@ -5,7 +5,8 @@
 //             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', by?: 'him' | 'her' | 'code', cause?, error?,
 //             summary?, detail?, name? (the hands' short name for it), question?, ask?: { for: 'her' | 'him', kind?, subject?, tier?: 'him' | 'ask', what?, screen? },
 //             steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
-//             shot?: path of the screen as it was at the end, told?: at }
+//             shot?: path of the screen as it was at the end, back?: when its end was put in front of her,
+//             told?: when he was told how it ended (what the voice said of it reached him) }
 // Only facts are kept, never a sentence written for one of its readers: who stopped it is a field, why it ended is one
 // of a few causes (CAUSES), what came of it is the hands' own one-line summary and their details. Each reader (her
 // conversation, the voice, the line in her notes, the panel) words these for itself.

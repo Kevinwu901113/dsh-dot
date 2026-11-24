@@ -786,3 +786,60 @@ test('a host that refuses the place\'s preset gets no session for the thing: it 
   assert.ok(h.audit.some((a) => a.event === 'hands-preset-refused' && a.preset === 'dot-hands-web'));
   h.stop();
 });
+
+test('a handoff holds a result of his: the new conversation has it in front of her as ended and not yet told him, it is told once, and the held result arriving later says nothing again', async () => {
+  const h = harness();
+  const dot = h.ctx.get('dshDot');
+  const note = async (agent) => { const d = await h.hooks['agent/pre-step']({ agent, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  const facts = () => h.audit.filter((a) => a.event === 'say-facts').map((a) => a.facts.join(' | '));
+  // his words: look at the battery; the thing is given, he hears it is being done
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看看你手机现在电量多少' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '看手机现在电量' }); await tick();
+  h.replies.push('去看了');
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'completed' } }); await tick(30);
+  // her conversation is being handed over (11-24, t59): the thing ends meanwhile, and its result is held
+  const release = dot.freeze();
+  await h.tools.done.execute({ summary: '电量百分之百，正在充电', reached: true }); await tick(30);
+  assert.equal(h.agentOf('s1').got.length, 0, 'held while she moves');
+  dot.setSession('s2');
+  const s2 = h.agentOf('s2');
+  // the new conversation's first turn is his next words, before the held result: the book has it in front of her
+  h.emit('s2', 'turn/start', { turn: 1 }); h.emit('s2', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查一条有出处的冷知识' }] });
+  assert.match(await note(s2), /有结果了、他还没听到：（在手机上）看手机现在电量——收尾了。结果：电量百分之百，正在充电（这一轮结束时会照事情簿告诉他）/);
+  h.replies.push('一百，在充着');
+  h.emit('s2', 'turn/end', { turn: 1, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(facts().at(-1), /「看手机现在电量」做完了。结果：电量百分之百，正在充电/, 'his turn tells him the end he has not heard');
+  assert.ok(dot.things(1)[0].told, 'and the book says he was told');
+  assert.doesNotMatch(await note(s2), /他还没听到/);
+  // the held result reaches her now: in front of her, and nothing more to tell him
+  release(); await tick(30);
+  assert.equal(s2.got.length, 1);
+  const sent = h.qqSent.length;
+  h.emit('s2', 'turn/start', { turn: 2 }); h.emit('s2', 'user/message', { source: s2.got[0].source, content: s2.got[0].content });
+  h.emit('s2', 'turn/end', { turn: 2, reason: { kind: 'completed' } }); await tick(30);
+  assert.equal(h.qqSent.length, sent, 'told once');
+  assert.equal(facts().filter((f) => /电量百分之百/.test(f)).length, 1);
+  h.stop();
+});
+
+test('the end of a thing of his is said in the turn it wakes, whatever else she does in that turn (adding a line to another thing is not taking this one further)', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const facts = () => h.audit.filter((a) => a.event === 'say-facts').map((a) => a.facts.join(' | '));
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看下电量，再查条冷知识' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '看手机现在电量' });
+  await h.tools.hands.execute({ device: 'web', do: '查一条有机构出处的冷知识' }); await tick();
+  h.replies.push('都去弄了');
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'completed' } }); await tick(30);
+  await h.tools.done.execute({ summary: '电量百分之百', reached: true }); await tick(30);
+  assert.equal(her.got.length, 1);
+  // 11-24 (t59, t61): the turn the battery's end woke added a line to the fact being looked up, and was silent
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got[0].source, content: her.got[0].content });
+  assert.equal((await h.tools.hands.execute({ add: '来源要能点开的原始页面' })).status, 'added');
+  h.replies.push('一百');
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.match(facts().at(-1), /「看手机现在电量」做完了。结果：电量百分之百/);
+  assert.deepEqual(h.qqSent.at(-1), ['owner', '一百', []]);
+  assert.ok(h.ctx.get('dshDot').things(5).find((e) => e.id === 't1').told);
+  h.stop();
+});

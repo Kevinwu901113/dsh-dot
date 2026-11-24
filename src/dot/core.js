@@ -399,17 +399,34 @@ export function apply(ctx, config = {}) {
     audit('awaited-answer', { thing: e.id, from: e.awaiting.from, pkg: n?.pkg ?? '', forHim: e.asker === 'him' });
     return ledger.get(e.id);
   };
+  // How long an ended thing stays in front of her, and owed to him while he has not heard how it ended.
+  const ENDED_SHOWN_MS = 3600000;
+  /**
+   * The things of his that have ended and that he has not been told the end of, oldest first: the book's `told` is
+   * written when what the voice said of it reached him (tellHim), and only then. Not one he stopped himself (he knows),
+   * not one a later thing carries on from (its end is the one to tell), and again when an answer it waited for came
+   * after he was told. Whichever turn of hers comes first — the one the result woke, or one of his words that the
+   * result has not reached yet (11-24: a handoff held it 85 s) — has it in front of her, and its end tells him once.
+   */
+  const owedToHim = (now = Date.now()) => {
+    const recent = ledger.recent(20), takenUp = new Set(recent.map((e) => e.after).filter(Boolean));
+    return recent.filter((e) => e.asker === 'him' && e.state === 'ended' && !(e.outcome === 'stopped' && e.by === 'him') && !takenUp.has(e.id)
+      && now - (e.awaiting?.answeredAt ?? e.endedAt ?? 0) <= ENDED_SHOWN_MS && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)).reverse();
+  };
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
-  // delegation ledger): what is under way and waits, and what ended in the last hour that is not just "done".
+  // delegation ledger): what is under way and waits, what ended in the last hour that is not just "done", and what of
+  // his has ended and he has not heard yet.
   const thingsLines = (now = Date.now()) => {
     const title = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
     const lines = ledger.unfinished().map((e) => prompt(e.state === 'running' ? 'dot.things.running' : 'dot.things.queued', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
     const recent = ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
+    const untold = new Set(owedToHim(now).map((e) => e.id));
     for (const e of recent) {
-      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > 3600000 || takenUp.has(e.id)) continue;
+      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > ENDED_SHOWN_MS || takenUp.has(e.id)) continue;
       if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
       else if (e.outcome === 'stuck') lines.push(prompt('dot.things.stuck', { what: title(e.task), question: e.question ?? '' }).trim());
+      else if (untold.has(e.id)) lines.push(prompt('dot.things.untold', { what: title(e.task), how: voiceHow(e) || prompt('dot.things.untold.done').trim(), summary: e.summary ? prompt('dot.plain.summary', { summary: e.summary }).trim() : '' }).trim());
     }
     for (const e of awaited(now)) lines.push(prompt('dot.things.awaiting', { what: title(e.task), from: e.awaiting.from, since: ago(e.awaiting.since, now) || '刚' }).trim());
     for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
@@ -595,10 +612,12 @@ export function apply(ctx, config = {}) {
     if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
       if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
       if (broke) return;
-      // A thing of his that came back and that she took further in this turn (gave her hands the next part, answered
-      // them) is not at its end: there is nothing to tell him yet.
-      const further = !t.fromQq && Boolean(t.opened?.length || t.answered);
-      const speak = !t.spoke && !further && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
+      // A turn his words did not open (a thing of his came back, an answer it waited for) has something for him when the
+      // book has an end of his he has not heard (planFor's `things`): not when it was already said in an earlier turn,
+      // nor when she carries the thing on (a later thing `after` it: that one's end is told). What else she did in the
+      // turn does not decide it (11-24: she added a line to another thing, and the end that woke the turn was not said).
+      const news = t.fromQq || Boolean(planFor(t)?.things?.length);
+      const speak = !t.spoke && news && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
       const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
       // The call that writes her words failed: that is not her choosing to say nothing.
       const told = (r) => { if (r?.status === 'failed') { preempts = 0; turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
@@ -1099,7 +1118,7 @@ export function apply(ctx, config = {}) {
         } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
       }
       found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
-      if (job.id) ledger.note(job.id, { told: Date.now() });
+      if (job.id) ledger.note(job.id, { back: Date.now() }); // in front of her; `told` is when he heard it (tellHim)
       audit('hands-result', { thing: job.id, session: lastSession, outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
@@ -1159,9 +1178,13 @@ export function apply(ctx, config = {}) {
   // and is told what is in her hands so that it does not make up doings.
   const nameOf = (task) => titleOf(String(task ?? '').replace(/^（[^）]*）/, ''));
   const planFor = (t) => {
-    const must = [], may = [];
-    const about = t?.thing ? ledger.get(t.thing) : null;
-    if (about?.state === 'ended') {
+    const must = [], may = [], things = [];
+    // The ends of his things he has not heard: the one that woke this turn among them, whichever turn this is.
+    const ends = owedToHim();
+    const stopped = new Set(t?.stopped ?? []);
+    for (const about of ends) {
+      if (stopped.has(about.id)) continue; // said below, as stopped in this turn
+      things.push(about.id);
       const what = nameOf(about.task);
       if (about.ask?.tier && about.ask.what) must.push(prompt(about.ask.tier === 'him' ? 'dot.plain.gate.him' : 'dot.plain.gate.ask', { what, step: about.ask.what }));
       else if (about.question) must.push(prompt('dot.plain.stuck', { what, question: about.question }));
@@ -1170,7 +1193,7 @@ export function apply(ctx, config = {}) {
       if (about.detail && !about.question) may.push(headTail(about.detail, cfg.sayDetailChars));
       if (about.awaiting?.from) must.push(prompt(about.awaiting.answeredAt ? 'dot.plain.answered' : 'dot.plain.awaiting', { from: about.awaiting.from, text: about.awaiting.text ?? '' }));
     }
-    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) must.push(prompt('dot.plain.stopped', { what: nameOf(e.task), how: voiceHow(e) || prompt('dot.plain.how.stopped.her').trim() })); }
+    for (const id of t?.stopped ?? []) { const e = ledger.get(id); if (e) { things.push(id); must.push(prompt('dot.plain.stopped', { what: nameOf(e.task), how: voiceHow(e) || prompt('dot.plain.how.stopped.her').trim() })); } }
     // Of things just given to her hands nothing is said but that they are being done — not even what they are: he has
     // just said it himself, and with the task in front of it the voice told it as done (11-24: 12 of 20 with the task
     // named, 1 of 20 without).
@@ -1180,7 +1203,7 @@ export function apply(ctx, config = {}) {
     else if (going.length) must.push(prompt(going[0].state === 'queued' ? 'dot.plain.queued' : 'dot.plain.opened'));
     // One thing, begun: the progress has sayings of hers to be said in (say.js leadInput). Otherwise the sentence itself.
     const sayings = !said && going.length === 1 && going[0].state !== 'queued' ? prompt('dot.plain.opened.sayings').split('\n').map((x) => x.trim()).filter(Boolean) : [];
-    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, sayings } : null;
+    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, sayings, things } : null;
   };
   const factsFor = (t) => {
     const out = [];
@@ -1241,6 +1264,9 @@ export function apply(ctx, config = {}) {
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
     if (t) t.spoke = true;
+    // The ends it was given are told: written on each thing now, when all of it went out (cut short by his words, the
+    // turn those words open says it).
+    if (plan?.things?.length && !r.unsent?.length) for (const id of plan.things) ledger.note(id, { told: Date.now() });
     saidNote = saidText(r); // hers to know: shown with whatever reaches her next
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
     if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
@@ -1396,7 +1422,7 @@ export function apply(ctx, config = {}) {
         }
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // One more thing for the hands at work: read between two of their steps.
-        if (String(args?.add ?? '').trim()) { const added = hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); const t = turns.get(lastSession); if (t && added.status === 'added') t.answered = true; return added; }
+        if (String(args?.add ?? '').trim()) { return hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(lastSession);
