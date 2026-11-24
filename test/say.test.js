@@ -112,12 +112,23 @@ test('a report from the book is said from its sentences, not from the conversati
   await twice.say.speak({ plan });
   assert.deepEqual(twice.sent, ['「发短信」这件事我去做了，现在还在做，还没有结果，有结果了告诉你。'], 'what cannot be held to the book is not sent: the book\'s own sentence is');
   assert.deepEqual(twice.audits.filter(([e]) => e === 'say-unfounded' || e === 'say-plain').map(([e]) => e), ['say-unfounded', 'say-unfounded', 'say-plain']);
-  // of a thing still being done: a reply that says it is over is written once more, then the sentence goes as it is
-  const { saysOver } = await import('../src/dot/say.js');
-  assert.equal(saysOver(['发了，还在等回音']), true); assert.equal(saysOver(['好，我去发', '有结果了跟你说']), false);
-  const over = mk(['发啦\n还没回', '去发了\n有结果跟你说']);
-  await over.say.speak({ plan: { ...plan, underway: true } });
-  assert.deepEqual(over.sent, ['去发了\n有结果跟你说']);
+  // of things just begun: her line to what he said, then the progress in a saying of hers she picked — not in her wording
+  const { parseLead, leadInput } = await import('../src/dot/say.js');
+  assert.deepEqual(parseLead('又查呀\n#2', 3), { pick: 1, rest: '又查呀' });
+  assert.equal(parseLead('#9', 3).pick, -1, 'a number that is none of them is no pick');
+  assert.match(leadInput({ his: '再发一次', sayings: ['去弄了', '在弄了 / 出结果喊你'], stickers: [] }), /（他刚说：再发一次）\n[^\n]*\n1\. 去弄了\n2\. 在弄了 \/ 出结果喊你\n/);
+  assert.doesNotMatch(leadInput({ his: 'x', sayings: ['去弄了'], stickers: [] }), /刚才的对话/);
+  const sayings = ['去弄了，有了跟你说', '在弄了 / 出结果喊你'];
+  const over = mk(['又查流量呀\n#2']);
+  await over.say.speak({ plan: { ...plan, underway: true, sayings } });
+  assert.deepEqual(over.sent, ['又查流量呀\n在弄了\n出结果喊你']);
+  assert.deepEqual(over.audits.filter(([e]) => e === 'say-lead').map(([, d]) => d), [{ lead: 1, pick: 1, of: 2 }]);
+  const quiet = mk(['[不回]\n#1']);
+  await quiet.say.speak({ plan: { ...plan, underway: true, sayings } });
+  assert.deepEqual(quiet.sent, ['去弄了，有了跟你说'], 'nothing to add: the saying alone');
+  const none = mk(['行']);
+  await none.say.speak({ plan: { ...plan, underway: true, sayings: [] } });
+  assert.deepEqual(none.sent, ['行\n' + plan.must[0]], 'no saying for it: the book\'s sentence as it is');
   const done = mk(['发完了，没回']);
   await done.say.speak({ plan: { his: '发了吗', must: ['「发短信」做完了。结果：发出去了，没回'] } });
   assert.deepEqual(done.sent, ['发完了，没回'], 'of a thing that is over, saying so is the report');

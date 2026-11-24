@@ -206,6 +206,7 @@ setx DSH_DOT_COMPUTER off
 | `reachUnansweredMs` | `7200000` | 她主动发给你的一条过了这么久你没回，在她对话里留一句事实「那条他没回」；0 = 不留 |
 | `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉，命中清单的句子每轮打回一次让她重说 |
 | `lean` | `true` | 她的新对话用插件自带的 `dot` 预设来建（第一次开、每次交接）：宿主的工具只带读写自己的文件、定时、目标（查资料交给手：`hands` 的 `device: web`）；加上插件自己的 `hands`、`qq_send`、`qq_sticker_keep`、`memory`、`recall`、`keep_line` 和她 QQ 的 action。提示词也只留插件为她写的几段。已有的对话不变（预设是建会话时定的）；想马上换：`/dot memory handoff`。宿主不认这个预设时照旧建会话 |
+| `likeRecords` | `true` | 你开口要一件事时，把记账里和它相近的几件（在哪做的、成没成、几步、等了多久）摆在她面前，怎么判断是她的事；`false` 就不摆 |
 | `nightcheck` | `true` | 她睡着时把手艺簿对着记账核对一遍并照着改（教训里的原因推测去掉、和后来记录对不上的去掉；改之前的原样留在 `~/dot/her/howto/_nightcheck.json`）。`false`：只在 `/dot nightcheck` 时核对，`/dot nightcheck apply` 才改 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 手艺簿（`~/dot/her/howto/`）：她的手做一件事时按地方（手机本身、各个 App、电脑）记步数，一件事结束按地方各记一行（步数、错、记账里的结果、用时、花费）；出过错、没做成或太久、或步数明显比平常多（≥ `howtoMinSteps`）的地方，一次小调用重写那里的笔记（教训、捷径，≤ `howtoMaxChars` 字），并给这件事起个短名，好看同一件事是不是越做越快、越省。一件事里第一次到某个地方，那里的笔记跟着给手。`/dot howto [<地方>]` 看 |
 | `thingCostCap` | `1500000` | 一件事花到这么多 token（缓存命中按十分之一算）就停下，变成一件要你点头的事（「还要接着做吗」）；0 = 不管 |

@@ -127,6 +127,7 @@ export const defaults = {
   howto: true,
   howtoMinSteps: 12,
   howtoMaxChars: 800,
+  likeRecords: true,     // records of things like the one he asks for now are put before her (thingsLike); false: she decides without them
   nightcheck: true,      // when she falls asleep her notes are held against the records and amended (nightcheck.js); false: only on /dot nightcheck
   promptsPort: 7870,    // /dot prompts: the prompt and persona editor page (scripts/prompts.mjs) on 127.0.0.1
   // Liveness: a turn with no session event for turnStallMs is stalled (he is told once).
@@ -420,6 +421,7 @@ export function apply(ctx, config = {}) {
   // Nothing here says where to go: these are records, and the judging is hers.
   const likeTokens = (text) => new Set(lexTokens(text).filter((x) => x.length >= 2));
   const thingsLike = (words, max = 3) => {
+    if (!cfg.likeRecords) return '';
     const q = likeTokens(words);
     if (q.size < 2) return '';
     const title = (task) => { const t = String(task ?? '').replace(/^（[^）]*）/, '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
@@ -873,9 +875,11 @@ export function apply(ctx, config = {}) {
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
   });
   // Her clock: "since the last message" counts from the last line said before this turn began.
+  // Shown once a turn, and written down that it was: whether she had them before her is a fact about the turn.
+  const liked = (t) => { if (!t) return ''; if (t.liked === undefined) { t.liked = thingsLike(t.hisWords ?? ''); if (t.liked) audit('things-like', { lines: t.liked.split('\n').length }); } return t.liked; };
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
-    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : '', id === lastSession ? thingsLike(turns.get(id)?.hisWords ?? '') : ''].filter(Boolean).join('\n');
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : '', id === lastSession ? liked(turns.get(id)) : ''].filter(Boolean).join('\n');
   } });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
@@ -1175,7 +1179,9 @@ export function apply(ctx, config = {}) {
     const going = (t?.opened ?? []).map((id) => ledger.get(id)).filter((e) => e && e.state !== 'ended');
     if (going.length > 1) must.push(prompt('dot.plain.opened.many', { n: going.length }));
     else if (going.length) must.push(prompt(going[0].state === 'queued' ? 'dot.plain.queued' : 'dot.plain.opened'));
-    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said } : null;
+    // One thing, begun: the progress has sayings of hers to be said in (say.js leadInput). Otherwise the sentence itself.
+    const sayings = !said && going.length === 1 && going[0].state !== 'queued' ? prompt('dot.plain.opened.sayings').split('\n').map((x) => x.trim()).filter(Boolean) : [];
+    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, sayings } : null;
   };
   const factsFor = (t) => {
     const out = [];

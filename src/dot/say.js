@@ -130,13 +130,29 @@ export function unfounded(lines, given) {
 }
 
 /**
- * Of a thing still being done: words that say it is over, or what was seen of it or heard back. A list of surface
- * marks, not a reading — on 112 replies marked by hand (11-24) it caught all 50 that said so and 16 of the 62 that did
- * not (a reply caught wrongly is written once more, nothing worse); the same model asked yes or no missed 14 of the
- * 50. (cf. "False Success", arXiv 2606.09863: a surface detector beat every model judge at this.)
+ * Of things still being done, what she writes is not the progress. Said in her own words, a thing just begun was told
+ * as done in 21 of 80 tries (11-24, the task: send a text), and nothing read afterwards could tell which: a list of
+ * surface marks made from one day's replies caught 23 of 38 on the next day's, the same model asked about it 9 of 38
+ * (shown the facts), 17 of 38 (not shown them), 30 of 38 with 14 of 62 wrongly caught. So the progress is not hers to
+ * word here: it is one of the sayings she has for this (dot.plain.opened.sayings — hers, each read once when it went
+ * into the file, none read again), or the book's own sentence when there is none; she picks the saying, and writes
+ * only the line before it, which answers what he said (2 of 80 said more than that; picked: 80 of 80).
  */
-const OVER = /(?<![去在要])发(了|完|好|啦)(?=[，,。 /]|$)|发(出去|过去|下去)(了|啦)|(又|再|刚|已经).{0,3}发了|完了|好了|搞定|点了.{0,4}发送|敲了一遍|没回|回音|回信|回复|回执|等(它|他|对方)?回|等了|没动静|没反应|石沉|卡在|加载|开着呢|看了眼|命令行.{0,3}敲|没找到|找到了|晾在|催下去/;
-export const saysOver = (lines) => OVER.test(unfold(lines.join(' / ')));
+export function leadInput({ his = '', sayings = [], status = [], about = '', stickers = null } = {}) {
+  const parts = [];
+  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((x) => `sticker:${x.id} ${x.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  const notes = [prompt('dot.say.report.his', { his: String(his).trim().replace(/\s*\n+\s*/g, ' / ') }).trim()];
+  if (String(about).trim()) notes.push(prompt('dot.say.report.about', { about: String(about).trim() }).trim());
+  notes.push(sayings.length ? prompt('dot.say.lead.pick', { list: sayings.map((x, i) => `${i + 1}. ${x}`).join('\n') }).trim() : prompt('dot.say.lead', { status: status.join(' ') }).trim());
+  parts.push(notes.join('\n'));
+  return parts.map((p) => p.trim()).join('\n\n');
+}
+/** What came back for leadInput: the number she picked (-1: none that is one of n), and the rest, which is her line. */
+export function parseLead(text, n) {
+  let pick = -1;
+  const rest = String(text ?? '').split('\n').filter((l) => { const m = /^\s*#\s*(\d+)\s*$/.exec(l); if (!m) return true; const k = Number(m[1]) - 1; if (pick < 0 && k >= 0 && k < n) pick = k; return false; }).join('\n');
+  return { pick, rest };
+}
 
 /**
  * @param {object} deps
@@ -151,12 +167,12 @@ export const saysOver = (lines) => OVER.test(unfold(lines.join(' / ')));
  */
 export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12 }) {
   /** Write it: the card and what is in front of her. A line the check catches is written once more; the second goes as it is. */
-  async function write(input, { has, pictures }) {
+  async function write(input, { has, pictures, pre = (t) => t }) {
     const system = String(card() ?? '').trim();
     if (!system) throw new Error('no persona card');
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = tidy(parseSaid(await call({ system, text: input }), { has, pictures }));
+      const parsed = tidy(parseSaid(pre(await call({ system, text: input })), { has, pictures }));
       // Her card's check reads chat a line at a time; a block she fenced goes as she wrote it.
       const lines = [], hits = [];
       for (const l of parsed.lines) { if (l.includes(WITHIN)) { lines.push(l); continue; } const c = check(l); lines.push(...c.lines); hits.push(...c.hits); }
@@ -175,7 +191,7 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
      * @param {string} [o.about] - what she knows that bears on it
      * @param {string[]} [o.images] - pictures her thinking wants sent with it (a screenshot, a file): not the call's to choose
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
-     * @param {{ his: string, must: string[], may?: string[], underway?: boolean }} [o.plan] - a report from the book (reportInput): said from these sentences, not from the conversation
+     * @param {{ his: string, must: string[], may?: string[], underway?: boolean, sayings?: string[] }} [o.plan] - a report from the book: said from these sentences (reportInput), or, of things just begun, her line and then a saying of hers (leadInput)
      * @param {string} [o.context] - for someone else than him: what they said, where
      */
     async speak({ to = 'owner', about = '', facts = [], plan = null, images = [], unprompted = false, context = '' } = {}) {
@@ -185,14 +201,24 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
         const mine = stickers();
         const has = (id) => mine.some((s) => s.id === id);
         let out;
-        if (his && plan?.must?.length) {
+        if (his && plan?.underway && plan.must?.length) {
+          // Things just begun: her line to what he said, then the progress in a saying of hers or the book's sentence.
+          const sayings = plan.sayings ?? [];
+          let pick = -1;
+          out = await write(leadInput({ his: plan.his, sayings, status: plan.must, about, stickers: mine }), { has, pictures: true, pre: (t) => { const r = parseLead(t, sayings.length); pick = r.pick; return r.rest; } });
+          if (sayings.length && pick < 0) pick = 0;
+          const status = tidy(parseSaid((sayings.length ? sayings[pick].split(' / ') : plan.must).join('\n'), { has, pictures: false })).lines;
+          const lead = out.silent ? [] : out.lines.filter((l) => !status.includes(l));
+          audit('say-lead', { lead: lead.length, pick, of: sayings.length });
+          out = { ...out, lines: [...lead, ...status], silent: false };
+        } else if (his && plan?.must?.length) {
           // A report: the book's sentences in her voice. A figure nobody gave it is written once more; the second
           // time the sentences go as they are — plain, and true.
           const input = reportInput({ his: plan.his, must: plan.must, may: plan.may ?? [], about, stickers: mine, unprompted });
           const given = [plan.his, about, ...plan.must, ...(plan.may ?? [])].join('\n');
           for (let attempt = 0; attempt < 2; attempt++) {
             out = await write(input, { has, pictures: true });
-            const extra = out.silent ? ['(nothing)'] : [...unfounded(out.lines, given), ...(plan.underway && saysOver(out.lines) ? ['(says it is over)'] : [])];
+            const extra = out.silent ? ['(nothing)'] : unfounded(out.lines, given);
             if (!extra.length) break;
             audit('say-unfounded', { extra: extra.slice(0, 8), attempt });
             if (attempt === 1) { out = tidy(parseSaid(plan.must.join('\n'), { has, pictures: false })); audit('say-plain', { lines: out.lines.length }); }
