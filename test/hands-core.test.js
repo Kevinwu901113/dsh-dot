@@ -19,11 +19,12 @@ function harness(cfg = {}) {
   const { hooks, add: addHook } = hookTable();
   const listeners = [], effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
   let command, n = 0;
-  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, noted: [], inject(m) { this.noted.push(m); }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
+  const made = new Map(); // session id → what it was made with ({ cwd, agentPreset }), as dsh keeps it on the session
+  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: made.get(id)?.cwd ?? (id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home), agentPreset: made.get(id)?.agentPreset } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, noted: [], inject(m) { this.noted.push(m); }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
   const services = {
     tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
     commands: { register: (c) => { command = c; return () => {}; } },
-    sessionController: { create: async () => ({ sessionId: `h${++n}` }), rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentOf(id) }) },
+    sessionController: { create: async (req = {}) => { const sessionId = `h${++n}`; made.set(sessionId, req); return { sessionId }; }, rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentOf(id) }) },
     agents: { get: (id) => agents.get(id) },
     workspaceRegistry: { archiveSession: async (id) => { archived.push(id); } },
     llm: {
@@ -50,7 +51,7 @@ function harness(cfg = {}) {
   emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation
   const pre = (id, name, input = {}) => hooks['tools/pre-execute']({ name, input, agent: agentOf(id) }, async () => 'ran');
   const shown = (name, v) => tools[name].output.render({}, v)[0].text;
-  return { ctx, home, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
+  return { ctx, home, made, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
 }
 
 test('a thing of his goes to her hands whole; she is woken when they ask and when it is over — and being woken says nothing to him', async () => {
@@ -669,7 +670,8 @@ test('this machine is a place for her hands too, and his: only on his business; 
   const started = await h.tools.hands.execute({ device: 'host', do: '看 ~/Claude/dsh-dot-src 有没有没提交的改动，再 npm install' }); await tick();
   assert.equal(started.status, 'started');
   h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
-  assert.equal(h.ctx.get('dshDot').handsDevice('h1'), 'host');
+  assert.deepEqual(h.made.get('h1'), { cwd: join(process.env.DSH_HOME, 'dsh-dot-hands', 'host'), agentPreset: 'dot-hands-host' });
+  assert.equal(h.ctx.get('dshDot').handsDevice('h1', h.made.get('h1').cwd, 'dot-hands-host'), 'host');
   assert.equal(h.ctx.get('dshDot').handsDevice('', join(process.env.DSH_HOME, 'dsh-dot-hands', 'host')), 'host', 'known by its folder alone');
   assert.equal(h.ctx.get('dshDot').handsDevice('', join(process.env.DSH_HOME, 'dsh-dot-hands')), '');
   assert.match(text(h.agentOf('h1').got[0]), /^（在他的电脑本机上，用命令行；不碰你的手机和电脑）看 ~\/Claude/);
@@ -745,5 +747,42 @@ test('an answer someone owes a thing is a record on it, not her hands\' time: th
   assert.deepEqual(await h.tools.done.execute({ summary: '发了', reached: true }), { status: 'unsaid-awaiting' });
   assert.match(h.shown('done', { status: 'unsaid-awaiting' }), /awaiting 要填/);
   assert.deepEqual(await h.tools.done.execute({ summary: '发了，还没回', reached: true, awaiting: '10086' }), { status: 'done' });
+  h.stop();
+});
+
+test('a thing on the web is made with the web\'s preset and its session has the web\'s tools only, known from the session itself; a shell call there is refused, not asked of him', async () => {
+  const { classify, hiddenFor } = await import('../src/compat/qq-bridge.js');
+  const h = harness();
+  const dot = h.ctx.get('dshDot');
+  const hers = Object.assign((id, cwd) => dot.hers(id, cwd), { hands: (id, cwd) => dot.isHands(id, cwd), handsDevice: (id, cwd, preset) => dot.handsDevice(id, cwd, preset) });
+  h.services.dshDotCompat = { owner: (id, cwd, preset) => classify({ id, cwd, preset }, null, hers), hiddenFor: (o, names) => hiddenFor(o, names) };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查一条有出处的冷知识，带来源' }] });
+  assert.equal((await h.tools.hands.execute({ device: 'web', do: '查一条有机构出处的冷知识' })).status, 'started'); await tick();
+  assert.equal(h.made.get('h1').agentPreset, 'dot-hands-web');
+  const s = h.agentOf('h1').session;
+  assert.equal(h.services.dshDotCompat.owner(s.id, s.header.cwd, s.header.agentPreset), 'hands:web', 'the place is on the session from the moment it is made');
+  // 11-24 (t61): the same call was judged by the computer's gates and asked of him as deleting in a shared folder `…/40]`
+  const curl = await h.pre('h1', 'bash', { command: `curl -sL "https://www.esa.int/x" -o /tmp/esa.html; python3 - <<'EOF'\nt=[l for l in s if len(l)>40]\nEOF` });
+  assert.match(curl.reason, /bash is not available in this session \(hands:web\)/);
+  assert.equal(h.audit.filter((a) => a.event === 'consent-asked').length, 0, 'nothing is asked of him');
+  assert.equal(h.ctx.get('dshDot').things(1)[0].ask, undefined, 'and the thing is not stopped on a question for him');
+  for (const tool of ['write', 'read', 'job_output', 'account', 'mcp__dot-phone__mobile_click_on_screen_at_coordinates']) assert.ok((await h.pre('h1', tool, {})).reason, `${tool} is not the web's`);
+  assert.equal(await h.pre('h1', 'web_fetch', { url: 'https://www.weather.gov/' }), 'ran');
+  // a session of her hands not made with a place's preset: nothing of any place
+  assert.equal(h.services.dshDotCompat.owner('h9', s.header.cwd, 'dot-hands'), 'hands');
+  assert.deepEqual(hiddenFor('hands', ['bash', 'web_fetch', 'account', 'phone_type', 'ask_her', 'done']), ['bash', 'web_fetch', 'account', 'phone_type']);
+  h.stop();
+});
+
+test('a host that refuses the place\'s preset gets no session for the thing: it is not made with the default surface instead', async () => {
+  const h = harness();
+  const calls = [];
+  h.services.sessionController.create = async (req) => { calls.push(req); throw new Error('unknown agent preset'); };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查个东西' }] });
+  await h.tools.hands.execute({ device: 'web', do: '查个东西' }); await tick(30);
+  assert.deepEqual(calls.map((c) => c.agentPreset), ['dot-hands-web'], 'asked once, with the preset');
+  const e = h.ctx.get('dshDot').things(1)[0];
+  assert.equal(e.outcome, 'failed'); assert.equal(e.cause, 'no-session');
+  assert.ok(h.audit.some((a) => a.event === 'hands-preset-refused' && a.preset === 'dot-hands-web'));
   h.stop();
 });

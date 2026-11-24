@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, symlinkSync,
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, classify, hiddenFor, findRoot, readBridge, botUins, doctor, isDotTool, isDeviceTool, BRIDGE_ID_RE, BRIDGE_TOOL_PREFIXES } from '../src/compat/qq-bridge.js';
-import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_ZOOM_TOOL } from '../src/tool-prefixes.js';
+import { DOT_TOOLS, DOT_TOOL_PREFIXES, DEVICE_TOOL_PREFIXES, PHONE_ZOOM_TOOL, HANDS_PRESETS, handsPlaceOf } from '../src/tool-prefixes.js';
 import DshComputerSubprocess from '../src/computer/subprocess.js';
 
 /** A qq-bridge checkout: config.json, state/mode.json, its bundles linked into a fake ~/.dsh. */
@@ -102,8 +102,8 @@ test('classify: hers, qq-bridge sandbox, qq-bridge owner chat, everyone else', (
   // her hands: told apart before anything else of hers
   const withHands = Object.assign((id, cwd) => hers(id, cwd), { hands: (id) => id === 'h1' });
   assert.equal(classify({ id: 'h1', cwd: '/x' }, null, withHands), 'hands');
-  assert.deepEqual(hiddenFor('hands', ['memory', 'recall', 'account', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-qq__invoke_action'], 'her hands type with phone_type: the paste-based typing is not offered');
-  assert.deepEqual(hiddenFor('hands', ['mcp__dot-phone__mobile_take_screenshot', 'phone_zoom', 'mcp__dot-phone__mobile_list_elements_on_screen', 'phone_type']), ['mcp__dot-phone__mobile_take_screenshot'], 'the screen comes back as text after each action; a part of it is looked at with phone_zoom, not a whole-screen picture every step');
+  assert.deepEqual(hiddenFor('hands:phone', ['memory', 'recall', 'account', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash']), ['memory', 'recall', 'qq_send', 'hands', 'mcp__dot-phone__mobile_type_keys', 'mcp__dot-vm__browser_click', 'mcp__dot-qq__invoke_action', 'bash'], 'her hands type with phone_type: the paste-based typing is not offered');
+  assert.deepEqual(hiddenFor('hands:phone', ['mcp__dot-phone__mobile_take_screenshot', 'phone_zoom', 'mcp__dot-phone__mobile_list_elements_on_screen', 'phone_type']), ['mcp__dot-phone__mobile_take_screenshot'], 'the screen comes back as text after each action; a part of it is looked at with phone_zoom, not a whole-screen picture every step');
 });
 
 test('hiddenFor: what each kind of session does not see', () => {
@@ -246,13 +246,13 @@ test('hiddenFor: her hands are offered the tools of the device the thing is on, 
   assert.deepEqual(seen('hands:web'), ['ask_her', 'done', 'web_search', 'web_fetch']);
   // on the machine dsh runs on: the shell and reading, none of her devices and none of her accounts
   assert.deepEqual(seen('hands:host'), ['ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image']);
-  // the device not known: both devices, still only what they use of her phone
-  assert.ok(seen('hands').includes(`${V}browser_click`) && seen('hands').includes('phone_type') && !seen('hands').includes(`${P}mobile_login_to_cloud_provider`));
-  // which device: asked of dot by the session's id
-  const hers = Object.assign(() => false, { hands: () => true, handsDevice: (id) => ({ h1: 'phone', h2: 'web' })[id] ?? '' });
-  assert.equal(classify({ id: 'h1', cwd: '/x' }, null, hers), 'hands:phone');
-  assert.equal(classify({ id: 'h2', cwd: '/x' }, null, hers), 'hands:web');
-  assert.equal(classify({ id: 'h3', cwd: '/x' }, null, hers), 'hands');
+  // the place not known (a session not made with one of the places' presets): no device, no shell, no accounts — fail closed
+  assert.deepEqual(seen('hands'), ['ask_her', 'done']);
+  // which place: what the session was made with (dsh keeps the preset on the session), asked of dot
+  const hers = Object.assign(() => false, { hands: () => true, handsDevice: (id, cwd, preset) => ({ 'dot-hands-phone': 'phone', 'dot-hands-web': 'web' })[preset] ?? '' });
+  assert.equal(classify({ id: 'h1', cwd: '/x', preset: 'dot-hands-phone' }, null, hers), 'hands:phone');
+  assert.equal(classify({ id: 'h2', cwd: '/x', preset: 'dot-hands-web' }, null, hers), 'hands:web');
+  assert.equal(classify({ id: 'h3', cwd: '/x', preset: 'dot-hands' }, null, hers), 'hands');
   // a thing on this machine is known by its folder alone (all the subprocess provider sees), and runs here
   const byCwd = Object.assign(() => false, { hands: (i, c) => c.startsWith('/h'), handsDevice: (i, c) => (c.startsWith('/h/host') ? 'host' : '') });
   assert.equal(classify({ cwd: '/h/host' }, null, byCwd), 'hands:host');
@@ -261,4 +261,27 @@ test('hiddenFor: her hands are offered the tools of the device the thing is on, 
   sp.compat = () => ({ ownerOfCwd: (cwd) => classify({ cwd }, null, byCwd), ownerComputer: 'vm' });
   assert.equal(sp.routeFor('/h/host'), 'host');
   assert.equal(sp.routeFor('/h'), 'vm');
+});
+
+test('her hands\' presets, one a place: the host tools a session lists come with its preset, so only the computer and this machine have a shell and files', () => {
+  // 11-24 (things t30, t61): every thing was made with one preset that had the shell, files and jobs; restrict cannot
+  // take a preset's own tools out, so a thing given to look something up listed bash/write/edit/read/job_* and ran curl.
+  const yml = readFileSync(new URL('../cordis.patch.yml', import.meta.url), 'utf8');
+  const rowsOf = (preset) => {
+    const at = yml.indexOf(`        id: ${preset}\n`);
+    assert.ok(at > 0, `${preset} is declared`);
+    const next = yml.indexOf('\n    - id: ', at);
+    return [...yml.slice(at, next < 0 ? undefined : next).matchAll(/^ {10}- id: ([\w-]+)$/gm)].map((m) => m[1]);
+  };
+  const shell = ['tool-bash', 'tool-pwsh', 'tool-fs', 'tool-jobs'];
+  for (const place of ['phone', 'web']) {
+    const rows = rowsOf(HANDS_PRESETS[place]);
+    assert.ok(rows.includes('tool-web'), `${place}: looking things up`);
+    assert.deepEqual(rows.filter((r) => shell.includes(r)), [], `${place}: no shell, no files, no jobs`);
+  }
+  for (const place of ['computer', 'host']) assert.deepEqual(rowsOf(HANDS_PRESETS[place]).filter((r) => shell.includes(r)), shell, `${place}: the shell and files`);
+  assert.doesNotMatch(yml, /id: dot-hands\n/, 'no preset for every place at once');
+  assert.equal(handsPlaceOf('dot-hands-web'), 'web');
+  assert.equal(handsPlaceOf('dot-hands'), '');
+  assert.equal(handsPlaceOf(undefined), '');
 });

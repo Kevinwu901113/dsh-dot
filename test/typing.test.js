@@ -70,3 +70,17 @@ test('computer gate: > | ; inside quotes are text — a script handed to a tool 
   assert.equal(sharedTouch('echo "a > b" > "my file.txt"', o), '/Users/k/dot/my file.txt');
   assert.equal(sharedTouch("grep 'x;rm -rf her' log.txt", o), '');
 });
+
+test('computer gate: the lines of a here-document are what its command reads, not commands — unless a shell reads them', async () => {
+  const { sharedTouch } = await import('../src/computer/gate.js');
+  const o = { shared: ['/Users/k/.dsh/dsh-dot-hands'], cwd: '/Users/k/.dsh/dsh-dot-hands', home: '/home/gem' };
+  // 11-24: a line of python in a here-document was read as a redirect to a file `40]` in the shared working folder
+  const fetched = `curl -sL "https://www.esa.int/x" -o /tmp/esa.html; wc -c /tmp/esa.html; python3 - <<'EOF'\nimport re,html\ns=open('/tmp/esa.html').read()\nt=[l for l in s.split('\\n') if len(l)>40]\nprint(t[:5])\nEOF`;
+  assert.equal(sharedTouch(fetched, o), '');
+  assert.equal(sharedTouch('cat <<-END\n\tx > y\n\tEND\necho ok > z', o), '/Users/k/.dsh/dsh-dot-hands/z', 'the command after the document is read again');
+  assert.equal(sharedTouch('cat > notes.txt <<EOF\nhello\nEOF', o), '/Users/k/.dsh/dsh-dot-hands/notes.txt', 'a redirect on the command line itself still counts');
+  assert.equal(sharedTouch('bash <<EOF\nrm -rf notes\nEOF', o), '/Users/k/.dsh/dsh-dot-hands/notes', 'given to a shell, the lines are commands');
+  assert.equal(sharedTouch('sudo sh -s <<"X"\nrm notes\nX', o), '/Users/k/.dsh/dsh-dot-hands/notes');
+  assert.equal(sharedTouch('python3 - <<EOF\nprint(1)\nrm -rf notes', o), '', 'no closing line: the document runs to the end, as in the shell');
+  assert.equal(sharedTouch('cat <<< "a>b" > out', o), '/Users/k/.dsh/dsh-dot-hands/out', 'a here-string is not a document');
+});

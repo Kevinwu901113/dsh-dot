@@ -120,6 +120,45 @@ export function readOnlyScript(script) {
 }
 const scriptOf = (args) => { try { const a = typeof args === 'string' ? JSON.parse(args) : args; return a?.script ?? a?.expression ?? a?.code ?? a?.function ?? a?.js ?? ''; } catch { return ''; } };
 
+/** Commands that run what they read: a here-document given to one of these is commands, to anything else it is text. */
+const SHELL_READERS = new Set(['sh', 'bash', 'zsh', 'dash', 'ksh', 'fish', 'ssh']);
+/**
+ * The command with the lines of its here-documents (`<<EOF` … `EOF`) blanked, when what reads them is not a shell: they
+ * are what that command reads — a script for python, text for cat — not commands of this one (11-24: a line of python,
+ * `[l for l in s if len(l)>40]`, was read as a redirect to a file called `40]` in the working folder). Given to a shell
+ * (`bash <<EOF`) they are commands, and stay. A document with no closing line runs to the end, as in the shell.
+ */
+export function hereDocsOut(command) {
+  const lines = String(command).split('\n');
+  const out = [];
+  const pending = []; // { word, strip, keep } of the documents opened on a line, in order
+  for (const line of lines) {
+    if (pending.length) {
+      const d = pending[0];
+      if ((d.strip ? line.replace(/^\t+/, '') : line) === d.word) { pending.shift(); out.push(''); } else out.push(d.keep ? line : '');
+      continue;
+    }
+    out.push(line);
+    // `<<` outside quotes (not `<<<`, a string): the word after it ends the document; quoted, the same word.
+    let quote = '';
+    for (let i = 0; i < line.length; i++) {
+      const c = line[i];
+      if (quote) { if (c === quote) quote = ''; else if (c === '\\' && quote === '"') i++; continue; }
+      if (c === '\\') { i++; continue; }
+      if (c === "'" || c === '"') { quote = c; continue; }
+      if (c !== '<' || line[i + 1] !== '<' || line[i + 2] === '<' || line[i - 1] === '<') continue;
+      const m = /^<<(-?)\s*(?:'([^']*)'|"([^"]*)"|\\?([^\s;&|<>()]+))/.exec(line.slice(i));
+      if (!m) continue;
+      const before = line.slice(0, i).split(/;|&&|\|\||\|/).pop();
+      const w = words(before.replace(/[0-9]?[<>]{1,2}&?\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g, ' '));
+      while (w.length && (/^\w+=/.test(w[0]) || PREFIXES.has(w[0]))) w.shift();
+      pending.push({ word: m[2] ?? m[3] ?? m[4], strip: m[1] === '-', keep: SHELL_READERS.has((w[0] ?? '').split('/').pop()) });
+      i += m[0].length - 1;
+    }
+  }
+  return out.join('\n');
+}
+
 export function sharedTouch(command, { shared = [], cwd = '', home = defaults.vmHome } = {}) {
   const roots = shared.filter(Boolean).map((p) => p.replace(/\/+$/, '') || '/');
   let dir = cwd || home;
@@ -136,7 +175,7 @@ export function sharedTouch(command, { shared = [], cwd = '', home = defaults.vm
   };
   // Inside quotes, > | ; & are text, not shell (a script handed to a tool: `eval "(()=>{const t=…})()"` is no redirect
   // to a file called {const): they are masked before the command is cut into segments and scanned for redirects.
-  const unquoted = String(command).replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (q) => q.replace(/[>|;&\n]/g, '\u0001'));
+  const unquoted = hereDocsOut(command).replace(/"(?:\\.|[^"\\])*"|'[^']*'/g, (q) => q.replace(/[>|;&\n]/g, '\u0001'));
   for (const seg of unquoted.split(/\n|;|&&|\|\||\|/)) {
     // Redirects that overwrite (not >>, not >&, not to /dev/null).
     for (const m of seg.matchAll(/(?<![>&0-9])[0-9]?>(?![>&])\s*("[^"]*"|'[^']*'|[^\s;&|<>]+)/g)) {

@@ -14,7 +14,7 @@
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESET, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESETS, handsPlaceOf, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
 import { checkReply } from '../persona/card.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -1025,29 +1025,28 @@ export function apply(ctx, config = {}) {
   // What he said yes to (consent.js).
   const consent = createConsent({ store });
   const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
-  // Which device each of her hands' sessions is for: they are offered that device's tools and no other's (compat).
-  const handsDevices = new Map(); let handsMaking = '';
-  // A thing on this machine itself (device 'host') is done from its own folder under the hands': a command is routed by
-  // the folder it comes from (computer/subprocess.js), and that folder says "here, not in her computer".
+  // Which place a session of her hands is for is written on the session itself: the preset it was made with (dsh keeps
+  // it as header.agentPreset from the start), one a place, carrying only that place's host tools (tool-prefixes.js
+  // HANDS_PRESETS). A thing on this machine itself (device 'host') is also done from its own folder under the hands': a
+  // command is routed by the folder it comes from (computer/subprocess.js), and that folder says "here, not in her
+  // computer" — by the folder alone it is known as 'host' too. Anything else is not known: '' (compat: no device tools).
   const handsHostDir = resolve(join(dshHome(), 'dsh-dot-hands', 'host'));
   const atHandsHost = (cwd) => { if (!cwd) return false; const p = resolve(String(cwd)); return p === handsHostDir || p.startsWith(handsHostDir + sep); };
-  const handsPlace = (id, cwd) => (atHandsHost(cwd) ? 'host' : id ? handsDevices.get(id) ?? handsMaking : '');
+  const handsPlace = (cwd, preset) => (atHandsHost(cwd) ? 'host' : handsPlaceOf(preset));
   hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
     create: async (dir, device = '') => {
       const cwd = device === 'host' ? handsHostDir : dir;
       if (device === 'host') { try { mkdirSync(cwd, { recursive: true }); } catch (error) { void error; } }
       const controller = ctx.get('sessionController');
-      if (!controller) return '';
-      handsMaking = device; // the session being made now is for this device (compat asks, before its id is known here)
-      // With their own preset (only the host tools doing takes); a host that does not know it refuses it — then as before.
+      const agentPreset = HANDS_PRESETS[device];
+      if (!controller || !agentPreset) return '';
+      // Only with the place's own preset. A host that refuses it gets no session: made without one, the session would
+      // have the host's whole default surface (11-24: a thing given to look something up had a shell).
       let made = null;
-      try { made = await controller.create({ cwd, agentPreset: HANDS_PRESET }); } catch (err) { audit('hands-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
-      try { made ??= await controller.create({ cwd }); } catch (err) { logger.warn(`hands session not created: ${err.message}`); return ''; }
+      try { made = await controller.create({ cwd, agentPreset }); } catch (err) { audit('hands-preset-refused', { preset: agentPreset, why: String(err?.message ?? err).slice(0, 200) }); logger.warn(`hands session not created: ${err.message}`); return ''; }
       const { sessionId } = made ?? {};
       try { await controller.rename?.({ sessionId, title: 'dot · 手' }); } catch (error) { void error; }
-      if (sessionId) { handsDevices.set(sessionId, device); if (handsDevices.size > 40) handsDevices.delete(handsDevices.keys().next().value); }
-      handsMaking = '';
       return sessionId ?? '';
     },
     agentFor: handsAgent,
@@ -1688,6 +1687,14 @@ export function apply(ctx, config = {}) {
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_WAIT_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
     if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
+    // A tool that is not the place's (compat's set for this session) is not theirs to call, and not a question for him:
+    // refused here, before the gates below would judge it as if it were (11-24: a shell call of a thing on the web was
+    // asked of him as deleting in a shared folder). compat's guard refuses it too, but after this hook.
+    if (theirs) {
+      const compat = ctx.get('dshDotCompat'), s = exec.agent?.session;
+      const place = compat?.owner?.(id, s?.header?.cwd, s?.header?.agentPreset);
+      if (place && compat.hiddenFor?.(place, [exec.name])?.length) { audit('hands-not-theirs', { session: id, tool: exec.name, place }); return deny(`dsh-dot: ${exec.name} is not available in this session (${place})`); }
+    }
     // Her phone is reached with its own tools, where the gates look: not through the shell.
     if (theirs && exec.name === 'bash' && /\b(?:adb|emulator|am\s+start|input\s+(?:tap|text|keyevent))\b/.test(String(args?.command ?? ''))) { audit('gate-shell', { session: id }); return deny(prompt('dot.gates.shell')); }
     // What her hands do on her phone, by the gates' four tiers (gates.js): code decides, from the screen as it was last read.
@@ -1707,7 +1714,7 @@ export function apply(ctx, config = {}) {
     // (computer/gate.js, which then asks nothing of its own for it) and the page her browser is on now.
     // On this machine itself (a thing given with device 'host'): only looking is theirs; anything else is asked of him
     // (gates.js classifyHost). Every call of theirs there is judged, whatever the tool.
-    const onHost = theirs && handsPlace(id, exec.agent?.session?.header?.cwd) === 'host';
+    const onHost = theirs && handsPlace(exec.agent?.session?.header?.cwd, exec.agent?.session?.header?.agentPreset) === 'host';
     if (onHost) {
       exec.dotGated = true;
       const stop = gateHands(classifyHost({ tool: exec.name, input: args }), id, 'host');
@@ -1904,8 +1911,8 @@ export function apply(ctx, config = {}) {
     hers: (id, cwd) => isDotSession(id, cwd) || retired(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(hands?.isHands(id, cwd)),
-    /** The device a session of her hands is for: 'phone' | 'computer' | 'web' | 'host' ('' when not known); a host thing is known by its folder alone. */
-    handsDevice: (id, cwd) => handsPlace(id, cwd),
+    /** The place a session of her hands is for, from its preset: 'phone' | 'computer' | 'web' | 'host' ('' when not known); a host thing is known by its folder alone. */
+    handsDevice: (id, cwd, preset) => handsPlace(cwd, preset),
     busy: (id) => turns.has(id),
     /** Add a part to the short message that goes with what has just reached her ({ name, order, text({ agent, messages }) → string | Promise }); returns its disposer. */
     turnNote,

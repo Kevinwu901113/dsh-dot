@@ -57,8 +57,16 @@ export const DOT_TOOLS = ['memory', 'recall', 'account', 'hands', HANDS_ASK_TOOL
 export const DOT_TOOL_PREFIXES = [QQ_TOOL_PREFIX];
 /** The agent preset her conversations are made with when lean (declared in cordis.patch.yml: preset-dot). */
 export const HER_PRESET = 'dot';
-/** The agent preset her hands' sessions are made with (cordis.patch.yml: preset-dot-hands). */
-export const HANDS_PRESET = 'dot-hands';
+/**
+ * The agent presets her hands' sessions are made with, one a place (cordis.patch.yml: preset-dot-hands-*). The host's
+ * own tools of a session come with its preset and nothing takes them out afterwards (compat's restrict reaches only
+ * what a session inherits), so a place's preset carries only what is done there: the web, and for her computer and
+ * this machine also the shell, its jobs and reading files. The preset is also how a session's place is known — dsh
+ * keeps it on the session (header.agentPreset) from the moment it is made.
+ */
+export const HANDS_PRESETS = Object.freeze({ phone: 'dot-hands-phone', computer: 'dot-hands-computer', host: 'dot-hands-host', web: 'dot-hands-web' });
+/** The place a hands preset is for ('' for any other preset, or none). */
+export const handsPlaceOf = (preset) => Object.keys(HANDS_PRESETS).find((k) => HANDS_PRESETS[k] === preset) ?? '';
 /** Is this tool one a lean conversation of hers keeps (HER_TOOLS, and her QQ's own actions)? */
 export const isHerTool = (n) => HER_TOOLS.includes(n) || String(n ?? '').startsWith(QQ_TOOL_PREFIX);
 // What her conversation keeps when it is lean (dot.lean, a conversation begun since it was turned on): her one verb

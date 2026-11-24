@@ -88,21 +88,57 @@
                   thresholdChars: 8192
                   headChars: 4096
                   tailChars: 1024
-    # Her hands' own preset: the rows of `standard` that doing takes — the shell and its jobs, reading files and
-    # pictures, the web, compaction for a long thing — and nothing to plan, delegate, ask or present with. Every step
-    # of a thing resends the tool list, and the hands are most of what she spends.
-    - id: preset-dot-hands
+    # Her hands' own presets, one a place (tool-prefixes.js HANDS_PRESETS): the rows of `standard` that doing there takes,
+    # and nothing to plan, delegate, ask or present with. A session's preset decides which host tools its requests list,
+    # and nothing takes them out afterwards — so a thing on the web or on her phone is made with a preset that has no
+    # shell and no files (11-24: one preset for every place, and a thing given to look something up had a shell).
+    # Every step of a thing resends the tool list, and the hands are most of what she spends.
+    - id: preset-dot-hands-phone
       name: '@deepseek-ai/dsh-agent-preset'
       config:
-        id: dot-hands
-        name: dot-hands
-        description: dot 的手：只带做事要的工具（命令行、读文件、查资料）
+        id: dot-hands-phone
+        name: dot-hands-phone
+        description: dot 的手（手机）：查资料；手机的工具由 dsh-dot 给
         order: 91
         plugins:
           - id: persona
             name: '@deepseek-ai/dsh-persona'
             config:
-              prefix: You are an agent operating a phone and a computer, powered by the {{model}} model.
+              prefix: You are an agent operating a phone, powered by the {{model}} model.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+    - id: preset-dot-hands-computer
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dot-hands-computer
+        name: dot-hands-computer
+        description: dot 的手（她的电脑）：命令行、读文件、查资料
+        order: 92
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are an agent operating a computer, powered by the {{model}} model.
           - id: time-context
             name: '@deepseek-ai/dsh-time-context'
           - id: tool-bash
@@ -117,6 +153,86 @@
               applyPatch: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+    - id: preset-dot-hands-host
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dot-hands-host
+        name: dot-hands-host
+        description: dot 的手（他这台电脑本机）：命令行、读文件、查资料
+        order: 93
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are an agent working on this machine with a shell, powered by the {{model}} model.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
+          - id: tool-bash
+            name: '@deepseek-ai/dsh-tool-bash'
+            disabled: !!js process.platform === 'win32'
+          - id: tool-pwsh
+            name: '@deepseek-ai/dsh-tool-pwsh'
+            disabled: !!js process.platform !== 'win32'
+          - id: tool-fs
+            name: '@deepseek-ai/dsh-tool-fs'
+            config:
+              applyPatch: false
+          - id: tool-jobs
+            name: '@deepseek-ai/dsh-tool-jobs'
+          - id: tool-web
+            name: '@deepseek-ai/dsh-tool-web'
+            config:
+              fetch: true
+              searchTimeoutMs: 60000
+          - id: compaction
+            name: cordis:group
+            group: true
+            isolate:
+              compaction: true
+              toolResultPruner: true
+            config:
+              - id: compaction-basic
+                name: '@deepseek-ai/dsh-compaction-basic'
+              - id: tool-result-pruner
+                name: '@deepseek-ai/dsh-compaction-tool-result-pruner'
+                config:
+                  thresholdChars: 8192
+                  headChars: 4096
+                  tailChars: 1024
+    - id: preset-dot-hands-web
+      name: '@deepseek-ai/dsh-agent-preset'
+      config:
+        id: dot-hands-web
+        name: dot-hands-web
+        description: dot 的手（查资料）：只有查资料
+        order: 94
+        plugins:
+          - id: persona
+            name: '@deepseek-ai/dsh-persona'
+            config:
+              prefix: You are an agent looking things up on the web, powered by the {{model}} model.
+          - id: time-context
+            name: '@deepseek-ai/dsh-time-context'
           - id: tool-web
             name: '@deepseek-ai/dsh-tool-web'
             config:
