@@ -146,7 +146,7 @@ function writeRecallSettings(patch) {
   return next.recall;
 }
 
-const WHO = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]', seen: '[我看到的]' };
+const WHO = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]' };
 const p2 = (n) => String(n).padStart(2, '0');
 const dateStamp = (ms) => { const d = new Date(ms); return `${d.getFullYear()}-${p2(d.getMonth() + 1)}-${p2(d.getDate())} ${p2(d.getHours())}:${p2(d.getMinutes())}`; };
 const clip = (s, n) => (s.length > n ? `${head(s, n)}…` : s);
@@ -166,12 +166,6 @@ export function chunkTurns(lines, maxChars = 1200) {
   let cur = null;
   for (const l of lines) {
     const text = l?.who === 'note' ? factLines(l?.text) : String(l?.text ?? '').trim();
-    // A line she kept while browsing (who: 'seen') is not part of any turn: a chunk of its own, marked, so that
-    // recall can keep it out of the turns' places (query) and it never splits or joins a conversation.
-    if (l?.who === 'seen') {
-      if (text && rejectReason(text) !== 'secret') out.push({ at: l.at, end: l.at, session: l.session ?? '', kind: 'seen', replied: false, lines: [`${WHO.seen}${l.from ? `（${l.from}）` : ''}：${text.replace(/\s*\n+\s*/g, ' / ')}`] });
-      continue;
-    }
     const incoming = l?.who !== 'her';
     if (!cur || cur.session !== l.session || (incoming && cur.replied)) { cur = { at: l.at, end: l.at, session: l.session ?? '', lines: [], replied: false }; out.push(cur); }
     cur.end = l.at;
@@ -180,7 +174,7 @@ export function chunkTurns(lines, maxChars = 1200) {
     const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : '';
     cur.lines.push(`${WHO[l.who] ?? l.who}${to}：${text.replace(/\s*\n+\s*/g, ' / ')}`);
   }
-  return out.filter((c) => c.lines.length).map((c) => ({ at: c.at, end: c.end, session: c.session, ...(c.kind ? { kind: c.kind } : {}), text: clip(`[${dateStamp(c.at)}] ${c.lines.join('\n')}`, maxChars) }));
+  return out.filter((c) => c.lines.length).map((c) => ({ at: c.at, end: c.end, session: c.session, text: clip(`[${dateStamp(c.at)}] ${c.lines.join('\n')}`, maxChars) }));
 }
 
 const dot = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i] * b[i]; return s; };
@@ -218,7 +212,7 @@ export function openIndex(dir) {
       const vs = vectors.map(norm);
       dim ||= vs[0].length;
       if (vs.some((v) => v.length !== dim)) throw new Error(`embedding size changed (${dim} → ${vs.find((v) => v.length !== dim).length}): /dot memory recall rebuild`);
-      const rows = chunks.map((c) => ({ at: c.at, end: c.end, session: c.session, ...(c.kind ? { kind: c.kind } : {}), text: c.text, dim }));
+      const rows = chunks.map((c) => ({ at: c.at, end: c.end, session: c.session, text: c.text, dim }));
       const all = new Float32Array(vs.length * dim); vs.forEach((v, i) => all.set(v, i * dim));
       appendFileSync(f.vec, Buffer.from(all.buffer));
       appendFileSync(f.meta, rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
@@ -399,12 +393,6 @@ export function renderTurns(chunks, now = Date.now()) {
   return out.join('\n');
 }
 
-/** Lines she kept while browsing, as she reads them: the words, then where she saw them. */
-export function renderSeen(chunks) {
-  const line = (c) => { const m = /^(?:\[[^\]]*\] )?\[我看到的\](?:（([^）]*)）)?：([\s\S]*)$/.exec(c.text); return m ? `- ${m[2]}${m[1] ? `（${m[1]}）` : ''}` : `- ${c.text}`; };
-  return `${prompt('memory.recall.seen')}\n${chunks.map(line).join('\n')}`;
-}
-
 /**
  * opts: { cfg (memory config: recall* keys), dir (<home>/memory), lines () → in-memory transcript
  * lines, transcriptFile, logger, audit, embedder? (backend, spec) → { embed, rerank } — tests/hosts }
@@ -475,7 +463,7 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
       const first = src.find((l) => l.at > ix.end && l.at <= completeThrough);
       const tail = ix.meta().at(-1);
       let from = ix.end;
-      if (first?.who === 'her' && tail && tail.kind !== 'seen' && tail.session === (first.session ?? '')) { ix.dropLast(); lexCache = null; from = tail.at - 1; }
+      if (first?.who === 'her' && tail && tail.session === (first.session ?? '')) { ix.dropLast(); lexCache = null; from = tail.at - 1; }
       const chunks = chunkTurns(src.filter((l) => l.at > from && l.at <= completeThrough), cfg.recallChunkChars);
       for (let i = 0; i < chunks.length; i += 32) {
         const part = chunks.slice(i, i + 32);
@@ -537,25 +525,18 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     const lexical = cfg.recallLexical !== false;
     // What she already sees: her whole current session (dsh keeps it in the window until the
     // handoff), or — for a host that shows only the last N turns — those N.
-    // Lines she kept while browsing never take a turn's place: the turns are chosen among turns, exactly as
-    // before; the kept lines are chosen apart, a few at most.
-    const outside = (all) => { const turns = all.filter((c) => c.kind !== 'seen'); return N > 0 ? turns.slice(0, Math.max(0, turns.length - N)) : turns.filter((c) => c.session !== session); };
-    const seenMax = Math.max(0, Number(cfg.recallSeenMax ?? 2) || 0);
-    let seen = [];
+    const outside = (all) => (N > 0 ? all.slice(0, Math.max(0, all.length - N)) : all.filter((c) => c.session !== session));
     let picked = null, from = [];
     if (impl) {
       try {
         const ix = index(b);
         const pool = outside(ix.meta().map((m, i) => ({ ...m, i })));
-        let qvec = null;
-        const queryVec = async () => (qvec ??= (await impl.embed([q], 'query')).map(norm)[0]);
         picked = []; from = pool;
         if (pool.length) {
           // `more`: other wordings of the same wake (a rewrite of what he may have said back then). Each
           // gets its own cosine and BM25 list; all of them are fused by rank with the lists of his words.
           const also = more.map((x) => clip(String(x ?? '').trim(), 500)).filter((x) => x && x !== q && rejectReason(x) !== 'secret').slice(0, 3);
           const [qv, ...mv] = (await impl.embed([q, ...also], 'query')).map(norm);
-          qvec = qv;
           const vecs = ix.vecs();
           const cos = pool.map((c) => dot(qv, vecs[c.i]));
           const bm = lexical ? bm25For(ix).score(q, pool.map((c) => c.i)) : [];
@@ -583,29 +564,13 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
             picked = fuse(vec, lexical ? standOut(bm).slice(0, 60) : [], ...extra, recent).slice(0, topK);
           }
         }
-        const kept = seenMax ? ix.meta().map((m, i) => ({ ...m, i })).filter((c) => c.kind === 'seen') : [];
-        if (kept.length) {
-          const vecs = ix.vecs(), qv = await queryVec();
-          const cos = kept.map((c) => dot(qv, vecs[c.i]));
-          const bm = lexical ? bm25For(ix).score(q, kept.map((c) => c.i)) : [];
-          const top = (sc, positive) => sc.map((s, j) => ({ j, s })).filter((x) => !positive || x.s > 0).sort((x, y) => y.s - x.s).slice(0, 6);
-          const keys = [...new Set([...top(cos, false), ...top(bm, true)].map((x) => x.j))];
-          let ranked = null;
-          if (impl.rerank && keys.length) { try { ranked = await impl.rerank(q, keys.map((j) => kept[j].text), keys.length); } catch (err) { logger.warn(`recall rerank failed (${err.message}); kept lines by words this time`); } if (ranked && !Array.isArray(ranked)) ranked = null; }
-          // A line she merely read needs a reason to come back: the reranker's bar, or — without one — its words standing out.
-          seen = ranked
-            ? ranked.filter((x) => x.score >= (Number(cfg.recallSeenMin ?? 0.3) || 0)).slice(0, seenMax).map((x) => ({ c: kept[keys[x.index]], s: x.score }))
-            : standOut(bm).slice(0, seenMax).map((x) => ({ c: kept[x.j], s: x.s }));
-        }
-      } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; seen = []; }
+      } catch (err) { logger.warn(`recall query failed (${err.message}); lexical this time`); picked = null; }
     }
     if (!picked) {
       // Not ready (installing, downloading, no key, failed, a cloud hiccup): the same turns, found by words.
       res.mode = `${b}→lexical`;
       const chunks = chunkTurns(lines(), cfg.recallChunkChars);
       const all = outside(chunks);
-      const kept = seenMax ? chunks.filter((c) => c.kind === 'seen') : [];
-      if (kept.length) { const sb = createBm25(); for (const c of kept) sb.add(c.text); seen = standOut(sb.score(q)).slice(0, seenMax).map((x) => ({ c: kept[x.j], s: x.s })); }
       const bm = createBm25(); for (const c of all) bm.add(c.text);
       const words = standOut(bm.score(q));
       from = all;
@@ -631,12 +596,6 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     for (const j of [...taken]) for (let d = 1; d <= near; d++) { take(j - d, 0); take(j + d, 0); }
     res.hits = shown.map((x) => ({ at: x.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.text })).sort((x, y) => x.at - y.at);
     res.text = shown.length ? `${prompt('memory.recall.header', { today: todayText() })}\n\n${renderTurns(shown)}` : '';
-    // The lines she kept, after the turns and under their own heading, inside their own small budget.
-    const seenBudget = Number(cfg.recallSeenMaxTokens ?? 200) || Infinity;
-    let seenUsed = 0;
-    seen = seen.filter((x) => { const n = estimateTokens(x.c.text); if (seenUsed + n > seenBudget) return false; seenUsed += n; return true; });
-    res.seen = seen.map((x) => ({ at: x.c.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.c.text }));
-    if (seen.length) res.text = [res.text, renderSeen(seen.map((x) => x.c))].filter(Boolean).join('\n\n');
     res.ms = Math.round(performance.now() - t0);
     if (record) last = { at: Date.now(), ms: res.ms, mode: res.mode, hits: res.hits.length, query: clip(q, 40) };
     return res;

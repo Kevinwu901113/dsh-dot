@@ -33,7 +33,7 @@ import { head } from '../cut.js';
 
 const squash = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
-const SHOWN_MAX = 200000; // characters of screen text a thing keeps for keep_line's check (the newest)
+const SHOWN_MAX = 200000; // characters of screen text a thing keeps for has() (the newest)
 const clip = (s, n) => { const t = String(s ?? '').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(p || sep)); return b === a || b.startsWith(a + sep); };
 
@@ -49,7 +49,7 @@ const inside = (dir, p) => { const a = resolve(String(dir)), b = resolve(String(
  * @param deps.message    (text) => the user message that carries a task or something added to it
  * @param deps.textOf     (content) => text of an assistant message's content
  * @param deps.store      { get(key), set(key, value) } — remembered across restarts
- * @param deps.onDone     (result, thing) — it is over. result = { outcome, by, cause?, error?, summary?, detail?, question?, ask?, shown, steps, rounds, ms, notes }
+ * @param deps.onDone     (result, thing) — it is over. result = { outcome, by, cause?, error?, summary?, detail?, question?, ask?, steps, rounds, ms, notes }
  * @param deps.retire     (id) — a session the hands are done with (the host may put it away)
  * @param deps.maxMs      a thing is cut after this long
  */
@@ -62,7 +62,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const remember = (id) => { past.add(id); store.set('handsPast', [...past].slice(-30)); };
   const call = (fn, ...a) => { try { Promise.resolve(fn(...a)).catch(() => {}); } catch (error) { void error; } };
   const view = (t) => ({ id: t.entry, session: t.id, device: t.device, task: t.task, ...t.extra });
-  const snapshot = (t, more) => ({ shown: t.shown, steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
+  const snapshot = (t, more) => ({ steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
   const withAgent = async (t, fn) => { const agent = t.id ? await agentFor(t.id) : null; if (!agent) throw new Error('no hands session'); return fn(agent); };
   /**
    * The thing is over, whichever way. `outcome`: done · stuck · failed · timeout · stopped; `by`: whose word ended it
@@ -106,7 +106,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
         mine.off = onEvent((session, event) => {
           if (session?.id !== id || mine.over || mine.state !== 'running') return;
           if (event?.type === 'tool/call') { mine.steps++; ledger.count(mine.entry, { steps: 1 }); }
-          // What the screen showed them, as text: she sees the picture, and a line she keeps from it (keep_line) is checked against this.
+          // What the screen showed them, as text: what they type is checked against this (has).
           else if (event?.type === 'tool/result') { const c = event.data?.message?.content; let s = textOf(c); if ((!s || typeof s !== 'string') && c && typeof c === 'object') { try { s = JSON.stringify(c); } catch (error) { void error; s = ''; } } if (s) mine.shown = `${mine.shown}\n${s}`.slice(-SHOWN_MAX); }
           else if (event?.type === 'assistant/message') {
             const u = event.data?.usage;

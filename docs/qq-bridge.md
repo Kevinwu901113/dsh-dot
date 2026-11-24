@@ -36,8 +36,8 @@
 | 会话 | 藏掉 |
 |---|---|
 | `dot` | qq-bridge 的 `mcp__snowluma__*`、`mcp__snowluma-host__*`、`mcp__web-search-safe__*`（`compat.hideBridgeTools`） |
-| `qqb-sandbox` | dsh-dot 的全部：`memory` `recall` `account` `hands` `keep_line` `qq_send` `qq_sticker_keep` `phone_zoom` `phone_type`、`mcp__dot-phone__*`、`mcp__dot-vm__*`、`mcp__dot-qq__*` |
-| `qqb-owner` | 她自己的：`memory` `recall` `account` `hands` `keep_line` `qq_send` `qq_sticker_keep`、`mcp__dot-qq__*`；手机和电脑给（`compat.ownerDevices`） |
+| `qqb-sandbox` | dsh-dot 的全部：`memory` `recall` `account` `hands` `qq_send` `qq_sticker_keep` `phone_zoom` `phone_type`、`mcp__dot-phone__*`、`mcp__dot-vm__*`、`mcp__dot-qq__*` |
+| `qqb-owner` | 她自己的：`memory` `recall` `account` `hands` `qq_send` `qq_sticker_keep`、`mcp__dot-qq__*`；手机和电脑给（`compat.ownerDevices`） |
 | `other` | 她自己的那些（`account` 里存着她 App 的密码，不给任何第三方会话）；手机电脑照旧 |
 
 名单在 `src/tool-prefixes.js`（`DOT_TOOLS` / `DEVICE_TOOL_PREFIXES`），测试会把它和源码里所有 `tools.register` 对账，加工具忘了归类会直接红。

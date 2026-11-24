@@ -17,14 +17,13 @@
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
 // She edits her notes herself too (`memory`), and looks things up (`recall`).
-import { deny } from '../refusals.js';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import {
   DEFAULT_LIMITS, bankOp, noteChange, bankSize, bankUsage, bankFull, emptyMemory, findPerson, normalizeMemory, openOp, expireOpen, openView, renderItem, setImpression,
-  handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp, quoteIn,
+  handleOf, renderPerson, renderStanding, search, touchPerson, rejectReason, wordOp,
   resolvePerson, setOwner, ownerOf, proposeMerge, approveMerge, mergePeople, syncFriends,
 } from './store.js';
 import { createRecall, factLines } from './recall.js';
@@ -77,14 +76,6 @@ export const defaults = {
   recallRecentTurns: 20,        // the last turns before her window are a ranked list of their own (newest first), without a reranker; 0 = off
   recallNeighbors: 1,           // budget left over goes to the turns this close before and after each hit; 0 = off
   recallRerankMin: 0,           // a reranked turn needs at least this score (0–1); 0 = the reranker's order alone decides
-  // Lines she kept while browsing (who: 'seen', the keep_line tool): chosen apart from the turns, so they never take a
-  // turn's place. At most recallSeenMax of them per wake (0 = never shown), each above recallSeenMin with a reranker,
-  // inside recallSeenMaxTokens.
-  recallSeenMax: 2,
-  recallSeenMin: 0.3,
-  recallSeenMaxTokens: 200,
-  seenPerDay: 30,               // lines she may keep in a day (keep_line); 0 = the tool refuses
-  seenMaxChars: 80,             // one kept line is at most this long: a saying, not a passage
   recallMinQueryLength: 4,      // a waking message with fewer distinct content tokens (CJK characters, other words) recalls nothing: 好的 / 哈哈哈哈 / ok thanks. 0 = off
   // Without a reranker (none set, or still downloading): a hit must stand out from the whole index —
   // score ≥ median + k·(best − median), per channel, scale-free. 0 = off.
@@ -108,24 +99,6 @@ export const defaults = {
 const RECALL_WAKES = (src) => src.kind === 'user' || src.kind === 'schedule' || (src.kind === 'dsh-dot' && src.form === 'phone-notification');
 
 export const HANDOFF_SOURCE = Object.freeze({ kind: 'handoff' });
-/** Why keep_line did not keep a line, as she reads it (memory.seen: one reason a line). */
-export const seenRefusalText = (code, vars = {}) => table('memory.seen', vars)[code] ?? code;
-/**
- * May this line be kept? '' when it may; else the reason's code. `shown` is what her hands' tools showed (dot/hands.js)
- * this session — the only place a kept line may come from — and `today` how many she kept today.
- */
-export function seenRefusal({ text, hers, shown = '', today = 0, perDay = 30, maxChars = 80, known = [] }) {
-  const t = String(text ?? '').trim();
-  if (!hers) return 'elsewhere';
-  if (!t) return 'empty';
-  if (/\n/.test(t) || t.length > maxChars) return 'long';
-  if (rejectReason(t) === 'secret' || /https?:\/\//i.test(t)) return 'not-words';
-  if (today >= perDay) return 'full';
-  if (known.some((k) => quoteIn(t, k) && quoteIn(k, t))) return 'again';
-  if (!quoteIn(t, shown)) return 'not-shown';
-  return '';
-}
-
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const contentText = (content) => (typeof content === 'string' ? content : (Array.isArray(content) ? content : []).filter((p) => p?.type === 'text').map((p) => p.text ?? '').join(''));
 const isSilent = (t) => /^[`*\s]*DOT_SILENT[`*\s。.]*$/.test(String(t ?? ''));
@@ -139,8 +112,8 @@ export const dayLabel = (d) => { const p = (n) => String(n).padStart(2, '0'); re
  * another year), with 明天 / 下周三 given their date by code (when.js).
  */
 export function transcriptLine(l, { now = Date.now() } = {}) { // safe as a .map callback: an index is not an options object
-  const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]', seen: '[我看到的]' }[l.who] ?? l.who;
-  const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : l.who === 'seen' && l.from ? `（${l.from}）` : '';
+  const who = { owner: '他', her: '我', phone: '[手机]', note: '[我刚做的]', schedule: '[定时任务]' }[l.who] ?? l.who;
+  const to = l.who === 'her' && l.to && l.to !== 'owner' ? `（发给 ${l.to}）` : '';
   return `[${stamp(l.at, now)}] ${who}${to}：${annotate(l.who === 'note' ? factLines(l.text) : l.text, l.at, now)}`;
 }
 
@@ -471,29 +444,6 @@ export function apply(ctx, config = {}) {
     if (d?.retired?.(id)) return false;
     return (cwd && inside(home, cwd)) || id === d?.session?.();
   };
-  // What her hands' tools showed, per conversation: the only place a line she keeps (keep_line) may come from.
-  const shown = new Map(); // her conversation → the text her hands' rounds (and her own tools) showed (the last few hundred thousand characters)
-  const sawText = (id, text) => { const all = `${shown.get(id) ?? ''}\n${text}`; shown.delete(id); shown.set(id, all.length > 400000 ? all.slice(-300000) : all); if (shown.size > 6) shown.delete(shown.keys().next().value); };
-  const seenCalls = []; // sessions of keep_line calls let through, in order: execute() has no session of its own
-  ctx.on('session/event', (session, event) => {
-    const id = session?.id;
-    if (!id || event?.type !== 'tool/result' || !isConversation(id, session?.header?.cwd)) return;
-    const content = event.data?.message?.content;
-    let text = contentText(content);
-    if (!text && content && typeof content === 'object') { try { text = JSON.stringify(content); } catch { text = ''; } }
-    if (!text) return;
-    sawText(id, text);
-  });
-  ctx.on('tools/pre-execute', async (exec, next) => {
-    if (exec.name !== 'keep_line') return next();
-    const id = exec.agent?.session?.id ?? '';
-    const args = exec.input ?? exec.args ?? exec.arguments ?? {};
-    const today = lines.filter((l) => l.who === 'seen' && l.at >= startOfToday());
-    const why = seenRefusal({ text: args?.text, hers: isConversation(id, exec.agent?.session?.header?.cwd), shown: shown.get(id) ?? '', today: today.length, perDay: cfg.seenPerDay, maxChars: cfg.seenMaxChars, known: lines.filter((l) => l.who === 'seen').slice(-200).map((l) => l.text) });
-    if (why) { audit('seen-refused', { session: id, why }); return deny(seenRefusalText(why, { max: cfg.seenMaxChars, perDay: cfg.seenPerDay })); }
-    seenCalls.push(id);
-    return next();
-  });
   // What she says is on record where it goes out, never worked out from what kind of turn it was: QQ at the moment
   // it has been sent (dshQq.onSent — her qq_send and the relayed answer of a turn alike), every other way out by
   // whoever sends it (api.herSaid: the desktop, another IM, her phone's QQ).
@@ -522,8 +472,8 @@ export function apply(ctx, config = {}) {
         if (src.kind === 'schedule') record({ who: 'schedule', session: id, text });
         else if (src.kind === 'dsh-dot' && src.form === 'phone-notification') record({ who: 'phone', session: id, text: text.split('\n（')[0] });
         else if (src.kind === 'dsh-dot' && src.form === 'errand-note') record({ who: 'note', session: id, text: text.split('\n（')[0] });
-        // What her hands did and found (dot/hands.js): something she did, and where a line she keeps may come from.
-        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') { record({ who: 'note', session: id, text: factLines(text).slice(0, 600) }); sawText(id, text); }
+        // What her hands did and found (dot/hands.js): something she did.
+        else if (src.kind === 'dsh-dot' && src.form === 'hands-result') record({ who: 'note', session: id, text: factLines(text).slice(0, 600) });
         // What woke her is the query; the result is in front of her before the model is called.
         if (RECALL_WAKES(src) && !dot()?.retired?.(id)) prepareFor(id, src.kind === 'dsh-dot' ? text.split('\n（')[0] : text);
         return;
@@ -848,27 +798,11 @@ export function apply(ctx, config = {}) {
         return { found: found || '没翻到。' };
       },
     }), 'dsh-dot/memory: recall tool');
-    scope.effect(() => scope.tools.register({
-      name: 'keep_line',
-      description: prompt('memory.seen.tool', { max: cfg.seenMaxChars }),
-      parameters: { type: 'object', properties: { text: { type: 'string' }, from: { type: 'string' } }, required: ['text'], additionalProperties: false },
-      output: { schema: { type: 'object', properties: { ok: { type: 'boolean' } }, required: ['ok'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.ok ? '记下了' : '没记下' }] },
-      // Whether it may be kept was decided before this ran (tools/pre-execute above: her conversation, shown on her screen, short, not a repeat).
-      async execute(args) {
-        const session = seenCalls.shift() ?? '';
-        const from = clip(String(args?.from ?? '').replace(/\s+/g, ' ').trim(), 30);
-        record({ who: 'seen', session, text: String(args?.text ?? '').trim(), ...(from ? { from } : {}) });
-        audit('seen-kept', { session, from });
-        return { ok: true };
-      },
-    }), 'dsh-dot/memory: keep_line tool');
   });
 
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
     /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
-    /** What her hands' tools showed them in a round that came back to this conversation: the screen she was sent a picture of. */
-    shownTo(session, text) { if (session && text) sawText(String(session), String(text)); },
     /** The last lines between her and him, oldest first: [{ who: 'owner' | 'her', text, at }] — what was said, as it went out. */
     recent(n = 12, { withinMs = 12 * 3600000, now = Date.now() } = {}) {
       return lines.filter((l) => (l.who === 'owner' || (l.who === 'her' && (!l.to || l.to === 'owner'))) && now - l.at <= withinMs).slice(-n).map((l) => ({ who: l.who, text: l.text, at: l.at }));
@@ -903,7 +837,7 @@ export function apply(ctx, config = {}) {
     herLife() { return [...memory.self]; },
     recall,
     facts,
-    consolidate, diary, dayEnd, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, words: (memory.words ?? []).length, seen: lines.filter((l) => l.who === 'seen').length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
+    consolidate, diary, dayEnd, handoff, status: () => ({ gen: memory.gen, owner: memory.owner.length, self: memory.self.length, words: (memory.words ?? []).length, open: memory.open.length, people: Object.keys(memory.people).length, sinceCursor: sinceCursor().length }),
     /** For the panel: notes with their usage, counts, today's ledger, the diary (newest first), her conversation's tokens. */
     async panel() {
       const id = dot()?.session?.();

@@ -24,8 +24,7 @@
 | | 现在几点（每一轮，在对话历史之后） | `dot.now` |
 | | 定时任务那一轮 | `dot.scheduled` |
 | | 手机/电脑还在装（只在第一次装、开机没好时） / 装好那一刻 | `dot.setup` / `dot.setup-done` |
-| | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header`（她逛的时候记下的别人的说法另起一段：`memory.recall.seen`） |
-| | 记下看到的一句话 | `memory.seen.tool`（`keep_line` 的工具说明）/ `memory.seen`（被拒绝的理由，一行一个） |
+| | 记忆 / 想起的原话 | `memory.standing` / `memory.recall.header` |
 | | 她的手 | `dot.hands.system` `dot.hands-tool` `dot.hands.instead` `dot.hands.screen` `dot.hands.result` `dot.hands.result.his`；手来问她 `dot.hands.ask-tool` `dot.hands.ask` `dot.hands.asking` |
 | | 她自己的经验（进 App 时给） | `dot.howto.given` `dot.howto.no-notes`；整理经验的调用 `dot.howto.reflect`、翻旧笔记 `dot.howto.review` |
 | | 手机、电脑在她对话里的那一段 | `phone.hers` `dot.computer.hers`（操作说明 `phone.device` 只给手） |

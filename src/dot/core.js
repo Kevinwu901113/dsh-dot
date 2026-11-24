@@ -1069,7 +1069,6 @@ export function apply(ctx, config = {}) {
       await moved(); // her conversation is being handed over: it goes to the new one
       const found = lastSession && await resolveLive(lastSession);
       if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
-      if (r.shown) { try { ctx.get('dotMemory')?.shownTo?.(lastSession, r.shown); } catch (error) { void error; } }
       const lead = r.question && r.ask?.for === 'him'
         ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
         : r.question

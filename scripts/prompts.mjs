@@ -31,7 +31,7 @@ const M = await import('../src/memory/memory.js');
 const S = await import('../src/memory/store.js');
 const Q = await import('../src/qq/qq.js');
 const { deviceText } = await import('../src/phone/phone.js');
-const { createRecall, renderSeen } = await import('../src/memory/recall.js');
+const { createRecall } = await import('../src/memory/recall.js');
 // Pinned now: the recall sample below points DSH_HOME (and so the settings file) at a temp dir.
 P.configure({ home: P.promptHome() });
 
@@ -82,9 +82,7 @@ export const entries = [
     render: () => variant([['半夜被叫醒', P.prompt('dot.woke', { slept: '40 分钟', left: '6 小时 20 分钟' })], ['早上到点醒', P.prompt('dot.woke.morning', { slept: '8 小时 15 分钟' })]]) },
   { id: 'scheduled', group: 'system', name: '定时任务那一轮', note: '只在定时任务叫醒她时出现', files: ['dot.scheduled'], render: () => D.scheduledRule() },
   { id: 'memory', group: 'system', name: '记忆', note: '她对话的每一轮都带着：关于他、她自己记下的、今天到期的（到期当天、当天还没提过的）、还没了的事（有日子的在前，放不下的不显示）', files: ['memory.standing'], render: standing },
-  { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header', 'memory.recall.seen'], render: async () => `${await recallText()}\n\n${renderSeen([{ text: '[2026-11-18 15:02] [我看到的]（小黑盒）：这把纯纯坐牢' }])}` },
-  { id: 'seen', group: 'wake', name: '记下看到的一句话', note: '她自己逛的时候用 keep_line 记别人的原话（工具说明）；不是自己逛的时候、太长、带链接、当天记满、记过了、屏幕文字里找不到这句时被拒绝的理由（工具结果）', files: ['memory.seen.tool', 'memory.seen'],
-    render: () => variant([['工具说明', P.prompt('memory.seen.tool', { max: 80 })], ...['elsewhere', 'long', 'not-words', 'full', 'again', 'not-shown'].map((c) => [c, M.seenRefusalText(c, { max: 80, perDay: 30 })])]) },
+  { id: 'recall', group: 'system', name: '想起的原话', note: '叫醒她时从旧聊天里翻出来的，按日期分组、相对日期由程序换算（样例用的是关键词匹配）', files: ['memory.recall.header'], render: async () => recallText() },
   { id: 'voice', group: 'system', name: '说话提醒（最后一段）', note: '放在她对话每一轮的最后（记忆、原话之后），模型回话前最后读到的就是它；人设里填了「说话提醒」就用那个，空着用这个（{name} 是她的名字）。只在和他的对话里，跑腿不带。interlude.voice = false 关掉', files: ['interlude.voice'],
     render: () => P.prompt('interlude.voice', { name: '小点' }) },
 

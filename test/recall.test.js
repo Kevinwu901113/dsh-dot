@@ -557,59 +557,6 @@ test('rendering: recalled turns under their day, 明天 / 下周三 dated by cod
   for (const t of ['下周天气不错', '这周一直在忙', '下周一起去吧', '上上周三见过', '下下周三再说', '后天性的']) assert.equal(annotate(t, mon), t, t);
 });
 
-test('lines she kept while browsing: chunks of their own that never split a turn; chosen apart from the turns, a few at most, under their own heading', async () => {
-  const flatVecs = { async embed(texts) { return texts.map(() => Float32Array.from([1, 0, 0, 0])); } };
-  const reader = { ...flatVecs, async rerank(q, docs, n) { return docs.map((d, index) => ({ index, score: [...new Set(q)].filter((c) => d.includes(c)).length / new Set(q).size })).sort((a, b) => b.score - a.score).slice(0, n); } };
-  const dir = mkdtempSync(join(tmpdir(), 'mem-'));
-  let at = new Date(2026, 4, 1, 10, 0).getTime();
-  const lines = [];
-  const say = (who, text, extra = {}) => lines.push({ at: (at += 60000), who, text, session: 'old', ...extra });
-  say('owner', '今晚排位打不打');
-  say('seen', '这把纯纯坐牢', { session: 'errand-1', from: '小黑盒' });
-  say('her', '打，等我十分钟');
-  for (let i = 0; i < 12; i++) { say('owner', `排位第${i}把又输了`); say('her', '下把赢回来'); }
-  for (const t of ['排位连跪是会上头的', '队友排位在逛街', '排位打到凌晨三点', '我的key是 sk-abcdefghijklmnopqrstuvwxyz123456']) say('seen', t, { session: 'errand-1', from: '贴吧' });
-
-  const chunks = chunkTurns(lines);
-  assert.match(chunks[0].text, /他：今晚排位打不打\n我：打，等我十分钟$/, 'the line she kept in between did not split the turn');
-  const kept = chunks.filter((c) => c.kind === 'seen');
-  assert.deepEqual(kept.map((c) => c.text.replace(/^\[[^\]]*\] /, '')), ['[我看到的]（小黑盒）：这把纯纯坐牢', '[我看到的]（贴吧）：排位连跪是会上头的', '[我看到的]（贴吧）：队友排位在逛街', '[我看到的]（贴吧）：排位打到凌晨三点'], 'a secret is never kept as a chunk');
-  assert.equal(chunks.filter((c) => !c.kind).length, 13);
-
-  const cfg = { recallTopK: 3, recallMaxTokens: 1500, recallContrast: 0.35, recallMinScore: 0, recallMinQueryLength: 0, recallChunkChars: 1200, recallCandidates: 5, recallWindowTurns: 0, recallBackend: 'local' };
-  const mk = (extra, emb) => createRecall({ cfg: { ...cfg, ...extra }, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger: { info() {}, warn() {} }, embedder: () => emb });
-  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dsh-'));
-  let r = mk({}, reader); r.turnEnded(); await r.warm();
-  let q = await r.query('排位又连跪了', { session: 'now' });
-  assert.equal(q.hits.length, 3, 'the turns keep all their places');
-  assert.ok(q.hits.every((h) => !/我看到的/.test(h.text)), 'no kept line among the turns');
-  assert.equal(q.seen.length, 2, 'at most recallSeenMax kept lines');
-  assert.match(q.seen[0].text, /排位连跪是会上头的/);
-  const [turnsPart, seenPart] = q.text.split('\n\n你逛的时候记下的别人的说法');
-  assert.ok(turnsPart.startsWith('你记得的相关原话') && !/坐牢|逛街|上头/.test(turnsPart));
-  assert.match(seenPart, /\n- 排位连跪是会上头的（贴吧）\n- /);
-  // a line that has nothing to do with what he said does not come back
-  q = await r.query('周末去吃火锅吗', { session: 'now' });
-  assert.equal(q.seen.length, 0);
-  // off: never shown, and the turns are the same as with it on
-  r = mk({ recallSeenMax: 0 }, reader); r.turnEnded(); await r.warm();
-  const off = await r.query('排位又连跪了', { session: 'now' });
-  assert.equal(off.seen.length, 0);
-  assert.ok(!/逛的时候/.test(off.text));
-  r = mk({}, reader); r.turnEnded(); await r.warm();
-  assert.deepEqual((await r.query('排位又连跪了', { session: 'now' })).hits.map((h) => h.at), off.hits.map((h) => h.at), 'kept lines do not change which turns come back');
-  // no reranker: only a kept line whose words stand out
-  r = mk({}, flatVecs); r.turnEnded(); await r.warm();
-  q = await r.query('坐牢', { session: 'now' });
-  assert.deepEqual(q.seen.map((s) => s.text.replace(/^\[[^\]]*\] /, '')), ['[我看到的]（小黑盒）：这把纯纯坐牢']);
-  // before the index is ready: the same, by words
-  const cold = createRecall({ cfg, dir: mkdtempSync(join(dir, 'r-')), lines: () => lines, transcriptFile: join(dir, 'none'), logger: { info() {}, warn() {} }, embedder: () => Promise.reject(new Error('not yet')) });
-  q = await cold.query('坐牢', { session: 'now' });
-  assert.match(q.mode, /lexical/);
-  assert.equal(q.seen.length, 1);
-  assert.ok(q.hits.every((h) => !/我看到的/.test(h.text)));
-});
-
 test('annotate: 三天后 / 7天以后 / 一周后 / 两个礼拜之后 from the line\'s day; not 过两天, 几天后, 三天后悔, a duration or a day counted from another', () => {
   const at = new Date(2026, 11, 8, 18, 24).getTime(); // 12-08
   assert.equal(annotate('三天后取，7天以后复查，十天之后交图', at), '三天后（=12-11）取，7天以后（=12-15）复查，十天之后（=12-18）交图');

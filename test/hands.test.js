@@ -48,7 +48,6 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   assert.equal(h.hands.finish({ summary: '首页三个帖子：显卡、猫、游戏', detail: '首页有三个帖子：第一个讲显卡，第二个讲猫' }), true);
   const [r, j] = h.done[0];
   assert.deepEqual([r.outcome, r.by, r.steps, r.rounds, r.summary, r.detail], ['done', 'code', 2, 1, '首页三个帖子：显卡、猫、游戏', headTail('首页有三个帖子：第一个讲显卡，第二个讲猫', 12)]);
-  assert.match(r.shown, /纯纯坐牢[\s\S]*猫把杯子推下去了/, 'what the screen showed them, in full: what a line she keeps is checked against');
   assert.deepEqual(j, { id: 't1', session: 'h1', device: 'phone', task: '打开贴吧，说说首页有什么', forHim: true });
   await tick();
   assert.deepEqual(h.cancelled[0], ['h1', 'dot-hands: done']);
