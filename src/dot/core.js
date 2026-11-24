@@ -876,7 +876,7 @@ export function apply(ctx, config = {}) {
   });
   // Her clock: "since the last message" counts from the last line said before this turn began.
   // Shown once a turn, and written down that it was: whether she had them before her is a fact about the turn.
-  const liked = (t) => { if (!t) return ''; if (t.liked === undefined) { t.liked = thingsLike(t.hisWords ?? ''); if (t.liked) audit('things-like', { lines: t.liked.split('\n').length }); } return t.liked; };
+  const liked = (t) => { if (!t?.hisWords) return ''; if (t.likedFor !== t.hisWords) { t.likedFor = t.hisWords; t.liked = thingsLike(t.hisWords); if (t.liked) audit('things-like', { lines: t.liked.split('\n').length }); } return t.liked; };
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
     return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : '', id === lastSession ? liked(turns.get(id)) : ''].filter(Boolean).join('\n');
