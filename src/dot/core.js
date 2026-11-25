@@ -13,56 +13,36 @@
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
-import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, HIS_OK_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HER_PRESET, HANDS_PRESETS, handsPlaceOf, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
-import { checkReply } from '../persona/card.js';
-import { VM_SCREENSHOT } from '../qq/qq.js';
-import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
-import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
-import { HANDS_SOURCE, createHands } from './hands.js';
-import { createLedger, headTail } from './ledger.js';
-import { checkInput, checkTool, settle as settleCheck, report as checkReport, hashOf } from './nightcheck.js';
-import { approvalKind, classify, classifyComputer, classifyHost, KINDS, HIM_KINDS } from './gates.js';
-import { createConsent, REACHES } from './consent.js';
-import { createSay } from './say.js';
-import { createOutlet } from './outlet.js';
-import { createRecorder, replay as replayKept } from './replay.js';
-import { KNOWN_APPS, collectReply } from '../interlude/core.js';
-import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { get as httpGet } from 'node:http';
+import { createLedger } from './ledger.js';
+import { createConsent } from './consent.js';
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, relative, isAbsolute, dirname, resolve, sep } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { createSessions, isImMessage } from './sessions.js';
-import { costOf, createThings, nameOf, sameName, titleOf } from './things.js';
-import { createTurns, shortTool } from './turns.js';
+import { join } from 'node:path';
+import { createSessions } from './sessions.js';
+import { createThings } from './things.js';
+import { createTurns } from './turns.js';
 import { createVoice } from './voice.js';
 import { createArrive } from './arrive.js';
 import { createHandsWiring } from './hands-wiring.js';
 import { createTools } from './tools.js';
 import { createStatus, promptsPage } from './status.js';
-export { promptsPage } from './status.js';
-export { LOOP_EXEMPT } from './hands-wiring.js';
-export { SETUP_SOURCE } from './arrive.js';
-export { shortTool } from './turns.js';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
 import { createSleep } from './sleep.js';
 import { createCheckup } from './checkup.js';
 import { dotCommand } from './command.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, effortFor, installLlmGate, statusLine as llmGateLine, workEffort } from '../llm-gate.js';
+import { installLlmGate } from '../llm-gate.js';
 import { configure as configurePrompts, prompt } from '../prompts.js';
-import { drift } from '../integrity.js';
 import { runPendingReset } from '../reset.js';
-import { ago, stamp, today, unstamp } from '../clock.js';
-import { ownerSaid } from '../said.js';
-import { head } from '../cut.js';
-import { screenLines } from '../phone/typing.js';
-import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, ownerInterruptText, handsStatus, voiceHow, ownWords, replyCheckText, spokenOf, pushesText, TURN_NOTE_SOURCE, addressed, isOwnerTarget, ownerUnread, reachText, nowText, loopKey, conversationTitle, wakeText, scheduledRule, workingRules, contentText, stripSilent, SILENT } from './text.js';
+import { today } from '../clock.js';
+import { workingRules, stripSilent, SILENT } from './text.js';
+// What used to be defined here and now lives with the part that uses it: the same names, the same values.
+export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
+export { shortTool } from './turns.js';
+export { SETUP_SOURCE } from './arrive.js';
+export { LOOP_EXEMPT } from './hands-wiring.js';
+export { promptsPage } from './status.js';
 export * from './text.js';
 
 export const name = 'dsh-dot';
@@ -160,7 +140,6 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
   return { state: turnStallMs > 0 && idleMs >= turnStallMs ? 'stalled' : 'running', idleMs };
 }
 
-export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
 
 const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
 /**
@@ -259,24 +238,23 @@ export function apply(ctx, config = {}) {
   // Today's counters for the panel (persisted; reset when the day changes).
   const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
   const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
+  // The plugin's parts, one object made here and handed to each part (sessions.js … status.js). A part keeps its own
+  // state and is reached through its methods; what a part needs of a part made after it, it reads from here when it
+  // is used (dot.voice, dot.arrive, dot.hands, dot.sleep, dot.ledger, …), never at the time it is made.
   const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im, turnState, bump };
+  dot.ledger = null; dot.consent = null; dot.hands = null; dot.sleep = null; dot.llmGate = null; dot.budget = null; dot.checkup = null; // made below, in the order they always were
   const sessions = dot.sessions = createSessions(dot);
-  const { setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive, createConversation, openConversation } = sessions;
-  dot.ledger = null; dot.consent = null; // made below (ledger.js, consent.js)
-  const things = dot.things = createThings(dot);
-  const { awaited, answerTo, owedToHim, thingsLines, hisUnderWay } = things;
-  dot.hands = null; dot.sleep = null; // made below (hands.js, sleep.js)
+  dot.things = createThings(dot);
   const turns = dot.turns = createTurns(dot);
-  const { turnFailed, taken, owe, watchDrift, driftLine, turnNote, busyWith, inHome, doingOf, turnInfo, watchTurns } = turns;
   const voice = dot.voice = createVoice(dot);
   const arrive = dot.arrive = createArrive(dot);
-  const { moved, flushOwner, nextTask, enqueueTask, herState, quiet } = arrive;
   const hw = dot.hw = createHandsWiring(dot);
-  dot.llmGate = null; dot.budget = null; dot.checkup = null; // made below
-  const { howto, nightcheck, handsPlace } = hw;
   const tools = dot.tools = createTools(dot);
   const status = dot.status = createStatus(dot);
-  const { handBack, answerReaches, noteUnanswered, dropAck, outlet, say, saidText, tellHim } = voice;
+  const { isDotSession, retired, selfCheck, createConversation } = sessions;
+  const { turnNote, inHome, turnInfo, watchTurns, watchDrift } = turns;
+  const { flushOwner, nextTask, enqueueTask, herState, quiet } = arrive;
+  const { howto, nightcheck, handsPlace } = hw;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = dot.llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(dot.hands?.isHands(id)) && !dot.hands.doing()?.forHim });
@@ -284,10 +262,8 @@ export function apply(ctx, config = {}) {
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
 
-
-  // 1. Her turns.
+  // 1. Her turns (turns.js).
   ctx.effect(() => turns.disposeOwed, 'dsh-dot: his words not yet taken');
-
   ctx.on('session/event', turns.onSessionEvent);
 
   // 2. What of hers needs him (gates.js): nothing waits on a button (hands-wiring.js onApproval); a refusal that waits for his yes says so.
@@ -321,10 +297,7 @@ export function apply(ctx, config = {}) {
   // has to be the last thing she reads.
   ctx.on('agent/pre-step', turns.preStep);
   // Her clock: "since the last message" counts from the last line said before this turn began.
-  turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
-    const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
-    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === sessions.last() ? voice.reachLine() : '', id === sessions.last() ? thingsLines() : ''].filter(Boolean).join('\n');
-  } });
+  turnNote({ name: 'dot:now', order: 899, text: turns.nowNote });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
   // What went out to him since she was last up, as it was sent: the voice's words, not hers.
@@ -333,9 +306,8 @@ export function apply(ctx, config = {}) {
   turnNote({ name: 'dot:pushes', order: 898, text: arrive.pushesNote });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: turns.scheduledNote });
 
-
   // 3. Budget (budget.js).
-  const budget = dot.budget = watchBudget({ ctx, cfg, store, audit, im, logger });
+  dot.budget = watchBudget({ ctx, cfg, store, audit, im, logger });
 
   // 4. Device health (whichever devices are installed; they may come up after dot).
   ctx.inject(['dshComputer'], (c) => c.effect(() => c.dshComputer.onStatus?.((s) => {
@@ -349,14 +321,14 @@ export function apply(ctx, config = {}) {
   // Each night, once she is asleep: checked, then amended where the check would change something (hands-wiring.js nightly).
   ctx.effect(() => sleep.onSleep(hw.nightly), 'dsh-dot: nightcheck when she falls asleep');
   dot.sleep = sleep;
-  const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
+  const awake = sleep.awake;
   const sleeps = sleepsAtAll(cfg.awakeHours);
   turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === sessions.last() ? sleep.wokeNote() : '') });
   ctx.effect(() => hw.disposePhoneHome, 'dsh-dot: phone back to its home screen');
   // The book of things (ledger.js): every thing she gives her hands, and what came of it.
-  const ledger = dot.ledger = createLedger({ store });
+  dot.ledger = createLedger({ store });
   // What he said yes to (consent.js).
-  const consent = dot.consent = createConsent({ store });
+  dot.consent = createConsent({ store });
   // Her hands (hands.js, made in hands-wiring.js).
   hw.makeHands();
   // A thing a restart cut off is told to her once, when her conversation can be reached.
@@ -366,20 +338,19 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (dot.hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
   });
 
+  // 5. Her phone rings, QQ messages come in (arrive.js).
   ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(sessions.last()); return c.dshPhone.onNotification?.(arrive.wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.(arrive.qqMessage) ?? (() => {}), 'dsh-dot: qq messages'));
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(arrive.ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
   // What she said on QQ some other way than qq_send (the backend's own tools, her phone's QQ): on record all the same.
-  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onSelf?.((m) => {
-    audit('said-elsewhere', { to: m.to, chars: m.text.length });
-    try { ctx.get('dotMemory')?.herSaid?.({ session: sessions.last(), text: m.text, to: m.to, at: Date.parse(m.at) || Date.now() }); } catch (err) { logger.warn(`transcript: ${err.message}`); }
-  }) ?? (() => {}), 'dsh-dot: her own qq messages'));
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onSelf?.(voice.saidElsewhere) ?? (() => {}), 'dsh-dot: her own qq messages'));
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
   ctx.inject(['dshComputer'], (c) => c.effect(() => { const pc = c.dshComputer; pc.handsOf = hw.handsOf; return () => { delete pc.handsOf; }; }, 'dsh-dot: computer gate defers to hands gates'));
   // Read before you speak, the gates of her hands, loops (hands-wiring.js preExecute).
   ctx.on('tools/pre-execute', hw.preExecute);
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
+  // Turn watchdog: a stalled turn (turns.js), an unanswered reach (voice.js), the plugin's drift, a task of hers waiting.
+  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); voice.noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
   const checkup = dot.checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
   const doctorTell = (why) => checkup.tell(why);
@@ -390,6 +361,7 @@ export function apply(ctx, config = {}) {
     }, 15_000);
     return () => clearTimeout(t);
   }, 'dsh-dot: first-run doctor');
+  // When a device she was waiting for (installing or booting in this run) comes up, she tells him herself (arrive.js).
   const phoneSetup = arrive.watchSetup('phone', '手机', (s) => s.state === 'needs-license' || s.state === 'downloading');
   const computerSetup = arrive.watchSetup('computer', '电脑', (s) => s.state === 'starting' && (s.stage === 'downloading' || s.stage === 'installing'));
   ctx.inject(['dshComputer'], (c) => c.effect(() => { const off = c.dshComputer.onStatus?.(computerSetup); const now = c.dshComputer.status?.(); if (now) computerSetup(now); return off ?? (() => {}); }, 'dsh-dot: computer setup watch'));
@@ -455,19 +427,19 @@ export function apply(ctx, config = {}) {
     /** Every open turn of hers. */
     turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
     /** The book of things (ledger.js), newest first: what she set out to do and what came of each. */
-    things: (n = 20) => ledger.recent(n),
+    things: (n = 20) => dot.ledger.recent(n),
     /** What waits for his yes, and his standing yeses (consent.js). */
-    consent: () => ({ asking: consent.asking(), standing: consent.standing() }),
+    consent: () => ({ asking: dot.consent.asking(), standing: dot.consent.standing() }),
     /** The know-how book, place by place: notes or not, how each task went (howto.js summary). */
     knowhow: () => howto.summary(),
     /** A code sent to his phone that he gave her is not kept: digits in his words while a thing waits for one are masked. */
-    redact: (text) => { const e = ledger.recent(5).find((x) => x.ask?.kind === 'code' && Date.now() - (x.endedAt ?? 0) < 15 * 60_000); return e ? String(text ?? '').replace(/(?<!\d)\d{4,8}(?!\d)/g, '〔验证码〕') : text; },
+    redact: (text) => { const e = dot.ledger.recent(5).find((x) => x.ask?.kind === 'code' && Date.now() - (x.endedAt ?? 0) < 15 * 60_000); return e ? String(text ?? '').replace(/(?<!\d)\d{4,8}(?!\d)/g, '〔验证码〕') : text; },
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
     ownerPending: () => arrive.ownerPending(),
     /** Her bubbles to him are going out right now. */
-    sending: () => outlet.busy(),
+    sending: () => voice.outlet.busy(),
     flushOwner: () => flushOwner(),
-    isIm: (id) => imSessions.has(id),
+    isIm: (id) => sessions.imSessions.has(id),
     /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */
     llmGate: () => llmGate?.status() ?? null,
     /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */

@@ -10,19 +10,19 @@ import { prompt } from '../prompts.js';
 import { unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
 import { isImMessage } from './sessions.js';
-import { TURN_NOTE_SOURCE, addressed, contentText, scheduledRule } from './text.js';
+import { TURN_NOTE_SOURCE, addressed, contentText, nowText, scheduledRule } from './text.js';
 
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
 export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 
 /**
- * @param dot  the plugin's parts (core.js apply): cfg, audit, logger, im, sessions, turnState; read when used:
- *             sleep (wakeUp), ledger, consent, hands, arrive (taskTurnEnded, releaseHeld, nextTask), voice (turnEnded)
+ * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
+ *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, releaseHeld, nextTask), voice (turnEnded)
  * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, lastFailure, driftLine, watchDrift,
- *     turnNote, preStep, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns }
+ *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns }
  */
 export function createTurns(dot) {
-  const { cfg, audit, logger, im, sessions, turnState } = dot;
+  const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
   const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
@@ -174,6 +174,11 @@ export function createTurns(dot) {
     if (!parts.length) return decision;
     return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
   };
+  // Her clock: "since the last message" counts from the last line said before this turn began (turn note dot:now).
+  const nowNote = ({ agent }) => {
+    const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === sessions.last() ? dot.voice.reachLine() : '', id === sessions.last() ? dot.things.thingsLines() : ''].filter(Boolean).join('\n');
+  };
   const scheduledNote = ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '');
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
@@ -211,6 +216,6 @@ export function createTurns(dot) {
     get size() { return turns.size; },
     onSessionEvent, disposeOwed, turnFailed, taken, owe,
     lastFailure: () => lastFailure,
-    driftLine, watchDrift, turnNote, preStep, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns,
+    driftLine, watchDrift, turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns,
   };
 }

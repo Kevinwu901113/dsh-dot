@@ -19,7 +19,7 @@ import { reachText, voiceHow } from './text.js';
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, store, im, sessions, things, turns;
  *             read when used: ledger, arrive (hisUnread)
  * → { handBack, reachLine, answerReaches, noteUnanswered, dropAck, preempts, preempted, herSaid, replyChecks, planFor,
- *     factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText }
+ *     factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText, saidElsewhere }
  */
 export function createVoice(dot) {
   const { ctx, cfg, audit, logger, store, im, sessions, things, turns } = dot;
@@ -204,6 +204,11 @@ export function createVoice(dot) {
   };
   // What went out to him since she was last up, as it was sent: the voice's words, not hers (turn note dot:said).
   const saidNoteText = ({ agent }) => { if (!saidNote || agent.session.id !== sessions.last()) return ''; const n = saidNote; saidNote = ''; return n; };
+  // What she said on QQ some other way than qq_send (the backend's own tools, her phone's QQ): on record all the same.
+  const saidElsewhere = (m) => {
+    audit('said-elsewhere', { to: m.to, chars: m.text.length });
+    try { ctx.get('dotMemory')?.herSaid?.({ session: sessions.last(), text: m.text, to: m.to, at: Date.parse(m.at) || Date.now() }); } catch (err) { logger.warn(`transcript: ${err.message}`); }
+  };
   return {
     handBack,
     /** The day's times she wrote to him unasked, as a line for her turn (text.js reachText). */
@@ -212,6 +217,6 @@ export function createVoice(dot) {
     /** Her words in a row that gave way to his; preempted() counts one more and returns the count before it. */
     preempts: () => preempts,
     preempted: () => preempts++,
-    herSaid, replyChecks, planFor, factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText,
+    herSaid, replyChecks, planFor, factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText, saidElsewhere,
   };
 }
