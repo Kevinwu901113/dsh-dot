@@ -36,6 +36,7 @@ import { homedir } from 'node:os';
 import { join, relative, isAbsolute, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
+import { createSessions, isImMessage } from './sessions.js';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
 import { createSleep } from './sleep.js';
@@ -152,8 +153,7 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
 
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
-/** Source of a note left in her conversation (injected; it does not wake her). The form and the prompt ids keep the name they had when errands left them: installed overrides go by it. */
-export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
+export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
 const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
@@ -175,13 +175,6 @@ export function setupText(phoneStatus, computerStatus) {
 }
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
-/** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
-export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
-// "qq-dot-…" is our own tag (ownerSource): his QQ words relayed by dot, not a dsh-im bot session —
-// counting those made her conversation an "IM bot session", which the memory handoff leaves alone
-// (11-03: 456k tokens, no handoff since 10-29).
-export const isImMessage = (m) => { const r = String(m?.source?.rpcId ?? ''); return IM_RPC.test(r) && !r.startsWith('qq-dot-'); };
-const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 const answers = (url) => new Promise((r) => {
   const q = httpGet(url, { agent: false, timeout: 1000 }, (res) => { res.resume(); r(res.statusCode === 200); });
@@ -305,58 +298,15 @@ export function apply(ctx, config = {}) {
   }
   if (ctx.get('budget') === undefined) logger.info('dsh-budget not installed: no spending cap, budget notices disabled (optional)');
 
-  // Which sessions are dot's. 'home': cwd inside <home>. 'im': any session a dsh-im bot opened,
-  // whatever its workspace (the bot's first message carries an IM rpcId, which arrives in the inbox
-  // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
-  const imSessions = new Set();
-  let lastSession = store.get('lastSession') || ''; // her most recent session: where phone notifications wake her (remembered across restarts)
-  // Every change goes through here; the phone puts her conversation first (dshPhone.setPriority, when it has one).
-  const setLast = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
-  const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
-  const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
-  // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers, whatever the scope says.
-  const isDotSession = (id, cwd) => !BRIDGE_ID_RE.test(String(id ?? '')) && (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id)));
-
-  // Sessions that were hers and are not any more: conversations a reset or a handover retired (src/reset.js,
-  // setSession), and — read from older state files, nothing adds to it — the second session she had before there was
-  // one of her. A turn ending in one of them does not make it hers again.
-  const pastConversations = new Set([...(store.get('pastConversations') ?? []), ...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
-  const retired = (id) => Boolean(id) && pastConversations.has(id);
+  const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im };
+  const sessions = dot.sessions = createSessions(dot);
+  const { setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive, createConversation, openConversation } = sessions;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) && !hands.doing()?.forHim });
-  // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
-  // can point at a retired session or at one archived since (11-03: his QQ messages went into an
-  // archived session and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
-  const staleWhy = (id) => {
-    if (!id) return '';
-    if (retired(id)) return 'retired';
-    try { const ids = ctx.get('workspaceRegistry')?.archivedSessionIds; if ((Array.isArray(ids) || ids instanceof Set) && [...ids].includes(id)) return 'archived'; } catch (error) { void error; }
-    return '';
-  };
-  const selfCheck = () => {
-    const why = staleWhy(lastSession);
-    if (!why) return;
-    audit('last-session-cleared', { session: lastSession, why });
-    logger.warn(`her remembered conversation ${lastSession} is ${why}: cleared (the next message to her picks a new one)`);
-    setLast('');
-  };
   selfCheck();
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
-  /** Leave a note in her conversation, without waking it; true when it got there. */
-  async function noteToConversation(origin, note) {
-    const id = lastSession;
-    const controller = ctx.get('sessionController');
-    if (!id || !controller) return false;
-    try {
-      const found = await resolveLive(id);
-      if (!found || 'error' in found || typeof found.agent.inject !== 'function') return false;
-      found.agent.inject(createUserMessage({ content: [{ type: 'text', text: note }], source: ERRAND_NOTE_SOURCE }));
-      audit('errand-noted', { session: id, origin });
-      return true;
-    } catch (err) { logger.warn(`errand note failed: ${err.message}`); return false; }
-  }
 
   // Today's counters for the panel (persisted; reset when the day changes).
   const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
@@ -502,7 +452,7 @@ export function apply(ctx, config = {}) {
       if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
     }
     if (event.type === 'turn/end' && !retired(id)) setLast(id);
-    if ((event.type === 'turn/start' || event.type === 'turn/end') && id === lastSession) wakeUp('turn'); // a turn of her conversation: she is up (or stays up)
+    if ((event.type === 'turn/start' || event.type === 'turn/end') && id === sessions.last()) wakeUp('turn'); // a turn of her conversation: she is up (or stays up)
     // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
@@ -571,7 +521,7 @@ export function apply(ctx, config = {}) {
         if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
       }
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
-      if (id === lastSession) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
+      if (id === sessions.last()) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
     }
     // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
     if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
@@ -645,7 +595,7 @@ export function apply(ctx, config = {}) {
       try {
         const fg = String((await phone()?.foreground?.()) ?? '');
         const text = String((exec.input ?? exec.args ?? exec.arguments)?.text ?? '').trim();
-        if (text && /^com\.tencent\.mobileqq\//i.test(fg) && !/search|login|register|verify/i.test(fg)) { ctx.get('dotMemory')?.herSaid?.({ session: lastSession, text, to: '手机QQ' }); audit('said-on-phone', { chars: text.length }); }
+        if (text && /^com\.tencent\.mobileqq\//i.test(fg) && !/search|login|register|verify/i.test(fg)) { ctx.get('dotMemory')?.herSaid?.({ session: sessions.last(), text, to: '手机QQ' }); audit('said-on-phone', { chars: text.length }); }
       } catch (err) { logger.debug?.(`phone words not recorded: ${err.message}`); }
     }
     const asked = askedCalls.get(exec?.callId);
@@ -873,18 +823,18 @@ export function apply(ctx, config = {}) {
   // Her clock: "since the last message" counts from the last line said before this turn began.
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
-    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === lastSession ? reachText(reaches) : '', id === lastSession ? thingsLines() : ''].filter(Boolean).join('\n');
+    return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === sessions.last() ? reachText(reaches) : '', id === sessions.last() ? thingsLines() : ''].filter(Boolean).join('\n');
   } });
   // What she writes here is read by no one: said once per arrival, because nothing else in front of her says it.
   turnNote({ name: 'dot:say', order: 901, text: () => prompt('dot.say.note') });
   // What went out to him since she was last up, as it was sent: the voice's words, not hers.
-  turnNote({ name: 'dot:said', order: 897, text: ({ agent }) => { if (!saidNote || agent.session.id !== lastSession) return ''; const n = saidNote; saidNote = ''; return n; } });
+  turnNote({ name: 'dot:said', order: 897, text: ({ agent }) => { if (!saidNote || agent.session.id !== sessions.last()) return ''; const n = saidNote; saidNote = ''; return n; } });
   // Her phone's pushes held since she was last up (see wake): once, with whatever woke her.
-  turnNote({ name: 'dot:pushes', order: 898, text: ({ agent }) => { if (!pushes.length || agent.session.id !== lastSession) return ''; const t = pushesText(pushes); pushes = []; audit('pushes-shown', { count: t ? t.split('\n').length - 2 : 0 }); return t; } });
+  turnNote({ name: 'dot:pushes', order: 898, text: ({ agent }) => { if (!pushes.length || agent.session.id !== sessions.last()) return ''; const t = pushesText(pushes); pushes = []; audit('pushes-shown', { count: t ? t.split('\n').length - 2 : 0 }); return t; } });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
-  const busyWith = () => (turns.has(lastSession) ? prompt('dot.busy.chat') : '');
+  const busyWith = () => (turns.has(sessions.last()) ? prompt('dot.busy.chat') : '');
 
   // 3. Budget (budget.js).
   const budget = watchBudget({ ctx, cfg, store, audit, im, logger });
@@ -924,7 +874,7 @@ export function apply(ctx, config = {}) {
   // Her deciding, run again on kept requests (replay.js): kept only with replayKeep > 0 — else nothing listens.
   const replayDir = join(dshHome(), 'dot-replay', 'decide');
   if (cfg.replayKeep > 0) {
-    const herStep = (id) => { const s = ctx.get('agents')?.get?.(id)?.session; return !retired(id) && !hands?.isHands(id, s?.header?.cwd) && (id === lastSession || isDotSession(id, s?.header?.cwd)); };
+    const herStep = (id) => { const s = ctx.get('agents')?.get?.(id)?.session; return !retired(id) && !hands?.isHands(id, s?.header?.cwd) && (id === sessions.last() || isDotSession(id, s?.header?.cwd)); };
     const recorder = createRecorder({ dir: replayDir, keep: cfg.replayKeep, hers: herStep, audit, logger });
     ctx.on('llm/stream', (options, next) => { recorder.observe(options); return next(); }, { global: true });
   }
@@ -937,65 +887,11 @@ export function apply(ctx, config = {}) {
   }), 'dsh-dot: nightcheck when she falls asleep');
   const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
   const sleeps = sleepsAtAll(cfg.awakeHours);
-  turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === lastSession ? sleep.wokeNote() : '') });
-  // Her conversation and her hands think at their own effort (defaults.herEffort, handsEffort), whatever the model
-  // selector was last set to. It is the session's own selection, set through the agent before anything is sent into
-  // it: recorded for that session only, kept, and nothing is done when it already says so. The host fixes a step's
-  // selection before the step runs and fails the whole turn when the `agent/request` waterfall proposes another
-  // effort (11-17, and again 11-21: three of his messages went unanswered), so it is never changed there. A host
-  // without agent.model.select, or a model that does not offer the effort: the session follows the selector.
-  const thinkAt = async (agent, want) => {
-    if (!want) return;
-    try {
-      const m = agent?.model;
-      if (typeof m?.select !== 'function') return;
-      const cur = (typeof m.current === 'function' ? m.current() : null) ?? ctx.get('agentDefaultModel')?.currentSelection?.();
-      if (!cur?.provider || !cur?.model) return;
-      const { effort, why } = await effortFor(ctx, { provider: cur.provider, model: cur.model, reasoningEffort: cur.reasoningEffort }, want);
-      if (!effort || effort === cur.reasoningEffort) return;
-      m.select({ provider: cur.provider, model: cur.model, reasoningEffort: effort });
-      audit('effort-set', { session: agent.session?.id, model: `${cur.provider}/${cur.model}`, was: cur.reasoningEffort ?? 'default', effort, why });
-    } catch (err) { logger.warn(`reasoning effort not set: ${err.message}`); }
-  };
+  turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === sessions.last() ? sleep.wokeNote() : '') });
   let pushes = []; // her phone's pushes that no one sent (see wake): shown with the next thing that reaches her
   let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
   const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
   let deliverTracked; // assigned below, used by flush/releaseHeld
-  /**
-   * Her agent for a session: the live agent loop from ctx.agents (steer/inject/cancel) when it is
-   * running; otherwise the session controller's resolveAgent — the client API layer, whose handle on
-   * the desktop host only offers followup — which also loads a session that is not live.
-   */
-  const resolveLive = async (id) => {
-    const live = ctx.get('agents')?.get?.(id);
-    const found = typeof live?.followup === 'function' ? { agent: live } : await ctx.get('sessionController')?.resolveAgent(id);
-    if (found && !('error' in found) && !retired(id)) await thinkAt(found.agent, cfg.herEffort);
-    return found;
-  };
-  /**
-   * Make a session in her home for her conversation: with her own preset when lean is on. A host that does not know
-   * the preset (the plugin's patch row did not load, an older dsh) refuses it — then the session is made as before.
-   */
-  const createConversation = async (controller) => {
-    let made;
-    if (cfg.lean) {
-      try { made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); }
-      catch (err) { audit('conversation-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
-    }
-    made ??= await controller.create({ cwd: home });
-    // Its effort is set now, whoever is first to send into it (his words typed in its window, her own time).
-    try { await resolveLive(made?.sessionId); } catch (err) { logger.debug?.(`new conversation not resolved: ${err.message}`); }
-    return made;
-  };
-  /** A new conversation of hers in her home; '' when dsh cannot make one. */
-  const openConversation = async (controller) => {
-    try {
-      const { sessionId } = await createConversation(controller);
-      try { await controller.rename?.({ sessionId, title: 'dot' }); } catch (error) { void error; }
-      setLast(sessionId); audit('conversation-opened', { session: sessionId });
-      return sessionId;
-    } catch (err) { logger.warn(`could not open a conversation for her: ${err.message}`); return ''; }
-  };
   // Her hands (hands.js): their own session, outside her home, with the device tools and nothing else of hers.
   const handsAgent = async (id) => {
     try {
@@ -1081,7 +977,7 @@ export function apply(ctx, config = {}) {
     stir();
     try {
       await moved(); // her conversation is being handed over: it goes to the new one
-      const found = lastSession && await resolveLive(lastSession);
+      const found = sessions.last() && await resolveLive(sessions.last());
       if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       const lead = r.question && r.ask?.for === 'him'
         ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
@@ -1101,7 +997,7 @@ export function apply(ctx, config = {}) {
       }
       found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
       if (job.id) ledger.note(job.id, { back: Date.now() }); // in front of her; `told` is when he heard it (tellHim)
-      audit('hands-result', { thing: job.id, session: lastSession, outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
+      audit('hands-result', { thing: job.id, session: sessions.last(), outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
@@ -1114,7 +1010,7 @@ export function apply(ctx, config = {}) {
     const items = all.filter((n) => !n.fromOwner);
     waking = waking.then(async () => {
       // No conversation yet (first run, or after a reset): his words open one. Anything else has nowhere to go.
-      const id = target || lastSession || (fromOwner.length ? await openConversation(controller) : '');
+      const id = target || sessions.last() || (fromOwner.length ? await openConversation(controller) : '');
       if (!id) { audit('notification-dropped', { pkgs, why: 'no session yet' }); return; }
       // The live agent loop (ctx.agents) has steer/inject/cancel; the session controller's
       // resolveAgent is the client API layer and hands back a thinner handle (followup only on the
@@ -1199,8 +1095,8 @@ export function apply(ctx, config = {}) {
   };
   const outlet = createOutlet({
     qq: () => ctx.get('dshQq'), im,
-    here: () => { const t = turns.get(lastSession); return Boolean(t?.elsewhere && !t.fromQq); },
-    herSaid: (text) => herSaid(lastSession, text),
+    here: () => { const t = turns.get(sessions.last()); return Boolean(t?.elsewhere && !t.fromQq); },
+    herSaid: (text) => herSaid(sessions.last(), text),
   });
   // What she says (say.js): written by a call that is only her card, checked once, and carried out from here —
   // to his QQ or anyone's (her bubbles one after another; qq.send stops between them when he speaks), to her own
@@ -1223,7 +1119,7 @@ export function apply(ctx, config = {}) {
     check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
     unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && hisUnread(),
     lines: cfg.sayLines,
-    audit: (event, data) => audit(event, { session: lastSession, ...data }),
+    audit: (event, data) => audit(event, { session: sessions.last(), ...data }),
     send: (m) => outlet.send(m),
   });
   /** What went out, told back to her: the lines and pictures as they were sent. */
@@ -1251,7 +1147,7 @@ export function apply(ctx, config = {}) {
     if (plan?.things?.length && !r.unsent?.length) for (const id of plan.things) ledger.note(id, { told: Date.now() });
     saidNote = saidText(r); // hers to know: shown with whatever reaches her next
     // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
-    if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: lastSession, origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
+    if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
     return r;
   }
 
@@ -1313,7 +1209,7 @@ export function apply(ctx, config = {}) {
   const moved = () => (frozen ? new Promise((go) => frozenWaiters.push(go)) : Promise.resolve());
   const send = (id, items) => {
     if (!items.length) return;
-    if (frozen && id === lastSession) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
+    if (frozen && id === sessions.last()) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
     // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
     // (His own words never come this way: they have their own buffer and are steered in, see flushOwner.)
     if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', retired: retired(id) }); return; }
@@ -1323,7 +1219,7 @@ export function apply(ctx, config = {}) {
   const flush = () => {
     batchTimer = null;
     if (!awake()) return; // waking shows it to her (wakeUp)
-    const items = batch; batch = []; send(lastSession, items);
+    const items = batch; batch = []; send(sessions.last(), items);
   };
   // What arrived while her conversation was in a turn goes in when the turn ends.
   const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
@@ -1332,7 +1228,7 @@ export function apply(ctx, config = {}) {
   // What her attention is on right now, in one place. Everything that would wake her on its own account (a thing of
   // her own, picking up her phone, the one asking) asks `quiet()`; nothing keeps a list of its own.
   const herState = () => ({
-    writing: Boolean(lastSession) && turns.has(lastSession),       // a turn of her conversation is running
+    writing: Boolean(sessions.last()) && turns.has(sessions.last()),       // a turn of her conversation is running
     sending: outlet.busy(),                                        // her bubbles are going out
     hands: Boolean(hands?.busy()),                                 // her hands are on a round
     his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
@@ -1353,7 +1249,7 @@ export function apply(ctx, config = {}) {
     t.startedAt = now;
     try {
       // Her own time and what her phone shows her come to her conversation: there is one of her.
-      let id = lastSession;
+      let id = sessions.last();
       let found = id && await resolveLive(id);
       // No conversation of hers (a fresh start, "new conversation", or the remembered one is gone): her own time
       // opens one, as his first message would — it was dropped instead, and the day's slots with it.
@@ -1394,7 +1290,7 @@ export function apply(ctx, config = {}) {
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web', 'host'], description: 'phone / computer：在你的那台设备上做；web：查资料，不碰设备；host：在他这台电脑本机上用命令行做（他开口要的才交）' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
-        if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(lastSession); const stopped = hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
+        if (args?.stop) { const open = ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -1407,10 +1303,10 @@ export function apply(ctx, config = {}) {
         if (String(args?.add ?? '').trim()) { return hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
-        const t = turns.get(lastSession);
+        const t = turns.get(sessions.last());
         const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
         // This machine is his: her hands go there on his business only, never in her own time.
-        if (device === 'host' && !forHim) { audit('hands-host-refused', { session: lastSession }); return { status: 'failed', why: prompt('dot.hands.host.his').trim() }; }
+        if (device === 'host' && !forHim) { audit('hands-host-refused', { session: sessions.last() }); return { status: 'failed', why: prompt('dot.hands.host.his').trim() }; }
         if (device === 'phone') { clearTimeout(phoneHomeTimer); phoneHomeTimer = null; }
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
         // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
@@ -1430,13 +1326,13 @@ export function apply(ctx, config = {}) {
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'needs-ok' ? prompt('dot.gates.asked.her', { what: v.what ?? '' }) : v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
       async execute(args) {
         const to = String(args?.to ?? '').trim() || 'owner';
-        if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(lastSession), { about: args?.about, images: args?.images });
+        if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(sessions.last()), { about: args?.about, images: args?.images });
         // Someone she does not talk with, a group gone quiet, a file off her devices: his yes first (gates.js).
         const why = ctx.get('dshQq')?.gateFor?.({ to, images: args?.images ?? [] });
         if (why) {
           const k = approvalKind('qq_send', why);
-          if (!consent.allows({ kind: k.kind, subject: k.subject })) { consent.ask(k); audit('consent-asked', { session: lastSession, kind: k.kind, to }); return { status: 'needs-ok', what: k.what }; }
-          audit('consent-used', { session: lastSession, kind: k.kind, to });
+          if (!consent.allows({ kind: k.kind, subject: k.subject })) { consent.ask(k); audit('consent-asked', { session: sessions.last(), kind: k.kind, to }); return { status: 'needs-ok', what: k.what }; }
+          audit('consent-used', { session: sessions.last(), kind: k.kind, to });
         }
         return say.speak({ to, about: args?.about, context: args?.context, images: args?.images });
       },
@@ -1448,9 +1344,9 @@ export function apply(ctx, config = {}) {
       parameters: { type: 'object', properties: { kind: { type: 'string', enum: Object.keys(KINDS), description: Object.entries(KINDS).map(([k, v]) => `${k}：${v}`).join('；') }, always: { type: 'boolean', description: '他明说以后这种都行才填 true' } }, required: ['kind'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'ok' ? 'dot.gates.ok' : 'dot.gates.ok.refused', { what: KINDS[v?.kind] ?? '' }) }] },
       async execute(args) {
-        const t = turns.get(lastSession);
+        const t = turns.get(sessions.last());
         const kind = String(args?.kind ?? '');
-        if (!KINDS[kind] || !(t?.fromQq || t?.elsewhere)) { audit('consent-refused', { session: lastSession, kind }); return { status: 'refused', kind }; }
+        if (!KINDS[kind] || !(t?.fromQq || t?.elsewhere)) { audit('consent-refused', { session: sessions.last(), kind }); return { status: 'refused', kind }; }
         // A yes answers a question: the newest thing of this kind that stopped to ask him, or that she was told to ask
         // him about. With none waiting there is nothing for it to be a yes to.
         const since = Date.now() - 6 * 3600_000;
@@ -1464,11 +1360,11 @@ export function apply(ctx, config = {}) {
         // where the one it reaches has to be in those words (consent.js, 11-25).
         if (!waiting) {
           const g = consent.grant({ kind, words: t.hisWords ?? '', ahead: true });
-          audit('consent-granted', { session: lastSession, kind, subject: '', always: false, ahead: true, words: g.words.slice(0, 80) });
+          audit('consent-granted', { session: sessions.last(), kind, subject: '', always: false, ahead: true, words: g.words.slice(0, 80) });
           return { status: 'ok', kind };
         }
         const g = consent.grant({ kind, subject: waiting.subject, words: t.hisWords ?? '', always: Boolean(args?.always) });
-        audit('consent-granted', { session: lastSession, kind, subject: g.subject, always: g.always });
+        audit('consent-granted', { session: sessions.last(), kind, subject: g.subject, always: g.always });
         return { status: 'ok', kind };
       },
     }), 'dsh-dot: his yes');
@@ -1567,7 +1463,7 @@ export function apply(ctx, config = {}) {
     if (!agent && outlet.busy() && ownerBatch.length) { void outlet.settled().finally(() => flushOwner()); return 0; }
     const items = ownerBatch; ownerBatch = []; ownerTyping = ownerTypingSeen = false;
     if (!items.length) return 0;
-    const id = lastSession;
+    const id = sessions.last();
     if (frozen) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return items.length; }
     if (agent && id && agent.session?.id === id) { toOwnerAgent(agent, id, items); return items.length; }
     deliverTracked(items, false, id);
@@ -1631,7 +1527,7 @@ export function apply(ctx, config = {}) {
     if (!awake()) { audit('notification-held', { pkg: n.pkg, why: 'asleep' }); return; }
     if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
   };
-  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(lastSession); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
+  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(sessions.last()); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
     key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
@@ -1642,7 +1538,7 @@ export function apply(ctx, config = {}) {
   // What she said on QQ some other way than qq_send (the backend's own tools, her phone's QQ): on record all the same.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onSelf?.((m) => {
     audit('said-elsewhere', { to: m.to, chars: m.text.length });
-    try { ctx.get('dotMemory')?.herSaid?.({ session: lastSession, text: m.text, to: m.to, at: Date.parse(m.at) || Date.now() }); } catch (err) { logger.warn(`transcript: ${err.message}`); }
+    try { ctx.get('dotMemory')?.herSaid?.({ session: sessions.last(), text: m.text, to: m.to, at: Date.parse(m.at) || Date.now() }); } catch (err) { logger.warn(`transcript: ${err.message}`); }
   }) ?? (() => {}), 'dsh-dot: her own qq messages'));
   // Read before you speak: a qq_send to him while he has said something she has not read yet (still in
   // the buffer, or steered but not reached by the model) is held back once or twice per turn; the
@@ -1689,7 +1585,7 @@ export function apply(ctx, config = {}) {
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.
-    if (exec.name === 'hands' && id !== lastSession) return deny(prompt('dot.hands.instead'));
+    if (exec.name === 'hands' && id !== sessions.last()) return deny(prompt('dot.hands.instead'));
     // Her hands: asking her is theirs alone, and once they have asked, this stretch of theirs is over — nothing more is done until she answers.
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_WAIT_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
@@ -1751,7 +1647,7 @@ export function apply(ctx, config = {}) {
     }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
     // What she tells him on something her hands brought back counts as said in that turn, like her answer in a turn of his words.
-    const told = () => { if (toOwner && t?.forHim && id === lastSession) t.spoke = true; return next(); };
+    const told = () => { if (toOwner && t?.forHim && id === sessions.last()) t.spoke = true; return next(); };
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
     // Typed by her hands, the words are still hers: the line goes back to her, through them.
@@ -1764,7 +1660,7 @@ export function apply(ctx, config = {}) {
     }
     if (round) return next();
     if (!toOwner) return next();
-    const buffered = Boolean(id) && id === lastSession && ownerBatch.length > 0;
+    const buffered = Boolean(id) && id === sessions.last() && ownerBatch.length > 0;
     if (!buffered && !ownerUnread(exec.agent)) return told();
     if (preempts >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts }); return told(); }
     const n = preempts++;
@@ -1779,7 +1675,7 @@ export function apply(ctx, config = {}) {
   const turnInfo = (id, now = Date.now()) => {
     const t = turns.get(id);
     if (!t) return null;
-    return { session: id, retired: retired(id), conversation: id === lastSession, startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t), ...turnState(t, { now, turnStallMs: cfg.turnStallMs }) };
+    return { session: id, retired: retired(id), conversation: id === sessions.last(), startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t), ...turnState(t, { now, turnStallMs: cfg.turnStallMs }) };
   };
   const watchTurns = (now = Date.now()) => {
     if (!(cfg.turnStallMs > 0)) return;
@@ -1787,7 +1683,7 @@ export function apply(ctx, config = {}) {
       const idle = now - (t.lastEventAt ?? t.startedAt);
       if (idle < cfg.turnStallMs) continue;
       if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, retired: retired(id), idleMs: idle, doing: doingOf(t) }); }
-      if (id !== lastSession || t.ownerTold) continue;
+      if (id !== sessions.last() || t.ownerTold) continue;
       t.ownerTold = true;
       void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
     }
@@ -1809,7 +1705,7 @@ export function apply(ctx, config = {}) {
     if (announced.has(device)) return;
     announced.add(device);
     audit('setup-ready', { device });
-    const id = lastSession;
+    const id = sessions.last();
     if (!id) { void im.send(`✅ dot: ${label}装好了`, 'plain'); return; }
     waking = waking.then(async () => {
       const found = await resolveLive(id);
@@ -1833,7 +1729,7 @@ export function apply(ctx, config = {}) {
   // /dot: what is waiting and what is stuck, one line each.
   const mins = (ms) => `${Math.floor(ms / 60000)} min`;
   const statusLiveness = (now = Date.now()) => {
-    const who = (id) => `${retired(id) ? 'retired' : id === lastSession ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
+    const who = (id) => `${retired(id) ? 'retired' : id === sessions.last() ? 'her conversation' : 'session'} ${id.slice(0, 16)}`;
     const out = [...consent.asking().map((a) => `waiting for his yes: ${a.what} · ${mins(now - a.at)}`), ...consent.standing().map((g) => `his standing yes: ${KINDS[g.kind] ?? g.kind}${g.subject ? ` (${g.subject})` : ''} · 「${g.words}」`)];
     for (const id of turns.keys()) {
       const t = turnInfo(id, now);
@@ -1858,7 +1754,7 @@ export function apply(ctx, config = {}) {
       ...(checkup.last() && (checkup.last().bad || checkup.last().warn) ? [`doctor: ${checkup.last().bad} problem(s), ${checkup.last().warn} warning(s) — /dot doctor`] : []),
       `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
       // Where his next message goes: when she "does not answer", look here first.
-      `her conversation: ${lastSession ? `${lastSession}${turns.has(lastSession) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
+      `her conversation: ${sessions.last() ? `${sessions.last()}${turns.has(sessions.last()) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
       `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
       ...statusLiveness(),
       `budget: ${ctx.get('budget') ? (budget.blocked().length ? `BLOCKED (${budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
@@ -1879,25 +1775,14 @@ export function apply(ctx, config = {}) {
   // Other components (interlude, memory) need to know which session is her conversation.
   ctx.provide?.('dshDot', {
     home,
-    session: () => lastSession,
+    session: () => sessions.last(),
     // Her conversation moves on (memory's handoff): the one she leaves is retired, so a turn still running in it
     // — his words restarted there a moment ago, a reminder set there — does not make it hers again when it ends.
     /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
     lean: (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !retired(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; },
     /** A new conversation of hers, made with her own preset when lean is on (and this host knows the preset). → { sessionId } */
     createConversation: (controller) => createConversation(controller),
-    setSession: (id) => {
-      if (!id || id === lastSession) return;
-      if (lastSession) {
-        pastConversations.add(lastSession); store.set('pastConversations', [...pastConversations].slice(-50));
-        // The one she leaves stops here: a turn still running in it and whatever waits in its inbox are not carried on
-        // by a second her (11-20: it went on for two minutes — 38 turns, 16 messages to him — after she had moved).
-        // What is in her hands is not its: that comes back to wherever she is (handsBack).
-        try { ctx.get('agents')?.get?.(lastSession)?.cancel?.({ kind: 'hook', reason: 'dot: her conversation moved on' }); audit('conversation-left', { session: lastSession }); } catch (err) { logger.debug?.(`leaving ${lastSession}: ${err.message}`); }
-      }
-      pastConversations.delete(id);
-      setLast(id);
-    },
+    setSession: (id) => sessions.setSession(id),
     /**
      * Post a thing of her own ({ kind: 'free', key, text, source, ttlMs, onStart(sessionId), onDone(result) }): it runs in her
      * conversation when nothing else is going on (see defaults.interludeQueueMax); `onDone` gets
@@ -1956,7 +1841,7 @@ export function apply(ctx, config = {}) {
         if (!frozen) { const waiting = frozenWaiters; frozenWaiters = []; for (const go of waiting) go(); }
         if (frozen || !frozenQueue.length) return;
         const items = frozenQueue; frozenQueue = [];
-        deliverTracked(items, true, lastSession);
+        deliverTracked(items, true, sessions.last());
       };
     },
   });
