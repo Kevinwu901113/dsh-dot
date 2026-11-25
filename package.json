@@ -1,7 +1,7 @@
 {
   "name": "dsh-dot-life",
   "version": "0.25.2",
-  "description": "dot — a character who lives on her own phone, for DeepSeek Harness (dsh): an Android phone the plugin installs and runs, her own QQ, memory and a diary from real events, a life between conversations (幕间), an optional microVM computer with approval gates. One plugin, seven components; lives next to qq-bridge.",
+  "description": "dot — a character with a persona and a memory who lives her own days, for DeepSeek Harness (dsh): she decides, her hands do things on her own Android phone, an optional microVM computer, the web and this machine, and what she says is written from her persona card alone. Her own QQ, a ledger of things kept by code, approval tiers asked in her words. Lives next to qq-bridge.",
   "type": "module",
   "license": "MIT",
   "keywords": [
@@ -20,8 +20,6 @@
     "phone",
     "memory",
     "diary",
-    "interlude",
-    "hds-interlude",
     "persona",
     "microvm",
     "microsandbox",

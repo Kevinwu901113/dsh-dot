@@ -404,6 +404,31 @@ test('what needs him: code reads the screen; an ask ends the thing for him, his 
   h.stop();
 });
 
+test('a question put to him is not stuck any more once his next words have been read: said no, the line is gone at once, not an hour later', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  h.services.dshPhone = { lastScreen: { items: [{ words: '安装', x: 10, y: 10 }], at: Date.now() }, foreground: async () => 'com.android.packageinstaller/.InstallStart' };
+  const tapAt = (id) => h.pre(id, 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', { x: 10, y: 10 });
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '装个小红书' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '装小红书' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  await tapAt('h1'); await tapAt('h1');
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'text', text: '停在安装确认页。' }] } });
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  assert.match(await note(), /卡住了：（在手机上）装小红书/);
+  // the turn her hands' coming back opens is hers: the question is still waiting after it
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  assert.match(await note(), /卡住了：（在手机上）装小红书/, 'he has not answered yet');
+  // his words, and no yes in them
+  await tick(5);
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '不用了' }] });
+  h.emit('s1', 'turn/end', { turn: 4 }); await tick(30);
+  assert.doesNotMatch(await note(), /卡住了：（在手机上）装小红书/, 'he said no: not waiting, not stuck');
+  h.stop();
+});
+
 test('the know-how book: every device call of a thing is a step where it happened; the thing\'s end logs it with the book\'s outcome; a place worth it is reflected on; the next thing there is given the notes', async () => {
   const h = harness({ howtoMinSteps: 3 });
   let fg = 'com.max.xiaoheihe/.Main';
@@ -723,7 +748,7 @@ test('an answer someone owes a thing is a record on it, not her hands\' time: th
   await h.tools.his_ok.execute({ kind: 'call' });
   await h.tools.hands.execute({ device: 'phone', do: '给 10086 发短信 CXLL' }); await tick();
   h.emit('s1', 'turn/end', { turn: 6 }); await tick(30);
-  assert.equal(await h.pre(h.ctx.get('dshDot').handsSession?.() ?? 'h2', 'mcp__dot-phone__mobile_launch_app', { packageName: 'com.google.android.apps.messaging' }), 'ran');
+  assert.equal(await h.pre(h.ctx.get('dshDot').handsSession?.() ?? 'h2', 'mcp__dot-phone__mobile_open_url', { url: 'sms:10086' }), 'ran', 'the number his words name');
   assert.deepEqual(await h.tools.done.execute({ summary: '发了', reached: true }), { status: 'unsaid-awaiting' });
   assert.match(h.shown('done', { status: 'unsaid-awaiting' }), /awaiting 要填/);
   assert.deepEqual(await h.tools.done.execute({ summary: '发了，还没回', reached: true, awaiting: '10086' }), { status: 'done' });

@@ -4,6 +4,7 @@
 {people}
 === 已有：还没了的事 ===
 {open}
+{things}
 
 === 这段时间的记录 ===
 {records}

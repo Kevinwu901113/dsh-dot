@@ -25,6 +25,8 @@ test('gates: money is not done, his own steps are his, the rest of what needs hi
   assert.deepEqual(classify({ ...tap(10, 10), fg: 'com.google.android.dialer/com.android.dialer.main.impl.MainActivity', screen: screen(['10086', 10, 10]) }), { tier: 'ask', kind: 'call', what: '用电话或短信' });
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_launch_app', input: { packageName: 'com.google.android.apps.messaging' } }).kind, 'call');
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_open_url', input: { url: 'tel:10086' } }).kind, 'call');
+  assert.deepEqual(classify({ tool: 'mcp__dot-phone__mobile_open_url', input: { url: 'sms:+86 138-0013-8000?body=hi' } }), { tier: 'ask', kind: 'call', what: '打电话、发短信（+8613800138000）', subject: '+8613800138000' });
+  assert.equal(classify({ tool: 'mcp__dot-phone__mobile_open_url', input: { url: 'tel:10086' } }).subject, '10086');
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_swipe_on_screen', input: {}, fg: 'com.google.android.dialer/.X' }), null, 'scrolling the call log is looking');
   // hers: looking, ordinary taps, a tap far from any words on a screen that was read
   assert.equal(classify({ tool: 'mcp__dot-phone__mobile_list_elements_on_screen', input: {} }), null);
@@ -115,12 +117,19 @@ test('consent: a yes covers one thing (bound on first use) and lets go unused; "
   c.grant({ kind: 'push', words: '推吧' });
   assert.equal(c.allows({ kind: 'push', subject: 'origin' }), false, 'a yes that names nothing covers only what names nothing');
   assert.equal(c.allows({ kind: 'push' }), true);
-  // a yes he gave ahead (he asked for the thing himself): any subject of that kind, for the next thing once
+  // a yes he gave ahead (he asked for the thing himself): for the next thing of that kind, once
+  c.grant({ kind: 'install', words: '装个小红书', ahead: true });
+  assert.equal(c.allows({ kind: 'install', subject: 'x', thing: 't6' }), true, 'nobody is reached: any subject');
+  // a step that reaches someone: only the one his words name
   c.grant({ kind: 'call', words: '给10086发条短信', ahead: true });
+  assert.equal(c.allows({ kind: 'call', subject: '10010', thing: 't7' }), false, 'not a number he did not say');
+  assert.equal(c.allows({ kind: 'call', thing: 't7' }), false, 'nor a step the code cannot see the end of');
   assert.equal(c.allows({ kind: 'call', subject: '10086', thing: 't7' }), true);
   assert.equal(c.allows({ kind: 'call', thing: 't7' }), true, 'the thing keeps it');
-  assert.equal(c.allows({ kind: 'call', thing: 't8' }), false, 'not the thing after');
+  assert.equal(c.allows({ kind: 'call', subject: '10086', thing: 't8' }), false, 'not the thing after');
   c.grant({ kind: 'message', words: '跟他说一声', ahead: true });
+  assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), false, 'his words name no one');
+  c.grant({ kind: 'message', words: '给 9 号发个消息', ahead: true });
   assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), true);
   assert.equal(c.allows({ kind: 'message', subject: 'user:9' }), false, 'with no thing to keep it, once');
   // what was put to him before his words were read is not waiting after them

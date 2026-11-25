@@ -1,0 +1,8 @@
+head==== 事情簿：她交给手机、电脑去做的事（程序记的；做到哪了以这里为准） ===
+running=在做
+queued=排着
+done=做完了
+stopped=停了
+failed=没做成
+timeout=超时没做完
+stuck=停在一个要人拿主意的地方

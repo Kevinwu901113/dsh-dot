@@ -280,6 +280,12 @@ test('her hands\' presets, one a place: the host tools a session lists come with
     assert.deepEqual(rows.filter((r) => shell.includes(r)), [], `${place}: no shell, no files, no jobs`);
   }
   for (const place of ['computer', 'host']) assert.deepEqual(rowsOf(HANDS_PRESETS[place]).filter((r) => shell.includes(r)), shell, `${place}: the shell and files`);
+  // Their files are read, not written: write and edit are not registered at all (tool-fs config), so they are not in
+  // the tool list to be refused when called.
+  for (const place of ['computer', 'host']) {
+    const at = yml.indexOf(`        id: ${HANDS_PRESETS[place]}\n`), next = yml.indexOf('\n    - id: ', at);
+    assert.match(yml.slice(at, next < 0 ? undefined : next), /name: '@deepseek-ai\/dsh-tool-fs'\n {12}config:\n {14}applyPatch: false\n[^\n]*\n {14}write: false\n {14}edit: false\n/, `${place}: files are read only`);
+  }
   assert.doesNotMatch(yml, /id: dot-hands\n/, 'no preset for every place at once');
   assert.equal(handsPlaceOf('dot-hands-web'), 'web');
   assert.equal(handsPlaceOf('dot-hands'), '');

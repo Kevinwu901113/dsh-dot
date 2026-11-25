@@ -132,6 +132,18 @@ export function takeChunk(fresh, maxChars) {
   return out;
 }
 
+/**
+ * The book of things (dot/ledger.js) as the consolidation call is shown it: what was under way or ended since `from`,
+ * one line a thing with how it stands. '' when there is none — the section is then not there at all. The book is where
+ * a thing of her hands is kept; shown here so the same thing is not also written down as 还没了的事.
+ */
+export function thingsSection(things = [], from = 0) {
+  const t = table('memory.extract.things');
+  const rows = things.filter((e) => e && (e.state !== 'ended' || (e.endedAt ?? 0) >= from)).slice(0, 12).reverse()
+    .map((e) => `- [${t[e.state === 'ended' ? e.outcome : e.state] ?? e.state}] ${clip(String(e.task ?? '').split(/[。\n]/)[0].trim(), 80)}`);
+  return rows.length ? `${t.head}\n${rows.join('\n')}` : '';
+}
+
 /** What the consolidation call is asked to do (the JSON it returns, field by field). */
 export const extractRules = () => prompt('memory.extract');
 
@@ -140,11 +152,11 @@ export const extractRules = () => prompt('memory.extract');
  * longest prefix (the provider's cache): the rules (never change), the people (new ones are added at
  * the end, an impression now and then), 还没了的事 (different nearly every call), the new records.
  */
-export function extractPrompt({ text = '', known = '', open = '', words = [] }) {
+export function extractPrompt({ text = '', known = '', open = '', words = [], things = '' }) {
   return [
     extractRules(),
     '',
-    prompt('memory.extract.input', { records: text || '（这段时间没有新记录）', people: known || '（还没有）', open: open || '（没有）', words: words.map((e) => `- ${e}`).join('\n') || '（还没有）' }),
+    prompt('memory.extract.input', { records: text || '（这段时间没有新记录）', people: known || '（还没有）', open: open || '（没有）', things, words: words.map((e) => `- ${e}`).join('\n') || '（还没有）' }),
   ].join('\n');
 }
 
@@ -554,7 +566,8 @@ export function apply(ctx, config = {}) {
     const known = Object.values(memory.people).filter((p) => p.tier !== 'contact').map((p) => `${p.id} · ${p.names.join('/') || '(无名)'} · ${p.handles.join(', ')} · ${p.tier}${p.impression ? ` · ${p.impression}` : ''}`).join('\n');
     // The items she is shown, in her order (not every stored one: those are many and go by themselves).
     const view = openView(memory, { limits: cfg.limits, ...keep });
-    const ask = extractPrompt({ text, known, words: memory.words ?? [], open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n') });
+    let things = ''; try { things = thingsSection(dot()?.things?.(20) ?? [], fresh[0]?.at ?? 0); } catch (error) { void error; }
+    const ask = extractPrompt({ text, known, things, words: memory.words ?? [], open: [...view.today, ...view.list].map((x) => `- ${renderItem(x)}`).join('\n') });
     const r = await complete(ask, 'consolidation');
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }

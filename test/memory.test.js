@@ -8,7 +8,7 @@ import {
   bankOp, bankUsage, emptyMemory, touchPerson, setImpression, openOp, expireOpen, openView, renderStanding, DEFAULT_LIMITS, renderPerson, rejectReason, jaccard, search,
   resolvePerson, setOwner, syncFriends, proposeMerge, approveMerge, normalizeMemory, findPerson, cleanDue, touchShare, TOUCH_MIN, dueSaid,
 } from '../src/memory/store.js';
-import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel } from '../src/memory/memory.js';
+import { apply, applyExtraction, parseLooseJson, renderHandoff, transcriptLine, takeChunk, extractPrompt, dailyPrompt, dayLabel, thingsSection } from '../src/memory/memory.js';
 import { dayMark } from '../src/clock.js';
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -1122,4 +1122,20 @@ test('notes: when a note was written and what it replaced is kept beside it; a n
   // An older memory file: notes without a date keep working; meta of lines that are gone is dropped on load.
   const old = normalizeMemory({ version: 2, owner: ['宠物叫煤球'], self: [], noteMeta: { owner: { 不在了的一条: { at: 1 } } } });
   assert.deepEqual(old.noteMeta, { owner: {}, self: {} }); assert.deepEqual(old.pastNotes, []);
+});
+
+test('consolidation is shown the book of things: what her hands are on or ended in these records is not written down again as 还没了的事', () => {
+  const things = [
+    { id: 't3', state: 'running', task: '（在手机上）订周五去杭州的票。要靠窗', openedAt: 3000 },
+    { id: 't2', state: 'ended', outcome: 'done', task: '（查资料）查明天天气', endedAt: 2000 },
+    { id: 't1', state: 'ended', outcome: 'failed', task: '（在手机上）昨天的事', endedAt: 500 },
+  ];
+  const sec = thingsSection(things, 1000);
+  assert.match(sec, /^=== 事情簿：[^\n]+ ===\n- \[做完了\] （查资料）查明天天气\n- \[在做\] （在手机上）订周五去杭州的票$/);
+  assert.equal(thingsSection([], 0), '');
+  assert.equal(thingsSection([things[2]], 1000), '', 'ended before these records: not theirs');
+  const ask = extractPrompt({ text: '[06-22 20:00] 他：订票', open: '- x', things: sec });
+  assert.match(ask, /=== 已有：还没了的事 ===\n- x\n=== 事情簿：[^\n]+\n- \[做完了\][^\n]+\n- \[在做\][^\n]+\n\n=== 这段时间的记录 ===/);
+  assert.doesNotMatch(extractPrompt({ text: 'x', open: '- x' }), /事情簿：|\{things\}/, 'no book, no section');
+  assert.match(extractPrompt({ text: 'x' }), /事情簿上有的事[^\n]*不记进这里/);
 });

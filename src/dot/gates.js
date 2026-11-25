@@ -74,7 +74,8 @@ function judge(t, args, { items, fg, onScreen, moved }) {
   if (t === 'mobile_launch_app' && FORBIDDEN_APPS.test(pkg)) return { tier: 'forbid', kind: 'finance', what: `打开 ${pkg}` };
   if (t === 'mobile_open_url' && (PAY_URL.test(String(args.url ?? '')) || FORBIDDEN_SITES.test(hostOf(args.url)))) return { tier: 'forbid', kind: 'finance', what: '打开一个付款或理财的链接' };
   if (FORBIDDEN_APPS.test(app) && !leaving && t !== 'mobile_launch_app') return { tier: 'forbid', kind: 'finance', what: `在 ${app} 里操作` };
-  if (t === 'mobile_open_url' && ASK_URL.test(String(args.url ?? ''))) return { tier: 'ask', kind: 'call', what: '打电话、发短信' };
+  // The number a tel: / sms: link goes to is whom it reaches: named in the question, and what a yes of his is matched to.
+  if (t === 'mobile_open_url' && ASK_URL.test(String(args.url ?? ''))) { const to = (/^[a-z]+:\/{0,2}([+\d][\d\s-]*)/i.exec(String(args.url))?.[1] ?? '').replace(/[\s-]/g, ''); return { tier: 'ask', kind: 'call', what: to ? `打电话、发短信（${to}）` : '打电话、发短信', ...(to ? { subject: to } : {}) }; }
   const askApp = (t === 'mobile_launch_app' && match(ASK_APPS, pkg)) || (!leaving && t !== 'mobile_swipe_on_screen' && t !== 'mobile_launch_app' && match(ASK_APPS, app));
   if (askApp) return { tier: 'ask', kind: askApp, what: '用电话或短信' };
   if (t === 'mobile_install_app') return { tier: 'ask', kind: 'install', what: '在手机上装 App' };

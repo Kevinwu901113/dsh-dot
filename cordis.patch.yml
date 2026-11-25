@@ -151,6 +151,9 @@
             name: '@deepseek-ai/dsh-tool-fs'
             config:
               applyPatch: false
+              # her hands read files; what they change goes through the shell, where the gates see it
+              write: false
+              edit: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
           - id: tool-web
@@ -197,6 +200,9 @@
             name: '@deepseek-ai/dsh-tool-fs'
             config:
               applyPatch: false
+              # her hands read files; what they change goes through the shell, where the gates see it
+              write: false
+              edit: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
           - id: tool-web

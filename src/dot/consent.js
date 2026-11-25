@@ -7,6 +7,9 @@
  * @param deps.holdMs  a yes not used within this long is let go
  * @param deps.thingMs a yes given to a thing is let go this long after it was given (a thing never runs that long)
  */
+/** The kinds of step that reach someone other than him: a yes of his read ahead from his words covers only whom those words name. */
+export const REACHES = new Set(['call', 'message', 'friend', 'send-file']);
+
 export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_000, now = () => Date.now() }) {
   let grants = (Array.isArray(store.get('consent')) ? store.get('consent') : []).filter((g) => g?.always);
   const asks = []; // what she has to ask him about with no thing to hang it on (a message to someone she does not know)
@@ -16,7 +19,13 @@ export function createConsent({ store, holdMs = 30 * 60_000, thingMs = 6 * 3600_
   // user:2, and one given with nothing named covers only what names nothing.
   // A yes given ahead (he asked for the thing himself, before anything stopped to ask him: `ahead`) names no subject
   // and is for the next thing of that kind, once: the first thing that uses it keeps it, and with no thing it is used up.
-  const fits = (g, kind, subject) => g.kind === kind && (g.ahead || g.subject === String(subject ?? ''));
+  // One given ahead for a step that reaches someone else (REACHES: a call or a text, a message, a request to be added, a
+  // file sent) is his yes only to the one his words name (11-25, his decision, after a text went out on a yes read into
+  // his words): the code has to see whom the step reaches, and find that in what he said. Where it cannot — a tap in the
+  // dialer, a name his words do not have — nothing is assumed and he is asked, with what is about to go out in the
+  // question. A thing that has used the yes keeps it for its later steps, as before.
+  const named = (words, subject) => { const who = String(subject ?? '').replace(/^(?:user|group):/, '').trim(); return Boolean(who) && String(words ?? '').includes(who); };
+  const fits = (g, kind, subject) => g.kind === kind && (g.ahead ? (Boolean(g.thing) || !REACHES.has(kind) || named(g.words, subject)) : g.subject === String(subject ?? ''));
   return {
     /** His yes: { kind, subject?, words, always?, ahead? }. */
     grant({ kind, subject = '', words = '', always = false, ahead = false }) {

@@ -23,7 +23,7 @@ import { HANDS_SOURCE, createHands } from './hands.js';
 import { createLedger, headTail } from './ledger.js';
 import { checkInput, checkTool, settle as settleCheck, report as checkReport, hashOf } from './nightcheck.js';
 import { approvalKind, classify, classifyComputer, classifyHost, KINDS, HIM_KINDS } from './gates.js';
-import { createConsent } from './consent.js';
+import { createConsent, REACHES } from './consent.js';
 import { createSay } from './say.js';
 import { createOutlet } from './outlet.js';
 import { createRecorder, replay as replayKept } from './replay.js';
@@ -426,6 +426,9 @@ export function apply(ctx, config = {}) {
     for (const e of recent) {
       if (e.state !== 'ended' || now - (e.endedAt ?? 0) > ENDED_SHOWN_MS || takenUp.has(e.id)) continue;
       if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
+      // A question put to him that his next words have been read since is not waiting any more (askSettled, below):
+      // he said yes and the thing was taken up, or he said no or something else — either way it is not "stuck" now.
+      else if (e.outcome === 'stuck' && e.ask?.for === 'him' && e.askSettled) continue;
       else if (e.outcome === 'stuck') lines.push(prompt('dot.things.stuck', { what: title(e.task), question: e.question ?? '' }).trim());
       else if (untold.has(e.id)) lines.push(prompt('dot.things.untold', { what: title(e.task), how: voiceHow(e) || prompt('dot.things.untold.done').trim(), summary: e.summary ? prompt('dot.plain.summary', { summary: e.summary }).trim() : '' }).trim());
     }
@@ -1457,7 +1460,8 @@ export function apply(ctx, config = {}) {
         ].sort((a, b) => b.at - a.at)[0];
         // Nothing has stopped to ask him: he asked for this himself, in the words of this turn. That counts as his yes
         // (11-23, his decision) — for the next thing of this kind, once. Whether his words do ask for it is her reading:
-        // the code has his words on record with it, not a check of them.
+        // the code has his words on record with it, not a check of them — except for a step that reaches someone else,
+        // where the one it reaches has to be in those words (consent.js, 11-25).
         if (!waiting) {
           const g = consent.grant({ kind, words: t.hisWords ?? '', ahead: true });
           audit('consent-granted', { session: lastSession, kind, subject: '', always: false, ahead: true, words: g.words.slice(0, 80) });
@@ -1649,7 +1653,6 @@ export function apply(ctx, config = {}) {
   // whether an answer is owed is then a fact of the thing, and only her hands know it — like whether what was wanted
   // was reached, it is theirs to say and nobody's to guess (11-24: told how, they still left it out, and the reply
   // would again have been tied to nothing).
-  const REACHES = new Set(['call', 'message', 'friend', 'send-file']);
   const reached = new Set();
   const gateHands = (g, id, device) => {
     if (!g) return null;
