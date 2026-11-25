@@ -10,8 +10,9 @@ import { overrideNotes, rebase } from '../prompts.js';
  * @param deps.checkup  checkup.js
  * @param deps.prompts  the prompts page ({ start, stop })
  * @param deps.status   async (arg) => text — her status ('test' also sends a test message to his IM)
+ * @param deps.replay   async (file, times) => text — a kept request of her conversation sent again, only written down (replay.js)
  */
-export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available', voicetest = async () => 'voicetest is not available' }) {
+export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available', voicetest = async () => 'voicetest is not available', replay = async () => 'replay is not available' }) {
   const ok = (text) => ({ kind: 'success', text });
   const book = (app) => {
     if (app) {
@@ -24,8 +25,8 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status, nigh
   };
   return {
     name: 'dot',
-    description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it)',
-    input: { hint: '[stop | doctor | test | check | howto [<app>] | nightcheck [apply] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+    description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it); "replay <file|latest> [n]" sends a kept request of her conversation again n times and only writes down what came back (dot.replayKeep)',
+    input: { hint: '[stop | doctor | test | check | howto [<app>] | nightcheck [apply] | replay <file|latest> [n] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
     handler: async ({ rawInput }) => {
       const arg = String(rawInput ?? '').trim();
       if (arg === 'stop') return ok(stop());
@@ -35,6 +36,9 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status, nigh
       // The voice run again on inputs kept in a file (for measuring what it says of the same facts); nothing is sent.
       const vt = /^voicetest (\S+)$/.exec(arg);
       if (vt) { try { return ok(await voicetest(vt[1])); } catch (err) { return ok(`voicetest failed: ${err.message}`); } }
+      // A kept request of her conversation sent again (how she decides, measured): nothing is carried out or sent.
+      const rp = /^replay (\S+)(?: (\d+))?$/.exec(arg);
+      if (rp) { try { return ok(await replay(rp[1], rp[2])); } catch (err) { return ok(`replay failed: ${err.message}`); } }
       // Her notes held against the records: what would change (nothing is changed), or — apply — the changes of the last check.
       if (/^nightcheck\b/.test(arg)) { try { return ok(await nightcheck({ apply: /\bapply$/.test(arg) })); } catch (err) { return ok(`nightcheck failed: ${err.message}`); } }
       if (arg === 'doctor') { try { return ok(await checkup.text()); } catch (err) { return ok(`doctor failed: ${err.message}`); } }

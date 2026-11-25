@@ -26,6 +26,7 @@ import { approvalKind, classify, classifyComputer, classifyHost, KINDS, HIM_KIND
 import { createConsent } from './consent.js';
 import { createSay } from './say.js';
 import { createOutlet } from './outlet.js';
+import { createRecorder, replay as replayKept } from './replay.js';
 import { KNOWN_APPS, collectReply } from '../interlude/core.js';
 import { closeSync, mkdirSync, openSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { spawn } from 'node:child_process';
@@ -137,6 +138,8 @@ export const defaults = {
   // What one thing of her hands may cost before it stops and he is asked (tokens: new input + output + a tenth of the
   // cached input, as DeepSeek prices them). 0: no limit.
   thingCostCap: 1500000,
+  // Her conversation's model requests kept as sent, the newest this many, for /dot replay (replay.js). 0: none kept.
+  replayKeep: 0,
 };
 
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
@@ -915,6 +918,14 @@ export function apply(ctx, config = {}) {
     audit('voicetest', { file: f, cases: out.length });
     return `${out.length} case(s) → ${f}.out.json`;
   }
+  // Her deciding, run again on kept requests (replay.js): kept only with replayKeep > 0 — else nothing listens.
+  const replayDir = join(dshHome(), 'dot-replay', 'decide');
+  if (cfg.replayKeep > 0) {
+    const herStep = (id) => { const s = ctx.get('agents')?.get?.(id)?.session; return !retired(id) && !hands?.isHands(id, s?.header?.cwd) && (id === lastSession || isDotSession(id, s?.header?.cwd)); };
+    const recorder = createRecorder({ dir: replayDir, keep: cfg.replayKeep, hers: herStep, audit, logger });
+    ctx.on('llm/stream', (options, next) => { recorder.observe(options); return next(); }, { global: true });
+  }
+  const replay = (file, times) => replayKept({ dir: replayDir, base: join(dshHome(), 'dot-replay'), file, times, llm: ctx.get('llm'), sel: ctx.get('agentDefaultModel')?.currentSelection?.(), audit });
   // Each night, once she is asleep: checked, then amended where the check would change something. What was there
   // before stays in the check's file (each op carries the line as it was), and every change is in the audit log.
   ctx.effect(() => sleep.onSleep(() => {
@@ -1858,7 +1869,7 @@ export function apply(ctx, config = {}) {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
       stop: () => { const d = hands?.doing?.(); return hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
-      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText, nightcheck, voicetest,
+      memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: statusText, nightcheck, voicetest, replay,
     })), 'dsh-dot: /dot command');
   });
 

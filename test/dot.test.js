@@ -1,6 +1,6 @@
 import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
-import { mkdtempSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, existsSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, isSilent, stripSilent, contentText, spokenOf, reachText } from '../src/dot/core.js';
@@ -843,4 +843,123 @@ test('her sleep is a state: past her hours she is asleep once it has been quiet;
   await wait(60);
   assert.ok(w.followups.some((m) => /路人/.test(m.content[0].text)), 'what waited while she slept is shown to her once she is up');
   stop(h);
+});
+
+// ── Her deciding, run again on kept requests (src/dot/replay.js) ──
+const REPLAY_TOOLS = [{ name: 'say', description: '说一句', inputSchema: { type: 'object' } }, { name: 'hands', description: '交给手', inputSchema: { type: 'object' } }];
+/** A step of a conversation as the agent loop sends it: the system prompt as the leading system-role message. */
+const stepOf = (sessionId, text, extra = {}) => ({
+  provider: 'ds', model: 'v4', reasoningEffort: 'low', sessionId, maxTokens: 8000, tools: REPLAY_TOOLS,
+  messages: [{ role: 'system', content: [{ type: 'text', text: '# 你是小点\n规则' }] }, { role: 'user', content: [{ type: 'text', text }] }],
+  signal: new AbortController().signal, ...extra,
+});
+async function* answer() {
+  yield { type: 'text-delta', index: 0, text: '嗯' };
+  yield { type: 'tool-call-delta', index: 1, id: 'c1', name: 'say', argumentsDelta: '{"text":"在呢"}' };
+  yield { type: 'tool-call-delta', index: 2, id: 'c2', name: 'hands', argumentsDelta: '{"task":"看天气"}' };
+  yield { type: 'usage', usage: { inputTokens: 100, cacheReadTokens: 900, outputTokens: 20 } };
+  yield { type: 'finish', reason: { kind: 'tool-calls' } };
+}
+/** Her conversation s1 (home), her hands' h1, another x1; llm/stream registrations counted; the gate does not pace. */
+function replayHarness(config = {}) {
+  const h = harness();
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-dot.json'), JSON.stringify({ llm: { backgroundRpm: 0 } }));
+  const handsCwd = join(process.env.DSH_HOME, 'dsh-dot-hands', 'phone');
+  const followups = [], injected = [], herSaid = [], streams = [];
+  let cmd, onStream = 0;
+  const agents = { get: (id) => ({ session: { id, header: { cwd: id === 's1' ? h.home : id === 'h1' ? handsCwd : '/elsewhere' } }, followup: (m) => followups.push(m), inject: (m) => injected.push(m), steer: (m) => injected.push(m) }) };
+  const llm = { stream: (options) => { streams.push(options); return h.hooks['llm/stream'](options, () => answer()); } };
+  h.ctx.get = ((orig) => (n) => (n === 'commands' ? { register: (c) => { cmd = c; return () => {}; } } : n === 'agents' ? agents : n === 'llm' ? llm
+    : n === 'dotMemory' ? { herSaid: (x) => herSaid.push(x) } : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'ds', model: 'v4' }) } : orig(n)))(h.ctx.get);
+  const on = h.ctx.on;
+  h.ctx.on = (name, fn, opts) => { if (name === 'llm/stream') onStream++; return on(name, fn, opts); };
+  apply(h.ctx, { ...h.config, ...config });
+  h.emit(h.home, 'turn/start', { turn: 1 }); h.emit(h.home, 'turn/end', { turn: 1 }); // her conversation: s1
+  const dir = join(process.env.DSH_HOME, 'dot-replay', 'decide');
+  /** One request through the waterfall as the host sends it: the stream drained; whether next() was called. */
+  const send = async (options) => { let nexts = 0; for await (const c of h.hooks['llm/stream'](options, () => { nexts++; return answer(); })) void c; return nexts; };
+  const kept = () => (existsSync(dir) ? readdirSync(dir).filter((f) => !f.endsWith('.out.json')).sort() : []);
+  const settled = async (n) => { for (let i = 0; i < 100 && h.audit.filter((e) => e.event === 'decide-kept').length < n; i++) await wait(10); };
+  return { h, dir, send, kept, settled, followups, injected, herSaid, streams, cmd: () => cmd, onStream: () => onStream };
+}
+
+test('replay: by default no request is kept and nothing more listens on llm/stream', async () => {
+  const r = replayHarness();
+  assert.equal(r.onStream(), 1, 'the request gate only');
+  assert.equal(await r.send(stepOf('s1', '在干嘛')), 1);
+  await wait(30);
+  assert.ok(!existsSync(r.dir));
+  assert.match((await r.cmd().handler({ rawInput: 'replay latest' })).text, /replay failed: nothing kept/);
+  stop(r.h);
+});
+
+test('replay: with replayKeep N only her conversation is kept, the newest N, and the request goes on untouched', async () => {
+  const r = replayHarness({ replayKeep: 2 });
+  assert.equal(r.onStream(), 2);
+  const sent = [stepOf('s1', 'a'), stepOf('s1', 'b'), stepOf('s1', 'c')];
+  for (const o of sent) {
+    const before = { ...o, messages: structuredClone(o.messages), tools: structuredClone(o.tools) };
+    assert.equal(await r.send(o), 1, 'handed on once');
+    assert.deepEqual(o, before, 'not a field changed');
+  }
+  assert.equal(await r.send(stepOf('s1', 'c')), 1, 'the host retrying the same request');
+  for (const o of [stepOf('h1', 'hands'), stepOf('x1', 'other'), stepOf(undefined, 'say'), stepOf('s1', 'compact', { purpose: 'compaction' })]) assert.equal(await r.send(o), 1);
+  await r.settled(3); await wait(30);
+  const files = r.kept();
+  assert.equal(files.length, 2, files.join(', '));
+  const read = (f) => JSON.parse(readFileSync(join(r.dir, f), 'utf8'));
+  assert.deepEqual(files.map((f) => read(f).request.messages[1].content[0].text), ['b', 'c']);
+  const k = read(files[1]);
+  assert.equal(k.session, 's1');
+  const { signal, sessionId, ...fields } = sent[2]; void signal; void sessionId;
+  assert.deepEqual(k.request, JSON.parse(JSON.stringify(fields)), 'what was sent, field for field (not its signal)');
+  assert.equal(r.h.audit.filter((e) => e.event === 'decide-kept').length, 3, 'the retry is not kept twice; hands, other sessions, compaction never');
+  stop(r.h);
+});
+
+test('replay: a kept request sent again n times is only written down — nothing sent, followed up, remembered or booked', async () => {
+  const r = replayHarness({ replayKeep: 3 });
+  await r.send(stepOf('s1', '在干嘛'));
+  await r.settled(1);
+  const [file] = r.kept();
+  const state = readFileSync(join(process.env.DSH_HOME, 'dsh-dot-state.json'), 'utf8');
+  const audits = r.h.audit.length;
+  const out = (await r.cmd().handler({ rawInput: 'replay latest 2' })).text;
+  assert.match(out, /^2 run\(s\) of .*→ .*\.out\.json\n#1: say, hands · said · text 1 chars · tokens in 100 \(cached 900\) out 20 · tool-calls\n#2: /);
+  assert.equal(r.streams.length, 2);
+  const kept = JSON.parse(readFileSync(join(r.dir, file), 'utf8'));
+  for (const o of r.streams) { assert.deepEqual(JSON.parse(JSON.stringify(o)), kept.request, 'sent as kept'); assert.equal(o.sessionId, undefined); }
+  assert.notEqual(r.streams[0], r.streams[1]);
+  const res = JSON.parse(readFileSync(join(r.dir, `${file}.out.json`), 'utf8'));
+  assert.equal(res.same, true);
+  assert.deepEqual(res.runs[0].calls, [{ name: 'say', args: '{"text":"在呢"}' }, { name: 'hands', args: '{"task":"看天气"}' }]);
+  assert.deepEqual(res.runs[0].usage, { in: 100, cached: 900, out: 20 });
+  // no side effects: nothing to him, nothing into her conversation or memory, the book and state untouched, the replay not kept itself
+  assert.deepEqual([r.h.sent.length, r.followups.length, r.injected.length, r.herSaid.length], [0, 0, 0, 0]);
+  assert.equal(readFileSync(join(process.env.DSH_HOME, 'dsh-dot-state.json'), 'utf8'), state);
+  assert.deepEqual(r.h.audit.slice(audits).map((e) => e.event), ['replay']);
+  await wait(30);
+  assert.deepEqual(r.kept(), [file]);
+  // a name, too; and the count is bounded
+  assert.match((await r.cmd().handler({ rawInput: `replay ${file} 99` })).text, /^10 run\(s\)/);
+  stop(r.h);
+});
+
+test('replay: the fingerprint is the system text and the tool list, byte for byte', async () => {
+  const { fingerprint, systemOf } = await import('../src/dot/replay.js');
+  const { createHash } = await import('node:crypto');
+  const a = stepOf('s1', 'a');
+  assert.equal(systemOf(a), '# 你是小点\n规则');
+  assert.equal(systemOf({ system: 'card', messages: [] }), 'card', 'a hand-built request: its system');
+  const fp = fingerprint(a);
+  assert.equal(fp.systemSha, createHash('sha256').update('# 你是小点\n规则').digest('hex').slice(0, 12), 'as the say-call audit has it');
+  assert.deepEqual(fingerprint(JSON.parse(JSON.stringify(a))), fp, 'stable through the file');
+  assert.deepEqual(fingerprint(stepOf('s1', 'another turn')), fp, 'the history does not change it');
+  assert.notEqual(fingerprint({ ...a, tools: [{ ...REPLAY_TOOLS[0], description: '说一句。' }, REPLAY_TOOLS[1]] }).toolsSha, fp.toolsSha);
+  assert.notEqual(fingerprint({ ...a, messages: [{ role: 'system', content: [{ type: 'text', text: '# 你是小点\n规则 ' }] }] }).systemSha, fp.systemSha);
+  const r = replayHarness({ replayKeep: 1 });
+  await r.send(a); await r.settled(1);
+  const k = JSON.parse(readFileSync(join(r.dir, r.kept()[0]), 'utf8'));
+  assert.deepEqual({ systemSha: k.systemSha, systemChars: k.systemChars, toolsSha: k.toolsSha, tools: k.tools }, fp);
+  stop(r.h);
 });

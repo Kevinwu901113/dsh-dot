@@ -76,6 +76,7 @@ export const SCHEMA = [
   e('dot', 'sayDetailChars', 'dot', 'int', 'restart-dsh', '一件事做完，替她说话那次调用拿到的细节最多多少字（结果只从事情簿来）', { min: 0, max: 4000 }),
   e('dot', 'sameErrorNudge', 'dot', 'int', 'restart-dsh', '她的手连着碰到同一个错这么多次，提醒它换办法或照实收尾（没做到）；0 = 不提醒', { min: 0, max: 50 }),
   e('dot', 'sameErrorStop', 'dot', 'int', 'restart-dsh', '连着碰到同一个错这么多次，这件事由代码停下、记为没做成；0 = 不停', { min: 0, max: 100 }),
+  e('dot', 'replayKeep', 'dot', 'int', 'restart-dsh', '留下她对话最近几次发给模型的完整请求，供 /dot replay 重放（存在 ~/.dsh/dot-replay/decide/；含对话全文；0 = 不留）', { min: 0, max: 500 }),
   e('dot', 'pushesKept', 'dot', 'int', 'restart-dsh', 'App 自己的推送（不是人发来的）不叫醒她：留最近几条，下次她醒着有事时一起给她看', { min: 0, max: 50 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
   e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（整理记忆、用法笔记、她的手）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
