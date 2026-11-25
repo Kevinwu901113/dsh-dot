@@ -37,6 +37,7 @@ import { join, relative, isAbsolute, dirname, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createSessions, isImMessage } from './sessions.js';
+import { costOf, createThings, nameOf, sameName, titleOf } from './things.js';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
 import { createSleep } from './sleep.js';
@@ -301,6 +302,9 @@ export function apply(ctx, config = {}) {
   const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im };
   const sessions = dot.sessions = createSessions(dot);
   const { setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive, createConversation, openConversation } = sessions;
+  dot.ledger = null; dot.consent = null; // made below (ledger.js, consent.js)
+  const things = dot.things = createThings(dot);
+  const { awaited, answerTo, owedToHim, thingsLines, hisUnderWay } = things;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) && !hands.doing()?.forHim });
@@ -334,57 +338,6 @@ export function apply(ctx, config = {}) {
     const back = Boolean(c.hits.length || (strict && c.stripped)) && !wordsJustBack;
     wordsJustBack = back;
     return back ? c : null;
-  };
-  // A thing that was sent to someone and is done as far as her hands go can still be owed an answer (a text to a
-  // service number, a message, a request). That is a record on the thing — who is to answer, since when, until when —
-  // not hands kept on the page: 11-23 a text to 10086 took 169 s, 135 of them her hands watching for the reply, and
-  // a reply that came later was tied to nothing. When someone by that name writes, the code marks it answered and
-  // wakes her with it as that thing's — his business when the thing was his.
-  const sameName = (a, b) => { const x = String(a ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(), y = String(b ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(); return x.length >= 2 && y.length >= 2 && (x.includes(y) || y.includes(x)); };
-  const awaited = (now = Date.now()) => ledger.recent(40).filter((e) => e.awaiting?.from && !e.awaiting.answeredAt && now < (e.awaiting.until ?? 0));
-  /** Is this message the answer a thing is waiting for? → the thing, marked answered, or null. */
-  const answerTo = (n) => {
-    const e = awaited().find((x) => sameName(x.awaiting.from, n?.name) || sameName(x.awaiting.from, conversationTitle(n?.title)));
-    if (!e) return null;
-    ledger.note(e.id, { awaiting: { ...e.awaiting, answeredAt: Date.now(), text: head(String(n?.text ?? ''), 300) } });
-    audit('awaited-answer', { thing: e.id, from: e.awaiting.from, pkg: n?.pkg ?? '', forHim: e.asker === 'him' });
-    return ledger.get(e.id);
-  };
-  // How long an ended thing stays in front of her, and owed to him while he has not heard how it ended.
-  const ENDED_SHOWN_MS = 3600000;
-  /**
-   * The things of his that have ended and that he has not been told the end of, oldest first: the book's `told` is
-   * written when what the voice said of it reached him (tellHim), and only then. Not one he stopped himself (he knows),
-   * not one a later thing carries on from (its end is the one to tell), and again when an answer it waited for came
-   * after he was told. Whichever turn of hers comes first — the one the result woke, or one of his words that the
-   * result has not reached yet (11-24: a handoff held it 85 s) — has it in front of her, and its end tells him once.
-   */
-  const owedToHim = (now = Date.now()) => {
-    const recent = ledger.recent(20), takenUp = new Set(recent.map((e) => e.after).filter(Boolean));
-    return recent.filter((e) => e.asker === 'him' && e.state === 'ended' && !(e.outcome === 'stopped' && e.by === 'him') && !takenUp.has(e.id)
-      && now - (e.awaiting?.answeredAt ?? e.endedAt ?? 0) <= ENDED_SHOWN_MS && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)).reverse();
-  };
-  /** What her hands are on right now, as a line for her conversation ('' when they are free). */
-  // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
-  // delegation ledger): what is under way and waits, what ended in the last hour that is not just "done", and what of
-  // his has ended and he has not heard yet.
-  const thingsLines = (now = Date.now()) => {
-    const title = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
-    const lines = ledger.unfinished().map((e) => prompt(e.state === 'running' ? 'dot.things.running' : 'dot.things.queued', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
-    const recent = ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
-    const untold = new Set(owedToHim(now).map((e) => e.id));
-    for (const e of recent) {
-      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > ENDED_SHOWN_MS || takenUp.has(e.id)) continue;
-      if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
-      // A question put to him that his next words have been read since is not waiting any more (askSettled, below):
-      // he said yes and the thing was taken up, or he said no or something else — either way it is not "stuck" now.
-      else if (e.outcome === 'stuck' && e.ask?.for === 'him' && e.askSettled) continue;
-      else if (e.outcome === 'stuck') lines.push(prompt('dot.things.stuck', { what: title(e.task), question: e.question ?? '' }).trim());
-      else if (untold.has(e.id)) lines.push(prompt('dot.things.untold', { what: title(e.task), how: voiceHow(e) || prompt('dot.things.untold.done').trim(), summary: e.summary ? prompt('dot.plain.summary', { summary: e.summary }).trim() : '' }).trim());
-    }
-    for (const e of awaited(now)) lines.push(prompt('dot.things.awaiting', { what: title(e.task), from: e.awaiting.from, since: ago(e.awaiting.since, now) || '刚' }).trim());
-    for (const a of consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
-    return lines.join('\n');
   };
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
@@ -919,10 +872,9 @@ export function apply(ctx, config = {}) {
   };
   ctx.effect(() => () => clearTimeout(phoneHomeTimer), 'dsh-dot: phone back to its home screen');
   // The book of things (ledger.js): every thing she gives her hands, and what came of it.
-  const ledger = createLedger({ store });
+  const ledger = dot.ledger = createLedger({ store });
   // What he said yes to (consent.js).
-  const consent = createConsent({ store });
-  const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
+  const consent = dot.consent = createConsent({ store });
   // Which place a session of her hands is for is written on the session itself: the preset it was made with (dsh keeps
   // it as header.agentPreset from the start), one a place, carrying only that place's host tools (tool-prefixes.js
   // HANDS_PRESETS). A thing on this machine itself (device 'host') is also done from its own folder under the hands': a
@@ -1036,25 +988,18 @@ export function apply(ctx, config = {}) {
   // One rule for both: what has not reached him yet gives way to what he just said; what has reached him stands.
   let ackHold = null;   // the answer to his turn that opened a thing, held for a moment (see the voice at a turn's end)
   const dropAck = (why) => { if (!ackHold) return; clearTimeout(ackHold.timer); ackHold = null; audit('ack-dropped', { why }); };
-  /** Is something he asked for still in her hands (queued or running)? */
-  const hisUnderWay = () => ledger.unfinished().some((e) => e.asker === 'him');
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
   const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
   /** Has he said something she has not read — still in the buffer, or held while her conversation is being handed over? */
   const hisUnread = () => ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner);
-  /** What is in her hands, as the call that writes her words is told it: from the code, not from what she says she is doing. */
-  // What the voice is told about her doings comes from the book, never from what she wrote: one line a thing, no task
-  // text beyond its first clause (11-21: given the whole task, the voice read it out as progress).
-  const titleOf = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
   // What the voice is given comes in two shapes, by what the book has for this turn.
   // A report (planFor): a thing of this turn ended, was stopped, or was begun — the book's own sentences, plain and in
   // the first person, which the voice says her way and to which it adds nothing (say.js reportInput). `must` is what
   // is said; `may` is the thing's detail, given when it is what he asked for.
   // Talk (factsFor): nothing of this turn is in the book — she is talking with him; the voice has the conversation,
   // and is told what is in her hands so that it does not make up doings.
-  const nameOf = (task) => titleOf(String(task ?? '').replace(/^（[^）]*）/, ''));
   const planFor = (t) => {
     const must = [], may = [], things = [];
     // The ends of his things he has not heard: the one that woke this turn among them, whichever turn this is.
