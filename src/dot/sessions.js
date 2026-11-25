@@ -1,6 +1,6 @@
 // dsh-dot/sessions: which sessions are hers, and which one is her conversation (taken out of core.js as it was).
 // Holds: the IM sessions seen, her conversation (`lastSession`, remembered across restarts), the conversations she
-// has left (retired). Opens a conversation for her, resolves her agent at its effort, leaves a note in it.
+// has left (retired), the ones that are lean. Opens a conversation for her, resolves her agent at its effort, leaves a note in it.
 import { relative, isAbsolute } from 'node:path';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
@@ -19,7 +19,7 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, store, audit, logger, phone, home
- * → { last, setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive,
+ * → { last, setLast, wantIm, imSessions, isDotSession, retired, lean, isLean, selfCheck, noteToConversation, thinkAt, resolveLive,
  *     createConversation, openConversation, setSession }
  */
 export function createSessions(dot) {
@@ -41,6 +41,14 @@ export function createSessions(dot) {
   // one of her. A turn ending in one of them does not make it hers again.
   const pastConversations = new Set([...(store.get('pastConversations') ?? []), ...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
   const retired = (id) => Boolean(id) && pastConversations.has(id);
+  // Her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask). A lean
+  // conversation is one made with her own agent preset (HER_PRESET): the host's tools come with a session's preset
+  // and nothing a plugin can do afterwards takes them out of its requests — not tools.restrict() (it does not reach
+  // what the agent's own layer registers), not llm/stream (next() takes no argument), not system-prompt/assemble
+  // (0.2.2 re-attaches the tool list after the waterfall). The preset decides; the rest follows it.
+  const leanIds = new Set();
+  /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
+  const lean = (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !retired(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; };
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at a retired session or at one archived since (11-03: his QQ messages went into an
   // archived session and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -140,7 +148,10 @@ export function createSessions(dot) {
   return {
     /** Her conversation's session id ('' when there is none yet). */
     last: () => lastSession,
-    setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive,
+    setLast, wantIm, imSessions, isDotSession, retired, lean,
+    /** Was this conversation told it is lean (lean above)? */
+    isLean: (id) => leanIds.has(id),
+    selfCheck, noteToConversation, thinkAt, resolveLive,
     createConversation, openConversation, setSession,
   };
 }
