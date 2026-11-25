@@ -40,6 +40,8 @@ import { createSessions, isImMessage } from './sessions.js';
 import { costOf, createThings, nameOf, sameName, titleOf } from './things.js';
 import { createTurns, shortTool } from './turns.js';
 import { createVoice } from './voice.js';
+import { createArrive } from './arrive.js';
+export { SETUP_SOURCE } from './arrive.js';
 export { shortTool } from './turns.js';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
@@ -156,7 +158,6 @@ export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStal
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
 export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
-export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
 const COMPUTER_STAGE = { downloading: '下载镜像中（第一次要几 GB）', installing: '创建中', starting: '开机中' };
 /**
@@ -300,7 +301,10 @@ export function apply(ctx, config = {}) {
   }
   if (ctx.get('budget') === undefined) logger.info('dsh-budget not installed: no spending cap, budget notices disabled (optional)');
 
-  const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im, turnState };
+  // Today's counters for the panel (persisted; reset when the day changes).
+  const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
+  const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
+  const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im, turnState, bump };
   const sessions = dot.sessions = createSessions(dot);
   const { setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive, createConversation, openConversation } = sessions;
   dot.ledger = null; dot.consent = null; // made below (ledger.js, consent.js)
@@ -310,6 +314,8 @@ export function apply(ctx, config = {}) {
   const turns = dot.turns = createTurns(dot);
   const { turnFailed, taken, owe, watchDrift, driftLine, turnNote, busyWith, inHome, doingOf, turnInfo, watchTurns } = turns;
   const voice = dot.voice = createVoice(dot);
+  const arrive = dot.arrive = createArrive(dot);
+  const { moved, flushOwner, nextTask, enqueueTask, herState, quiet } = arrive;
   const { handBack, answerReaches, noteUnanswered, dropAck, outlet, say, saidText, tellHim } = voice;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
@@ -318,9 +324,6 @@ export function apply(ctx, config = {}) {
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
 
-  // Today's counters for the panel (persisted; reset when the day changes).
-  const stats = () => { const st = store.get('stats'); return st && st.day === today() ? st : { day: today(), woke: 0, owner: 0 }; };
-  const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
 
   // 1. Her turns.
   let howtoFor = () => null;  // set where her phone notes are (below)
@@ -335,18 +338,6 @@ export function apply(ctx, config = {}) {
   ctx.effect(() => turns.disposeOwed, 'dsh-dot: his words not yet taken');
 
   ctx.on('session/event', turns.onSessionEvent);
-  // (moving: arrive.js) A thing of her own at the end of a turn.
-  const taskTurnEnded = (id, t) => {
-    // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
-    // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
-    if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.forHim))) {
-      const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
-      if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
-      // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
-      if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
-    }
-  };
-  dot.arrive = { taskTurnEnded, releaseHeld: (id) => releaseHeld(id), nextTask: () => nextTask(), hisUnread: () => hisUnread() };
 
   // 2. What of hers needs him (gates.js): nothing waits on a button. A request the host or a plugin gates in her
   // sessions is let through when his yes covers it (consent.js), and otherwise refused at once: in her hands' session
@@ -591,7 +582,7 @@ export function apply(ctx, config = {}) {
   // What went out to him since she was last up, as it was sent: the voice's words, not hers.
   turnNote({ name: 'dot:said', order: 897, text: voice.saidNoteText });
   // Her phone's pushes held since she was last up (see wake): once, with whatever woke her.
-  turnNote({ name: 'dot:pushes', order: 898, text: ({ agent }) => { if (!pushes.length || agent.session.id !== sessions.last()) return ''; const t = pushesText(pushes); pushes = []; audit('pushes-shown', { count: t ? t.split('\n').length - 2 : 0 }); return t; } });
+  turnNote({ name: 'dot:pushes', order: 898, text: arrive.pushesNote });
   turnNote({ name: 'dot:scheduled-turn', order: 900, text: turns.scheduledNote });
 
 
@@ -602,12 +593,9 @@ export function apply(ctx, config = {}) {
   ctx.inject(['dshComputer'], (c) => c.effect(() => c.dshComputer.onStatus?.((s) => {
     if (s.state === 'error') void im.send(`⚠️ dot: 虚拟机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-computer.log`, 'plain');
   }) ?? (() => {}), 'dsh-dot: computer status'));
-  // 5. Her phone rings: a new notification wakes her in her latest session. She reads and answers in
-  // the app herself; the dsh reply is not relayed anywhere.
-  let waking = Promise.resolve();
   // Her sleep (sleep.js): asleep, only he wakes her; what her phone and her QQ show waits, and is shown when she wakes.
-  const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => quiet(),
-    onWake: () => { if (batch.length && !batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); } } });
+  const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => arrive.quiet(),
+    onWake: () => arrive.onWake() });
   // The voice, run again on inputs kept in a file: what it says of the same facts, several times over — how often it
   // says more than the facts do is measured this way, not guessed from one message (11-24: "发了" of a thing just
   // begun). The file: { times, cases: [{ name, text }] }; what came back is written beside it (.out.json). Nothing is sent.
@@ -648,10 +636,6 @@ export function apply(ctx, config = {}) {
   const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
   const sleeps = sleepsAtAll(cfg.awakeHours);
   turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === sessions.last() ? sleep.wokeNote() : '') });
-  let pushes = []; // her phone's pushes that no one sent (see wake): shown with the next thing that reaches her
-  let batch = [], batchTimer = null; // what her phone and her QQ showed (not his words): one wake for what arrives within notifyBatchMs
-  const held = new Map(); // session id → items that arrived while it was running a turn (each with heldAt); delivered as one message when it ends
-  let deliverTracked; // assigned below, used by flush/releaseHeld
   // Her hands (hands.js): their own session, outside her home, with the device tools and nothing else of hers.
   const handsAgent = async (id) => {
     try {
@@ -761,163 +745,6 @@ export function apply(ctx, config = {}) {
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached.
   ctx.effect(() => { const t = setTimeout(() => { for (const cut of hands.interrupted()) void handsBack({ outcome: 'failed', by: 'code', cause: 'restart', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); }, 'dsh-dot: what a restart cut off');
-  const deliver = (all, whileBusy, target) => {
-    const controller = ctx.get('sessionController');
-    const pkgs = [...new Set(all.map((n) => n.pkg))];
-    if (!controller) { audit('notification-dropped', { pkgs, why: 'no sessionController' }); return; }
-    const fromOwner = all.filter((n) => n.fromOwner);
-    const items = all.filter((n) => !n.fromOwner);
-    waking = waking.then(async () => {
-      // No conversation yet (first run, or after a reset): his words open one. Anything else has nowhere to go.
-      const id = target || sessions.last() || (fromOwner.length ? await openConversation(controller) : '');
-      if (!id) { audit('notification-dropped', { pkgs, why: 'no session yet' }); return; }
-      // The live agent loop (ctx.agents) has steer/inject/cancel; the session controller's
-      // resolveAgent is the client API layer and hands back a thinner handle (followup only on the
-      // desktop host) — it is the fallback that also loads a session that is not live.
-      const found = await resolveLive(id);
-      if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
-      // The owner's words, exactly as typed (several messages → several lines), as human input.
-      if (fromOwner.length) toOwnerAgent(found.agent, id, fromOwner);
-      if (!items.length) return;
-      // The people in these messages, as she remembers them (dsh-dot/memory).
-      const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
-      // An answer a thing of his was waiting for makes this turn his business: what comes of it is told to him.
-      const answer = items.find((n) => n.answers);
-      const noted = answer ? `\n${prompt('dot.notification.awaited', { task: head(String(answer.answersTask ?? '').split(/[。\n]/)[0], 60) }).trim()}${answer.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : ''}` : '';
-      const content = contentFor(wakeText(items, { whileBusy, cards }) + noted, items);
-      found.agent.followup(createUserMessage({ content, source: answer ? { ...PHONE_NOTIFICATION_SOURCE, thing: answer.answers, ...(answer.forHim ? { for: 'him' } : {}) } : PHONE_NOTIFICATION_SOURCE }));
-      bump('woke', 1);
-      audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
-    }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
-  };
-  /** Has he said something she has not read — still in the buffer, or held while her conversation is being handed over? */
-  const hisUnread = () => ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner);
-
-  /**
-   * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
-   * steered into it, so she reads them at her next step instead of after the turn (an agent without
-   * `steer` gets the followup).
-   */
-  let agentShapeLogged = false;
-  const toOwnerAgent = (agent, id, items) => {
-    const busy = turns.has(id);
-    const open = turns.get(id);
-    // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
-    // it is started over with what he just said, so the reply she writes is to all of it. A turn that has
-    // used a tool is not undone; his words go into it at its next step.
-    const restart = busy && open?.fromQq && !open.scheduled && !open.tools && !open.spoke && typeof agent.cancel === 'function' && voice.preempts() < cfg.ownerPreemptMax;
-    // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
-    // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
-    const via = restart ? 'restart' : busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
-    if (!agentShapeLogged) {
-      agentShapeLogged = true;
-      const methods = [...new Set([...Object.keys(agent), ...Object.getOwnPropertyNames(Object.getPrototypeOf(agent) ?? {})])].filter((k) => typeof agent[k] === 'function');
-      logger.info(`her agent handle offers: ${methods.join(', ')} (busy now: ${busy}, open turns: ${[...turns.keys()].map((k) => k.slice(0, 16)).join(' ') || 'none'})`);
-      audit('agent-handle', { methods, busy, openTurns: turns.size });
-    }
-    const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via === 'steer' || via === 'send' }), items), source: ownerSource() });
-    try {
-      if (via === 'restart') {
-        // The cancelled turn's own input stays in her history. His new words are queued in the same tick: waking
-        // input submitted after an active cancellation is held by the host for the next turn and runs when the
-        // aborted one has settled, so nothing waits on a promise of ours and the order is the host's inbox order.
-        agent.cancel({ kind: 'hook', reason: 'dot-owner-spoke' }, { keepInbox: true });
-        voice.preempted(); open.cancelled = true; // only once the cancel is in: a turn that was not cancelled keeps its answer
-        if (typeof agent.send === 'function') agent.send(message, 'next-turn', true); else agent.followup(message);
-      } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
-    } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
-    audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
-    owe(id);
-  };
-  // The pictures in what wakes her (dsh-dot/qq saved them in the attachment store): image blocks in the
-  // message, capped per message by qq's imageSeeMax and the store's imageLimits. Without a store: text only.
-  let warnedImages = false;
-  const contentFor = (text, items) => {
-    const images = items.flatMap((n) => n.images ?? []);
-    if (!images.length) return [{ type: 'text', text }];
-    const store = ctx.get('attachments');
-    if (!store) {
-      if (!warnedImages) { warnedImages = true; logger.warn('pictures arrived but no attachment store (ctx.attachments) is mounted: she reads them as text'); }
-      return [{ type: 'text', text }];
-    }
-    const limits = store.imageLimits ?? {};
-    const content = withImages(text, images, { max: Math.min(ctx.get('dshQq')?.imageSeeMax ?? 4, limits.maxImagesPerMessage || Infinity), maxBytes: limits.maxMessageImageBytes || Infinity });
-    const seen = content.filter((p) => p.type === 'image').length;
-    if (seen) audit('images-in-message', { count: seen, of: images.length });
-    return content;
-  };
-  let frozen = 0; let frozenQueue = []; let frozenWaiters = []; // while her conversation is being handed over (dsh-dot/memory)
-  /** Resolves once her conversation is not being handed over (at once, when it is not). */
-  const moved = () => (frozen ? new Promise((go) => frozenWaiters.push(go)) : Promise.resolve());
-  const send = (id, items) => {
-    if (!items.length) return;
-    if (frozen && id === sessions.last()) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return; }
-    // That session is in the middle of a turn: hold these; the turn's end delivers everything at once, in order.
-    // (His own words never come this way: they have their own buffer and are steered in, see flushOwner.)
-    if (id && turns.has(id)) { held.set(id, [...(held.get(id) ?? []), ...items.map((n) => ({ heldAt: Date.now(), ...n }))]); audit('notification-held', { count: items.length, why: 'turn running', retired: retired(id) }); return; }
-    deliverTracked(items, false, id);
-  };
-  // Asleep, what came stays here until she wakes; then it is all shown to her at once, in order.
-  const flush = () => {
-    batchTimer = null;
-    if (!awake()) return; // waking shows it to her (wakeUp)
-    const items = batch; batch = []; send(sessions.last(), items);
-  };
-  // What arrived while her conversation was in a turn goes in when the turn ends.
-  const releaseHeld = async (id) => { const items = held.get(id); if (!items?.length) return; held.delete(id); deliverTracked(items, true, id); };
-  // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
-  const taskQueue = []; let taskRunning = null;
-  // What her attention is on right now, in one place. Everything that would wake her on its own account (a thing of
-  // her own, picking up her phone, the one asking) asks `quiet()`; nothing keeps a list of its own.
-  const herState = () => ({
-    writing: Boolean(sessions.last()) && turns.has(sessions.last()),       // a turn of her conversation is running
-    sending: outlet.busy(),                                        // her bubbles are going out
-    hands: Boolean(hands?.busy()),                                 // her hands are on a round
-    his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
-    moving: frozen > 0,                                            // her conversation is being handed over
-    waiting: Boolean(taskRunning) || batch.length > 0 || [...held.values()].some((ns) => ns.length), // something is already on its way to her
-  });
-  const quiet = () => !Object.values(herState()).some(Boolean);
-  const finishTask = (t, status, report = '', cost = null) => {
-    if (t === taskRunning) taskRunning = null; else taskQueue.splice(taskQueue.indexOf(t), 1);
-    audit(`task-${status}`, { kind: t.kind, key: t.key, session: t.session, waitedMs: (t.startedAt ?? Date.now()) - t.queuedAt });
-    try { t.onDone?.({ status, queuedAt: t.queuedAt, startedAt: t.startedAt ?? null, doneAt: Date.now(), busyWith: t.busyWith, report, cost }); } catch (err) { logger.warn(`task onDone failed: ${err.message}`); }
-  };
-  const nextTask = async () => {
-    const now = Date.now();
-    for (const t of taskQueue.filter((x) => x.expiresAt <= now)) finishTask(t, 'expired');
-    if (!taskQueue.length || !quiet() || !awake()) return; // her own things do not wake her
-    const t = taskRunning = taskQueue.shift();
-    t.startedAt = now;
-    try {
-      // Her own time and what her phone shows her come to her conversation: there is one of her.
-      let id = sessions.last();
-      let found = id && await resolveLive(id);
-      // No conversation of hers (a fresh start, "new conversation", or the remembered one is gone): her own time
-      // opens one, as his first message would — it was dropped instead, and the day's slots with it.
-      if (!found || 'error' in found) {
-        const controller = ctx.get('sessionController');
-        id = controller ? await openConversation(controller) : '';
-        found = id && await resolveLive(id);
-      }
-      if (!found || 'error' in found) throw new Error(found?.error?.message ?? 'no conversation of hers and none could be opened');
-      t.session = id;
-      t.onStart?.(id);
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: t.text }], source: t.source }));
-      audit('task-started', { kind: t.kind, key: t.key, session: id, readOnly: Boolean(t.readOnly) });
-    } catch (err) { logger.warn(`task not started: ${err.message}`); finishTask(t, 'dropped'); }
-  };
-  const enqueueTask = ({ ttlMs = cfg.interludeTaskTtlMs, ...spec }) => {
-    const now = Date.now();
-    const same = spec.key && taskQueue.find((x) => x.key === spec.key);
-    if (same) { same.expiresAt = now + ttlMs; audit('task-refreshed', { kind: same.kind, key: same.key }); return 'refreshed'; }
-    const task = { ...spec, queuedAt: now, expiresAt: now + ttlMs, busyWith: busyWith() };
-    // What he asked for goes before her own things, after earlier asks; it is never the one dropped for room.
-    if (spec.kind === 'ask') taskQueue.splice(taskQueue.filter((x) => x.kind === 'ask').length, 0, task); else taskQueue.push(task);
-    while (taskQueue.filter((x) => x.kind !== 'ask').length > Math.max(1, cfg.interludeQueueMax)) finishTask(taskQueue.find((x) => x.kind !== 'ask'), 'dropped');
-    void nextTask();
-    return 'queued';
-  };
   /** A picture of her computer's desktop right now (PNG), or null when the computer has no way to take one. */
   const computerScreen = async () => {
     const sh = computer()?.backend?.rootShell;
@@ -1042,7 +869,7 @@ export function apply(ctx, config = {}) {
         let items = [], met = '';
         for (;;) {
           if (hands.doing()?.id !== mine.id) return { status: 'idle' }; // the thing was stopped meanwhile
-          if (want.note) { const n = seenNotes.find((x) => x.at >= since && `${x.pkg}\n${x.title}\n${x.text}`.toLowerCase().includes(want.note.toLowerCase())); if (n) met = `来了一条通知：${[n.title, n.text].filter(Boolean).join('：').slice(0, 200)}`; }
+          if (want.note) { const n = arrive.seenNotes().find((x) => x.at >= since && `${x.pkg}\n${x.title}\n${x.text}`.toLowerCase().includes(want.note.toLowerCase())); if (n) met = `来了一条通知：${[n.title, n.text].filter(Boolean).join('：').slice(0, 200)}`; }
           if (!met && (want.text || want.gone) && onPhone) { items = await look(); const w = words(items); if (want.text && w.includes(want.text)) met = `屏幕上出现了「${want.text}」`; else if (want.gone && items.length && !w.includes(want.gone)) met = `屏幕上没有「${want.gone}」了`; }
           if (met || Date.now() - began >= limit) break;
           await new Promise((r) => setTimeout(r, Math.min(cfg.waitPollMs, Math.max(50, limit - (Date.now() - began)))));
@@ -1071,7 +898,7 @@ export function apply(ctx, config = {}) {
         if (doing?.id && args.reached && reached.has(doing.id) && typeof args?.awaiting !== 'string') return { status: 'unsaid-awaiting' };
         if (doing?.id && from && args.reached) {
           const began = ledger.get(doing.id)?.startedAt ?? Date.now();
-          const got = [...seenNotes].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
+          const got = [...arrive.seenNotes()].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
           ledger.note(doing.id, { awaiting: { from, since: Date.now(), until: Date.now() + cfg.awaitMs, ...(got ? { answeredAt: got.at, text: head(got.text, 300) } : {}) } });
           audit('awaiting', { thing: doing.id, from, answered: Boolean(got) });
         }
@@ -1085,98 +912,10 @@ export function apply(ctx, config = {}) {
     scope.effect(() => scope.systemPrompt.section({ name: 'dot:hands', order: 59, text: (c) => (hands?.isHands(c.agent?.session?.id, c.agent?.session?.header?.cwd) ? prompt('dot.hands.system') : '') }), 'dsh-dot: hands section');
   });
 
-  // His messages wait for him to stop typing (see defaults.ownerQuietMs): their own buffer and timer,
-  // separate from everyone else's notifications.
-  let ownerBatch = [], ownerFirstAt = 0, ownerTimer = null, ownerTyping = false, ownerTypingSeen = false;
-  const ownerDue = (now = Date.now()) => {
-    const cap = ownerFirstAt + (ownerTypingSeen ? cfg.ownerTypingMaxMs : cfg.ownerMaxWaitMs);
-    return ownerTyping ? cap : Math.min(now + cfg.ownerQuietMs, cap);
-  };
-  const armOwner = () => {
-    clearTimeout(ownerTimer);
-    const now = Date.now();
-    ownerTimer = setTimeout(() => flushOwner(), Math.max(0, ownerDue(now) - now)); ownerTimer.unref?.();
-  };
-  /** Deliver his buffered words now. With `agent` (the qq_send gate's caller, her conversation): steered into it synchronously. */
-  const flushOwner = (agent) => {
-    clearTimeout(ownerTimer); ownerTimer = null;
-    // Her bubbles are still going out: sending counts as busy. They stop at the next bubble (qq.send sees he
-    // spoke); his words go in once they have, together with what was left unsent.
-    if (!agent && outlet.busy() && ownerBatch.length) { void outlet.settled().finally(() => flushOwner()); return 0; }
-    const items = ownerBatch; ownerBatch = []; ownerTyping = ownerTypingSeen = false;
-    if (!items.length) return 0;
-    const id = sessions.last();
-    if (frozen) { frozenQueue.push(...items); audit('notification-held', { count: items.length, why: 'handoff' }); return items.length; }
-    if (agent && id && agent.session?.id === id) { toOwnerAgent(agent, id, items); return items.length; }
-    deliverTracked(items, false, id);
-    return items.length;
-  };
-  /** QQ says he is typing / stopped typing: while a batch of his waits, typing holds it up to ownerTypingMaxMs. */
-  const ownerTypingNow = (s) => {
-    if (!s?.fromOwner || !ownerBatch.length) return;
-    ownerTyping = Boolean(s.typing);
-    if (ownerTyping) ownerTypingSeen = true;
-    armOwner();
-  };
-  // Apps whose notification title is who wrote (or called): a conversation with someone.
-  const conversationPlatform = { qq: 'qq', 'com.tencent.mobileqq': 'qq', 'com.tencent.mm': 'wechat', 'com.google.android.apps.messaging': 'sms', 'com.android.mms': 'sms', 'com.android.messaging': 'sms', 'com.google.android.dialer': 'call', 'com.android.dialer': 'call' };
-  const seenNotes = []; // the last notifications of her phone, with when they came: what wait_for looks through
-  const wake = (n) => {
-    seenNotes.push({ at: Date.now(), pkg: String(n?.pkg ?? ''), title: String(n?.title ?? ''), text: String(n?.text ?? '') }); if (seenNotes.length > 60) seenNotes.shift();
-    // Her QQ on the computer delivers the same messages as events; the phone's QQ notifications would double them.
-    if (n.pkg === 'com.tencent.mobileqq' && ctx.get('dshQq')?.connected) { audit('notification-held', { pkg: n.pkg, why: 'qq channel connected' }); return; }
-    // Who this is: one registry for every channel (dsh-dot/memory). Her computer QQ gives the
-    // number, and only the owner's number (set by hand with /qq owner) makes a message his own words.
-    // A chat app's notification shows only a display name — anyone can choose one — so a phone-side
-    // message is never his, whatever the name resolves to; a name that resolves to his card is not
-    // recorded on it either (that would turn the name into one of his handles).
-    if (!n.handles && conversationPlatform[n.pkg] && conversationTitle(n.title)) {
-      const name = conversationTitle(n.title);
-      n = { ...n, platform: conversationPlatform[n.pkg], name, handles: [`${conversationPlatform[n.pkg]}:name:${name}`], via: 'phone', fromOwner: false };
-    }
-    if (n.handles) {
-      const mem = ctx.get('dotMemory');
-      const known = mem?.resolve?.({ handles: n.handles, platform: n.platform, name: n.name });
-      if (known?.tier === 'owner' && !n.fromOwner) {
-        // Looks like him, cannot be verified: a plain message, flagged, and his card untouched.
-        n = { ...n, unverifiedOwner: true, title: `${n.title}（未验证身份）` };
-        audit('owner-name-unverified', { pkg: n.pkg, name: n.name, via: n.via });
-      } else {
-        mem?.touch?.({ handles: n.handles, platform: n.platform, name: n.name, tier: n.fromOwner ? 'owner' : 'talked', kind: n.kind === 'group' ? 'group' : 'dm' });
-      }
-    }
-    // The answer a thing was waiting for (see `awaited`): it wakes her whatever kind of notification carries it, as
-    // that thing's — and as his business when the thing was his.
-    if (!n.fromOwner) { const e = answerTo(n); if (e) n = { ...n, answers: e.id, answersTask: e.task, forHim: e.asker === 'him', handles: n.handles ?? [`${n.pkg}:name:${conversationTitle(n.title)}`] }; }
-    if (n.fromOwner) {
-      dropAck('he spoke');
-      if (!ownerBatch.length) ownerFirstAt = Date.now();
-      ownerBatch.push(n); ownerTyping = false; // he pressed send
-      wakeUp('him');
-      answerReaches();
-      armOwner();
-      return;
-    }
-    // Someone writing to her wakes her: a chat whose sender is known (her QQ, a chat app's conversation), or what
-    // the app itself calls a message or a call. An app's own push wakes no one: it is held (the latest few) and
-    // shown with whatever reaches her next (dot:pushes). What it says is shown as it is; opening it is hers to decide.
-    if (!n.handles && n.category !== 'msg' && n.category !== 'call') {
-      pushes = [...pushes.filter((p) => p.key !== n.key || !n.key), n].slice(-cfg.pushesKept);
-      audit('notification-held', { pkg: n.pkg, why: 'not a person', category: n.category ?? '' });
-      return;
-    }
-    batch.push(n);
-    if (!awake()) { audit('notification-held', { pkg: n.pkg, why: 'asleep' }); return; }
-    if (!batchTimer) { batchTimer = setTimeout(flush, cfg.notifyBatchMs); batchTimer.unref?.(); }
-  };
-  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(sessions.last()); return c.dshPhone.onNotification?.(wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
+  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(sessions.last()); return c.dshPhone.onNotification?.(arrive.wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
-  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.((m) => wake({
-    key: `qq:${m.kind}:${m.groupId || m.userId}`, pkg: 'qq', title: m.kind === 'group' ? `群 ${m.groupId} · ${m.who}` : `${m.who}（${m.userId}）`, text: m.text, at: m.at, postedAt: Date.parse(m.at), fromOwner: Boolean(m.fromOwner),
-    ...(m.images?.length ? { images: m.images } : {}),
-    handles: [`qq:${m.userId}`], platform: 'qq', name: m.who, kind: m.kind,
-  })) ?? (() => {}), 'dsh-dot: qq messages'));
-  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.(arrive.qqMessage) ?? (() => {}), 'dsh-dot: qq messages'));
+  ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(arrive.ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
   // What she said on QQ some other way than qq_send (the backend's own tools, her phone's QQ): on record all the same.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onSelf?.((m) => {
     audit('said-elsewhere', { to: m.to, chars: m.text.length });
@@ -1302,7 +1041,7 @@ export function apply(ctx, config = {}) {
     }
     if (round) return next();
     if (!toOwner) return next();
-    const buffered = Boolean(id) && id === sessions.last() && ownerBatch.length > 0;
+    const buffered = Boolean(id) && id === sessions.last() && arrive.ownerPending() > 0;
     if (!buffered && !ownerUnread(exec.agent)) return told();
     if (voice.preempts() >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts: voice.preempts() }); return told(); }
     const n = voice.preempted();
@@ -1310,7 +1049,6 @@ export function apply(ctx, config = {}) {
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
     return deny(ownerInterruptText());
   });
-  deliverTracked = deliver;
   ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
   const checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
@@ -1322,23 +1060,8 @@ export function apply(ctx, config = {}) {
     }, 15_000);
     return () => clearTimeout(t);
   }, 'dsh-dot: first-run doctor');
-  // When a device she was waiting for (installing or booting in this run) comes up, she tells him herself.
-  const announced = new Set();
-  const announceReady = (device, label) => {
-    if (announced.has(device)) return;
-    announced.add(device);
-    audit('setup-ready', { device });
-    const id = sessions.last();
-    if (!id) { void im.send(`✅ dot: ${label}装好了`, 'plain'); return; }
-    waking = waking.then(async () => {
-      const found = await resolveLive(id);
-      if (!found || 'error' in found) { void im.send(`✅ dot: ${label}装好了`, 'plain'); return; }
-      found.agent.followup(createUserMessage({ content: [{ type: 'text', text: prompt('dot.setup-done', { device: label }) }], source: SETUP_SOURCE }));
-    }).catch((err) => logger.warn(`setup announce failed: ${err.message}`));
-  };
-  const watchSetup = (device, label, waiting) => { let wasWaiting = false; return (s) => { if (waiting(s)) wasWaiting = true; else if (wasWaiting && s.state === 'ready') announceReady(device, label); }; };
-  const phoneSetup = watchSetup('phone', '手机', (s) => s.state === 'needs-license' || s.state === 'downloading');
-  const computerSetup = watchSetup('computer', '电脑', (s) => s.state === 'starting' && (s.stage === 'downloading' || s.stage === 'installing'));
+  const phoneSetup = arrive.watchSetup('phone', '手机', (s) => s.state === 'needs-license' || s.state === 'downloading');
+  const computerSetup = arrive.watchSetup('computer', '电脑', (s) => s.state === 'starting' && (s.stage === 'downloading' || s.stage === 'installing'));
   ctx.inject(['dshComputer'], (c) => c.effect(() => { const off = c.dshComputer.onStatus?.(computerSetup); const now = c.dshComputer.status?.(); if (now) computerSetup(now); return off ?? (() => {}); }, 'dsh-dot: computer setup watch'));
   ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onStatus?.((s) => {
     phoneSetup(s);
@@ -1378,7 +1101,7 @@ export function apply(ctx, config = {}) {
       `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
       // Where his next message goes: when she "does not answer", look here first.
       `her conversation: ${sessions.last() ? `${sessions.last()}${turns.has(sessions.last()) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
-      `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${ownerBatch.length ? ` · ${ownerBatch.length} waiting` : ''}`,
+      `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${arrive.ownerPending() ? ` · ${arrive.ownerPending()} waiting` : ''}`,
       ...statusLiveness(),
       `budget: ${ctx.get('budget') ? (budget.blocked().length ? `BLOCKED (${budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
       (() => { try { return llmGateLine(llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
@@ -1447,7 +1170,7 @@ export function apply(ctx, config = {}) {
     /** A code sent to his phone that he gave her is not kept: digits in his words while a thing waits for one are masked. */
     redact: (text) => { const e = ledger.recent(5).find((x) => x.ask?.kind === 'code' && Date.now() - (x.endedAt ?? 0) < 15 * 60_000); return e ? String(text ?? '').replace(/(?<!\d)\d{4,8}(?!\d)/g, '〔验证码〕') : text; },
     /** His messages waiting in the buffer; flushOwner() delivers them now. */
-    ownerPending: () => ownerBatch.length,
+    ownerPending: () => arrive.ownerPending(),
     /** Her bubbles to him are going out right now. */
     sending: () => outlet.busy(),
     flushOwner: () => flushOwner(),
@@ -1455,18 +1178,7 @@ export function apply(ctx, config = {}) {
     /** The model-request gate's status (src/llm-gate.js): per provider, requests in the last minute, background cap, cooldown, waiting. */
     llmGate: () => llmGate?.status() ?? null,
     /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */
-    freeze() {
-      frozen++;
-      let done = false;
-      return () => {
-        if (done) return; done = true;
-        frozen = Math.max(0, frozen - 1);
-        if (!frozen) { const waiting = frozenWaiters; frozenWaiters = []; for (const go of waiting) go(); }
-        if (frozen || !frozenQueue.length) return;
-        const items = frozenQueue; frozenQueue = [];
-        deliverTracked(items, true, sessions.last());
-      };
-    },
+    freeze: () => arrive.freeze(),
   });
 
   // The panel: `/dsh-dot/` on dsh's own web server (the "dot" sidebar tab is an iframe of it).
