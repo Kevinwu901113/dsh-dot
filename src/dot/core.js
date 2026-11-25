@@ -38,6 +38,8 @@ import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { createSessions, isImMessage } from './sessions.js';
 import { costOf, createThings, nameOf, sameName, titleOf } from './things.js';
+import { createTurns, shortTool } from './turns.js';
+export { shortTool } from './turns.js';
 import { mountPanel } from './panel.js';
 import { watchBudget } from './budget.js';
 import { createSleep } from './sleep.js';
@@ -144,8 +146,6 @@ export const defaults = {
   replayKeep: 0,
 };
 
-/** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
-export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 /** An open turn as the panel and /dot show it: 'stalled' (no session event for turnStallMs) or 'running'. */
 export function turnState(t, { now = Date.now(), turnStallMs = defaults.turnStallMs } = {}) {
   const idleMs = Math.max(0, now - (t.lastEventAt ?? t.startedAt ?? now));
@@ -299,12 +299,15 @@ export function apply(ctx, config = {}) {
   }
   if (ctx.get('budget') === undefined) logger.info('dsh-budget not installed: no spending cap, budget notices disabled (optional)');
 
-  const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im };
+  const dot = { ctx, cfg, logger, audit, phone, computer, home, store, im, turnState };
   const sessions = dot.sessions = createSessions(dot);
   const { setLast, wantIm, imSessions, isDotSession, retired, selfCheck, noteToConversation, thinkAt, resolveLive, createConversation, openConversation } = sessions;
   dot.ledger = null; dot.consent = null; // made below (ledger.js, consent.js)
   const things = dot.things = createThings(dot);
   const { awaited, answerTo, owedToHim, thingsLines, hisUnderWay } = things;
+  dot.hands = null; dot.sleep = null; // made below (hands.js, sleep.js)
+  const turns = dot.turns = createTurns(dot);
+  const { turnFailed, taken, owe, watchDrift, driftLine, turnNote, busyWith, inHome, doingOf, turnInfo, watchTurns } = turns;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(hands?.isHands(id)) && !hands.doing()?.forHim });
@@ -317,7 +320,6 @@ export function apply(ctx, config = {}) {
   const bump = (k, n = 1) => { const st = stats(); st[k] = (st[k] ?? 0) + n; store.set('stats', st); };
 
   // 1. Her turns.
-  const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
   let howtoFor = () => null;  // set where her phone notes are (below)
   const askedCalls = new Map(); // callId → what of it needs his yes: its tool result says so (tools/post-execute)
   // Her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask). A lean
@@ -354,174 +356,55 @@ export function apply(ctx, config = {}) {
       void noteToConversation('other', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
     }
   };
-  const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
-  const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
-  // What became of his words. Each message of his ends one of three ways: she answered, she chose not to, or it
-  // failed — the turn broke, the call that writes her words failed, or no turn ever took his words. The third is told
-  // to him by the plugin in its own name (never written as her), shown as failed, and said in /dot; until 11-22 it
-  // did not exist: a broken turn looked like her silence on his side and like "done" on the panel.
-  let owed = null;        // his words handed to her conversation and not yet taken by a turn: { session, timer }
-  let lastFailure = null; // { at, session, error, lost }
-  let failureTold = 0, driftTold = false;
-  const driftLine = () => { const d = drift(); return d ? prompt('dot.drift', { loaded: d.loaded || '?', disk: d.disk || '?', missing: d.missing.length }).trim() : ''; };
-  const turnFailed = (id, why, { lost = false, his = true } = {}) => {
-    const error = String(why ?? '').replace(/\s+/g, ' ').trim().slice(0, 200) || '没有说原因';
-    lastFailure = { at: Date.now(), session: id, error, lost };
-    audit('turn-failed', { session: id, error, lost, his });
-    if (!his || Date.now() - failureTold < cfg.failureNoticeMs) return;
-    failureTold = Date.now();
-    void im.send(prompt(lost ? 'dot.turn-lost' : 'dot.turn-failed', { error, hint: driftLine() }), 'plain');
-  };
-  const taken = (id) => { if (owed?.session === id) { clearTimeout(owed.timer); owed = null; } };
-  const owe = (id) => {
-    if (!(cfg.ownerLostMs > 0)) return;
-    clearTimeout(owed?.timer);
-    const mine = { session: id, timer: null };
-    const check = () => {
-      if (owed !== mine) return;
-      // A turn of hers is running: his words are read at its next step, or by the turn after it.
-      if (turns.has(id)) { mine.timer = setTimeout(check, cfg.ownerLostMs); mine.timer.unref?.(); return; }
-      owed = null;
-      turnFailed(id, '她的对话没有接到这句话', { lost: true });
-    };
-    mine.timer = setTimeout(check, cfg.ownerLostMs); mine.timer.unref?.();
-    owed = mine;
-  };
-  ctx.effect(() => () => clearTimeout(owed?.timer), 'dsh-dot: his words not yet taken');
-  // The plugin's files replaced under the running dsh (integrity.js): said once, before he finds out by her going quiet.
-  const watchDrift = () => { if (driftTold) return; const line = driftLine(); if (!line) return; driftTold = true; audit('plugin-drift', drift() ?? {}); void im.send(`⚠️ dot：${line}`, 'plain'); };
+  ctx.effect(() => turns.disposeOwed, 'dsh-dot: his words not yet taken');
 
-  ctx.on('session/event', (session, event) => {
-    const id = session?.id;
-    const cwd = session?.header?.cwd;
-    if (!id || !event) return;
-    if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) imSessions.add(id);
-    if (wantIm && event.type === 'user/message' && isImMessage(event.data)) imSessions.add(id);
-    if (!isDotSession(id, cwd)) return;
-    const open = turns.get(id);
-    if (open) {
-      open.lastEventAt = Date.now();
-      if (event.type === 'tool/call') { open.doing = shortTool(event.data?.name); open.tools = (open.tools ?? 0) + 1; }
-      if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
+  ctx.on('session/event', turns.onSessionEvent);
+  // (moving: arrive.js) A thing of her own at the end of a turn.
+  const taskTurnEnded = (id, t) => {
+    // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
+    // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
+    if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.forHim))) {
+      const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
+      if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
+      // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
+      if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
     }
-    if (event.type === 'turn/end' && !retired(id)) setLast(id);
-    if ((event.type === 'turn/start' || event.type === 'turn/end') && id === sessions.last()) wakeUp('turn'); // a turn of her conversation: she is up (or stays up)
-    // A reminder enters the inbox before its turn starts, and the prompt is assembled at turn
-    // start, before the user/message event: note it here so the turn knows from its first step.
-    if (event.type === 'agent/inbox/spliced') {
-      if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'user' && addressed(m.source) === 'qq')) taken(id); // his words are in her inbox's turn
-      if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule')) incoming.add(id);
-      const from = (event.data?.inserted ?? []).find((m) => ['dsh-dot', 'dsh-interlude'].includes(m?.source?.kind));
-      if (from) origins.set(id, from.source.form);
+  };
+  // (moving: voice.js) A turn he is in that ends.
+  const voiceTurnEnded = (id, t, event, broke) => {
+    if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
+    if (broke) return;
+    // A turn his words did not open (a thing of his came back, an answer it waited for) has something for him when the
+    // book has an end of his he has not heard (planFor's `things`): not when it was already said in an earlier turn,
+    // nor when she carries the thing on (a later thing `after` it: that one's end is told). What else she did in the
+    // turn does not decide it (11-24: she added a line to another thing, and the end that woke the turn was not said).
+    const news = t.fromQq || Boolean(planFor(t)?.things?.length);
+    const speak = !t.spoke && news && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
+    const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
+    // The call that writes her words failed: that is not her choosing to say nothing.
+    const told = (r) => { if (r?.status === 'failed') { preempts = 0; turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
+    if (!speak) { over(); return; }
+    // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
+    // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.
+    // His next words call the wait off (that turn answers all of it).
+    if (t.fromQq && t.opened?.length && cfg.ackHoldMs > 0) {
+      dropAck('another turn');
+      const ack = { timer: null };
+      ack.timer = setTimeout(() => {
+        if (ackHold !== ack) return;
+        ackHold = null;
+        if (!hisUnderWay()) { audit('ack-folded', { session: id }); return; } // told by the turn the result woke
+        void tellHim(t).then(told, over);
+      }, cfg.ackHoldMs);
+      ack.timer.unref?.();
+      ackHold = ack;
+      audit('ack-held', { session: id, things: t.opened });
       return;
     }
-    if (event.type === 'turn/start') {
-      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), origin: origins.get(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
-      origins.delete(id);
-      return;
-    }
-    const t = turns.get(id);
-    if (!t) return;
-    if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
-    // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
-    if (event.type === 'user/message' && addressed(event.data?.source) === 'qq') {
-      t.fromQq = true;
-      if (event.data?.source?.kind === 'user') taken(id);
-      if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
-        t.his = true;
-        const said = ownerSaid(unstamp(contentText(event.data?.content))).trim();
-        if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
-      }
-      // His own words of this turn, as he typed them (t.said goes on to hold what she last wrote): what a yes of his is kept with.
-      if (event.data?.source?.kind === 'user') { const words = ownerSaid(unstamp(contentText(event.data?.content))).trim(); if (words) t.hisWords = [t.hisWords, words].filter(Boolean).join(' ').slice(-200); }
-      return;
-    }
-    const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
-    // What woke this turn besides him (a notification, her own time) and what the turn cost: a task of hers that ran
-    // in it (dshDot.task) gets its result and its cost back when the turn ends.
-    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind) && event.data.source.form !== 'turn-note') t.origin ??= event.data.source.form;
-    // Her hands came back on something of his: the turn is on his business (a thing she starts from it is his too),
-    // and what she tells him in it she says with qq_send.
-    if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') { t.forHim = true; if (event.data.source.thing) t.thing = event.data.source.thing; }
-    if (event.type === 'assistant/message') {
-      const u = event.data?.usage;
-      if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
-      if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
-    }
-    // The turn broke (the model call failed, a prompt could not be put together): not her silence. Nothing is written
-    // in her name about a turn that did not happen; he is told by the plugin when the turn was his.
-    const broke = ended && event.data?.reason?.kind === 'error';
-    if (broke) {
-      const lost = owed?.session === id && !t.fromQq;
-      taken(id);
-      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: Boolean(lost || ((t.fromQq || t.hisHere || t.forHim) && !t.scheduled)) });
-    }
-    // A question of hers to him is waiting until his next words have been read: the turn they open either keeps his
-    // yes (his_ok) or does not — said no, said something else — and after it the question is not waiting any more
-    // (11-23: a yes was matched to yesterday's text message he had called off).
-    if (ended && t.his && !broke) {
-      for (const e of ledger.recent(10)) if (e.outcome === 'stuck' && e.ask?.for === 'him' && !e.askSettled && (e.told ?? e.endedAt ?? 0) < t.startedAt) ledger.note(e.id, { askSettled: Date.now() });
-      consent.settle(t.startedAt);
-    }
-    if (ended) {
-      turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
-      // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
-      // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
-      if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.forHim))) {
-        const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
-        if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
-        // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
-        if (!hands?.busy()) finishTask(taskRunning, 'done', ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
-      }
-      // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
-      if (id === sessions.last()) setTimeout(() => { void releaseHeld(id).then(nextTask); }, 50);
-    }
-    // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
-    if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
-      t.elsewhere = true;
-      // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
-      if (!t.scheduled && !retired(id)) { t.hisHere = true; }
-    }
-    // Nothing she writes leaves, and nothing she writes is read: a turn he is in that ends — his words, or a thing of
-    // his that came to its end — is answered by the voice (say.js) from their conversation and the facts of the book.
-    // What she herself has for him (a view, a question, something that does not match the picture) she gives with
-    // say's `about`, a field, in that turn. Until 11-23 the turn's closing words were passed on as "what she knows":
-    // she was asked to write them every turn, wrote "发出去了" before her hands had moved, and 0.25.1 then had to drop
-    // them whenever a thing had just ended — taking her real questions with them.
-    // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
-    if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) {
-      if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
-      if (broke) return;
-      // A turn his words did not open (a thing of his came back, an answer it waited for) has something for him when the
-      // book has an end of his he has not heard (planFor's `things`): not when it was already said in an earlier turn,
-      // nor when she carries the thing on (a later thing `after` it: that one's end is told). What else she did in the
-      // turn does not decide it (11-24: she added a line to another thing, and the end that woke the turn was not said).
-      const news = t.fromQq || Boolean(planFor(t)?.things?.length);
-      const speak = !t.spoke && news && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
-      const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
-      // The call that writes her words failed: that is not her choosing to say nothing.
-      const told = (r) => { if (r?.status === 'failed') { preempts = 0; turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
-      if (!speak) { over(); return; }
-      // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
-      // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.
-      // His next words call the wait off (that turn answers all of it).
-      if (t.fromQq && t.opened?.length && cfg.ackHoldMs > 0) {
-        dropAck('another turn');
-        const ack = { timer: null };
-        ack.timer = setTimeout(() => {
-          if (ackHold !== ack) return;
-          ackHold = null;
-          if (!hisUnderWay()) { audit('ack-folded', { session: id }); return; } // told by the turn the result woke
-          void tellHim(t).then(told, over);
-        }, cfg.ackHoldMs);
-        ack.timer.unref?.();
-        ackHold = ack;
-        audit('ack-held', { session: id, things: t.opened });
-        return;
-      }
-      void tellHim(t).then(told, over);
-    }
-  });
+    void tellHim(t).then(told, over);
+  };
+  dot.arrive = { taskTurnEnded, releaseHeld: (id) => releaseHeld(id), nextTask: () => nextTask() };
+  dot.voice = { turnEnded: voiceTurnEnded };
 
   // 2. What of hers needs him (gates.js): nothing waits on a button. A request the host or a plugin gates in her
   // sessions is let through when his yes covers it (consent.js), and otherwise refused at once: in her hands' session
@@ -563,10 +446,6 @@ export function apply(ctx, config = {}) {
     return out;
   });
 
-  // Working rules are a system-prompt section for sessions in <home> (static per session, so the
-  // cached prefix holds). The silence rule is additionally put in front of the model on the turn a
-  // schedule wakes, as a dynamic context; only those turns get it.
-  const inHome = (c) => { const s = c.agent?.session; return isDotSession(s?.id, s?.header?.cwd) || turns.has(s?.id); };
   // The know-how book (howto.js): every device call her hands make while a thing runs is a step of that thing, in
   // the place it happened; the first time they are in a place in that thing, its notes come along (in the
   // post-execute hook above). The thing's end (hands onDone, below) logs it and picks what is worth learning from.
@@ -759,20 +638,7 @@ export function apply(ctx, config = {}) {
   // line of his: with nothing at the end she went off to operate her phone on "在干嘛" (1/6 answered); with this
   // short tail 5/6, as with the full snapshot (6/6) — the reminder of how she talks is what did the work, and it
   // has to be the last thing she reads.
-  const turnNotes = [];
-  const turnNote = (note) => { turnNotes.push(note); return () => { const i = turnNotes.indexOf(note); if (i >= 0) turnNotes.splice(i, 1); }; };
-  ctx.on('agent/pre-step', async ({ agent, messages, signal }, next) => {
-    const decision = await next();
-    const s = agent?.session, id = s?.id;
-    if (!decision || decision.kind === 'reject' || signal?.aborted || !id || !messages?.length) return decision;
-    if (!isDotSession(id, s.header?.cwd) || retired(id) || hands?.isHands(id, s.header?.cwd)) return decision;
-    const parts = [];
-    for (const n of [...turnNotes].sort((a, b) => a.order - b.order)) {
-      try { const t = String(await n.text({ agent, messages }) ?? '').trim(); if (t) parts.push(t); } catch (err) { logger.debug?.(`turn note ${n.name}: ${err.message}`); }
-    }
-    if (!parts.length) return decision;
-    return { ...decision, messages: [...decision.messages, createUserMessage({ content: [{ type: 'text', text: `<system-reminder>\n${parts.join('\n\n')}\n</system-reminder>` }], source: TURN_NOTE_SOURCE })] };
-  });
+  ctx.on('agent/pre-step', turns.preStep);
   // Her clock: "since the last message" counts from the last line said before this turn began.
   turnNote({ name: 'dot:now', order: 899, text: ({ agent }) => {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
@@ -784,10 +650,8 @@ export function apply(ctx, config = {}) {
   turnNote({ name: 'dot:said', order: 897, text: ({ agent }) => { if (!saidNote || agent.session.id !== sessions.last()) return ''; const n = saidNote; saidNote = ''; return n; } });
   // Her phone's pushes held since she was last up (see wake): once, with whatever woke her.
   turnNote({ name: 'dot:pushes', order: 898, text: ({ agent }) => { if (!pushes.length || agent.session.id !== sessions.last()) return ''; const t = pushesText(pushes); pushes = []; audit('pushes-shown', { count: t ? t.split('\n').length - 2 : 0 }); return t; } });
-  turnNote({ name: 'dot:scheduled-turn', order: 900, text: ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '') });
+  turnNote({ name: 'dot:scheduled-turn', order: 900, text: turns.scheduledNote });
 
-  /** What she is busy with right now (an interlude task records it when it has to wait). */
-  const busyWith = () => (turns.has(sessions.last()) ? prompt('dot.busy.chat') : '');
 
   // 3. Budget (budget.js).
   const budget = watchBudget({ ctx, cfg, store, audit, im, logger });
@@ -838,6 +702,7 @@ export function apply(ctx, config = {}) {
     if (!cfg.nightcheck) return;
     void (async () => { try { await nightcheck(); const done = await nightcheck({ apply: true }); audit('nightcheck-night', { done: String(done).slice(0, 300) }); } catch (error) { logger.warn(`nightcheck failed: ${error.message}`); audit('nightcheck-failed', { error: String(error.message).slice(0, 200) }); } })();
   }), 'dsh-dot: nightcheck when she falls asleep');
+  dot.sleep = sleep;
   const awake = sleep.awake, wakeUp = sleep.wakeUp, stir = sleep.stir;
   const sleeps = sleepsAtAll(cfg.awakeHours);
   turnNote({ name: 'dot:woke', order: 898, text: ({ agent }) => (agent.session.id === sessions.last() ? sleep.wokeNote() : '') });
@@ -883,7 +748,7 @@ export function apply(ctx, config = {}) {
   const handsHostDir = resolve(join(dshHome(), 'dsh-dot-hands', 'host'));
   const atHandsHost = (cwd) => { if (!cwd) return false; const p = resolve(String(cwd)); return p === handsHostDir || p.startsWith(handsHostDir + sep); };
   const handsPlace = (cwd, preset) => (atHandsHost(cwd) ? 'host' : handsPlaceOf(preset));
-  hands = createHands({
+  hands = dot.hands = createHands({
     dir: join(dshHome(), 'dsh-dot-hands'),
     create: async (dir, device = '') => {
       const cwd = device === 'host' ? handsHostDir : dir;
@@ -1614,25 +1479,6 @@ export function apply(ctx, config = {}) {
     return deny(ownerInterruptText());
   });
   deliverTracked = deliver;
-  // Turn watchdog: a turn of hers with no session event for turnStallMs is stalled (audited once).
-  // Her conversation is never cancelled: he is told once per turn.
-  const doingOf = (t) => t.doing || (t.said ? t.said.replace(/\s+/g, ' ').slice(0, 60) : '') || '（不清楚）';
-  const turnInfo = (id, now = Date.now()) => {
-    const t = turns.get(id);
-    if (!t) return null;
-    return { session: id, retired: retired(id), conversation: id === sessions.last(), startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t), ...turnState(t, { now, turnStallMs: cfg.turnStallMs }) };
-  };
-  const watchTurns = (now = Date.now()) => {
-    if (!(cfg.turnStallMs > 0)) return;
-    for (const [id, t] of [...turns]) {
-      const idle = now - (t.lastEventAt ?? t.startedAt);
-      if (idle < cfg.turnStallMs) continue;
-      if (!t.stallAudited) { t.stallAudited = true; audit('turn-stalled', { session: id, retired: retired(id), idleMs: idle, doing: doingOf(t) }); }
-      if (id !== sessions.last() || t.ownerTold) continue;
-      t.ownerTold = true;
-      void im.send(`⏳ dot: 她这一轮 ${Math.round(idle / 60000)} 分钟没动静了（最后在做：${doingOf(t)}）。没替她取消；要停就在 DeepSeek Harness 里点停止。`, 'plain');
-    }
-  };
   ctx.effect(() => { const timer = setInterval(() => { watchTurns(); noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
   // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
   const checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
@@ -1682,7 +1528,7 @@ export function apply(ctx, config = {}) {
     }
     const d = drift();
     if (d) out.push(`plugin files changed on disk since dsh started: running ${d.loaded || '?'}, on disk ${d.disk || '?'}, ${d.missing.length} prompt file(s) gone · quit dsh and open it again`);
-    if (lastFailure && now - lastFailure.at < 3600000) out.push(`last failed turn: ${who(lastFailure.session)} · ${mins(now - lastFailure.at)} ago · ${lastFailure.lost ? 'his words were not taken · ' : ''}${lastFailure.error}`);
+    if (turns.lastFailure() && now - turns.lastFailure().at < 3600000) out.push(`last failed turn: ${who(turns.lastFailure().session)} · ${mins(now - turns.lastFailure().at)} ago · ${turns.lastFailure().lost ? 'his words were not taken · ' : ''}${turns.lastFailure().error}`);
     return out.length ? out : [`liveness: nothing waits for his yes, no stalled or failed turn (stalled after ${mins(cfg.turnStallMs)})`];
   };
 
