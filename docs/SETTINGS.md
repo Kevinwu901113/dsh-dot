@@ -66,7 +66,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 回复不拆条、不模拟打字 | `qq.typingMsPerChar: 0` | |
 | 发 QQ 的审批松紧 | `qq.sendPolicy`：`reply`（默认）/ `always` / `off` | |
 | 她自己的时间多久来一次 | `interlude.idleMinutes`（你上一句话、或她的一天开始之后安静多久来一次，默认 30）、`interlude.freeTimesPerDay`（每天最多几次，默认 2，`0` 关） | 来过一次就要等你再找她、或第二天；她可以在那段时间里自己留一个「下次」（`later`）。她自己做的事不推迟它 |
-| 省 token | `interlude.freeTokenCap` / `freeDailyTokens`（自己的时间每次 / 每天的上限，她的手替她做的事算在里面）、`dot.thingCostCap`（一件事花到多少就停下问你）、`memory.handoffTokens`（交班阈值，默认 60000） | 三个上限的单位都是**折算 token**（见下「花费怎么算」）。每天的用量在 dot 面板，按官方价估的钱数在旁边；记忆的调用在 `~/dot/memory/calls.jsonl` |
+| 省 token | `interlude.freeTokenCap` / `freeDailyTokens`（自己的时间每次 / 每天的上限，她的手替她做的事算在里面）、`dot.thingCostCap`（一件事花到多少就停下问你）、`memory.handoffTokens`（交班阈值，默认 200000） | 三个上限的单位都是**折算 token**（见下「花费怎么算」）。每天的用量在 dot 面板，按官方价估的钱数在旁边；记忆的调用在 `~/dot/memory/calls.jsonl` |
 | 模型额度用完 / API key 失效 | 不用设：插件用自己的名义告诉你一次是哪一种（不是「她出错了」），后台的请求（整理记忆、写经验、她自己的事）先不发，直到有一次请求成功、或提供方给的恢复时间到了 | 充值或改好 key 以后给她发一句话就接着。同一类出错提示 `dot.failureNoticeMs`（10 分钟）内只发一次 |
 | 和别的记忆插件一起用 | `memory.coexist`：`auto`（默认）/ `people-only` / `full` | |
 | **和她聊天时报 429 / `rate limit reached for RPM`** | `llm.backgroundRpm` 调小（默认 20，她后台的请求每分钟最多几次；你们的对话不受限） | 被限流后闸门自己会减半、冷却，`/dot` 有一行「model requests」看近一分钟的请求数 |
