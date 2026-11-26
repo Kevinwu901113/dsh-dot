@@ -368,3 +368,22 @@ test('free time: what it cost today is counted in 折算 token and in yuan at th
   h.stop();
   resetPrices();
 });
+
+test('settings from before: interlude.price is his own price for every count, the caps keep their names and are read as 折算 token as they are', async () => {
+  const { priceOf, unitsOf, resetPrices } = await import('../src/price.js');
+  const was = process.env.DSH_HOME;
+  const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
+  writeFileSync(join(dsh, 'dsh-dot.json'), JSON.stringify({ interlude: { price: { in: 2, cached: 0.5, out: 3 }, freeTokenCap: 150000, freeDailyTokens: 300000 } }));
+  process.env.DSH_HOME = dsh;
+  try {
+    resetPrices();
+    const tasks = [];
+    const h = harness({ reply: GOOD, vm: {} });
+    h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true } : get(n)))(h.ctx.get);
+    const flash = { provider: 'deepseek-account', model: 'deepseek-flash' };
+    assert.equal(priceOf(flash).source, 'own', 'his price, in place of the table');
+    assert.equal(unitsOf({ cacheReadTokens: 1000, outputTokens: 100 }, flash), 250 + 150);
+    assert.match((await h.cmd().handler({ rawInput: 'free' })).text, /budget 150000 tokens/, 'his cap as he wrote it, not converted');
+    h.stop();
+  } finally { if (was === undefined) delete process.env.DSH_HOME; else process.env.DSH_HOME = was; resetPrices(); }
+});
