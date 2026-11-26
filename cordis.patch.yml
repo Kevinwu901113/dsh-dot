@@ -7,16 +7,20 @@
 #               DSH_DOT_COMPUTER=off turns it off (the host subprocess/sandbox settings stay stock).
 #   qq        — her QQ on her computer: NapCat or SnowLuma (OneBot 11, /qq backend) inside the VM,
 #               same account as the phone app; logged in by her phone scanning the code (/qq qr).
-#               Messages wake her instantly; she answers with qq_send. Needs the computer.
+#               Messages wake her instantly; what she says goes out through it. Needs the computer.
 #               DSH_DOT_QQ=off turns it off.
-#   dot       — the always-on glue: scheduled runs → IM, silence protocol, approval cards with the
-#               live view, working rules as a prompt section. Needs dsh-im and the official
-#               schedule bundle (see README). DSH_DOT_CONTACT=off turns it off.
-#   memory    — what she remembers (people, fragments, diary, owner/self banks). DSH_DOT_MEMORY=off.
+#   dot       — her conversation (only the one the plugin makes for her), what wakes her (one way in,
+#               one clock), her hands (phone, computer, web, this machine: one thing a place, places at
+#               once), the book of things, what needs his yes (asked in her words, no approval cards),
+#               her words written from her card and sent one way, failures and a used-up account told
+#               in the plugin's name. Needs dsh-im and dsh's schedule service (see README).
+#               DSH_DOT_CONTACT=off turns it off.
+#   memory    — what she remembers (his and her words and recall, notes on him and her, people, diary). DSH_DOT_MEMORY=off.
 #   compat    — living next to qq-bridge: per-session tool visibility, where its commands run, its bot
 #               accounts kept out of her QQ. DSH_DOT_COMPAT=off turns it off.
 #   interlude — her persona (the Canon / persona.md, HDSI presets by share code) as a prompt section,
-#               and 自己的时间: a few times a day, time of her own in her conversation.
+#               and 自己的时间: time of her own in her conversation, once after his quiet or the start
+#               of her day (and when she left herself a later).
 #               DSH_DOT_INTERLUDE=off turns it off.
 # Every component tolerates a sibling being off (services are looked up with ctx.get(...)?.).
 
@@ -310,7 +314,7 @@
       name: 'dsh-dot-life/dot'
       disabled: !!js "process.env.DSH_DOT_CONTACT === 'off'"
       config:
-        # dot's home: its working files live here and sessions started here are dot's.
+        # dot's home: her files live here. Her conversation is the one the plugin makes for her, not any session started here.
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
     # 6b. What she remembers (after Hermes and dsh-whale-inurqq): you, her own notes, the people she
     #     meets in her apps, what happened. Her conversation is handed over to a fresh session past

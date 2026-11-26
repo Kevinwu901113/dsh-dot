@@ -32,16 +32,18 @@ She remembers you, keeps living between your conversations, and has her own phon
 ## ✨ What makes her different
 
 - 🎭 **She sounds like herself.** The step that writes her words reads only her persona card and your recent conversation: no tools, and none of dsh's own agent prompt. The card is a Markdown file; import a community preset or write your own, and she speaks by the new one as soon as you save it.
-- 📒 **Things have an outcome.** Everything you ask of her goes into a book: under way, queued, done, stuck, not done, stopped by whom, what it cost. She reports progress only from that book. If it didn't work, she says so. She doesn't make progress up.
+- 📒 **Things have an outcome.** Everything you ask of her goes into a book: under way, done, stuck, not done, stopped by whom, whose reply it is waiting for, what it cost. She reports progress only from that book. If it didn't work, she says so. She doesn't make progress up.
 - 🛠️ **She gets better at her phone and computer.** Each app, the phone itself and the computer have a know-how book. Pitfalls become lessons; a route that worked becomes a shortcut, with a count of how many times it has worked. The same task gets faster, more accurate and cheaper.
 - 🔒 **Nothing behind your back.** Money is off-limits. Steps only you can take (paying, codes, QR sign-ins, face checks) are left for you. Installing apps, calling, deleting, signing up and the like are asked about in the chat first, and done only once you say yes. Code decides which is which from the screen, not from what she says. There is no approve button.
-- 🌙 **She has a life between conversations.** She keeps hours: past her usual time and after a quiet spell she falls asleep, writes the day's diary and tidies her notes. Your message wakes her; anything else waits until she is up. Twice a day she gets time of her own, with no task and a folder that is hers alone. She remembers what you said and the people around you, and the people she meets herself.
+- 🌙 **She has a life between conversations.** She keeps hours: past her usual time and after a quiet spell she falls asleep, writes the day's diary and tidies her notes. Your message wakes her; anything else waits until she is up. When things have been quiet on your side for a while (half an hour by default), or her day has just begun, she gets time of her own, with no task and a folder that is hers alone; once used, the next one waits until you have talked to her again or a new day starts, and during it she can set herself a "come back in a while". She remembers what you said and the people around you, and the people she meets herself.
 
 ## 🧰 What she has
 
 - 📱 **A phone.** The plugin downloads and builds an Android emulator (no Java or Android Studio); you watch it inside dsh. She installs her own apps (asking you first) and stays signed in. Messages from people wake her; apps' own pushes don't, and are shown to her the next time she is up.
-- 🖥️ **A computer.** A bundled microVM (no Docker needed): shell, browser, desktop, live view. Her commands run inside it, not on your machine. Scheduled jobs push to your IM when there is a result, and stay quiet when there isn't.
+- 🖥️ **A computer.** A bundled microVM (no Docker needed): shell, browser, desktop, live view. Her commands on this computer run inside it, not on your machine. Scheduled jobs push to your IM when there is a result, and stay quiet when there isn't.
 - 💬 **A QQ account.** QQ runs on her computer, the same account as on her phone. Your message wakes her in 1–2 seconds; she replies in several short messages, sends stickers and saves pictures people send. You choose when group chats wake her.
+
+She can do things in different places at once: browsing on the phone, working on the computer, looking something up on the web, without one holding up the other. Each place does one thing at a time; if it is busy, a new thing doesn't quietly join a queue: she is told right away what is going on there and decides herself whether to wait, add a word to it, use another place, or stop it first.
 
 The phone and the computer each have a power switch (`/phone off`, `/computer off`, or the top of the dot settings page); off stays off across restarts.
 
@@ -140,14 +142,21 @@ Yes, it is possible. Platforms' terms forbid automation. **Give her spare accoun
 <details>
 <summary><b>Will she touch my stuff?</b></summary>
 
-Her commands run in her own VM and emulator, not on your computer, except folders you share with her. On her own devices, anything with consequences falls into four tiers: money is never touched; what only you can do (paying, codes, QR, face) waits for you; installing apps, calling, texting, deleting, signing up, messaging strangers, connecting out from the computer or changing your shared files are asked about in the chat first; the rest is hers. A "yes" covers that one thing; "from now on, fine" makes it standing. Every step she takes is in the audit log.
+Her commands run in her own VM and emulator, not on your computer, except folders you share with her. When you ask her for something on this computer of yours, she can do it from the command line too: looking-only commands run directly, anything that changes, installs or connects out is asked about first; in her own time she doesn't touch your computer. On her own devices, anything with consequences falls into four tiers: money is never touched; what only you can do (paying, codes, QR, face) waits for you; installing apps, calling, texting, deleting, signing up, messaging strangers, connecting out from the computer or changing your shared files are asked about in the chat first; the rest is hers. A "yes" covers that one thing; "from now on, fine" makes it standing. Every step she takes is in the audit log.
 
 </details>
 
 <details>
 <summary><b>Will she burn through tokens?</b></summary>
 
-Her daily spend is shown in the dot panel on the right. A thing that costs more than its cap (600k tokens by default) stops and asks you whether to go on; her own time has a per-session and a daily cap; the same error over and over gets the thing stopped by code. All caps are in [docs/SETTINGS.md](docs/SETTINGS.md).
+Her daily spend is shown in the dot panel on the right. A thing that costs more than its cap stops and asks you whether to go on; her own time has a per-session and a daily cap; the same error over and over gets the thing stopped by code. All caps are in [docs/SETTINGS.md](docs/SETTINGS.md).
+
+</details>
+
+<details>
+<summary><b>She suddenly stopped answering?</b></summary>
+
+If the model account has run out of quota or balance, or its sign-in / API key no longer works, you get a message from the plugin (not from her) saying which it is and what to do, instead of a vague "something went wrong"; her background work such as tidying her memory pauses and stops retrying meanwhile. Once you have topped up or fixed it, send her a line: she answers normally again and the background work picks up by itself. If one of her turns fails for another reason, or a message of yours never reached her, the plugin tells you too.
 
 </details>
 
@@ -167,7 +176,7 @@ Edit `~/dot/persona.md` for the persona. Every prompt the plugin gives her is ed
 
 ## 🧩 How it works
 
-dsh runs the conversation, calls the tools and carries the IM. dsh-dot decides **who is in that conversation**. In her sessions, dsh's own agent preamble is replaced with her persona, her memory and the days she has just lived; in other workspaces dsh is still dsh.
+dsh runs the conversation, calls the tools and carries the IM. dsh-dot decides **who is in that conversation**. In her sessions, dsh's own agent preamble is replaced with her persona, her memory and the days she has just lived; in other workspaces dsh is still dsh. Her conversation is only the one the plugin opens for her: a session you start by hand in the dot workspace is an ordinary dsh session, not her.
 
 ```mermaid
 flowchart LR
@@ -190,7 +199,7 @@ flowchart LR
 ```
 
 - **Deciding**: her conversation reads her persona, memory and the book, and decides what to do and what to say.
-- **Doing**: each thing goes to a session of its own that only operates the phone and computer, with no persona. It comes back only when the thing is done, not done, or waiting on a decision.
+- **Doing**: each thing goes to a session of its own that only operates the phone and computer or looks things up, with no persona. Things in different places run at once; each comes back only when it is done, not done, or waiting on a decision.
 - **Speaking**: a separate call with only her persona card writes the words for you, and they leave by a single way out.
 
 There are seven components (persona and her own time, memory, the contact layer, phone, computer, QQ, and coexistence with other plugins), each of which can be turned off. Details in [docs/USAGE.md](docs/USAGE.md) (Chinese).

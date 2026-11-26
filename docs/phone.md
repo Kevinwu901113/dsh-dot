@@ -7,13 +7,14 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 1. **安装**（第一次）：接受 [Android SDK 许可](https://developer.android.com/studio/terms)后（`/phone accept`，或配置 `acceptLicense: true`，或 `~/.dsh/dsh-phone.json` 里 `{"acceptLicense": true}`），从 `dl.google.com/android/repository` 读索引，下载 stable 通道的 emulator、platform-tools 和 `system-images;android-<api>;google_apis;<abi>`（约 1.7 GB），解压到 `~/.dsh/phone/`。`google_apis` 镜像没有 Play 商店——检测面最小，App 用 APK 装。
 2. **AVD**：`~/.dsh/phone/avd/dot.avd/config.ini` 由插件写（Pixel 6 尺寸、1080×2400、3 GB 内存、数据分区默认 16 GB、不带 Play）。数据分区大小在手机建好之前选：`/phone accept <GB>` 或 `/phone size <GB>`（8–256）；建好后模拟器不会扩大已有分区，`/phone size` 只显示当前大小。想改尺寸或内存，改配置后删掉这个目录重建（手机里的数据会没）。
 3. **开机**：`emulator -avd dot -port <端口> -no-boot-anim -gpu auto`，等 `sys.boot_completed`，然后常亮屏幕、关动画、解锁。上一次 dsh 留下的还在跑的模拟器会被直接接管，不会开两个——但只接管控制台报告 AVD 名是 `dot` 的那台（`adb emu avd name`）：MuMu、雷电、BlueStacks 等也会以 `emulator-5554` 出现在 adb 里，占着端口不等于是她的手机。端口从 `port`（5554）起找第一个 adb 没列出的（到 5584 为止）。模拟器自己退出会在 `restartDelayMs` 后重开。手机在 dsh 退出后继续运行。
-4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL` 是上一步占到的 `emulator-<端口>`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。mobile-mcp 只会把整张截图缩小（`scale` ≤ 1、`maxSize`），所以另有一个 dot 自己的工具 `phone_zoom`：现截一张，按屏幕像素 `{x, y, w, h}` 裁一块，放大（`scale` ≤ 3，不填就放到长边约 1200 像素），PNG 经附件仓库（`ctx.attachments`）成为图片交给她；没有附件仓库时说明原因。只读，幕间的观察轮也允许。
-5. **提示**：手机就绪后系统提示里多一段 `phone:device`，告诉模型设备号和用法（先看元素再点；验证码、人脸停下来叫用户）。
-6. **闸门**：`mobile_install_app` / `mobile_uninstall_app` 弹审批（目前审批框只显示工具名，不显示是哪个 App）；打的字像密码 / 支付 / 验证码时弹审批（`sensitivePatterns`）。打字用 `phone_type`：通过输入法（首次使用自动装 ADB Keyboard）一个字一个字打进去，打完读一遍输入框核对；mobile-mcp 那个靠剪贴板粘贴的打字不给手用。手每做一个动作，结果后面跟着屏幕上现在的文字和位置；整屏截图不给手，要看图用 `phone_zoom` 看一块。
-7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot，dot 往她最近的会话里追加一条 `[11-04 04:52 手机通知] QQ · 宽：……`（开头是收到的时间），她自己决定去 App 里回还是只回 `DOT_SILENT`。这条回复不会转发到任何 IM。所以她不需要定闹钟去看 QQ——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的：新 App 默认叫醒；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；她睡着以后来的通知留到她醒来一起给她（睡着是状态：过了 `awakeHours`、安静满 `sleepAfterQuietMinutes`）。`/phone notifications` 看最近 20 条。
+4. **MCP**：开机后以 stdio 挂一个 mobile-mcp（随插件一起安装，`ANDROID_HOME` 指向 `~/.dsh/phone`，`ANDROID_SERIAL` 是上一步占到的 `emulator-<端口>`），工具名 `mcp__dot-phone__mobile_*`：列设备、截图、列屏幕元素（带坐标）、点、滑、长按、输入、按键、打开/关闭 App、装卸 App、开 URL。mobile-mcp 只会把整张截图缩小（`scale` ≤ 1、`maxSize`），所以另有一个 dot 自己的工具 `phone_zoom`：现截一张，按屏幕像素 `{x, y, w, h}` 裁一块，放大（`scale` ≤ 3，不填就放到长边约 1200 像素），PNG 经附件仓库（`ctx.attachments`）成为图片交给她；没有附件仓库时说明原因。只读。
+5. **提示**：手机就绪后系统提示里多一段 `phone:device`。操作手机的会话（她的手；没有 dot 时任何会话）拿到的是 `phone.device`：设备号和用法（先看元素再点；验证码、人脸停下来）。她自己的对话里没有手机工具，拿到的是 `phone.hers`：手机对她意味着什么、要用就交给手。
+6. **闸门**：`mobile_install_app` / `mobile_uninstall_app`，以及打的字像密码 / 支付 / 验证码（`sensitivePatterns`）时，这个组件向宿主要审批。在她的手的会话里没有按钮可点：dot 按「要他的事」四档当场答（他的同意盖得住就放行，否则这件事停下，她在聊天里问你，见 DESIGN「0.25：要他的事」）；点、长按、开网址这些动作也由 dot 的闸门按落点下的字判档。打字用 `phone_type`：通过输入法（首次使用自动装 ADB Keyboard）一个字一个字打进去，打完读一遍输入框核对；mobile-mcp 那个靠剪贴板粘贴的打字不给手用。手每做一个动作，结果后面跟着屏幕上现在的文字和位置；整屏截图不给手，要看图用 `phone_zoom` 看一块。
+7. **通知叫醒她**：插件盯着系统的事件日志（`adb logcat -b events notification_enqueue`），每有 App 发通知就立刻读一次通知栏（`dumpsys notification`），另外每 `notifyPollMs` 兜底轮询一次——QQ 这类 App 在聊天窗口开着时会立刻撤回通知，光靠轮询会漏，新出现的通知（启动时已经在栏里的不算；系统包不算；`notifyApps` 可以只挑几个 App）交给 dot。**有人发来的才叫醒她**：聊天 App 和短信里认得出发信人的对话、她 QQ 上的人，或 App 自己标成消息 / 来电的；dot 往她的对话里追加一条 `[11-04 04:52 手机通知] QQ · 宽：……`（开头是收到的时间），去不去 App 里回由她定，不理就什么都不用做。App 自己的推送不叫醒她，留最近几条（dot 的 `pushesKept`），下次不管什么叫醒她时一起给她看一眼。所以她不需要定闹钟去看手机——有人找她，手机会响。**任何 App 都算**，包括她以后自己装的；像手机自己的通知设置一样可以按 App 静音——`/phone notify mute <包名>` / `wake <包名>`（持久化在 `dsh-phone.json`），`/phone notify` 看每个 App 发过多少条和当前策略。她在 Android 设置里关掉某个 App 的通知也一样生效（通知栏里没有就不会叫）。几秒内连来的多条合成一次叫醒（dot 的 `notifyBatchMs`）；她睡着以后来的通知留到她醒来一起给她（睡着是状态：过了 `awakeHours`、安静满 `sleepAfterQuietMinutes`）。`/phone notifications` 看最近 20 条。
 8. **实时画面**：默认只有插件的网页（模拟器不弹自己的窗口；要它也弹出来设 `window: true`）。网页，挂在 **dsh 自己的 web server** 上：`<dsh 地址>/dsh-dot/phone/`——dsh 右侧栏的「手机」标签页就是它：画面跟着屏幕变（页面一帧一帧地要：画完上一帧才要下一帧，所以页面和 dsh 哪边都不会积压；有手机自己的屏幕流时用它，流畅，没有就退回 adb 截图，每几秒一帧），能直接点、滑、按返回/主页、输入文字，登录 App 就在这里做。**它不单独监听端口**：页面、每一帧画面和每一次点击都先过 dsh 的 `connection` 服务（dsh 自己的登录态 + Host/Origin 围栏，转发头一概不认），只有登录了这个 dsh 的人能看能点。想在别的设备上看，把 dsh 本身暴露出去（如 `tailscale serve` dsh 的端口，或 dsh 的远程访问），再把那个地址写进 `publicUrl`，审批提醒里的链接就是 `<publicUrl>/dsh-dot/phone/`。无头跑（服务器）时 `window: false` 只用网页。网页里的文字输入走 `adb shell input text`，只支持 ASCII（账号、验证码够用）；中文由她自己的工具输。
 9. **摄像头**：后置摄像头是模拟器的虚拟场景（`hw.camera.back=virtualscene`，前置没有）——一个有电视和书架的 3D 房间。场景里的 `wall` 海报每次开机前被挪到镜头正前方 1.5 米、1 米见方（插件改写模拟器的 `resources/Toren1BD.posters`，原文件存成 `.orig`，`table` 海报不动），所以往海报上放一张图，她打开相机或扫一扫看到的就是它。`dshPhone.showToCamera(png)` 负责放：先按 HOME 回桌面（有 App 开着摄像头时换图不生效），`adb emu virtualscene-image wall` 清空海报，再设成新写的 `resources/dsh-dot-poster-<毫秒>.png`（同一路径或不先清空，模拟器会一直显示这个进程里放的第一张），旧文件删掉。QQ 扫码登录电脑端就靠它（见 [qq.md](qq.md)）。0.10.8 之前开起来的手机要 `/phone restart` 一次海报才会挪过去；更早建的、没有摄像头的 AVD 会被自动补上 `virtualscene`，同样下次开机生效。
-10. **表情包在相册里**：她电脑 QQ 那边存的表情包（`~/.dsh/stickers/`，见 qq.md）同步到手机 `/sdcard/Pictures/dot-stickers/<id>.<png|jpg|gif|webp>`（扩展名按文件头判断），推完发 `MEDIA_SCANNER_SCAN_FILE` 广播，相册里就有一个 dot-stickers 相册，任何 App 都能从相册选图发。手机就绪时、表情包有增减时各同步一次（按文件名 + 大小比，已经在的不重推；从收藏里挤掉的在手机上也删掉；文件夹里不是 `<id>.<ext>` 的文件不动）。手机提示词最后一段（`phone.stickers`）教她各 App 怎么把相册里的图加进自己的表情：QQ 长按 → 添加到表情、微信长按 → 添加表情、小黑盒评论配图从相册选；做成一次就记到 self。只教不催，用不用随她。`/qq stickers` 看同步了几张，`/qq stickers sync` 立刻推一次。
+10. **同一时间谁在用手机**：dot 管，一个地方一把锁（`dot/hands.js`）。她的手做一件手机上的事时，从开始占到结束；别的会话（qq-bridge 管理员私聊，没有 compat 时任何会话）直接用手机的工具时占住它，那一轮结束或 2 分钟不碰就放开。占着时别人的调用当场被拒、她交来的新事当场告诉她手机在忙什么，谁都不排队等。电脑、查资料、本机各有自己的锁，所以手机忙着时她照样可以在别处做事。以前的手机租约（`leaseIdleMs`、`leaseWaitMs`、她的对话优先）11-26 删了，这两个键不再读取。
+11. **表情包在相册里**：她电脑 QQ 那边存的表情包（`~/.dsh/stickers/`，见 qq.md）同步到手机 `/sdcard/Pictures/dot-stickers/<id>.<png|jpg|gif|webp>`（扩展名按文件头判断），推完发 `MEDIA_SCANNER_SCAN_FILE` 广播，相册里就有一个 dot-stickers 相册，任何 App 都能从相册选图发。手机就绪时、表情包有增减时各同步一次（按文件名 + 大小比，已经在的不重推；从收藏里挤掉的在手机上也删掉；文件夹里不是 `<id>.<ext>` 的文件不动）。手机提示词最后一段（`phone.stickers`）教她各 App 怎么把相册里的图加进自己的表情：QQ 长按 → 添加到表情、微信长按 → 添加表情、小黑盒评论配图从相册选；做成一次就记到 self。只教不催，用不用随她。`/qq stickers` 看同步了几张，`/qq stickers sync` 立刻推一次。
 
 `/phone` 看状态（含存储大小），子命令：`accept [GB]`、`size <GB>`、`retry`、`restart`、`screenshot`、`notifications`、`notify [mute|wake <包名>]`。
 
@@ -31,14 +32,14 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 | `liveView` | `true` | 在 dsh 的 web server 上挂实时画面页（`/dsh-dot/phone/`）；`false` 关闭 |
 | `liveStream` | `true` | 实时画面优先用手机自己的屏幕流（mobilecli `screencapture`，只在有人看的时候开）；`false` 只用 adb 截图 |
 | `publicUrl` | 无 | 这个 dsh 对外的地址（你自己的暴露方式）；实时画面链接 = `<publicUrl>/dsh-dot/phone/`，写进审批提醒 |
-| `gpu` | `auto` | 模拟器 `-gpu`（`auto` / `host` / `software` 等）。`auto` 在 API 35 上可能被强制成 CPU 软件渲染：`~/.dsh/phone/emulator.log` 里有 `forcing software rendering for GLES`。软件渲染下每次截屏都是宿主 CPU 重新合成整屏，持续高频截屏会让虚拟机卡过 15 秒、被模拟器的卡死检测杀掉（日志 `detected a hanging thread 'QEMU2 main loop'`）。Mac 上可改 `"host"` 用显卡，改后重启手机，确认日志里不再有 `forcing software rendering` |
+| `gpu` | 空（Windows 用 `swiftshader_indirect`，其他系统 `auto`） | 模拟器 `-gpu`（`auto` / `host` / `software` 等）。`auto` 在 API 35 上可能被强制成 CPU 软件渲染：`~/.dsh/phone/emulator.log` 里有 `forcing software rendering for GLES`。软件渲染下每次截屏都是宿主 CPU 重新合成整屏，持续高频截屏会让虚拟机卡过 15 秒、被模拟器的卡死检测杀掉（日志 `detected a hanging thread 'QEMU2 main loop'`）。Mac 上可改 `"host"` 用显卡，改后重启手机，确认日志里不再有 `forcing software rendering` |
 | `keepAppsAlive` / `keepAliveEveryMinutes` | `true` / `10` | 关掉 doze、standby、cached-apps freezer，给所有第三方 App（含她以后装的）后台运行许可，否则 QQ 退后台几分钟就被冻结、收不到消息（真机实测：发出到弹通知差 3.5 分钟） |
 | `locale` / `timezone` | `zh-CN` / `Asia/Shanghai` | 手机的语言和时区 |
 | `number` | 无 | 她的手机号（注册、登录 App 用）；也可用 `/phone number <号码>` 设 |
 | `installers` | 浏览器、文件管理器 | 开机时被允许安装未知应用的包；`[]` 则她得自己去设置里开 |
 | `acceptLicense` / `DSH_DOT_PHONE_ACCEPT_LICENSE=yes` | `false` | SDK 许可 |
 | `channel` | `stable` | 模拟器通道 |
-| `bootTimeoutMs` / `restartDelayMs` | `300000` / `10000` | 开机等待、崩溃重开间隔 |
+| `bootTimeoutMs` / `bootSlowMs` / `restartDelayMs` | `600000` / `300000` / `10000` | 开机等待、超过多久算「开机较慢」、崩溃重开间隔 |
 | `notifications` | `true` | 盯不盯通知栏 |
 | `notifyPollMs` / `notifyApps` / `notifyMuted` | `4000` / `[]` / `[]` | 兜底快照间隔（事件到了会立刻读，`0` = 只靠事件）；只关心哪些包（空 = 所有非系统 App，含以后装的）；静音的包（`/phone notify mute` 也写这里） |
 | `mcp` / `toolCallTimeoutMs` | `true` / `60000` | 挂 mobile-mcp |
@@ -75,7 +76,7 @@ An Android phone the plugin installs and runs for the character, exposed to the 
 
 ## 已知限制
 
-- App 开在前台时不会发通知（QQ 的聊天窗口开着就收不到那个人的消息通知）。提示里让她用完 App 按 HOME 回桌面。
+- App 开在前台时不会发通知（QQ 的聊天窗口开着就收不到那个人的消息通知）。所以她在手机上的最后一步过后 `dot.phoneHomeAfterMs`（3 分钟）没有新的一步，代码按一次 HOME（App 不关）。
 
 - 第一次下载约 2 GB，取决于到 `dl.google.com` 的速度。
 - 没有 Play 商店和 Google 服务；需要 GMS 的 App 不能用。

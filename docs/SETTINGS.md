@@ -65,8 +65,9 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 群聊里插话的规则 | `qq.groupPolicy`：`mention`（被 @ 才回，默认）/ `score`（按价值评分，配 `qq.scoreThreshold` 0–10）/ `all` / `none` | |
 | 回复不拆条、不模拟打字 | `qq.typingMsPerChar: 0` | |
 | 发 QQ 的审批松紧 | `qq.sendPolicy`：`reply`（默认）/ `always` / `off` | |
-| 她逛 / 玩的 App | `interlude.phoneApps`（站点 → 包名）、`interlude.playApps`（名字 → 包名）、`interlude.play: false` 关掉「玩」 | 只对她自己装了的 App 生效 |
-| 省 token | `interlude.maxRoundsPerDay`、`interlude.browseDailyCap`、`memory.handoffTokens`（交班阈值，默认 60000） | 每轮用量在 `~/dot/interlude/calls.jsonl`、`~/dot/memory/calls.jsonl` |
+| 她自己的时间多久来一次 | `interlude.idleMinutes`（你上一句话、或她的一天开始之后安静多久来一次，默认 30）、`interlude.freeTimesPerDay`（每天最多几次，默认 2，`0` 关） | 来过一次就要等你再找她、或第二天；她可以在那段时间里自己留一个「下次」（`later`）。她自己做的事不推迟它 |
+| 省 token | `interlude.freeTokenCap` / `freeDailyTokens`（自己的时间每次 / 每天的上限，她的手替她做的事算在里面）、`dot.thingCostCap`（一件事花到多少就停下问你）、`memory.handoffTokens`（交班阈值，默认 60000） | 每天的用量在 dot 面板；记忆的调用在 `~/dot/memory/calls.jsonl` |
+| 模型额度用完 / API key 失效 | 不用设：插件用自己的名义告诉你一次是哪一种（不是「她出错了」），后台的请求（整理记忆、写经验、她自己的事）先不发，直到有一次请求成功、或提供方给的恢复时间到了 | 充值或改好 key 以后给她发一句话就接着。同一类出错提示 `dot.failureNoticeMs`（10 分钟）内只发一次 |
 | 和别的记忆插件一起用 | `memory.coexist`：`auto`（默认）/ `people-only` / `full` | |
 | **和她聊天时报 429 / `rate limit reached for RPM`** | `llm.backgroundRpm` 调小（默认 20，她后台的请求每分钟最多几次；你们的对话不受限） | 被限流后闸门自己会减半、冷却，`/dot` 有一行「model requests」看近一分钟的请求数 |
 | 电脑审批多 / 少 | `gate.mode`：`risky`（默认）/ `browser`（每个浏览器动作都问）/ `off` | |
@@ -114,8 +115,7 @@ setx DSH_DOT_COMPUTER off
 | `adbPort` | `5137` | 插件自己的 adb server 端口，避开 MuMu、雷电、手机助手等自带旧 adb 占用的 5037；`0` = 用 5037 |
 | `notifyMuted` | `[]` | 不叫醒她的包名（也可用 `/phone notify mute`） |
 | `notifyCatchUpMs` | `43200000`（12 小时） | dsh 没开时到的通知，重启后这么久以内的照样叫醒她；更早的不叫 |
-| `leaseIdleMs` | `120000` | 同一时间只有一件事在用手机：占着的那件事这么久没碰手机（或它这一轮结束）就让出来 |
-| `leaseWaitMs` | `60000` | 别的事要用手机时最多等这么久，等不到就告诉她稍后再试；和你的对话排在最前 |
+| `leaseIdleMs` / `leaseWaitMs` | — | 不再读取（11-26）。谁在用手机由 dot 管：她的手做一件事时从头占到尾；别的会话（如 qq-bridge 管理员私聊）直接用手机时占着，那一轮结束或 2 分钟不碰就放开；占着时别人当场被拒，不等 |
 | `keepAppsAlive` | `true` | 不让后台 App 被冻结（聊天 App 收消息靠它） |
 | `publicUrl` | `""` | 你对外暴露的 dsh 地址，用于实时画面链接 |
 
@@ -192,7 +192,7 @@ setx DSH_DOT_COMPUTER off
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `idleMinutes` | `30` | 他上一句话（或她的一天开始）之后安静这么久，来一次「自己的时间」；她自己做的事不推迟它 |
 | `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
-| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天最多几次、每次和每天的 token 上限（她的手替她做的事算在里面）；`0` 次关 |
+| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天最多几次（`/interlude free` 不算）、每次和每天的 token 上限（她的手替她做的事算在里面，到了上限这一轮停、手在这件事上的下一步也被拒）；`0` 次关 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
 
 ### `dot`
@@ -202,10 +202,10 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉联系人层 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `phoneHomeAfterMs` | `180000` | 她在手机上的最后一步过后这么久，手机自己回到桌面（开在前台的 App 不出通知）；这之前接着做下一步就留在原地。App 不关，再打开还在原来那一页。0 = 不回 |
-| `handsMaxMs` | `360000` | 她的手做一步最长多久；超过就停，带着已经说的回来 |
+| `handsMaxMs` | `600000` | 她的手做一件事（或她回答之后接着做的那一段）最长多久；超过就停，记为超时，带着手最后说的回来 |
 | `reachUnansweredMs` | `7200000` | 她主动发给你的一条过了这么久你没回，在她对话里留一句事实「那条他没回」；0 = 不留 |
-| `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉，命中清单的句子每轮打回一次让她重说 |
-| `lean` | `true` | 她的新对话用插件自带的 `dot` 预设来建（第一次开、每次交接）：宿主的工具只带读写自己的文件、定时、目标（查资料交给手：`hands` 的 `device: web`）；加上插件自己的 `hands`、`qq_send`、`qq_sticker_keep`、`memory`、`recall` 和她 QQ 的 action。提示词也只留插件为她写的几段。已有的对话不变（预设是建会话时定的）；想马上换：`/dot memory handoff`。宿主不认这个预设时照旧建会话 |
+| `replyCheck` | `true` | 她说出去的话先过代码检查（`~/dot/persona.checks.txt`）：括号里的动作描写去掉；命中清单的句子，替她说话的那次调用重写一次，第二次照发；她的手要打出去的话命中了，退回给她换个说法 |
+| `lean` | `true` | 她的新对话用插件自带的 `dot` 预设来建（第一次开、每次交接）：宿主的工具只带读写自己的文件、定时、目标（查资料交给手：`hands` 的 `device: web`）；加上插件自己的 `hands`、`say`、`his_ok`、`qq_sticker_keep`、`memory`、`recall`、`later` 和她 QQ 的 action。提示词也只留插件为她写的几段。已有的对话不变（预设是建会话时定的）；想马上换：`/dot memory handoff`。宿主不认这个预设时照旧建会话 |
 | `nightcheck` | `true` | 她睡着时把手艺簿对着记账核对一遍并照着改（教训里的原因推测去掉、和后来记录对不上的去掉；改之前的原样留在 `~/dot/her/howto/_nightcheck.json`）。`false`：只在 `/dot nightcheck` 时核对，`/dot nightcheck apply` 才改 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 手艺簿（`~/dot/her/howto/`）：她的手做一件事时按地方（手机本身、各个 App、电脑）记步数，一件事结束按地方各记一行（步数、错、记账里的结果、用时、花费）；出过错、没做成或太久、或步数明显比平常多（≥ `howtoMinSteps`）的地方，一次小调用重写那里的笔记（教训、捷径，≤ `howtoMaxChars` 字），并给这件事起个短名，好看同一件事是不是越做越快、越省。一件事里第一次到某个地方，那里的笔记跟着给手。`/dot howto [<地方>]` 看 |
 | `thingCostCap` | `1500000` | 一件事花到这么多 token（缓存命中按十分之一算）就停下，变成一件要你点头的事（「还要接着做吗」）；0 = 不管 |
@@ -222,20 +222,23 @@ setx DSH_DOT_COMPUTER off
 | `ownerQuietMs` | `1500` | 你的 QQ 消息：你停下多少毫秒没新消息才送给她，每来一条重新计时 |
 | `ownerMaxWaitMs` | `6000` | 你一直不停时，最多从第一条起等多少毫秒 |
 | `ownerTypingMaxMs` | `15000` | QQ 报「正在输入」（NapCat）时最多等多少毫秒 |
-| `ownerPreemptMax` | `2` | 先读再说，一个数管所有出口：她的话还没到你那、你又说了话时，她连着最多让几次（重写这一轮、把写好的回答留作草稿、或拦下一条 `qq_send`）；之后先发出去。她的话有一条到了你那就清零 |
+| `ownerPreemptMax` | `2` | 先读再说，一个数管所有出口：她的话还没到你那、你又说了话时，她连着最多让几次（重来这一轮、或这次先不说）；之后先发出去。她的话有一条到了你那就清零 |
 | `loopRepeat` | `5` | 一轮里同一个工具、参数几乎一样（忽略空白和数字）调这么多次后，再调就被拦下，让她换个办法或说明卡在哪（记 `loop-stopped`）；0 关 |
-| `interludeQueueMax` | `3` | 她自己时间里的事（`interlude` 交来的）一次一件，在她的对话里做，只在没有别的事时开始；排满这么多件，最早的作废（`dropped`） |
+| `interludeQueueMax` | `3` | 她自己时间里的事（`interlude` 交来的）一次一段，在她的对话里做，只在她没有别的事（没在写、没在发、手上没事、没有你的话在路上）时开始；排满这么多件，最早的作废（`dropped`） |
 | `interludeTaskTtlMs` | `1800000` | 排队这么久还没轮到就作废（`expired`） |
 | `turnStallMs` | `300000` | 她的一轮这么久没有任何会话事件就算卡住：记 `turn-stalled`，面板标「卡住」；是她的对话就告诉你一次（不替她取消） |
+| `ownerLostMs` | `45000` | 你的话交给她的对话之后这么久没有哪一轮接到（当时也没有轮次在跑），算没接到，以插件的名义告诉你 |
+| `failureNoticeMs` | `600000` | 出错提示（这一轮出错、没接到、额度用完、key 失效）多久内最多发一次 |
+| `waitMaxMs` / `awaitMs` | `120000` / `86400000` | 手等屏幕上出现 / 消失某几个字或等一条通知（`wait_for`），一次最多等多久；一件事发出去在等别人回，事情簿上记着等多久 |
 | `imBot` / `imTarget` | `""` | dsh-im 的投递目标，空 = 第一个 |
 
 ### `llm`（模型请求闸门，`src/llm-gate.js`）
 
-她后台的模型请求（整理记忆和日记、手的会话、群聊评分、App 经验整理）和你们的对话共用同一个 provider 的 key。这道闸门在每个请求前面：只压后台的，你们的对话（以及认不出来的请求）照常发。每个 provider 分开算。`/dot` 和 dot 页面「状态」里能看到近一分钟的请求数、后台上限、是否在冷却。
+她后台的模型请求（整理记忆和日记、手替她自己做事的会话、群聊评分、App 经验整理）和你们的对话共用同一个 provider 的 key；手替你做的事算在你们的对话这边，不被压。这道闸门在每个请求前面：只压后台的，你们的对话（以及认不出来的请求）照常发。每个 provider 分开算。`/dot` 和 dot 页面「状态」里能看到近一分钟的请求数、后台上限、是否在冷却。
 
 | 键 | 默认 | 作用 |
 |---|---|---|
-| `workEffort` | `high` | 她后台干活的思考强度：记忆整理和日记、用法笔记的回顾、手的会话。和对话分开——dsh 只有一个模型选择器，在任何对话里改思考强度都会变成全局默认；以前这些后台请求读的就是那个默认，把聊天的思考关掉等于把它们的也关了。可选 `off` / `low` / `high` / `max`，`''` = 跟随选择器。模型不支持所选强度时（问宿主一次）也跟随，不会发出被拒的请求。QQ 群聊评分固定 `off`。实际发出的强度在 `/dot` 的 model requests 一行（`thinking: chat …, background …`）和幕间 `calls.jsonl` 的 `effort` 里 |
+| `workEffort` | `high` | 她后台干活的思考强度：记忆整理和日记、手艺簿的整理和核对。和对话分开——dsh 只有一个模型选择器，在任何对话里改思考强度都会变成全局默认；以前这些后台请求读的就是那个默认，把聊天的思考关掉等于把它们的也关了。可选 `off` / `low` / `high` / `max`，`''` = 跟随选择器。模型不支持所选强度时（问宿主一次）也跟随，不会发出被拒的请求。QQ 群聊评分固定 `off`。实际发出的强度在 `/dot` 的 model requests 一行（`thinking: chat …, background …`）里。她的对话和手各有自己的强度（`dot.herEffort`、`dot.handsEffort`，默认 `low`），替她说话的那次调用是 `dot.sayEffort`（默认 `off`） |
 | `backgroundRpm` | `20` | 后台请求每分钟最多几次（近 60 秒内所有请求都算进去，但只压后台的；间隔至少 60/上限 秒，一次放一个）。`0` = 不限速（只计数） |
 | `foregroundQuietSeconds` | `15` | 你们的对话有请求在发时后台不发（一个请求开着超过 10 分钟就当它已经被丢下）；发完后再等这么多秒（她一轮有好几步） |
 | `maxBackgroundWaitSeconds` | `180` | 一个后台请求最多被压后多久，到了就放行。最多 270（比 `dot.turnStallMs` 的 300 秒短，手不会被当成卡住；填更大也按 270） |
@@ -243,6 +246,8 @@ setx DSH_DOT_COMPUTER off
 | `retryHoldMaxSeconds` | `30` | 上一项最多等多久 |
 
 被限流（任何请求收到 `RATE_LIMIT`）时：后台至少停到最近一次被拒后的 60 秒，后台上限减半（最少 1）。60 秒内的再次被拒（一批一起被拒、dsh 的几次重试）算同一次；过了这一分钟又被拒才算再一次：再减半，冷却加倍（带随机抖动，最多 10 分钟）；provider 给了 retry-after 就按它。3 分钟没再被限流后每分钟加回 1。冷却开始和结束各记一行日志和审计（`kind: llm-gate`）。
+
+额度或余额用完（`QUOTA`）、登录或 API key 用不了（`AUTH` 一类）时，不是冷却：每个请求都会一样失败，直到你去处理。所以后台请求一个都不发（当场按同一个错误结束，`/dot` 的 model requests 一行写着 `account quota since …`），直到这个 provider 有一次请求成功，或者提供方给的恢复时间到了（到时放一个出去试）；dot 用插件自己的名义告诉你一次是哪一种、怎么办（`dot.account.quota` / `dot.account.auth`），不写成她说的话。审计 `account-held` / `account-resumed`。
 
 ### `compat`（和 qq-bridge 共处，见 [qq-bridge.md](qq-bridge.md)）
 
