@@ -333,9 +333,7 @@ export function apply(ctx, config = {}) {
     const input = exec.input ?? exec.args ?? exec.arguments;
     if (tool && typesText(tool, input)) {
       const phone = ctx.get('dshPhone');
-      // The phone first (one session drives it at a time), then which app is in front.
-      const busyPhone = await phone?.lease?.(sessionId, tool);
-      if (busyPhone) return deny(busyPhone);
+      // Which app is in front (who may drive the phone at all is dsh-dot's lock, before this).
       let pkg = '';
       try { pkg = String((await phone?.foreground?.()) ?? '').split('/')[0]; } catch (error) { void error; }
       // A batch that opens an app and types: the app it opens is where the typing lands.

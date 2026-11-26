@@ -341,7 +341,7 @@ export function apply(ctx, config = {}) {
   });
 
   // 5. Her phone rings, QQ messages come in (arrive.js).
-  ctx.inject(['dshPhone'], (c) => c.effect(() => { c.dshPhone.setPriority?.(sessions.last()); return c.dshPhone.onNotification?.(arrive.wake) ?? (() => {}); }, 'dsh-dot: phone notifications'));
+  ctx.inject(['dshPhone'], (c) => c.effect(() => c.dshPhone.onNotification?.(arrive.wake) ?? (() => {}), 'dsh-dot: phone notifications'));
   // QQ messages (NapCat in the computer) take the same road as phone notifications: batch, hold while busy, group.
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onMessage?.(arrive.qqMessage) ?? (() => {}), 'dsh-dot: qq messages'));
   ctx.inject(['dshQq'], (c) => c.effect(() => c.dshQq.onTyping?.(arrive.ownerTypingNow) ?? (() => {}), 'dsh-dot: qq typing'));
@@ -351,6 +351,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['dshComputer'], (c) => c.effect(() => { const pc = c.dshComputer; pc.handsOf = hw.handsOf; return () => { delete pc.handsOf; }; }, 'dsh-dot: computer gate defers to hands gates'));
   // Read before you speak, the gates of her hands, loops (hands-wiring.js preExecute).
   ctx.on('tools/pre-execute', hw.preExecute);
+  // One lock a place: a call on her phone or computer that cannot run now is refused before anything else (hands-wiring.js laneGate).
+  ctx.on('tools/pre-execute', hw.laneGate, { prepend: true });
   // Her clock: the one timer for what comes of time passing, in this order — her sleep (sleep.js), a stalled turn
   // (turns.js), an unanswered reach (voice.js), the plugin's drift, what other parts watch on it (dshDot.onTick: her
   // own time, interlude), then a thing of hers waiting to go in (arrive.js). Whatever it brings goes in by arrive().

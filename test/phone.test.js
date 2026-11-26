@@ -589,34 +589,13 @@ test('phone_zoom tool: a part of the screen, enlarged, through the attachment st
   h.stop();
 });
 
-const audits = () => readFileSync(join(process.env.DSH_HOME, 'dsh-phone-audit.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)).filter((e) => e.kind === 'phone-lease');
-
-test('phone lease: one session drives the phone; another waits, then is refused; turn end and idle free it; her conversation goes first', async () => {
+test('phone: no lease of its own — who may drive it is dsh-dot\'s one lock a place; two sessions\' calls both go on here', async () => {
   const h = harness({ config: { leaseWaitMs: 300, leaseIdleMs: 700 } });
   const T = 'mcp__dot-phone__mobile_click_on_screen_at_coordinates';
   assert.equal((await h.gate(T, {}, 'errand')).via, 'next');
-  const refused = await h.gate('mcp__dot-phone__mobile_take_screenshot', {}, 'interlude');
-  assert.equal(refused.kind, 'deny');
-  assert.match(refused.reason, /^手机正被另一件事占着（在用 mobile_click_on_screen_at_coordinates），稍后再试$/);
-  assert.equal((await h.gate(T, {}, 'errand')).via, 'next', 'the holder keeps going');
-  // the holder's turn ends: the waiting one gets it
-  const waiting = h.gate(T, {}, 'interlude');
-  setTimeout(() => h.turnEnd('errand'), 50);
-  assert.equal((await waiting).via, 'next');
-  // two wait; her conversation is first in line though it came second
-  h.ctx.dshPhone.setPriority('her');
-  const order = [];
-  const a = h.gate(T, {}, 'errand').then((r) => order.push(['errand', r.kind]));
-  await new Promise((r) => setTimeout(r, 20));
-  const b = h.gate(T, {}, 'her').then((r) => order.push(['her', r.kind]));
-  setTimeout(() => h.turnEnd('interlude'), 60);
-  await Promise.all([a, b]);
-  assert.deepEqual(order, [['her', 'allow'], ['errand', 'deny']]);
-  // idle: the holder stops touching it for leaseIdleMs
-  await new Promise((r) => setTimeout(r, 750));
-  assert.equal((await h.gate(T, {}, 'errand')).via, 'next');
-  assert.equal((await h.gate(T, {})).via, 'next', 'no session id: no lease');
-  assert.deepEqual([...new Set(audits().map((e) => e.event))].sort(), ['acquired', 'expired', 'refused', 'waited']);
+  assert.equal((await h.gate('mcp__dot-phone__mobile_take_screenshot', {}, 'interlude')).via, 'next', 'not held here, not waited for');
+  assert.equal(h.ctx.dshPhone.lease, undefined);
+  assert.equal(h.ctx.dshPhone.setPriority, undefined);
   h.stop();
 });
 

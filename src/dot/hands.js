@@ -67,8 +67,10 @@ export const DIRECT_IDLE_MS = 120000;
  * @param deps.onDone     (result, thing) — it is over. result = { outcome, by, cause?, error?, summary?, detail?, question?, ask?, steps, rounds, ms, notes }
  * @param deps.retire     (id) — a session the hands are done with (the host may put it away)
  * @param deps.maxMs      a thing is cut after this long
+ * @param deps.lane       (event, { device, session, holder, why? }) — a session that is not her hands took a device ('acquired'),
+ *                        was not let on ('refused'), or let it go ('expired')
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', done = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', done = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, lane = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
   const past = new Set(store.get('handsPast') ?? []);
   { const old = store.get('handsSession'); if (old) { past.add(String(old)); store.set('handsSession', ''); } } // one session for all rounds, before 0.25
   { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', cause: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
@@ -81,7 +83,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   /** The first one begun: what a call that does not say which acts on. */
   const first = () => under.values().next().value ?? null;
   const onDevice = (device) => [...under.values()].find((t) => t.device === device) ?? null;
-  const letGo = (device, why) => { const d = direct.get(device); if (!d) return; direct.delete(device); audit('lane-let-go', { device, session: d.session, why }); if (!direct.size && offDirect) { try { offDirect(); } catch (e) { void e; } offDirect = null; } };
+  const letGo = (device, why) => { const d = direct.get(device); if (!d) return; direct.delete(device); lane('expired', { device, session: d.session, holder: d.session, why }); if (!direct.size && offDirect) { try { offDirect(); } catch (e) { void e; } offDirect = null; } };
   /** The thing `which` names, under way: { session } its hands' session, { thing } its entry; left out, first(). */
   const pick = (which) => (which == null ? first() : 'thing' in which ? under.get(which.thing) ?? null : 'session' in which ? bySession.get(which.session) ?? null : first());
   const free = (t) => { if (under.get(t.entry) !== t) return false; under.delete(t.entry); if (t.id && bySession.get(t.id) === t) bySession.delete(t.id); return true; };
@@ -192,8 +194,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      */
     hold(device, session, tool = '') {
       const h = holderOf(device);
-      if (h && !(h.session && h.session === session)) { audit('lane-busy', { device, session, ...(h.thing ? { thing: h.thing.id } : { holder: h.session }) }); return h; }
-      if (!h) audit('lane-held', { device, session, tool });
+      if (h && !(h.session && h.session === session)) { lane('refused', { device, session, holder: h.thing ? h.thing.id : h.session }); return h; }
+      if (!h) lane('acquired', { device, session, holder: session });
       direct.set(device, { session, tool, at: now() });
       offDirect ??= onEvent((s, event) => { if (event?.type === 'turn/end' && s?.id) for (const [dev, d] of [...direct]) if (d.session === s.id) letGo(dev, 'turn-end'); }) ?? (() => {});
       return null;

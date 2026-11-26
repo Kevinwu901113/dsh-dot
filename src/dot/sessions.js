@@ -18,12 +18,12 @@ export const isImMessage = (m) => { const r = String(m?.source?.rpcId ?? ''); re
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };
 
 /**
- * @param dot  the plugin's parts (core.js apply): ctx, cfg, store, audit, logger, phone, home
+ * @param dot  the plugin's parts (core.js apply): ctx, cfg, store, audit, logger, home
  * → { last, setLast, wantIm, imSessions, isDotSession, retired, lean, isLean, selfCheck, thinkAt, resolveLive,
  *     createConversation, openConversation, setSession }
  */
 export function createSessions(dot) {
-  const { ctx, cfg, store, audit, logger, phone, home } = dot;
+  const { ctx, cfg, store, audit, logger, home } = dot;
   // What her conversation is. It is one session, and the plugin is the only one that makes it: openConversation (the
   // first thing that reaches her when she has none) and setSession (a handoff), both through createConversation — with
   // her own preset (HER_PRESET) whenever lean is on and the host takes it. A session is hers when it is that one, or one
@@ -35,8 +35,8 @@ export function createSessions(dot) {
   const imSessions = new Set();
   let lastSession = store.get('lastSession') || ''; // her conversation: where phone notifications wake her (remembered across restarts)
   // Every change goes through here, called only where the plugin made her conversation (and by the self-check, to
-  // clear it); the phone puts her conversation first (dshPhone.setPriority, when it has one).
-  const point = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
+  // clear it).
+  const point = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); };
   /** A turn of hers ended in `id` (turns.js): that is her conversation already — no other session becomes it this way. */
   const setLast = (id) => { if (!id || id === lastSession) return; audit('not-her-conversation', { session: id, conversation: lastSession }); };
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');

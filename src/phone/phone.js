@@ -77,11 +77,10 @@ export const defaults = {
   notifyApps: [],           // [] = every app she installs, now or later, until muted
   notifyMuted: [],          // packages whose notifications never wake her (also /phone notify mute <pkg>, persisted)
   notifyCatchUpMs: 12 * 3600_000, // at start, notifications that arrived while dsh was down (no older than this) still wake her
-  // One session drives the phone at a time (her conversation, an errand, an interlude round all act as her).
   screenAfter: true,        // after a tap, swipe, launch, typing: what is on the screen now comes with the result
   screenAfterMs: 700,       // how long the screen is given to settle before it is read
-  leaseIdleMs: 120_000,     // the lease lapses this long after its holder's last phone call (or when its turn ends)
-  leaseWaitMs: 60_000,      // another session's phone call waits this long for it, then is refused
+  leaseIdleMs: 120_000,     // no longer read: the phone's lease is dsh-dot's one lock a place (dot/hands.js; a session on it directly lets go after DIRECT_IDLE_MS or at its turn's end)
+  leaseWaitMs: 60_000,      // no longer read: nothing waits for the phone — a call while it is held is refused at once
   mcp: true,                // mount mobile-mcp as mcp__dot-phone__*
   toolCallTimeoutMs: 60_000,
   // Gate: phone tools that are asked for approval (dsh-computer-style), and typed text that is.
@@ -962,42 +961,8 @@ export function apply(ctx, config = {}, deps = {}) {
     return { kind: 'ask', reason };
   });
 
-  // One session drives the phone at a time: any phone call takes the lease — looking too, since a
-  // screenshot mid-way through another session's steps shows a screen she did not put there. It lapses
-  // leaseIdleMs after the holder's last call or when the holder's turn ends; a call from another
-  // session waits up to leaseWaitMs, then is refused. Her conversation (setPriority) goes first.
-  const lease = { holder: '', tool: '', at: 0, priority: '' };
-  const waiting = new Set();
-  const lapse = () => { audit({ kind: 'phone-lease', event: 'expired', session: lease.holder, holder: lease.holder }); lease.holder = ''; };
-  phone.setPriority = (id) => { lease.priority = id || ''; };
-  /** For hooks that answer a phone call ahead of this one (interlude's observation allow): null, or why it is refused. */
-  phone.lease = (id, tool) => (id ? takeLease(id, tool) : null);
-  async function takeLease(id, tool) {
-    const until = Date.now() + cfg.leaseWaitMs;
-    for (;;) {
-      if (lease.holder && lease.holder !== id && Date.now() - lease.at > cfg.leaseIdleMs) lapse();
-      const first = waiting.has(lease.priority) ? lease.priority : waiting.values().next().value;
-      if (lease.holder === id || (!lease.holder && (first ?? id) === id)) {
-        waiting.delete(id);
-        if (lease.holder !== id) audit({ kind: 'phone-lease', event: 'acquired', session: id, holder: id });
-        Object.assign(lease, { holder: id, tool, at: Date.now() });
-        return null;
-      }
-      if (Date.now() >= until) { waiting.delete(id); audit({ kind: 'phone-lease', event: 'refused', session: id, holder: lease.holder }); return `手机正被另一件事占着（${lease.holder ? `在用 ${lease.tool}` : '有别的事排在前面'}），稍后再试`; }
-      if (!waiting.has(id)) { waiting.add(id); audit({ kind: 'phone-lease', event: 'waited', session: id, holder: lease.holder }); }
-      await sleep(Math.min(50, until - Date.now()));
-    }
-  }
-  ctx.on('session/event', (session, event) => { if (event?.type === 'turn/end' && session?.id && session.id === lease.holder) lapse(); });
-  // Prepended: a listener ahead of it that answers without next() (interlude's observation `allow`) would skip it.
-  ctx.on('tools/pre-execute', async (exec_, next) => {
-    const tool = exec_.name.startsWith(PHONE_TOOL_PREFIX) ? exec_.name.slice(PHONE_TOOL_PREFIX.length) : exec_.name === PHONE_ZOOM_TOOL || exec_.name === PHONE_TYPE_TOOL ? exec_.name : '';
-    const id = exec_.agent?.session?.id;
-    if (!tool) return next();
-    const refused = id ? await takeLease(id, tool) : null;
-    if (refused) return deny(refused);
-    return next();
-  }, { prepend: true });
+  // Who may drive the phone right now is not decided here: dsh-dot has one lock a place (dot/hands.js holder), the
+  // phone's among them — a thing of hers holds it from start to end, any other session while it uses it.
 
   // After a call that changes the screen, what the screen shows now comes along with the result: the words on it and
   // where to tap them. Looking again after every tap was half of all phone calls (11-18: 6 of 11, 442 of 1500).

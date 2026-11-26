@@ -10,7 +10,7 @@ import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { deny } from '../refusals.js';
-import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, VM_TOOL_PREFIX, isHerTool, HANDS_PRESETS, handsPlaceOf, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
+import { HANDS_ASK_TOOL, HANDS_DONE_TOOL, SAY_TOOL, PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL, PHONE_ZOOM_TOOL, VM_TOOL_PREFIX, isHerTool, HANDS_PRESETS, handsPlaceOf, HANDS_WAIT_TOOL, PHONE_LOOK_TOOLS } from '../tool-prefixes.js';
 import { VM_SCREENSHOT } from '../qq/qq.js';
 import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
@@ -24,7 +24,7 @@ import { prompt } from '../prompts.js';
 import { stamp } from '../clock.js';
 import { head } from '../cut.js';
 import { screenLines } from '../phone/typing.js';
-import { costOf, sameName } from './things.js';
+import { costOf, sameName, titleOf } from './things.js';
 import { shortTool } from './turns.js';
 import { handsStatus, ownWords, replyCheckText, spokenOf, isOwnerTarget, loopKey, conversationTitle, contentText, ownerInterruptText } from './text.js';
 
@@ -36,7 +36,7 @@ const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, store, phone, computer, home, sessions,
  *             turns, voice, arrive; read when used: ledger, consent, sleep (stir)
  * → { hands(), makeHands, howto, onApproval, onPostExecute, assemble, nightcheck, nightly, disposePhoneHome,
- *     cancelPhoneHome, restartCut, handsPlace, handsOf, askTool, waitTool, doneTool, preExecute }
+ *     cancelPhoneHome, restartCut, handsPlace, handsOf, askTool, waitTool, doneTool, preExecute, laneGate }
  */
 export function createHandsWiring(dot) {
   const { ctx, cfg, audit, logger, store, phone, computer, home, sessions, turns, voice, arrive } = dot;
@@ -277,7 +277,7 @@ export function createHandsWiring(dot) {
     if (!(cfg.phoneHomeAfterMs > 0)) return;
     phoneHomeTimer = setTimeout(() => {
       phoneHomeTimer = null;
-      if (hands?.busy() || !phone()?.isReady) return;
+      if (hands?.holder('phone') || !phone()?.isReady) return; // something is on the phone: a thing of hers, or someone using it
       Promise.resolve(phone().adbExec?.(['shell', 'input', 'keyevent', 'KEYCODE_HOME'])).then(() => audit('phone-home', { afterMs })).catch((err) => logger.debug?.(`phone home: ${err.message}`));
     }, afterMs);
     phoneHomeTimer.unref?.();
@@ -321,6 +321,8 @@ export function createHandsWiring(dot) {
       // A session her hands are done with is put away: one per thing, so they pile up otherwise.
       retire: async (id) => { try { await ctx.get('workspaceRegistry')?.archiveSession?.(id); } catch (err) { logger.debug?.(`hands session not archived: ${err.message}`); } },
       audit, maxMs: cfg.handsMaxMs,
+      // Who else is on her phone or her computer, written to that device's own log as the phone's lease always was.
+      lane: (event, { device, ...d }) => { const log = device === 'phone' ? phone()?.audit : device === 'computer' ? computer()?.audit : null; try { log?.({ kind: `${device}-lease`, event, ...d }); } catch (error) { void error; } },
       // The thing is over, or her hands need her: what they said, and the screen as it is now for her own eyes, come
       // to her conversation and wake her. Nothing else of theirs does. What she makes of it — and whether he hears of
       // it — is hers: on his business the message says whose it is, and she tells him with qq_send.
@@ -481,6 +483,20 @@ export function createHandsWiring(dot) {
     if (thing && REACHES.has(g.kind)) hands.keptOf(thing).reached = true;
     return null;
   };
+  // One lock a place (hands.js holder). A call of her hands on a device is their thing's: it goes on while their thing
+  // holds that place (a late call of a session whose thing is over does not reach a device another thing is on). A
+  // call on her phone or her computer from any other session (a qq-bridge chat; without compat, any) holds the device
+  // while it uses it (hands.hold) — and is refused, at once, while a thing of hers or another such session is on it.
+  // First of the hooks (prepended): nothing else is asked or judged for a call that cannot run.
+  const placeOfTool = (name) => (name === PHONE_TYPE_TOOL || name === PHONE_ZOOM_TOOL || name.startsWith(PHONE_TOOL_PREFIX) ? 'phone' : name.startsWith(VM_TOOL_PREFIX) ? 'computer' : '');
+  const laneGate = async (exec, next) => {
+    const device = placeOfTool(String(exec?.name ?? '')), s = exec?.agent?.session;
+    if (!device || !s?.id || !hands) return next();
+    let held;
+    if (hands.isHands(s.id, s.header?.cwd)) { const mine = hands.thingOf(s.id); held = hands.holder(device); if (!held || (mine && held.thing?.id === mine.id)) return next(); }
+    else { held = hands.hold(device, s.id, shortTool(exec.name)); if (!held) return next(); }
+    return deny(`${device === 'phone' ? '手机' : '电脑'}正被另一件事占着（${held.thing ? `在做：${titleOf(held.thing.task)}` : `在用 ${held.tool}`}），稍后再试`);
+  };
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
   const calls = new WeakMap(); // turn → how often each call (loopKey) was made in it
   const handsOf = (exec) => Boolean(hands?.isHands(exec?.agent?.session?.id, exec?.agent?.session?.header?.cwd));
@@ -583,6 +599,6 @@ export function createHandsWiring(dot) {
     /** Her hands (hands.js), or null before makeHands. */
     hands: () => hands,
     makeHands, howto, onApproval, onPostExecute, assemble, nightcheck, nightly, disposePhoneHome, cancelPhoneHome,
-    restartCut, handsPlace, handsOf, askTool, waitTool, doneTool, preExecute,
+    restartCut, handsPlace, handsOf, askTool, waitTool, doneTool, preExecute, laneGate,
   };
 }
