@@ -39,6 +39,7 @@ import { runPendingReset } from '../reset.js';
 import { today } from '../clock.js';
 import { configure as configurePrice, noteRoute, routeFor } from '../price.js';
 import { buildText } from '../build.js';
+import { sandboxAvailable, sandboxProbe } from '../computer/host-sandbox.js';
 import { workingRules, stripSilent, SILENT } from './text.js';
 // What used to be defined here and now lives with the part that uses it: the same names, the same values.
 export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
@@ -485,4 +486,6 @@ export function apply(ctx, config = {}) {
   ctx.inject(['webServer', 'connection'], (c) => c.effect(() => mountPanel(ctx, c.webServer, logger, c.connection), 'dsh-dot: panel'));
 
   logger.info(`dot ready — ${buildText()} — home ${home}`);
+  // Her hands on this machine run read-only in a box when there is one that holds (computer/host-sandbox.js): said once at start.
+  { const boxed = sandboxAvailable(); logger.info(`this machine: ${boxed ? 'looks run in a read-only, offline box' : `no box (${sandboxProbe()}) — every command her hands run here is asked of him`}`); audit('host-box', { boxed, why: sandboxProbe() }); }
 }

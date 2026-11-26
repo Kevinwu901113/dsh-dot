@@ -5,15 +5,35 @@
 // looks) fails here instead of writing or reaching out. macOS: the system's own sandbox (sandbox-exec, Seatbelt —
 // marked deprecated, still what other coding agents use for this). Elsewhere there is no box, and the gate asks him
 // about every command instead (sandboxAvailable false).
-import { existsSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 export const SANDBOX_EXEC = '/usr/bin/sandbox-exec';
-let forced = null;
-/** Can a command on this machine be boxed? (tests: setSandboxAvailable) */
-export const sandboxAvailable = () => forced ?? (process.platform === 'darwin' && existsSync(SANDBOX_EXEC));
+let forced = null, probed = null;
+/**
+ * Can a command on this machine be boxed? Not taken on trust: the first time it is asked, the box is tried — a plain
+ * look must run in it and a write must be refused. A box that does not hold (the tool gone, the profile refused, a
+ * write let through) counts as none, and every command on this machine is asked of him instead. (tests: setSandboxAvailable)
+ */
+export const sandboxAvailable = () => forced ?? (probed ??= probe());
 export const setSandboxAvailable = (v) => { forced = v; };
+export const sandboxProbe = () => probedWhy;
+let probedWhy = '';
+function probe() {
+  if (process.platform !== 'darwin' || !existsSync(SANDBOX_EXEC)) { probedWhy = 'no sandbox-exec here'; return false; }
+  const dir = mkdtempSync(join(tmpdir(), 'dsh-dot-box-')), target = join(dir, 'written');
+  try {
+    const run = (argv) => spawnSync(SANDBOX_EXEC, ['-p', profile(), ...argv], { timeout: 5000, encoding: 'utf8' });
+    const look = run(['/bin/ls', '/']);
+    if (look.status !== 0) { probedWhy = `a look did not run in the box: ${String(look.stderr || look.error?.message || look.status).trim().slice(0, 160)}`; return false; }
+    run(['/bin/sh', '-c', `echo x > '${target}'`]);
+    if (existsSync(target)) { probedWhy = 'a write got through the box'; return false; }
+    probedWhy = 'ok';
+    return true;
+  } catch (err) { probedWhy = `probe failed: ${err.message}`; return false; } finally { try { rmSync(dir, { recursive: true, force: true }); } catch { /* left in tmp */ } }
+}
 
 // Where keys and logins live: not even read in the box (the gate asks about naming them too).
 const SECRET_DIRS = ['.ssh', '.aws', '.gnupg', '.config/gh', '.docker', '.kube', 'Library/Keychains', 'Library/Cookies'];
