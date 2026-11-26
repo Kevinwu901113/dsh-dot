@@ -34,6 +34,11 @@ export const defaults = {
   // left on device" in /qq log). Only a new computer gets it; an existing one keeps its size.
   rootDisk: '16G',
   mounts: [],
+  // Share a folder with the VM because a command was run in it (the old behaviour)? Off: only `mounts` (or, with none
+  // set, ~/dsh-computer/workspace) is ever shared, and a folder shared before that is not on it is taken back at the
+  // next boot. 11-26: six folders had piled up this way — her own home (~/dot) and ~/Documents/okx among them —
+  // inside a computer whose browser and QQ read what strangers send.
+  autoShare: false,
   readyTimeoutMs: 240_000,
   // Public origin of *dsh itself* (your own exposure, e.g. `tailscale serve` → https://my-mac.tailnet.ts.net):
   // the live view lives on dsh's web server behind dsh's login. Used in approval messages and status.
@@ -218,9 +223,11 @@ export function apply(ctx, config = {}, deps = {}) {
   // Folders actually bound into the VM: what earlier runs recorded, plus the configured defaults.
   const state = readState();
   const recorded = state.mounts || [];
-  // Explicitly configured folders are honored as given; recorded/default ones must pass `shareable`.
+  // Explicitly configured folders are honored as given. Without autoShare nothing else is shared: a recorded folder
+  // that is not configured is unbound at boot (disallowedBound) — recorded stays the list to reconcile against.
   const explicit = new Set(cfg.mounts?.length ? resolveMounts(cfg) : []);
-  const allowed = (m) => explicit.has(m) || shareable(m);
+  const configured = new Set(resolveMounts(cfg));
+  const allowed = (m) => explicit.has(m) || (cfg.autoShare ? shareable(m) : configured.has(m));
   const initialMounts = [...new Set([...recorded, ...resolveMounts(cfg)])].filter(allowed);
   // An existing VM bound to a folder that is no longer allowed gets rebound without it.
   const disallowedBound = recorded.filter((m) => !allowed(m));
@@ -299,7 +306,7 @@ export function apply(ctx, config = {}, deps = {}) {
    */
   let pending = null;
   computer.ensureShared = (dir) => {
-    if (off || computer.isShared(dir) || !shareable(dir) || !backend.remount || computer.error) return null;
+    if (off || !cfg.autoShare || computer.isShared(dir) || !shareable(dir) || !backend.remount || computer.error) return null;
     const previous = [...computer.mounts];
     const next = [...previous.filter((m) => !inside(dir, m)), dir]; // a parent replaces its children
     computer.mounts = next; // later spawns map paths as shared; they wait on the lock meanwhile

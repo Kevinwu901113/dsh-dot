@@ -44,6 +44,7 @@ export const SCHEMA = [
   e('computer', 'memory', '电脑', 'text', 'restart-dsh', '内存上限（如 4G）'),
   e('computer', 'cpus', '电脑', 'int', 'restart-dsh', 'CPU 核数', { min: 1, max: 32 }),
   e('computer', 'rootDisk', '电脑', 'text', 'create', '磁盘（如 16G）'),
+  e('computer', 'autoShare', '电脑', 'bool', 'restart-dsh', '命令在哪个文件夹跑，就把那个文件夹共享进电脑（默认关：只共享 mounts 里列的，没列就只有 ~/dsh-computer/workspace；关掉后，以前自动共享的会在下次开机时撤掉）'),
   e('computer', 'backend', '电脑', choice('auto', 'microsandbox', 'docker'), 'restart-dsh', '虚拟机后端'),
   e('computer', 'publicUrl', '电脑', 'text', 'restart-dsh', '对外的 dsh 地址'),
   e('computer', 'apiKey', '电脑', 'text', 'restart-dsh', '网关密钥（空 = 每台机器自动生成）', { secret: true }),

@@ -257,3 +257,26 @@ test('computer power: off shuts the VM down and refuses commands; kept in dsh-do
     assert.deepEqual(b.calls, [], 'nothing booted');
   } finally { shut(gw.server); process.env.DSH_HOME = old; if (old === undefined) delete process.env.DSH_HOME; }
 });
+
+test('sharing with the computer: only what is configured; a folder shared before by a command run in it is taken back at boot; nothing is shared on the fly', async () => {
+  const { apply } = await import('../src/computer/vm.js');
+  const gw = await gatewayLike({ keyed: true, relayClosed: true });
+  const old = process.env.DSH_HOME;
+  process.env.DSH_HOME = mkdtempSync(join(tmpdir(), 'dot-share-'));
+  const kept = mkdtempSync(join(tmpdir(), 'dot-kept-')), stray = mkdtempSync(join(tmpdir(), 'dot-stray-'));
+  const { writeFileSync } = await import('node:fs');
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-computer-state.json'), JSON.stringify({ mounts: [kept, stray] }));
+  const until = async (pred, ms = 3000) => { const end = Date.now() + ms; while (Date.now() < end) { if (pred()) return true; await new Promise((r) => setTimeout(r, 10)); } return pred(); };
+  const remounts = [];
+  const backend = { kind: 'fake', bin: 'fake', rootShell: async () => '', ensure: async () => ({ fresh: false, mounts: [kept, stray] }), stop: async () => {},
+    remount: async (o) => { remounts.push({ mounts: [...o.mounts], previous: [...o.previous] }); } };
+  const ctx = { logger: () => ({ debug() {}, info() {}, warn() {}, error() {} }), provide(n, v) { ctx[n] = v; }, effect() {}, inject() {} };
+  try {
+    apply(ctx, { port: gw.port, apiKey: 'secret', mcp: false, mounts: [kept] }, { backend });
+    assert.ok(await until(() => ctx.dshComputer.status().state === 'ready'), 'booted');
+    assert.deepEqual(remounts, [{ mounts: [kept], previous: [kept, stray] }], 'rebound without the stray folder, reconciled against the recorded list');
+    assert.deepEqual(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-computer-state.json'), 'utf8')).mounts, [kept]);
+    assert.equal(ctx.dshComputer.ensureShared(mkdtempSync(join(tmpdir(), 'dot-new-'))), null, 'a command run elsewhere shares nothing');
+    assert.equal(remounts.length, 1);
+  } finally { shut(gw.server); process.env.DSH_HOME = old; if (old === undefined) delete process.env.DSH_HOME; }
+});

@@ -125,7 +125,8 @@ setx DSH_DOT_COMPUTER off
 |---|---|---|
 | `rootDisk` | `"16G"` | 磁盘 🔒 建立时 |
 | `memory` / `cpus` | `"4G"` / `2` | 资源上限 |
-| `mounts` | `[]` | 共享文件夹 |
+| `mounts` | `[]` | 共享文件夹（空 = 只有 `~/dsh-computer/workspace`） |
+| `autoShare` | `false` | 命令在哪个文件夹跑就把那个文件夹共享进电脑。默认关：只共享 `mounts`，以前自动共享进去的会在下次开机时撤掉（11-26：`~/dot` 和 `~/Documents/okx` 曾这样被带进电脑） |
 | `backend` | `"auto"` | `microsandbox` / `docker` |
 | `power` | `true` | 电源开关：`false` = 关机，重启 dsh 也保持关着（dot 页面顶部的开关、`/computer on`、`/computer off`） |
 | `image` | 国内镜像 `enterprise-public-cn-beijing.cr.volces.com/vefaas-public/all-in-one-sandbox:latest` | 镜像（作者官方的国内镜像，与 `ghcr.io/agent-infra/sandbox:latest` 同一镜像；海外用户可改回 ghcr）🔒 建立时 |
