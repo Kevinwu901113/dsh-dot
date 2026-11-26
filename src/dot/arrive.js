@@ -92,6 +92,8 @@ export function createArrive(dot) {
   };
   /** Her conversation moved on (dshDot.setSession): after an overflow, what was kept arrives in the new one; otherwise what went into the one she left is let go. */
   const movedOn = (from, to) => {
+    // Her own time going on when she moved goes on in the new conversation: its end is the end of a turn there.
+    if (taskRunning?.session === from) { taskRunning.session = to; audit('task-moved', { kind: taskRunning.task, from, to }); }
     const o = overflow.get(from);
     overflow.delete(from);
     const rest = untrack(sent.filter((s) => s.session === from)).map((s) => s.e);
@@ -354,6 +356,21 @@ export function createArrive(dot) {
     waiting: Boolean(taskRunning) || onTheWay('person').length > 0,             // something is already on its way to her
   });
   const quiet = () => !Object.values(herState()).some(Boolean);
+  /**
+   * Is this session's work right now her own time's (the stretch running, taskRunning)? Her conversation: when the turn
+   * running in it was opened by her own time or by her hands coming back to a thing of hers — not by his words or
+   * anyone else's, which may come in the same conversation while her own time waits on her hands (11-26: a session
+   * id alone counted his turns into her own time's budget, and could have stopped them). Her hands: when their thing
+   * was given in this stretch. What her own time costs and may do is judged by this, not by the session id.
+   */
+  const ownTime = (id, cwd) => {
+    if (!taskRunning || !id) return false;
+    const t0 = taskRunning.session ? turns.get(taskRunning.session) : null;
+    const ownTurn = (t) => Boolean(t) && t.by.whose === 'her' && (t.by.form === taskRunning.source?.form || t.by.form === 'hands-result');
+    if (id === taskRunning.session) return ownTurn(turns.get(id));
+    const thing = dot.hands?.isHands(id, cwd) ? dot.hands.thingOf(id) : null;
+    return Boolean(thing) && !thing.forHim && (taskRunning.things.includes(thing.id) || (ownTurn(t0) && (t0.opened ?? []).includes(thing.id)));
+  };
   const finishTask = (t, status, report = '', cost = null) => {
     if (t === taskRunning) taskRunning = null; else take([t]);
     audit(`task-${status}`, { kind: t.task, key: t.key, session: t.session, waitedMs: (t.startedAt ?? Date.now()) - t.queuedAt });
@@ -432,6 +449,9 @@ export function createArrive(dot) {
     onWake: () => pump(),
     /** The last notifications of her phone (the array itself: wait_for and done look through it). */
     seenNotes: () => seenNotes,
-    herState, quiet, enqueueTask, nextTask, taskTurnEnded, watchSetup,
+    herState, quiet, ownTime,
+    /** The conversation her own time is going on in ('' when none is). */
+    ownTimeSession: () => taskRunning?.session ?? '',
+    enqueueTask, nextTask, taskTurnEnded, watchSetup,
   };
 }

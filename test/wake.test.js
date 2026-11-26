@@ -92,6 +92,10 @@ function ownHarness({ home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot'), 
     onTick: (fn) => { ticker = fn; return () => { ticker = null; }; },
     hers: (id) => id === 's1', retired: () => false, session: () => 's1',
     isHands: (id) => id === 'h1', handsFor: () => state.handsFor,
+    // What dot says is her own time's work (arrive.js ownTime): s1 while the stretch runs and its turn is hers (state.his:
+    // a turn of his came in meanwhile), h1 while its thing is hers.
+    ownTime: (id) => Boolean(state.own) && (id === 's1' ? !state.his : id === 'h1' && state.handsFor === 'her'),
+    ownTimeSession: () => (state.own ? 's1' : ''),
   };
   const ctx = {
     logger: () => ({ info() {}, warn() {}, error() {} }),
@@ -116,8 +120,8 @@ function ownHarness({ home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot'), 
     /** The model a session's calls go to, as its request header says. */
     route: (id, config) => emit(id, 'request/header', { header: { config } }, id === 'h1' ? '/hands' : home),
     /** The last queued own time starts in s1 and, when told, is over. */
-    start: () => tasks.at(-1).onStart('s1'),
-    done: (cost = null) => tasks.at(-1).onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '', cost }),
+    start: () => { state.own = true; tasks.at(-1).onStart('s1'); },
+    done: (cost = null) => { state.own = false; return tasks.at(-1).onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '', cost }); },
     gate: async (sid, name, cwd) => { let out = { kind: 'allow', via: 'next' }; for (const fn of gates) out = await fn({ name, agent: { session: { id: sid, header: { cwd } } } }, async () => out); return out; },
     stop: () => { for (const d of effects) if (typeof d === 'function') d(); },
   };
@@ -189,6 +193,8 @@ test('her own time: a day\'s cost has a ceiling the code counts — her steps an
     // both sessions' calls go to deepseek-flash (their request headers say so): a cache hit is 0.02 of a token (src/price.js)
     for (const id of ['s1', 'h1']) h.route(id, { provider: 'deepseek-account', model: 'deepseek-flash' });
     h.step('s1', { inputTokens: 3000 });
+    // a turn of his in the same conversation while her own time waits on her hands: not her own time's (11-26)
+    h.state.his = true; h.step('s1', { inputTokens: 90000 }); h.state.his = false;
     h.state.handsFor = 'him'; h.step('h1', { inputTokens: 50000 });
     h.state.handsFor = 'her'; h.step('h1', { inputTokens: 5600, cacheReadTokens: 20000 }); // 5600 + 400 = 6000
     await new Promise((r) => setImmediate(r));

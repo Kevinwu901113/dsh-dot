@@ -42,6 +42,12 @@ const accounted = (text) => {
   return text;
 };
 
+// What dot says is her own time's work (dsh-dot arrive.js ownTime), for the stand-in dots below: the session a
+// stretch started in, while it runs.
+const own = { id: '' };
+const ownFake = { ownTime: (id) => Boolean(own.id) && id === own.id, ownTimeSession: () => own.id };
+const tracked = (t) => ({ ...t, onStart: (id) => { own.id = id; t.onStart(id); }, onDone: (r) => { own.id = ''; t.onDone(r); } });
+
 function harness({ reply, canon = CANON, config = {}, targets = [{ targetId: 'me' }], web = null, vm = null, memory = undefined, wire = null } = {}) {
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   mkdirSync(home, { recursive: true });
@@ -232,7 +238,7 @@ test('free time: her own time comes to her with a budget; QQ is hers as always, 
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000, freeDailyTokens: 30000 } });
   const tasks = [], cancelled = [];
   let fg = 'com.max.xiaoheihe/.MainActivity';
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: (id) => id === 'e1', session: () => 's1' }
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...ownFake, task: (t) => { tasks.push(tracked(t)); return 'queued'; }, retired: (id) => id === 'e1', session: () => 's1' }
     : n === 'dshPhone' ? { isReady: true, apps: async () => [], foreground: async () => fg }
       : n === 'agents' ? { get: (id) => ({ cancel: () => cancelled.push(id) }) } : get(n)))(h.ctx.get);
   writeFileSync(join(h.home, 'her', '想学的.md'), '画画');
@@ -269,7 +275,7 @@ test('free time: her own time comes to her with a budget; QQ is hers as always, 
 test('free time: one step past the whole budget stops it without a wake-up message; with no cancel, every tool is refused', async () => {
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000 } });
   const tasks = [], steered = [];
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true }
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...ownFake, task: (t) => { tasks.push(tracked(t)); return 'queued'; }, retired: () => true }
     : n === 'agents' ? { get: () => ({ steer: (m) => steered.push(m) }) }
       : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }) } : get(n)))(h.ctx.get); // no cancel on this host
   await h.cmd().handler({ rawInput: 'free' });
@@ -297,7 +303,7 @@ test('free time: one step past the whole budget stops it without a wake-up messa
 test('voice: how she talks is the last thing she reads with what has just reached her, from the Canon or the built-in; not in retired sessions', async () => {
   const voiceOf = (opts) => {
     const notes = [];
-    const h = harness({ ...opts, wire: (ctx) => { ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: (id) => id === 'e1', turnNote: (x) => { notes.push(x); return () => {}; } } : get(n)))(ctx.get); } });
+    const h = harness({ ...opts, wire: (ctx) => { ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...ownFake, task: () => 'queued', retired: (id) => id === 'e1', turnNote: (x) => { notes.push(x); return () => {}; } } : get(n)))(ctx.get); } });
     return { h, note: notes.find((p) => p.name === 'interlude:voice') };
   };
   const c = (id, cwd) => ({ agent: { session: { id, header: { cwd } } }, messages: [] });
@@ -354,7 +360,7 @@ test('free time: what it cost today is counted in 折算 token and in yuan at th
   const provided = {};
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 100000, freeDailyTokens: 200000 }, wire: (ctx) => { ctx.provide = (n, v) => { provided[n] = v; }; } });
   const tasks = [];
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true }
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...ownFake, task: (t) => { tasks.push(tracked(t)); return 'queued'; }, retired: () => true }
     : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }) } : get(n)))(h.ctx.get);
   await h.cmd().handler({ rawInput: 'free' });
   tasks[0].onStart('e1');
@@ -379,7 +385,7 @@ test('settings from before: interlude.price is his own price for every count, th
     resetPrices();
     const tasks = [];
     const h = harness({ reply: GOOD, vm: {} });
-    h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true } : get(n)))(h.ctx.get);
+    h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...ownFake, task: (t) => { tasks.push(tracked(t)); return 'queued'; }, retired: () => true } : get(n)))(h.ctx.get);
     const flash = { provider: 'deepseek-account', model: 'deepseek-flash' };
     assert.equal(priceOf(flash).source, 'own', 'his price, in place of the table');
     assert.equal(unitsOf({ cacheReadTokens: 1000, outputTokens: 100 }, flash), 250 + 150);

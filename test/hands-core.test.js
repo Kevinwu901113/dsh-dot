@@ -1120,3 +1120,46 @@ test('what went out is told piece by piece: the words went and the screen he was
   assert.match(d.messages.filter((m) => m.content).map((m) => text(m)).join("\n"), /这几张图没发出去（字发出去了）：\n\[computer:screen\]（upload failed）/);
   h.stop();
 });
+
+test('what is her own time\'s work is told by the turn and the thing, not the session: his turn in the same conversation is not, her hands on its thing are; moving to a new conversation takes the stretch along', async () => {
+  const h = harness();
+  const dshDot = h.ctx.get('dshDot');
+  let started = '', ended = null;
+  dshDot.task({ kind: 'free', key: 'free|t', text: '[自己的时间] 你的', source: { kind: 'dsh-interlude', form: 'free' }, onStart: (id) => { started = id; }, onDone: (r) => { ended = r; } });
+  await tick(30);
+  assert.equal(started, 's1');
+  assert.equal(dshDot.ownTimeSession(), 's1');
+  const her = h.agentOf('s1');
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  assert.equal(dshDot.ownTime('s1'), true, 'the turn her own time opened');
+  await h.tools.hands.execute({ device: 'web', do: '看看今天有什么新闻' }); await tick();
+  assert.equal(dshDot.ownTime('h1', h.made.get('h1')?.cwd), true, 'her hands on the thing it gave');
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.equal(ended, null, 'it waits on her hands');
+  // he writes meanwhile: his turn, in the same conversation, is not her own time's
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在吗' }] });
+  assert.equal(dshDot.ownTime('s1'), false, 'his turn');
+  assert.equal(dshDot.ownTime('h1', h.made.get('h1')?.cwd), true, 'her hands on its thing still are');
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
+  // she moves to a new conversation: the stretch goes along, and ends there
+  dshDot.setSession('s9');
+  assert.equal(dshDot.ownTimeSession(), 's9');
+  h.stop();
+});
+
+test('a result that comes back while her conversation is being handed over goes into the new one, and the record says which got it', async () => {
+  const h = harness();
+  const dshDot = h.ctx.get('dshDot');
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查下天气' }] });
+  await h.tools.hands.execute({ device: 'web', do: '查下明天广州的天气' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  const before = h.agentOf('s1').got.length;
+  const release = dshDot.freeze();
+  await h.tools.done.execute({ summary: '明天多云，26 度', reached: true }); await tick(30);
+  assert.equal(h.agentOf('s1').got.length, before, 'held while she moves');
+  dshDot.setSession('s2'); release(); await tick(80);
+  assert.equal(h.agentOf('s1').got.length, before, 'not into the one she left');
+  assert.match(text(h.agentOf('s2').got.at(-1)), /明天多云，26 度/);
+  assert.equal(h.audit.findLast((a) => a.event === 'hands-result').session, 's2');
+  h.stop();
+});

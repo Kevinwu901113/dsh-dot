@@ -345,31 +345,42 @@ export function createHandsWiring(dot) {
   };
   /** What came of a thing, for her: the hands' summary, then their details. */
   const resultText = (r) => [r.summary, r.detail].map((x) => String(x ?? '').trim()).filter(Boolean).join('\n') || '（没说什么）';
+  // What came back is made ready first (the screen taken: seconds), and only then put in line for her conversation, so
+  // the delivery itself is one step into the conversation she is in at that moment — a handover in between is waited
+  // for like any other delivery, and the result is not followed up into the one she has just left (11-26).
   function handsBack(r, job) {
     dot.sleep.stir();
-    arrive.arrive({ kind: 'hands', for: job.forHim ? 'him' : 'her', thing: job.id, external: true, into: (agent) => (agent ? handsInto(agent, r, job) : audit('hands-result-dropped', { why: 'no conversation' })) });
+    void handsContent(r, job).then((content) => {
+      arrive.arrive({ kind: 'hands', for: job.forHim ? 'him' : 'her', thing: job.id, external: true, into: (agent, id) => (agent ? handsInto(agent, id, content, r, job) : audit('hands-result-dropped', { thing: job.id, why: 'no conversation' })) });
+    }, (err) => logger.warn(`hands result not made ready: ${err.message}`));
   }
-  async function handsInto(agent, r, job) {
+  /** What a thing's end says to her, with the screen as it is now (her phone or computer): made before it is delivered. */
+  async function handsContent(r, job) {
+    const lead = r.question && r.ask?.for === 'him'
+      ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
+      : r.question
+      ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
+      : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) });
+    const owed = job.id ? dot.ledger.get(job.id)?.awaiting : null;
+    const owes = !owed?.from ? '' : `\n${prompt(owed.answeredAt ? 'dot.hands.result.answered' : 'dot.hands.result.awaiting', { from: owed.from, text: owed.text ?? '' }).trim()}`;
+    const content = [{ type: 'text', text: lead.trim() + owes + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
+    if (r.outcome !== 'failed' && job.device !== 'web' && job.device !== 'host') { // looking something up, or a shell on this machine, leaves no screen to show
+      try {
+        const images = ctx.get('attachments');
+        const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
+        if (png?.length && job.id) { try { const dir = join(dshHome(), 'dsh-dot-things'); mkdirSync(dir, { recursive: true }); const shot = join(dir, `${job.id}.png`); writeFileSync(shot, png); dot.ledger.note(job.id, { shot }); const kept = new Set(dot.ledger.recent(100).map((e) => `${e.id}.png`)); for (const f of readdirSync(dir)) if (!kept.has(f)) rmSync(join(dir, f), { force: true }); } catch (err) { logger.debug?.(`thing ${job.id}: screen not kept: ${err.message}`); } }
+        if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
+      } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
+    }
+    return content;
+  }
+  /** Into her conversation as it is when the line reaches it (`id`: the session `agent` is): what was made ready, in one step. */
+  function handsInto(agent, id, content, r, job) {
     try {
-      const lead = r.question && r.ask?.for === 'him'
-        ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
-        : r.question
-        ? prompt('dot.hands.ask', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
-        : prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) });
-      const owed = job.id ? dot.ledger.get(job.id)?.awaiting : null;
-      const owes = !owed?.from ? '' : `\n${prompt(owed.answeredAt ? 'dot.hands.result.answered' : 'dot.hands.result.awaiting', { from: owed.from, text: owed.text ?? '' }).trim()}`;
-      const content = [{ type: 'text', text: lead.trim() + owes + (job.forHim && r.ask?.for !== 'him' ? `\n${prompt(r.question ? 'dot.hands.ask.his' : 'dot.hands.result.his').trim()}` : '') }];
-      if (r.outcome !== 'failed' && job.device !== 'web' && job.device !== 'host') { // looking something up, or a shell on this machine, leaves no screen to show
-        try {
-          const images = ctx.get('attachments');
-          const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
-          if (png?.length && job.id) { try { const dir = join(dshHome(), 'dsh-dot-things'); mkdirSync(dir, { recursive: true }); const shot = join(dir, `${job.id}.png`); writeFileSync(shot, png); dot.ledger.note(job.id, { shot }); const kept = new Set(dot.ledger.recent(100).map((e) => `${e.id}.png`)); for (const f of readdirSync(dir)) if (!kept.has(f)) rmSync(join(dir, f), { force: true }); } catch (err) { logger.debug?.(`thing ${job.id}: screen not kept: ${err.message}`); } }
-          if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
-        } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
-      }
       agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
       if (job.id) dot.ledger.note(job.id, { back: Date.now() }); // in front of her; `told` is when he heard it (tellHim)
-      audit('hands-result', { thing: job.id, session: sessions.last(), outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
+      // The session that got it, as it got it (not whichever is hers by the time this line is written).
+      audit('hands-result', { thing: job.id, session: agent.session?.id ?? id, outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached (an effect: → its disposer).

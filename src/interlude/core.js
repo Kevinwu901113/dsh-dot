@@ -249,7 +249,10 @@ export function apply(ctx, config = {}) {
 
 
   // 自己的时间, in her conversation. When it comes is her clock's (dshDot.onTick, below); what it is, is here.
-  const free = new Map(); // session id → { cost, budget, warned, stopped, origin }
+  // The stretch of her own time going on ({ cost, budget, warned, stopped, origin }), or null. Which turns and which of
+  // her hands' sessions are its work is dot's to say (dshDot.ownTime): not the session id — his words come into the
+  // same conversation while her own time waits on her hands, and are not her own time's to count or to stop.
+  let current = null;
   let freeQueued = false; // one free time at a time, from queued to done
   const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
   // phase: what brought it — 'quiet' (he went quiet, or her day began), 'later' (she said so), 'command' (/interlude free).
@@ -257,7 +260,7 @@ export function apply(ctx, config = {}) {
     rollDay();
     const held = (why) => { audit('free-held', { phase, why }); return { skipped: why }; };
     if (!dshDot()?.task) return held('needs dot (dsh-dot)');
-    if (free.size || freeQueued) return held('already running');
+    if (current || freeQueued) return held('already running');
     if (freeLeft() < Math.min(cfg.freeTokenCap, 20000)) return held('daily budget used');
     if (phase !== 'command' && (meta.dayFrees ?? 0) >= cfg.freeTimesPerDay) return held('daily count used');
     const budget = Math.min(cfg.freeTokenCap, freeLeft());
@@ -271,10 +274,11 @@ export function apply(ctx, config = {}) {
     const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), context });
     const r = dshDot().task({
       kind: 'free', key: `free|${dayOf()}|${meta.dayFrees ?? 0}`, text, source: FREE_SOURCE, ttlMs: ttlInHours(),
-      onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false, origin: phase }; free.set(id, f); },
+      // Counted when it begins: a stretch that lapses in the queue or is dropped for room is not one of the day's.
+      onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false, origin: phase }; current = f; meta.dayFrees = (meta.dayFrees ?? 0) + 1; saveMeta(); },
       onDone: (res) => {
         freeQueued = false;
-        if (sid && free.get(sid) === f) free.delete(sid);
+        if (current === f) current = null;
         const status = f?.stopped ? 'stopped' : res.status;
         remember('free', { ...res, status }, doing);
         audit('free-done', { status, tokens: res.cost ? tokensOf(res.cost) : 0 });
@@ -283,7 +287,6 @@ export function apply(ctx, config = {}) {
     if (r === 'refreshed') return held('already queued');
     freeQueued = true;
     doing = doings.add({ kind: 'free', what: '自己的时间' });
-    meta.dayFrees = (meta.dayFrees ?? 0) + 1; saveMeta();
     audit('free-queued', { phase, budget });
     return { ok: true, budget };
   }
@@ -297,18 +300,21 @@ export function apply(ctx, config = {}) {
     if (a) return a;
     try { const found = await ctx.get('sessionController')?.resolveAgent(id); return found && !('error' in found) ? found.agent : null; } catch (error) { void error; return null; }
   };
-  // Her hands' steps on a thing of hers while her own time runs are part of what it costs (one at a time: the one there is).
-  const freeOf = (id, cwd) => free.get(id) ?? (free.size && dshDot()?.isHands?.(id, cwd) && dshDot()?.handsFor?.(id) === 'her' ? [...free.values()][0] : null);
+  // What her own time's work is: its turns in her conversation and her hands' steps on the things it gave (dshDot.ownTime).
+  const freeOf = (id, cwd) => (current && id && dshDot()?.ownTime?.(id, cwd) ? current : null);
+  // Her conversation, when the turn running in it is her own time's: what is stopped or told when the budget runs out.
+  const ownConversation = () => { const id = dshDot()?.ownTimeSession?.() || ''; return id && dshDot()?.ownTime?.(id) ? id : ''; };
   ctx.on('session/event', (session, event) => {
     if (event?.type !== 'assistant/message' || !event.data?.usage) return;
     const f = freeOf(session?.id, session?.header?.cwd);
     if (!f) return;
-    const id = [...free].find(([, v]) => v === f)[0]; // her conversation: the one stopped or told
     const spent = freeCharge(session, event.data.usage), step = Math.round(spent.units);
     f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; meta.dayFreeYuan = addYuan(meta.dayFreeYuan, spent.yuan); saveMeta();
     if (!f.stopped && f.cost >= f.budget) {
-      f.stopped = true; // from here the gate refuses every tool, whether or not the cancel lands
+      f.stopped = true; // from here the gate refuses every tool of its work, whether or not the cancel lands
       void (async () => {
+        const id = ownConversation(); // not a turn of his that came in meanwhile: that one is left alone
+        if (!id) { audit('free-stopped', { cost: f.cost, cancelled: false }); return; }
         const agent = await agentOf(id);
         try { if (typeof agent?.cancel === 'function') { agent.cancel({ kind: 'hook', reason: 'dsh-interlude: free time budget' }, { keepInbox: true }); audit('free-stopped', { session: id, cost: f.cost }); return; } } catch (error) { void error; }
         audit('free-stop-refused-tools', { session: id, cost: f.cost });
@@ -318,8 +324,9 @@ export function apply(ctx, config = {}) {
     if (!f.warned && f.cost >= 0.8 * f.budget) {
       f.warned = true;
       void (async () => {
+        const id = ownConversation();
+        if (!id || current !== f || f.stopped) return; // over by now, or a turn of his is running: no message to it
         const agent = await agentOf(id);
-        if (free.get(id) !== f || f.stopped) return; // over by now: no message to wake an idle agent with
         const m = createUserMessage({ content: [{ type: 'text', text: prompt('interlude.free.budget', { stamp: stamp(), used: f.cost, budget: f.budget }) }], source: FREE_SOURCE });
         try {
           if (typeof agent?.steer === 'function') agent.steer(m);
@@ -334,9 +341,9 @@ export function apply(ctx, config = {}) {
   ctx.on('tools/pre-execute', async (exec, next) => {
     const sessionId = exec.agent?.session?.id;
     // Her own time runs in her conversation; her hands (dsh-dot/hands) do the typing, so the rule about typing looks at them too.
-    const hands = Boolean(free.size && dshDot()?.isHands?.(sessionId, exec.agent?.session?.header?.cwd));
-    if (!sessionId || !(free.has(sessionId) || hands)) return next();
-    if (freeOf(sessionId, exec.agent?.session?.header?.cwd)?.stopped) return deny(prompt('interlude.free.over'));
+    const f = freeOf(sessionId, exec.agent?.session?.header?.cwd);
+    if (!f) return next();
+    if (f.stopped) return deny(prompt('interlude.free.over'));
     const tool = exec.name === PHONE_TYPE_TOOL ? exec.name : exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     const input = exec.input ?? exec.args ?? exec.arguments;
     if (tool && typesText(tool, input)) {
@@ -392,7 +399,7 @@ export function apply(ctx, config = {}) {
   // from a stretch that a later brought — so what she leaves cannot keep her going on her own; only his coming back or
   // a new day starts it again. Not past her usual hours (it would only lapse), and never sooner than idleMinutes.
   const leaveLater = (sessionId, minutes, now = Date.now()) => {
-    const f = free.get(sessionId);
+    const f = freeOf(sessionId);
     if (!f) return { status: 'not-own' };
     if (f.origin === 'later') return { status: 'used' };
     const ms = Math.max(cfg.idleMinutes, 1, Math.round(Number(minutes) || 0)) * 60000;

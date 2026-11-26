@@ -442,6 +442,9 @@ export function apply(ctx, config = {}) {
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(dot.hands?.isHands(id, cwd)),
     /** Whose thing a session of her hands is on: 'him' | 'her' ('' when it is not on one). */
+    /** Is this session's work right now her own time's (arrive.js ownTime): what her own time costs and may do is judged by this. */
+    ownTime: (id, cwd) => dot.arrive.ownTime(id, cwd),
+    ownTimeSession: () => dot.arrive.ownTimeSession(),
     handsFor: (id) => { const t = dot.hands?.thingOf(id); return !t ? '' : t.forHim ? 'him' : 'her'; },
     /** The place a session of her hands is for, from its preset: 'phone' | 'computer' | 'web' | 'host' ('' when not known); a host thing is known by its folder alone. */
     handsDevice: (id, cwd, preset) => handsPlace(cwd, preset),
