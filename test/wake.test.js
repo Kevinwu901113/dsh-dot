@@ -224,3 +224,55 @@ test('her own time: across a restart, the quiet and what was used of it are kept
     c.stop();
   } finally { mock.timers.reset(); }
 });
+
+test('later: she says when the next one comes, in her own time only — one a stretch, never from a stretch a later brought; whatever comes next uses it up; kept across a restart', async () => {
+  const day = today();
+  mock.timers.enable({ apis: ['Date'], now: at(day, 9, 0) });
+  try {
+    const h = ownHarness({ config: { freeTimesPerDay: 5 } });
+    const later = (minutes, sid = 's1') => h.tools.later.execute({ minutes }, { agent: { session: { id: sid } } });
+    const said = (v) => h.tools.later.output.render({}, v)[0].text;
+    assert.equal(said(await later(30)), '现在不是你自己的时间，留不了。');
+    h.tick(); h.start(); // 09:00: her day began an hour ago
+    assert.equal(said(await later(60 * 15)), '那时已经过了你平时睡下的点，留不了。');
+    assert.equal(said(await later(120)), '记下了：11:00 左右再有一段自己的时间。');
+    assert.equal(said(await later(90)), '记下了：10:30 左右再有一段自己的时间。', 'one a stretch: the second replaces the first');
+    assert.equal(said(await later(1)), '记下了：09:10 左右再有一段自己的时间。', 'never sooner than idleMinutes');
+    await later(90);
+    h.done();
+    // dsh restarts; the later stays.
+    h.stop();
+    const b = ownHarness({ home: h.home, config: { freeTimesPerDay: 5 } });
+    const laterB = (minutes) => b.tools.later.execute({ minutes }, { agent: { session: { id: 's1' } } });
+    mock.timers.setTime(at(day, 10, 29)); b.tick();
+    assert.equal(b.tasks.length, 0);
+    mock.timers.setTime(at(day, 10, 30)); b.tick();
+    assert.equal(b.tasks.length, 1, 'the later she left');
+    b.start();
+    assert.equal(b.tools.later.output.render({}, await laterB(60))[0].text, '这一段是上次留下的「下次」，不能再留。');
+    b.done();
+    for (let m = 31; m < 24 * 60 - 10 * 60 - 31; m++) { mock.timers.setTime(at(day, 10, m)); b.tick(); }
+    assert.equal(b.tasks.length, 1, 'nothing more of its own: no running on');
+    // He comes back: the quiet after it brings one, and from that one she may leave a later again.
+    b.stop();
+    const c = ownHarness({ home: h.home, config: { freeTimesPerDay: 5 } });
+    mock.timers.setTime(at(day, 15, 0)); c.his(); mock.timers.setTime(at(day, 15, 10)); c.tick();
+    assert.equal(c.tasks.length, 1); c.start();
+    assert.equal((await c.tools.later.execute({ minutes: 60 }, { agent: { session: { id: 's1' } } })).status, 'ok');
+    c.done();
+    // His words come again before it: the next one comes from those, and the later is used up by it.
+    mock.timers.setTime(at(day, 15, 30)); c.his(); mock.timers.setTime(at(day, 15, 40)); c.tick(); c.start(); c.done();
+    assert.equal(c.tasks.length, 2);
+    mock.timers.setTime(at(day, 16, 10)); c.tick();
+    assert.equal(c.tasks.length, 2, 'the later went with the one that came before it');
+    // A later left late in the day lapses with it.
+    mock.timers.setTime(at(day, 20, 0)); c.his(); mock.timers.setTime(at(day, 20, 10)); c.tick(); c.start();
+    assert.equal((await c.tools.later.execute({ minutes: 150 }, { agent: { session: { id: 's1' } } })).status, 'ok');
+    c.done();
+    c.state.quiet = false; mock.timers.setTime(at(day, 22, 41)); c.tick(); // busy then; then her hours are over
+    mock.timers.setTime(at(day + 86400000, 8, 1)); c.state.quiet = true; c.tick();
+    assert.ok(c.audit.some((e) => e.event === 'free-later-lapsed'));
+    assert.equal(c.tasks.length, 3);
+    c.stop();
+  } finally { mock.timers.reset(); }
+});

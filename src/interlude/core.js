@@ -407,6 +407,27 @@ export function apply(ctx, config = {}) {
     void freeTime(origin);
   }
   ctx.inject?.(['dshDot'], (c) => c.effect(() => (c.dshDot ?? dshDot())?.onTick?.(() => tick()) ?? (() => {}), 'dsh-interlude: her own time, on her clock'));
+  // When the next one comes is hers to say, in her own time (`later`): one a stretch (a second replaces the first), not
+  // from a stretch that a later brought — so what she leaves cannot keep her going on her own; only his coming back or
+  // a new day starts it again. Not past her usual hours (it would only lapse), and never sooner than idleMinutes.
+  const leaveLater = (sessionId, minutes, now = Date.now()) => {
+    const f = free.get(sessionId);
+    if (!f) return { status: 'not-own' };
+    if (f.origin === 'later') return { status: 'used' };
+    const ms = Math.max(cfg.idleMinutes, 1, Math.round(Number(minutes) || 0)) * 60000;
+    if (ms > msLeftInHours(hours(), new Date(now))) return { status: 'night' };
+    meta.later = { at: now + ms, left: now }; saveMeta();
+    audit('free-later', { session: sessionId, minutes: Math.round(ms / 60000), replaced: Boolean(f.later) });
+    f.later = meta.later.at;
+    return { status: 'ok', at: meta.later.at };
+  };
+  ctx.inject?.(['tools'], (scope) => scope.effect(() => scope.tools.register({
+    name: 'later',
+    description: prompt('interlude.later-tool'),
+    parameters: { type: 'object', properties: { minutes: { type: 'integer', description: '多少分钟以后' } }, required: ['minutes'], additionalProperties: false },
+    output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'ok' ? prompt('interlude.later.ok', { at: stamp(v.at).slice(-5) }) : prompt(v?.status === 'used' ? 'interlude.later.used' : v?.status === 'night' ? 'interlude.later.night' : 'interlude.later.not-own') }] },
+    async execute(args, exec) { return leaveLater(exec?.agent?.session?.id, args?.minutes); },
+  }), 'dsh-interlude: later'));
   // Model requests (src/llm-gate.js): her own time runs in her conversation and her hands' session (dot registers those).
   installLlmGate(ctx, { name: 'dot-interlude' });
 
