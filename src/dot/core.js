@@ -407,7 +407,9 @@ export function apply(ctx, config = {}) {
     lean: (id, preset) => sessions.lean(id, preset),
     /** A new conversation of hers, made with her own preset when lean is on (and this host knows the preset). → { sessionId } */
     createConversation: (controller) => createConversation(controller),
-    setSession: (id) => sessions.setSession(id),
+    setSession: (id) => { const from = sessions.last(); sessions.setSession(id); if (id && id !== from) arrive.movedOn(from, id); },
+    /** Memory did not move her after an overflow of `id` (r: the handoff's { error } | { skipped }, or { again: true }): he is told. */
+    notMoved: (id, r) => arrive.notMoved(id, r),
     /**
      * Post a thing of her own ({ kind: 'free', key, text, source, ttlMs, onStart(sessionId), onDone(result) }): it runs in her
      * conversation when nothing else is going on (see defaults.interludeQueueMax); `onDone` gets

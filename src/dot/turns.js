@@ -58,14 +58,16 @@ export function createTurns(dot) {
     accountHeld = info.kind; failureTold = Date.now();
     void im.send(accountText(info.kind, `${info.message}（${info.code}）`, info.until), 'plain');
   };
-  const turnFailed = (id, why, { lost = false, his = true, outcome = null } = {}) => {
+  // `overflow`: her conversation no longer fit the model and she was not moved to a new one ('failed': the handoff did
+  // not happen; 'again': the conversation an overflow made did not fit either) — he is told what to do about it.
+  const turnFailed = (id, why, { lost = false, his = true, outcome = null, overflow = '' } = {}) => {
     const error = String(why ?? '').replace(/\s+/g, ' ').trim().slice(0, 200) || '没有说原因';
     lastFailure = { at: Date.now(), session: id, error, lost };
-    audit('turn-failed', { session: id, error, lost, his, ...(outcome?.kind ? { outcome: outcome.kind } : {}) });
+    audit('turn-failed', { session: id, error, lost, his, ...(outcome?.kind ? { outcome: outcome.kind } : {}), ...(overflow ? { overflow } : {}) });
     if (!his || Date.now() - failureTold < cfg.failureNoticeMs) return;
     failureTold = Date.now();
     if (ACCOUNT[outcome?.kind]) { accountHeld = outcome.kind; void im.send(accountText(outcome.kind, `${outcome.message}（${outcome.code}）`, outcome.retryAfterMs ? Date.now() + outcome.retryAfterMs : 0), 'plain'); return; }
-    void im.send(prompt(lost ? 'dot.turn-lost' : 'dot.turn-failed', { error, hint: driftLine() }), 'plain');
+    void im.send(prompt(overflow === 'again' ? 'dot.turn-overflow.again' : overflow ? 'dot.turn-overflow' : lost ? 'dot.turn-lost' : 'dot.turn-failed', { error, hint: driftLine() }), 'plain');
   };
   const taken = (id) => { if (owed?.session === id) { clearTimeout(owed.timer); owed = null; } };
   const owe = (id) => {
@@ -153,7 +155,11 @@ export function createTurns(dot) {
     if (broke) {
       const lost = owed?.session === id && !overQq(t);
       taken(id);
-      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: lost || forHim(t), outcome: outcomeOf(event.data.reason) });
+      const error = event.data.reason.error?.message ?? event.data.reason.message, outcome = outcomeOf(event.data.reason), his = lost || forHim(t);
+      // Her conversation no longer fits the model: dsh-dot/memory hands her over, and what this turn was given arrives
+      // again in the new conversation (arrive.js overflowed) — he is told only if that does not come. His words typed
+      // at her window did not come by arrive(): told as before.
+      if (outcome.kind !== 'context' || atHisWindow(t) || !dot.arrive.overflowed(id, t, { error, lost, his, outcome })) turnFailed(id, error, { lost, his, outcome });
     }
     // A question of hers to him is waiting until his next words have been read: the turn they open either keeps his
     // yes (his_ok) or does not — said no, said something else — and after it the question is not waiting any more

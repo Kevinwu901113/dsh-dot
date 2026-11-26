@@ -18,7 +18,8 @@ export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, bump, sessions, things, turns, voice;
  *             read when used: sleep (awake, wakeUp), hands (busy, thingById), ledger
- * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnStarted, turnEnded, note,
+ * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnStarted, turnEnded,
+ *     overflowed, movedOn, notMoved, note,
  *     pushesNote, seenNotes, herState, quiet, enqueueTask, nextTask, taskTurnEnded, watchSetup }
  */
 export function createArrive(dot) {
@@ -60,10 +61,52 @@ export function createArrive(dot) {
   const untrack = (es) => { for (const s of es) sent.splice(sent.indexOf(s), 1); return es; };
   /** A turn of a session started (turns.js): what waits in its inbox is that turn's. */
   const turnStarted = (id, t) => { for (const s of sent) if (s.session === id && s.turn === null) s.turn = t; };
+  // Her conversation no longer fits the model (turns.js: a turn of it broke on that). dsh-dot/memory hands her over to a
+  // new one; what that turn was given — what woke it, his words steered into it — and whatever still waited in the
+  // conversation she leaves arrives again there, by arrive(), once (`again`): to him it is as if nothing had happened.
+  // Kept by the conversation it broke in, until she has moved (movedOn) or memory says she will not (notMoved); only
+  // then is he told, and what was kept is let go. What already came again once is never sent a third time.
+  const overflow = new Map(); // session → { es, since (when the first turn that broke began), error, lost, his, outcome }
+  /** A turn of her conversation broke because it no longer fits: true when what it was given is kept for the new conversation. */
+  const overflowed = (id, t, info) => {
+    if (id !== sessions.last() || typeof ctx.get('dotMemory')?.handoff !== 'function') return false; // nobody to hand her over
+    const o = overflow.get(id) ?? { es: [], since: t.startedAt, his: false };
+    const es = untrack(sent.filter((s) => s.session === id && s.turn === t)).map((s) => s.e);
+    o.es.push(...es);
+    Object.assign(o, info, { since: Math.min(o.since, t.startedAt), his: o.his || info.his });
+    overflow.set(id, o);
+    audit('turn-overflowed', { session: id, held: es.length, his: info.his });
+    return true;
+  };
+  /** He is told what became of a turn that broke because her conversation no longer fits, and what was kept for it is let go. */
+  const overflowTold = (from, o, why, es, error = o.error) => {
+    audit('overflow-dropped', { session: from, count: es.length, why });
+    turns.turnFailed(from, error, { lost: o.lost, his: o.his, outcome: o.outcome, overflow: why });
+  };
+  /** Her conversation moved on (dshDot.setSession): after an overflow, what was kept arrives in the new one; otherwise what went into the one she left is let go. */
+  const movedOn = (from, to) => {
+    const o = overflow.get(from);
+    overflow.delete(from);
+    const rest = untrack(sent.filter((s) => s.session === from)).map((s) => s.e);
+    if (!o) return;
+    const es = [...o.es, ...rest], once = es.filter((e) => !e.again), twice = es.filter((e) => e.again);
+    audit('overflow-resent', { from, to, count: once.length, kinds: once.map((e) => e.kind) });
+    // Held for the handoff from the start (it is going on): not held anew, and his words not put in his buffer again.
+    for (const e of once) arrive({ ...e, again: true, held: 'handoff' });
+    if (twice.length) overflowTold(from, o, 'again', twice);
+  };
+  /** dsh-dot/memory did not move her after an overflow (`r`: the handoff's { error } or { skipped }, or { again: true } — the conversation an overflow made overflowed too). */
+  const notMoved = (from, r = {}) => {
+    const o = overflow.get(from);
+    if (!o) return;
+    overflow.delete(from);
+    const why = r.again ? 'again' : 'failed';
+    overflowTold(from, o, why, o.es, why === 'failed' ? `${o.error ?? ''}（换新对话没成：${r.error ?? r.skipped ?? '没有说原因'}）` : o.error);
+  };
 
   /** The way in: the arrival waits in the list, and whatever may go in now goes. */
   const arrive = (e) => {
-    if (e.kind === 'his') { if (!onTheWay('his').length) his.firstAt = Date.now(); his.typing = false; armHis(); } // he pressed send
+    if (e.kind === 'his' && !e.again) { if (!onTheWay('his').length) his.firstAt = Date.now(); his.typing = false; armHis(); } // he pressed send
     waiting.push({ at: Date.now(), for: 'her', external: false, ...e }); pump();
   };
 
@@ -377,7 +420,7 @@ export function createArrive(dot) {
     arrive, wake, qqMessage, ownerTypingNow, flushOwner,
     /** His messages waiting in his buffer (or for her bubbles to be out). */
     ownerPending: () => onTheWay('his').length,
-    hisUnread, freeze, turnStarted, turnEnded, note, pushesNote,
+    hisUnread, freeze, turnStarted, turnEnded, overflowed, movedOn, notMoved, note, pushesNote,
     /** She just woke (sleep.js onWake): what waited is shown to her. */
     onWake: () => pump(),
     /** The last notifications of her phone (the array itself: wait_for and done look through it). */

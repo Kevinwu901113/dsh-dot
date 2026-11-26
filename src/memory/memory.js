@@ -699,15 +699,23 @@ export function apply(ctx, config = {}) {
   const handoffBase = new Map(); // session → tokens when it was created by a handoff (0) — cooldown baseline
   const overflowed = new Set(); // conversations a context overflow handed over to
   async function afterTurn(id, reason) {
-    if (handingOff) return;
+    const overflow = reason?.kind === 'error' && outcomeOf(reason).kind === 'context';
+    if (handingOff) {
+      if (!overflow) return;
+      // A handoff is under way: once it is over, this conversation is handed over still, unless that was it.
+      while (handingOff) await new Promise((r) => setTimeout(r, 100));
+      if (dot()?.session?.() !== id) return;
+    }
     const tokens = await measure(id);
     // Her conversation no longer fits the model (dsh's own compaction, where there is one, could not make it fit):
     // every turn of it would break the same way. Handed over now, whatever its size and whether a goal is on — once: a
     // conversation made by such a handover that overflows again is not handed over again (what is too big came with it).
-    if (reason?.kind === 'error' && outcomeOf(reason).kind === 'context') {
-      if (overflowed.has(id)) { audit('handoff-skipped', { session: id, why: 'overflowed again' }); return; }
-      const r = await handoff(id, tokens, 'overflow');
-      if (r.sessionId) { handoffBase.set(r.sessionId, 0); overflowed.add(r.sessionId); }
+    // dot keeps what the turn that broke was given and sends it into the new conversation (dshDot.setSession); when
+    // there is none, it is told so (notMoved), and he hears what to do.
+    if (overflow) {
+      if (overflowed.has(id)) { audit('handoff-skipped', { session: id, why: 'overflowed again' }); dot()?.notMoved?.(id, { again: true }); return; }
+      const r = await handoff(id, tokens, 'overflow').catch((err) => ({ error: err.message }));
+      if (r.sessionId) { handoffBase.set(r.sessionId, 0); overflowed.add(r.sessionId); } else dot()?.notMoved?.(id, r);
       return;
     }
     const grown = tokens - (handoffBase.get(id) ?? 0);
