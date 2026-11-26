@@ -674,34 +674,48 @@ export function apply(ctx, config = {}) {
     if (d.isIm?.(fromId)) return { skipped: 'IM bot session (its bot owns the binding)' };
     handingOff = true;
     await backfill();
-    const release = d.freeze?.() ?? (() => {});
     const t0 = Date.now();
+    let release = () => {}, made = '';
     try {
-      // Whatever is new is consolidated first: her notes must be up to date before the old session goes.
+      // Whatever is new is consolidated first: her notes must be up to date before the old session goes. This is a
+      // model call (tens of seconds): it runs before anything is held, so his words keep reaching her meanwhile
+      // (11-26: 13 handovers held his messages for a median 76 s, mostly for this). What is said while it runs is in
+      // the tail below, and in the next consolidation.
       if (consolidating) { try { await consolidating; } catch (error) { void error; } }
       const c = await consolidate({ reason: 'handoff' });
-      memory.gen++;
-      save();
-      // Archive first: a wake that reaches an archived session is dropped without a word.
-      try { await ctx.get('workspaceRegistry')?.archiveSession?.(fromId); } catch (err) { logger.warn(`archive of ${fromId} failed: ${err.message}`); }
+      release = d.freeze?.() ?? (() => {});
+      // The new conversation is made whole before anything of the old one is let go: made, named, given its opening
+      // lines, and found. A step that fails leaves her where she was — the old conversation current and not archived.
+      const gen = memory.gen + 1;
       const { sessionId } = await (d.createConversation?.(controller) ?? controller.create({ cwd: home }));
-      try { await controller.rename?.({ sessionId, title: `dot · 第 ${memory.gen} 段` }); } catch (error) { void error; }
+      if (!sessionId) throw new Error('no new conversation was made');
+      made = sessionId;
+      try { await controller.rename?.({ sessionId, title: `dot · 第 ${gen} 段` }); } catch (error) { void error; }
       // After an overflow, dot sends what the turn that broke was given into the new conversation again: his words
       // among it are not in its opening lines as well (she would read them twice, once as "not a new message").
       const again = d.comingAgain?.(fromId), words = new Set((again?.words ?? []).flatMap((w) => w.split('\n')).map((w) => w.trim()).filter(Boolean));
       const comes = (l) => l.who === 'owner' && l.at >= again.since && l.text.split('\n').map((x) => x.trim()).filter(Boolean).every((x) => words.has(x));
       const leftOut = again ? lines.filter((l) => l.session === fromId && comes(l)) : [];
-      d.setSession?.(sessionId);
       const tail = lines.filter((l) => l.session === fromId && ['owner', 'her'].includes(l.who) && !leftOut.includes(l)).slice(-cfg.handoffTailLines);
-      const note = renderHandoff(tail, memory.gen);
+      const note = renderHandoff(tail, gen);
       const found = await controller.resolveAgent(sessionId);
-      if (found && !('error' in found)) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: note }], source: { ...HANDOFF_SOURCE, generation: memory.gen } }));
+      if (!found || 'error' in found || typeof found.agent?.inject !== 'function') throw new Error(`the new conversation ${sessionId} could not be reached${found?.error ? `: ${found.error}` : ''}`);
+      found.agent.inject(createUserMessage({ content: [{ type: 'text', text: note }], source: { ...HANDOFF_SOURCE, generation: gen } }));
+      // Now she moves: the generation counts, her conversation is the new one, and only then is the old one archived
+      // (a wake that reaches an archived session is dropped without a word: the old one is no longer hers by then).
+      memory.gen = gen;
+      save();
+      d.setSession?.(sessionId);
+      made = '';
+      try { await ctx.get('workspaceRegistry')?.archiveSession?.(fromId); } catch (err) { logger.warn(`archive of ${fromId} failed: ${err.message}`); }
       appendFileSync(files.handoffs, `${JSON.stringify({ at: new Date().toISOString(), from: fromId, to: sessionId, gen: memory.gen, tokens, ms: Date.now() - t0, consolidated: Boolean(c?.ok), tail: tail.length })}\n`);
       audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens, ...(why ? { why } : {}), ...(leftOut.length ? { leftOut: leftOut.length } : {}) });
       logger.info(`handoff: ${fromId} → ${sessionId} (第 ${memory.gen} 段, ${tokens} tokens)`);
       return { ok: true, sessionId };
     } catch (err) {
-      logger.warn(`handoff failed: ${err.message}`); audit('handoff-failed', { from: fromId, error: clip(err.message, 200) });
+      logger.warn(`handoff failed: ${err.message}`); audit('handoff-failed', { from: fromId, error: clip(err.message, 200), ...(made ? { left: made } : {}) });
+      // A conversation made for her that she never moved into is not left lying about as if it were hers.
+      if (made) { try { await ctx.get('workspaceRegistry')?.archiveSession?.(made); } catch (error) { void error; } }
       return { error: err.message };
     } finally { release(); handingOff = false; }
   }

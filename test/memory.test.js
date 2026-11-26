@@ -409,7 +409,7 @@ test('transcript: what he said, what she really sent over QQ, phone and errand n
   assert.match(found.found, /相关原话[\s\S]*— \d\d-\d\d 周. · 今天\n\d\d:\d\d 他：下周六（=\d\d-\d\d）我搬家\n我：搬去哪 \/ 要帮忙吗/);
 });
 
-test('consolidation and handoff: notes written first, old session archived before the new one, its last lines carried over, deliveries frozen', async () => {
+test('consolidation and handoff: notes written first (nothing held meanwhile), the new conversation made whole before the old one is archived, its last lines carried over, deliveries frozen for the move', async () => {
   const reply = JSON.stringify({ open: [{ action: 'add', content: '他问她搬家那天能不能帮忙，还没定时间', owed: false }] });
   const h = harness({ llmReply: reply });
   apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
@@ -432,6 +432,29 @@ test('consolidation and handoff: notes written first, old session archived befor
   assert.equal(h.contexts[0].text({ agent: { session: { id: 'errand', header: { cwd: h.home } } } }), '', 'errands do not get her notes');
   assert.ok(existsSync(join(h.home, 'memory', 'memory.md')));
   assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
+});
+
+test('a handover that cannot finish leaves her where she was: no new conversation, or one that cannot be reached, and the old one stays current and is not archived', async () => {
+  for (const broken of ['create', 'resolve']) {
+    const h = harness({ llmReply: '{}' });
+    const svc = h.ctx.get('sessionController');
+    if (broken === 'create') svc.create = async () => { throw new Error('quota'); };
+    else svc.resolveAgent = async () => ({ error: 'gone' });
+    let frozenDuringCall = -1;
+    const stream = h.ctx.llm.stream;
+    h.ctx.llm.stream = (o) => { frozenDuringCall = h.frozen[0]; return stream(o); };
+    apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+    h.emit('s1', 'turn/start', {});
+    h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
+    h.tokens = 150000;
+    h.emit('s1', 'turn/end', {});
+    await wait(50);
+    assert.equal(h.session, 's1', broken);
+    assert.deepEqual(h.archived, broken === 'resolve' ? ['s2'] : [], `${broken}: the old one is not archived; a new one she never moved into is`);
+    assert.equal(h.services.dotMemory.status().gen, 1, `${broken}: the generation does not count`);
+    assert.equal(frozenDuringCall, 0, 'the consolidation ran before anything was held');
+    assert.deepEqual(h.frozen, [1, 1], 'held for the move, and let go');
+  }
 });
 
 test('which session is her conversation is dot\'s to say: what is said in a session opened by hand in her home is not hers to remember, and it is never handed over', async () => {
