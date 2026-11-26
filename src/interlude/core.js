@@ -32,6 +32,7 @@ import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
 import { cardFor } from '../persona/parts.js';
 import { head } from '../cut.js';
+import { addYuan, charge, configure as configurePrice, noteRoute, routeFor } from '../price.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -58,7 +59,9 @@ export const defaults = {
   idleMinutes: 30,            // her own time comes this long after his last word, or after her day began; what she does herself does not put it off
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
-  // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
+  // His own price, yuan per million tokens ({ in, cached, out }), in place of the built-in table (src/price.js) for every
+  // model and hour — and then her account (yourDoings) shows it in money too. null: the table (DeepSeek's official
+  // price for deepseek-flash); her account shows tokens only.
   price: null,
   // 自己的时间: she is woken with nothing to do but her own time — all her tools, her own folder (<home>/her), no
   // list of what to do. Limits live in the gates (approvals, QQ refused, typing in social apps asks) and in the token
@@ -164,6 +167,7 @@ export function apply(ctx, config = {}) {
   runPendingReset({ logger }); // a reset scheduled on the dot page: before any state is read (src/reset.js)
   const cfg = { ...defaults, ...setValues(config), ...sectionOf('interlude', (m) => logger.warn(m)) };
   if (cfg.enabled === false) { logger.info('off (dsh-dot.json: interlude.enabled = false)'); return; }
+  configurePrice({ price: cfg.price ?? null, warn: (m) => logger.warn(m) }); // his own price, for every count (src/price.js)
   const home = cfg.home || join(homedir(), 'dot');
   const dir = join(home, 'interlude');
   const files = {
@@ -197,7 +201,7 @@ export function apply(ctx, config = {}) {
   const roundCost = () => ({ in: Math.max(0, (meta.dayTokensIn ?? 0) - (meta.dayTokensCached ?? 0)), cached: meta.dayTokensCached ?? 0, out: meta.dayTokensOut ?? 0 });
 
   const meta = { day: dayOf(), ...readJson(files.meta, {}) };
-  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFrees = 0; } };
+  const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFreeYuan = 0; meta.dayFrees = 0; } };
   const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
   // Her card and checks file follow the canon (src/persona/card.js): written when there are none, written again when
   // another canon.json took its place — never over a file the user edited.
@@ -224,6 +228,7 @@ export function apply(ctx, config = {}) {
     const id = session?.id;
     const cwd = session?.header?.cwd;
     if (!id || !event) return;
+    noteRoute(id, event); // which model a session's calls go to (src/price.js)
     const d = hersBy(id, cwd);
     if (d === false) return;
     if (d === null) {
@@ -281,9 +286,10 @@ export function apply(ctx, config = {}) {
     return { ok: true, budget };
   }
   // What her own time costs, step by step: told to wrap up past 80% of its budget, stopped at 100%.
-  // A cached re-read of the context weighs a tenth (what it costs on DeepSeek), or every step would
-  // spend the whole context again and the budget would buy three steps.
-  const freeWeight = (u) => (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0) + (Number(u.outputTokens ?? 0) || 0) + 0.1 * (Number(u.cacheReadTokens ?? 0) || 0);
+  // Counted in 折算 token (src/price.js, the same count as a thing's cost on the book): a cached re-read of the context
+  // weighs what it costs (0.02 of a new input token on deepseek-flash, an output token 4), or every step would spend
+  // the whole context again and the budget would buy three steps. The yuan, at the hour's price, is kept beside it.
+  const freeCharge = (session, u) => charge(u, { route: routeFor(ctx, session?.id) });
   const agentOf = async (id) => {
     const a = ctx.get('agents')?.get?.(id);
     if (a) return a;
@@ -296,8 +302,8 @@ export function apply(ctx, config = {}) {
     const f = freeOf(session?.id, session?.header?.cwd);
     if (!f) return;
     const id = [...free].find(([, v]) => v === f)[0]; // her conversation: the one stopped or told
-    const step = Math.round(freeWeight(event.data.usage));
-    f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; saveMeta();
+    const spent = freeCharge(session, event.data.usage), step = Math.round(spent.units);
+    f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; meta.dayFreeYuan = addYuan(meta.dayFreeYuan, spent.yuan); saveMeta();
     if (!f.stopped && f.cost >= f.budget) {
       f.stopped = true; // from here the gate refuses every tool, whether or not the cancel lands
       void (async () => {

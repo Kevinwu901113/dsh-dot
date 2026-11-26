@@ -112,6 +112,17 @@ export function charge(usage, { at = Date.now(), route = null } = {}) {
 
 /** Yuan added up: null once any part was not priced. */
 export const addYuan = (a, b) => (a === null || b === null ? null : (Number(a) || 0) + (Number(b) || 0));
+/**
+ * Add a usage into a cost record ({ in, cached, out }, changed in place and returned) with what it was charged
+ * (`spent`: { units, yuan }, as charge gives it or a record that carries them; left out, only the tokens are added).
+ */
+export function addSpend(record, usage, spent = null) {
+  const c = usageOf(usage);
+  for (const k of ['in', 'cached', 'out']) record[k] = (Number(record[k]) || 0) + c[k];
+  if (spent && spent.units !== undefined) record.units = (Number(record.units) || 0) + (Number(spent.units) || 0);
+  if (spent && spent.yuan !== undefined) record.yuan = addYuan(record.yuan, spent.yuan);
+  return record;
+}
 
 /** The models seen without a price: ["provider/model", …]. */
 export const unknownRoutes = () => [...unknown.keys()];

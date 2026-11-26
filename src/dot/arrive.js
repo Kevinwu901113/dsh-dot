@@ -12,6 +12,7 @@ import { ERRAND_NOTE_SOURCE } from './sessions.js';
 import { titleOf } from './things.js';
 import { forHim, overQq } from './turns.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerUnread, ownerWords, withImages, handsStatus, pushesText, conversationTitle, wakeText } from './text.js';
+import { addSpend } from '../price.js';
 
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
@@ -403,7 +404,7 @@ export function createArrive(dot) {
     // under way — things of his in other places do not hold it. Its cost is all of those turns'.
     if (taskRunning?.session === id && (t.by.form === taskRunning.source?.form || (t.by.form === 'hands-result' && !t.by.thing))) {
       const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
-      if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
+      if (t.cost) addSpend(c, t.cost, t.cost);
       taskRunning.things.push(...(t.opened ?? []));
       // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
       if (!taskRunning.things.some((x) => dot.hands?.thingById(x))) finishTask(taskRunning, 'done', taskRunning.things.map((x) => dot.ledger.get(x)).filter((e) => e?.state === 'ended').map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);

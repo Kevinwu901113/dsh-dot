@@ -4,9 +4,13 @@ import { ago } from '../clock.js';
 import { head } from '../cut.js';
 import { prompt } from '../prompts.js';
 import { conversationTitle, voiceHow } from './text.js';
+import { unitsOf } from '../price.js';
 
-/** One thing's cost in tokens: new input + output + a tenth of the cached input, as DeepSeek prices them. */
-export const costOf = (e) => (Number(e?.tokens?.in) || 0) + (Number(e?.tokens?.out) || 0) + 0.1 * (Number(e?.tokens?.cached) || 0);
+/**
+ * One thing's cost in 折算 token (src/price.js): what its calls were charged, one by one. An entry from before they
+ * were (no `units`) is counted from its tokens on `route` — the model its session used, or the default one.
+ */
+export const costOf = (e, route = null) => (Number.isFinite(e?.units) ? e.units : unitsOf(e?.tokens, route));
 /** What is in her hands, as the call that writes her words is told it: from the code, not from what she says she is doing. */
 // What the voice is told about her doings comes from the book, never from what she wrote: one line a thing, no task
 // text beyond its first clause (11-21: given the whole task, the voice read it out as progress).

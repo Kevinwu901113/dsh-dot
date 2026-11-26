@@ -43,6 +43,7 @@ import { mkdirSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { headTail } from './ledger.js';
 import { head } from '../cut.js';
+import { usageOf } from '../price.js';
 
 const squash = (s) => String(s ?? '').normalize('NFKC').replace(/\s+/g, '');
 export const HANDS_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'hands' });
@@ -70,7 +71,7 @@ export const DIRECT_IDLE_MS = 120000;
  * @param deps.lane       (event, { device, session, holder, why? }) — a session that is not her hands took a device ('acquired'),
  *                        was not let on ('refused'), or let it go ('expired')
  */
-export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, overCap = () => '', done = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, lane = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
+export function createHands({ dir, create, agentFor, onEvent, message, textOf, store, ledger, price = () => ({}), overCap = () => '', done = () => '', onDone = () => {}, retire = () => {}, audit = () => {}, lane = () => {}, maxMs = 600000, maxChars = 900, now = () => Date.now() }) {
   const past = new Set(store.get('handsPast') ?? []);
   { const old = store.get('handsSession'); if (old) { past.add(String(old)); store.set('handsSession', ''); } } // one session for all rounds, before 0.25
   { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', cause: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
@@ -150,7 +151,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
           else if (event?.type === 'assistant/message') {
             const u = event.data?.usage;
             if (u) {
-              ledger.count(mine.entry, { tokens: { in: (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0), cached: u.cacheReadTokens, out: u.outputTokens } });
+              ledger.count(mine.entry, { tokens: usageOf(u), ...price(u, id) });
               // Over what a thing may cost without his yes: it stops here, as a question for him.
               const q = overCap(ledger.get(mine.entry) ?? {});
               if (q && !mine.question) { mine.question = q; mine.ask = { for: 'him', kind: 'spend' }; call(withAgent, mine, (agent) => agent.cancel?.({ kind: 'hook', reason: 'dot-hands: over its cost' })); settle(mine, 'stuck', { cause: 'over-cap' }); return; }

@@ -36,6 +36,7 @@ import { installLlmGate } from '../llm-gate.js';
 import { configure as configurePrompts, prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { today } from '../clock.js';
+import { configure as configurePrice, noteRoute } from '../price.js';
 import { workingRules, stripSilent, SILENT } from './text.js';
 // What used to be defined here and now lives with the part that uses it: the same names, the same values.
 export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
@@ -127,8 +128,8 @@ export const defaults = {
   ownerLostMs: 45000,
   // He is told of a turn that failed at most once in this long (a broken install fails every turn the same way).
   failureNoticeMs: 600000,
-  // What one thing of her hands may cost before it stops and he is asked (tokens: new input + output + a tenth of the
-  // cached input, as DeepSeek prices them). 0: no limit.
+  // What one thing of her hands may cost before it stops and he is asked, in 折算 token (src/price.js: uncached input 1,
+  // a cache hit 0.02, output 4 on deepseek-flash — the idle price; a million is 1 yuan idle, 2 at peak hours). 0: no limit.
   thingCostCap: 1500000,
   // Her conversation's model requests kept as sent, the newest this many, for /dot replay (replay.js). 0: none kept.
   replayKeep: 0,
@@ -226,6 +227,9 @@ export function apply(ctx, config = {}) {
   const audit = (event, { kind, ...data } = {}) => (computer()?.audit ?? phone()?.audit)?.({ kind: 'dot', event, ...data, ...(kind !== undefined ? { of: kind } : {}) });
   const home = cfg.home || join(homedir(), 'dot');
   configurePrompts({ home, logger });
+  // What a call costs (src/price.js): his own price, when he gave one (interlude.price, the same for every component), and
+  // a model without a price said once in the log.
+  configurePrice({ price: sectionOf('interlude').price ?? null, warn: (m) => logger.warn(m) });
   const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
   const im = createNotifier(() => ctx.get('dshIm'), cfg, logger, () => ctx.get('dshQq'));
 
@@ -267,6 +271,7 @@ export function apply(ctx, config = {}) {
   // 1. Her turns (turns.js).
   ctx.effect(() => turns.disposeOwed, 'dsh-dot: his words not yet taken');
   ctx.on('session/event', turns.onSessionEvent);
+  ctx.on('session/event', (session, event) => noteRoute(session?.id, event)); // which model a session's calls go to (price.js)
 
   // 2. What of hers needs him (gates.js): nothing waits on a button (hands-wiring.js onApproval); a refusal that waits for his yes says so.
   ctx.on('approval/request', hw.onApproval, { prepend: true });

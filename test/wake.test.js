@@ -113,6 +113,8 @@ function ownHarness({ home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot'), 
     /** A turn of hers (a notification answered, say): her own doing. */
     hers: () => { emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '有人' }] }); emit('s1', 'turn/end', { turn: 1 }); },
     step: (id, usage) => emit(id, 'assistant/message', { message: { content: [] }, usage }, id === 'h1' ? '/hands' : home),
+    /** The model a session's calls go to, as its request header says. */
+    route: (id, config) => emit(id, 'request/header', { header: { config } }, id === 'h1' ? '/hands' : home),
     /** The last queued own time starts in s1 and, when told, is over. */
     start: () => tasks.at(-1).onStart('s1'),
     done: (cost = null) => tasks.at(-1).onDone({ status: 'done', queuedAt: Date.now(), startedAt: Date.now(), doneAt: Date.now(), busyWith: '', report: '', cost }),
@@ -184,9 +186,11 @@ test('her own time: a day\'s cost has a ceiling the code counts — her steps an
   try {
     const h = ownHarness({ config: { freeTimesPerDay: 10, freeTokenCap: 10000, freeDailyTokens: 15000 } });
     h.tick(); h.start();
+    // both sessions' calls go to deepseek-flash (their request headers say so): a cache hit is 0.02 of a token (src/price.js)
+    for (const id of ['s1', 'h1']) h.route(id, { provider: 'deepseek-account', model: 'deepseek-flash' });
     h.step('s1', { inputTokens: 3000 });
     h.state.handsFor = 'him'; h.step('h1', { inputTokens: 50000 });
-    h.state.handsFor = 'her'; h.step('h1', { inputTokens: 4000, cacheReadTokens: 20000 }); // 6000
+    h.state.handsFor = 'her'; h.step('h1', { inputTokens: 5600, cacheReadTokens: 20000 }); // 5600 + 400 = 6000
     await new Promise((r) => setImmediate(r));
     assert.deepEqual(h.cancelled, [], '9000 of 10000');
     h.step('h1', { inputTokens: 2000 });

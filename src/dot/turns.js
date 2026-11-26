@@ -10,6 +10,7 @@
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { drift } from '../integrity.js';
 import { outcomeOf } from '../llm-gate.js';
+import { addSpend, charge, routeFor } from '../price.js';
 import { prompt } from '../prompts.js';
 import { unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
@@ -147,7 +148,7 @@ export function createTurns(dot) {
     if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') { if (t.by.whose !== 'schedule') t.by.whose = 'him'; if (event.data.source.thing) t.by.thing = event.data.source.thing; }
     if (event.type === 'assistant/message') {
       const u = event.data?.usage;
-      if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
+      if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; addSpend(t.cost, u, charge(u, { route: routeFor(ctx, id) })); }
     }
     // The turn broke (the model call failed, a prompt could not be put together): not her silence. Nothing is written
     // in her name about a turn that did not happen; he is told by the plugin when the turn was his.

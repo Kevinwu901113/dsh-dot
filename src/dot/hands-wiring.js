@@ -25,6 +25,7 @@ import { stamp } from '../clock.js';
 import { head } from '../cut.js';
 import { screenLines } from '../phone/typing.js';
 import { costOf, sameName, titleOf } from './things.js';
+import { charge, routeFor } from '../price.js';
 import { shortTool } from './turns.js';
 import { handsStatus, ownWords, replyCheckText, spokenOf, isOwnerTarget, loopKey, conversationTitle, contentText, ownerInterruptText } from './text.js';
 
@@ -316,6 +317,8 @@ export function createHandsWiring(dot) {
       message: (text) => createUserMessage({ content: [{ type: 'text', text }], source: HANDS_SOURCE }),
       textOf: contentText,
       store, ledger: dot.ledger,
+      // What each step cost, at the price of its model and its hour (src/price.js): the book adds it up.
+      price: (u, id) => charge(u, { route: routeFor(ctx, id) }),
       done: () => prompt('dot.hands.done-missing'),
       overCap: (e) => (cfg.thingCostCap > 0 && costOf(e) > cfg.thingCostCap && !dot.consent.allows({ kind: 'spend', thing: e.id }) ? prompt('dot.gates.spend.q', { tokens: Math.round(costOf(e) / 1000) }) : ''),
       // A session her hands are done with is put away: one per thing, so they pile up otherwise.

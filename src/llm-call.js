@@ -59,7 +59,7 @@ export const WORK = 'work';
  *   has it (else the selector's); undefined: the selector's own
  * @param {boolean} [o.background] - the request is background work (llm-gate: paced, held while the account is)
  * @param {string} [o.system] @param {object[]} [o.tools] @param {number} o.maxTokens @param {object[]} o.messages - sent as given
- * @returns {Promise<{ ok: boolean, outcome: object, text: string, args: string, calls: object[], usage: object|null, finish: object|null, effort?: string }>}
+ * @returns {Promise<{ ok: boolean, outcome: object, text: string, args: string, calls: object[], usage: object|null, finish: object|null, effort?: string, route?: { provider, model } }>}
  *   outcome.kind 'no-model' when there is no model to ask (nothing was sent)
  */
 export async function callModel(ctx, { effort, background = false, system, tools, maxTokens, messages } = {}) {
@@ -72,5 +72,5 @@ export async function callModel(ctx, { effort, background = false, system, tools
     r = { text: '', args: '', usage: null, calls: [], finish: { kind: 'error', failure: { code: String(err?.code ?? 'UNKNOWN'), message: String(err?.message ?? err) } } };
   }
   const outcome = outcomeOf(r.finish, r);
-  return { ...r, ok: outcome.kind === 'ok', outcome, effort: e };
+  return { ...r, ok: outcome.kind === 'ok', outcome, effort: e, route: { provider: sel.provider, model: sel.model } }; // route: what it cost is priced by (src/price.js)
 }

@@ -1027,3 +1027,33 @@ test('his turn that broke on the account, with no one having found it before: to
   assert.equal(h.audit.findLast((a) => a.event === 'turn-failed').outcome, 'transient');
   h.stop();
 });
+
+test('a thing\'s cost is what its calls were charged at deepseek-flash\'s price: a cache hit 0.02, an output token 4 — over thingCostCap it stops as a question for him', async () => {
+  const { charge, unitsOf } = await import('../src/price.js');
+  const { costOf } = await import('../src/dot/things.js');
+  const FLASH = { provider: 'deepseek-account', model: 'deepseek-flash' };
+  const h = harness({ thingCostCap: 1000 });
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看看安卓版本' }] });
+  assert.equal((await h.tools.hands.execute({ device: 'phone', do: '看看安卓版本' })).status, 'started');
+  await tick();
+  const thing = () => h.services.dshDot.things(5)[0];
+  // 20000 cache hits: 2000 at the old tenth (over the cap), 400 now (under it)
+  const a = { inputTokens: 0, cacheReadTokens: 20000, outputTokens: 0 }, b = { inputTokens: 0, outputTokens: 200 };
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'tool-call', name: 'x' }] }, usage: a });
+  assert.equal(thing().state, 'running', '400 of 1000');
+  assert.equal(costOf(thing()), unitsOf(a, FLASH));
+  // 200 output tokens: 200 at the old weight, 800 now → 1200, over
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'tool-call', name: 'x' }] }, usage: b });
+  await tick();
+  const e = h.services.dshDot.things(5)[0];
+  assert.deepEqual([e.state, e.outcome, e.cause], ['ended', 'stuck', 'over-cap']);
+  assert.equal(costOf(e), unitsOf(a, FLASH) + unitsOf(b, FLASH));
+  assert.equal(costOf(e), 1200);
+  // the yuan beside it is each call at its hour's price, the same count price.js gives
+  const close = (x, y) => assert.ok(Math.abs(x - y) < 1e-12, `${x} ≈ ${y}`);
+  const at = Date.now();
+  close(e.yuan, charge(a, { at, route: FLASH }).yuan + charge(b, { at, route: FLASH }).yuan); // (no hour boundary crossed between the two calls)
+  assert.deepEqual(e.tokens, { in: 0, cached: 20000, out: 200 }, 'the tokens are kept as they were');
+  assert.match(e.question, /约 1k token/, 'the question he is asked says the 折算 count');
+  h.stop();
+});

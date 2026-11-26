@@ -7,6 +7,7 @@
 // worth it is hers to judge — nothing here scores it.
 import { readFileSync, writeFileSync } from 'node:fs';
 import { head } from '../cut.js';
+import { addYuan } from '../price.js';
 
 const DAY = 86400000;
 const KEEP = 200;
@@ -25,10 +26,13 @@ export function yuanOf(c, price) {
 export function addUsage(cost, u) {
   if (!u) return cost;
   const c = cost ?? { in: 0, cached: 0, out: 0 };
-  // dsh-llm TokenUsage (inputTokens without the cached reads, cacheReadTokens, outputTokens) or a cost record.
+  // dsh-llm TokenUsage (inputTokens without the cached reads, cacheReadTokens, outputTokens) or a cost record, with
+  // what it was charged when it carries that (units, yuan: src/price.js).
   c.in += Number(u.inputTokens ?? u.in ?? 0) || 0;
   c.cached += Number(u.cacheReadTokens ?? u.cached ?? 0) || 0;
   c.out += Number(u.outputTokens ?? u.out ?? 0) || 0;
+  if (u.units !== undefined) c.units = (Number(c.units) || 0) + (Number(u.units) || 0);
+  if (u.yuan !== undefined) c.yuan = addYuan(c.yuan, u.yuan);
   return c;
 }
 

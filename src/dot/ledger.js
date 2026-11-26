@@ -4,7 +4,8 @@
 //   entry = { id, asker: 'him' | 'her', device, task, state: 'queued' | 'running' | 'ended',
 //             outcome?: 'done' | 'stopped' | 'failed' | 'timeout' | 'stuck', by?: 'him' | 'her' | 'code', cause?, error?,
 //             summary?, detail?, name? (the hands' short name for it), question?, ask?: { for: 'her' | 'him', kind?, subject?, tier?: 'him' | 'ask', what?, screen? },
-//             steps, tokens: { in, cached, out }, openedAt, startedAt?, endedAt?, session?,
+//             steps, tokens: { in, cached, out }, units?: 折算 token, yuan?: yuan at each call's price (null: a call had
+//             no price) — both from src/price.js, call by call — openedAt, startedAt?, endedAt?, session?,
 //             shot?: path of the screen as it was at the end, back?: when its end was put in front of her,
 //             told?: when he was told how it ended (what the voice said of it reached him) }
 // Only facts are kept, never a sentence written for one of its readers: who stopped it is a field, why it ended is one
@@ -14,6 +15,7 @@
 // was not ended ('failed', cause 'restart') — the device may have been left halfway, and that is told once.
 
 import { head as headOf, tail as tailOf } from '../cut.js';
+import { addYuan } from '../price.js';
 
 /** Why a thing ended, when that is not plain from its outcome. */
 export const CAUSES = ['restart', 'no-session', 'interrupted', 'broke-off', 'no-result', 'timeout', 'stopped', 'command', 'over-cap', 'not-reached', 'same-error'];
@@ -65,7 +67,14 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
     /** It is being done now. */
     begin(id, more = {}) { const e = find(id); if (!e || e.state === 'ended') return; Object.assign(e, { state: 'running', startedAt: now() }, more); save(); },
     /** Counted as it goes; written down with the next change of state. */
-    count(id, { steps = 0, tokens } = {}) { const e = find(id); if (!e) return; e.steps += steps; if (tokens) for (const k of ['in', 'cached', 'out']) e.tokens[k] += Number(tokens[k] ?? 0) || 0; },
+    // `units` and `yuan`: what the call cost (src/price.js charge), added up as it goes.
+    count(id, { steps = 0, tokens, units, yuan } = {}) {
+      const e = find(id); if (!e) return;
+      e.steps += steps;
+      if (tokens) for (const k of ['in', 'cached', 'out']) e.tokens[k] += Number(tokens[k] ?? 0) || 0;
+      if (units !== undefined) e.units = (e.units ?? 0) + (Number(units) || 0);
+      if (yuan !== undefined) e.yuan = addYuan(e.yuan, yuan);
+    },
     /** It is over, this way. Once: an ended thing stays as it ended. */
     end(id, { outcome, by = 'code', cause = '', error = '', summary = '', detail = '', name = '', question = '', ask = null } = {}) {
       const e = find(id);

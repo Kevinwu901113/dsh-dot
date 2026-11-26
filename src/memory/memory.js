@@ -38,6 +38,7 @@ import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
 import { head } from '../cut.js';
 import { ownerSaid } from '../said.js';
+import { addYuan, charge } from '../price.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -521,8 +522,9 @@ export function apply(ctx, config = {}) {
       return { error };
     }
     const raw = r.text, usage = r.usage;
-    const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), cached: Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
-    if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
+    // `in` counts the cache hits too (as calls.jsonl always has); `yuan` is what it cost at the hour's price (src/price.js, null: no price for the model).
+    const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), cached: Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0), yuan: charge(usage, { route: r.route ?? null }).yuan } : null;
+    if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0, yuan: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.yuan = addYuan(memory.ledger.yuan ?? 0, spent.yuan); memory.ledger.calls++; }
     return { raw, spent, ...(r.ok ? {} : { truncated: true }) };
   }
 

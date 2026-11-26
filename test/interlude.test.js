@@ -270,11 +270,13 @@ test('free time: one step past the whole budget stops it without a wake-up messa
   const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 10000 } });
   const tasks = [], steered = [];
   h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true }
-    : n === 'agents' ? { get: () => ({ steer: (m) => steered.push(m) }) } : get(n)))(h.ctx.get); // no cancel on this host
+    : n === 'agents' ? { get: () => ({ steer: (m) => steered.push(m) }) }
+      : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }) } : get(n)))(h.ctx.get); // no cancel on this host
   await h.cmd().handler({ rawInput: 'free' });
   tasks[0].onStart('e1');
-  // cached re-reads weigh a tenth: 50000 cached + 4000 fresh + 500 out = 9500 → warned, not stopped
-  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 4000, cacheReadTokens: 50000, outputTokens: 500 } });
+  // at deepseek-flash's price a cache hit weighs 0.02 and an output token 4 (src/price.js): 4000 fresh + 50000 cached
+  // (1000) + 800 out (3200) = 8200 → warned, not stopped
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 4000, cacheReadTokens: 50000, outputTokens: 800 } });
   await new Promise((r) => setImmediate(r));
   assert.equal(steered.length, 1);
   h.emit('e1', 'assistant/message', { message: { content: [] }, usage: { inputTokens: 20000 } });

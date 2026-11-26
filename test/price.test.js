@@ -104,3 +104,31 @@ test('price: a session\'s calls go to the model its last request header named, e
   assert.equal(yuanText(0.08156), '¥0.082');
   assert.equal(yuanText(0.00408), '¥0.0041');
 });
+
+test('price: the book of things, a turn\'s cost and her own account add a call up alike — the units and yuan charge gives', async () => {
+  resetPrices();
+  const { createLedger } = await import('../src/dot/ledger.js');
+  const { costOf: thingCost } = await import('../src/dot/things.js');
+  const { addUsage, tokensOf } = await import('../src/interlude/doings.js');
+  const { addSpend } = await import('../src/price.js');
+  const calls = [{ inputTokens: 1200, cacheReadTokens: 30000, outputTokens: 300 }, { inputTokens: 800, cacheReadTokens: 31000, outputTokens: 150, cacheWriteTokens: 0 }];
+  const at = bj(2026, 11, 28, 20);
+  const store = new Map();
+  const book = createLedger({ store: { get: (k) => store.get(k), set: (k, v) => store.set(k, v) } });
+  const id = book.open({ task: 'x' });
+  const turn = { in: 0, cached: 0, out: 0 };
+  for (const u of calls) { const c = charge(u, { at, route: FLASH }); book.count(id, { tokens: usageOf(u), ...c }); addSpend(turn, u, c); }
+  const doing = addUsage(null, turn); // a turn's cost settles a doing of hers (arrive.js → interlude remember)
+  const units = calls.reduce((n, u) => n + unitsOf(u, FLASH), 0), yuan = calls.reduce((n, u) => n + costOf(u, at, FLASH), 0);
+  close(thingCost(book.get(id)), units);
+  close(turn.units, units); close(doing.units, units);
+  close(book.get(id).yuan, yuan); close(turn.yuan, yuan); close(doing.yuan, yuan);
+  assert.deepEqual(book.get(id).tokens, { in: 2000, cached: 61000, out: 450 });
+  assert.equal(tokensOf(doing), 63450, 'her account still counts plain tokens');
+  // an entry from before the book counted units: its tokens, on the route given
+  close(thingCost({ tokens: { in: 2000, cached: 61000, out: 450 } }, FLASH), units);
+  // a call without a price makes the yuan of the whole unknown, not smaller
+  book.count(id, { ...charge({ inputTokens: 5 }, { route: { provider: 'x', model: 'y' } }) });
+  assert.equal(book.get(id).yuan, null);
+  resetPrices();
+});
