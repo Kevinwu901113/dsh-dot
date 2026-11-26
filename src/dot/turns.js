@@ -112,7 +112,9 @@ export function createTurns(dot) {
     if (event.type === 'turn/start') {
       const next = upcoming.get(id) ?? {};
       upcoming.delete(id);
-      turns.set(id, { turn: event.data?.turn, by: { whose: next.schedule ? 'schedule' : 'her', where: '', form: next.form, thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now(), spoke: false, opened: [], stopped: [], startedOver: false });
+      const t = { turn: event.data?.turn, by: { whose: next.schedule ? 'schedule' : 'her', where: '', form: next.form, thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now(), spoke: false, opened: [], stopped: [], startedOver: false };
+      turns.set(id, t);
+      dot.arrive.turnStarted(id, t); // what waits in its inbox is this turn's
       return;
     }
     const t = turns.get(id);
@@ -165,7 +167,7 @@ export function createTurns(dot) {
       // A thing of her own (her own time) lasts as long as her hands are still on it (arrive.js taskTurnEnded).
       dot.arrive.taskTurnEnded(id, t);
       // What waited for this turn goes in once it has settled, so the followup starts a fresh turn (arrive.js).
-      dot.arrive.turnEnded(id);
+      dot.arrive.turnEnded(id, t);
     }
     // A turn on his business that ends is answered by the voice (voice.js turnEnded).
     if (ended && forHim(t)) dot.voice.turnEnded(id, t, event, broke);

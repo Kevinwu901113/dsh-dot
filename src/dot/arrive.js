@@ -18,7 +18,7 @@ export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, bump, sessions, things, turns, voice;
  *             read when used: sleep (awake, wakeUp), hands (busy, thingById), ledger
- * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnEnded, note,
+ * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnStarted, turnEnded, note,
  *     pushesNote, seenNotes, herState, quiet, enqueueTask, nextTask, taskTurnEnded, watchSetup }
  */
 export function createArrive(dot) {
@@ -50,6 +50,16 @@ export function createArrive(dot) {
   const all = (kind) => waiting.filter((e) => e.kind === kind);
   const take = (es) => { for (const e of es) waiting.splice(waiting.indexOf(e), 1); return es; };
   const onTheWay = (kind) => all(kind).filter((e) => e.held !== 'handoff'); // a handoff is `moving`, not theirs
+
+  // What has gone in and has not been through a turn that ended: { e, session, turn } — `turn` the open turn it was
+  // steered into, or null while it waits in the session's inbox for the next one (bound when that starts). It is let
+  // go when its turn ends; a turn that broke because her conversation no longer fits the model keeps it for the new
+  // conversation (overflowed). A line of ours (`note`) wakes no turn and is not kept.
+  const sent = [];
+  const track = (e, session, turn = null) => { if (e.kind === 'note') return; sent.push({ e, session, turn }); if (sent.length > 100) sent.shift(); };
+  const untrack = (es) => { for (const s of es) sent.splice(sent.indexOf(s), 1); return es; };
+  /** A turn of a session started (turns.js): what waits in its inbox is that turn's. */
+  const turnStarted = (id, t) => { for (const s of sent) if (s.session === id && s.turn === null) s.turn = t; };
 
   /** The way in: the arrival waits in the list, and whatever may go in now goes. */
   const arrive = (e) => {
@@ -98,7 +108,7 @@ export function createArrive(dot) {
           const found = await resolveLive(id);
           if (!found || 'error' in found) { audit('notification-dropped', { pkgs, why: found?.error?.message ?? 'session not found' }); return; }
           // The owner's words, exactly as typed (several messages → several lines), as human input.
-          if (words.length) toOwnerAgent(found.agent, id, words.map((e) => e.n));
+          if (words.length) toOwnerAgent(found.agent, id, words);
           if (!persons.length) return;
           // Someone writing: one message for what came together, with the people in it as she remembers them.
           const items = persons.map((e) => e.n), whileBusy = persons.some((e) => e.whileBusy);
@@ -106,6 +116,7 @@ export function createArrive(dot) {
           // An answer a thing of his was waiting for makes this turn his business: what comes of it is told to him.
           const answer = items.find((n) => n.answers);
           const noted = answer ? `\n${prompt('dot.notification.awaited', { task: head(String(answer.answersTask ?? '').split(/[。\n]/)[0], 60) }).trim()}${answer.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : ''}` : '';
+          for (const e of persons) track(e, id);
           found.agent.followup(createUserMessage({ content: contentFor(wakeText(items, { whileBusy, cards }) + noted, items), source: answer ? { ...PHONE_NOTIFICATION_SOURCE, thing: answer.answers, ...(answer.forHim ? { for: 'him' } : {}) } : PHONE_NOTIFICATION_SOURCE }));
           bump('woke', 1);
           audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
@@ -117,6 +128,7 @@ export function createArrive(dot) {
       going = going.then(async () => {
         const id = sessions.last();
         const found = id ? await resolveLive(id) : null;
+        if (found && !('error' in found)) track(e, id);
         void Promise.resolve(e.into(found && !('error' in found) ? found.agent : null, id)).catch((err) => logger.warn(`${e.kind} did not go in: ${err.message}`));
       }).catch((err) => logger.warn(`${e.kind} did not go in: ${err.message}`));
     }
@@ -134,7 +146,8 @@ export function createArrive(dot) {
    * `steer` gets the followup).
    */
   let agentShapeLogged = false;
-  const toOwnerAgent = (agent, id, items) => {
+  const toOwnerAgent = (agent, id, es) => {
+    const items = es.map((e) => e.n);
     const busy = turns.has(id);
     const open = turns.get(id);
     // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
@@ -151,6 +164,9 @@ export function createArrive(dot) {
       audit('agent-handle', { methods, busy, openTurns: turns.size });
     }
     const message = createUserMessage({ content: contentFor(ownerWords(items, Date.now(), { whileBusy: via === 'steer' || via === 'send' }), items), source: ownerSource() });
+    // Steered in, they are the open turn's; otherwise the next turn's — and so is what the turn started over had.
+    if (via === 'restart') for (const s of sent) if (s.session === id && s.turn === open) s.turn = null;
+    for (const e of es) track(e, id, via === 'steer' || via === 'send' ? open : null);
     try {
       if (via === 'restart') {
         // The cancelled turn's own input stays in her history. His new words are queued in the same tick: waking
@@ -160,7 +176,7 @@ export function createArrive(dot) {
         turns.startedOver(open); // only once the cancel is in: a turn that was not cancelled keeps its answer
         if (typeof agent.send === 'function') agent.send(message, 'next-turn', true); else agent.followup(message);
       } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
-    } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }
+    } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); for (const s of sent) if (es.includes(s.e)) s.turn = null; agent.followup(message); }
     audit('owner-message', { session: id, count: items.length, whileBusy: busy, via }); bump('owner', items.length);
     turns.owe(id);
   };
@@ -187,7 +203,7 @@ export function createArrive(dot) {
     const items = onTheWay('his');
     his.due = 0; his.typing = his.seen = false;
     const id = sessions.last();
-    if (agent && items.length && !frozen && id && agent.session?.id === id) toOwnerAgent(agent, id, take(items).map((e) => e.n));
+    if (agent && items.length && !frozen && id && agent.session?.id === id) toOwnerAgent(agent, id, take(items));
     else pump();
     return items.length;
   };
@@ -270,8 +286,11 @@ export function createArrive(dot) {
   } });
   /** Hold deliveries to her conversation (a handoff is moving it); the returned function releases them to the new one. */
   const freeze = () => { frozen++; let done = false; return () => { if (!done) { done = true; frozen--; pump(); } }; };
-  /** A turn of her conversation ended (turns.js): once that has settled, what waited for it goes in, then a thing of her own. */
-  const turnEnded = (id) => { if (id === sessions.last()) setTimeout(() => { pump(); void nextTask(); }, 50); };
+  /** A turn of a session ended (turns.js): what went in for it is let go; for her conversation, once that has settled, what waited for it goes in, then a thing of her own. */
+  const turnEnded = (id, t) => {
+    untrack(sent.filter((s) => s.session === id && s.turn === t));
+    if (id === sessions.last()) setTimeout(() => { pump(); void nextTask(); }, 50);
+  };
 
   // Her own things (dshDot.task: her own time): the lowest priority, one at a time, when nothing else is going on.
   // What her attention is on right now, in one place. Everything that would wake her on its own account (a thing of
@@ -358,7 +377,7 @@ export function createArrive(dot) {
     arrive, wake, qqMessage, ownerTypingNow, flushOwner,
     /** His messages waiting in his buffer (or for her bubbles to be out). */
     ownerPending: () => onTheWay('his').length,
-    hisUnread, freeze, turnEnded, note, pushesNote,
+    hisUnread, freeze, turnStarted, turnEnded, note, pushesNote,
     /** She just woke (sleep.js onWake): what waited is shown to her. */
     onWake: () => pump(),
     /** The last notifications of her phone (the array itself: wait_for and done look through it). */
