@@ -167,7 +167,6 @@ function render(s){
     let h='<div class="kv">';
     const f=it.free||{};
     h+='<span>自己的时间</span><span>'+(f.perDay?('今天 '+(f.today||0)+'/'+f.perDay+' 次 · 折算 '+fmt(f.tokens||0)+'/'+fmt(f.dailyTokens||0)+' token'+(yuan(f.yuan)?' · 约 '+yuan(f.yuan)+'（按官方价估）':'')+(f.next?' <span class="mute">· 下一次约 '+esc(at(f.next))+'</span>':'')):'关着')+'</span>';
-    if(it.growth) h+='<span>她现在的样子</span><span>'+(it.growth.portrait?'<div class="pre">'+esc(it.growth.portrait)+'</div>'+(it.growth.week?'<span class="mute">'+esc(it.growth.week)+' 写的</span>':''):'<span class="mute">还没有（每周回顾一次）</span>')+'</span>';
     h+='</div>';
     $('now').innerHTML=h;
   } else $('now').innerHTML='<span class="mute">人设组件未加载</span>';
@@ -196,8 +195,12 @@ function render(s){
   let t='';
   if(it){t+=tile((it.doings&&it.doings.today?it.doings.today.doings:0),'自己做的事');}
   if(dot&&dot.today){t+=tile(dot.today.woke,'通知叫醒')+tile(dot.today.owner,'你的消息');}
-  const tin=(it?it.today.tokensIn:0)+(m?m.ledger.in:0), tout=(it?it.today.tokensOut:0)+(m?m.ledger.out:0);
-  t+=tile(fmt(tin),'token 入')+tile(fmt(tout),'token 出');
+  // Today's tokens: the memory's calls and the things given to her hands today (the interlude's own counters stopped
+  // counting when its narrator went in 0.24, and read 0 here since).
+  const d0=new Date();d0.setHours(0,0,0,0);
+  const own=((dot&&dot.things)||[]).filter((e)=>(e.openedAt||0)>=d0.getTime());
+  const tin=own.reduce((n,e)=>n+((e.tokens&&e.tokens.in)||0),0)+(m?m.ledger.in:0), tout=own.reduce((n,e)=>n+((e.tokens&&e.tokens.out)||0),0)+(m?m.ledger.out:0);
+  t+=tile(fmt(tin),'token 入（记忆+手）')+tile(fmt(tout),'token 出（记忆+手）');
   if(m&&m.ledger&&yuan(m.ledger.yuan))t+=tile(yuan(m.ledger.yuan),'记忆调用 · 按官方价估');
   $('today').innerHTML=t;
   if(m){

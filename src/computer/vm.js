@@ -305,20 +305,25 @@ export function apply(ctx, config = {}, deps = {}) {
    * Share `dir` with the VM (backend permitting). Creates the remount lock synchronously, so any
    * command spawned right after waits for the swap; resolves when the VM is back.
    */
-  let pending = null;
+  let pending = null, inFlight = 0;
   computer.ensureShared = (dir) => {
     if (off || !cfg.autoShare || computer.isShared(dir) || !shareable(dir) || !backend.remount || computer.error) return null;
     const previous = [...computer.mounts];
     const next = [...previous.filter((m) => !inside(dir, m)), dir]; // a parent replaces its children
     computer.mounts = next; // later spawns map paths as shared; they wait on the lock meanwhile
+    // One lock for however many shares are in line: it goes, and the computer counts as up, only when the last is done
+    // (each one used to clear it on its own, while the next still needed it).
+    inFlight++;
     try { writeFileSync(computer.lockFile, String(process.pid)); } catch {}
     computer.remounting = true; changed();
     const run = (pending || computer.ready).then(() =>
       backend.remount({ mounts: next, previous, port: cfg.port, waitHealthy: (ms) => waitFor(`${base}/v1/sandbox`, ms, computer.authHeaders()) }));
     pending = run.then(
-      () => { writeState({ mounts: next }); logger.info(`shared with the computer: ${dir}`); computer.audit({ kind: 'mount', action: 'share', dir, mounts: next }); },
-      (err) => { computer.mounts = previous; writeState({ mounts: previous }); logger.error(`could not share ${dir}: ${err.message}`); computer.audit({ kind: 'mount', action: 'share-failed', dir, error: err.message }); },
+      () => { writeState({ mounts: computer.mounts }); logger.info(`shared with the computer: ${dir}`); computer.audit({ kind: 'mount', action: 'share', dir, mounts: computer.mounts }); },
+      // Only this folder is taken back: one shared after it, in line behind, stays.
+      (err) => { computer.mounts = computer.mounts.filter((m) => m !== dir); writeState({ mounts: computer.mounts }); logger.error(`could not share ${dir}: ${err.message}`); computer.audit({ kind: 'mount', action: 'share-failed', dir, error: err.message }); },
     ).finally(() => {
+      if (--inFlight > 0) return;
       try { rmSync(computer.lockFile, { force: true }); } catch {}
       computer.remounting = false; changed();
       ensureServices(cfg, computer, logger).then(

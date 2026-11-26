@@ -222,11 +222,15 @@ export function createHandsWiring(dot) {
       let judged = [], failed = '', seen = null; // seen: what the call gave back, said when it cannot be read
       if (input.lessons.length && sel && llm) {
         try {
-          const reply = await callModel(ctx, {
-            effort: WORK, background: true,
+          const ask = (effort) => callModel(ctx, {
+            effort, background: true,
             system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 12000, // what it thinks counts too: at 4000 the answer for a place with eight lessons was cut mid-JSON
             messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
           });
+          let reply = await ask(WORK);
+          // All of it spent on thinking, no answer written (11-26: the dialer's check, 12000 tokens, 0 of them the
+          // answer): asked once more with less thinking, the same question.
+          if (reply.finish?.kind === 'max-tokens' && !String(reply.args ?? '').trim()) { audit('nightcheck-rethink', { app }); reply = await ask('low'); }
           seen = { finish: reply.finish?.kind ?? '', text: String(reply.text ?? '').length, args: String(reply.args ?? '').length, out: reply.usage?.outputTokens ?? 0 };
           if (!reply.ok) throw new Error(outcomeText(reply.outcome));
           const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));

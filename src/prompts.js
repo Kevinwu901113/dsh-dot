@@ -58,8 +58,12 @@ export function fill(text, vars = {}, id = '') {
 /** The prompt `id`, filled with `vars`. */
 export const prompt = (id, vars = {}) => fill(raw(id), vars, id);
 
-/** A `key=value` per line file as an object, each value filled with `vars`. */
-export function table(id, vars = {}) {
+/**
+ * A `key=value` per line file as an object, each value filled with `vars` — or, called with no vars, left as written
+ * for the caller to fill (dot.now's rows are filled one by one: filling them here first only warned that every
+ * placeholder had no value, at every start).
+ */
+export function table(id, vars) {
   const out = {};
   const text = raw(id), builtin = readText(builtinPath(id)) ?? '';
   // The built-in first, then the override over it: a key added to the built-in after someone made their own
@@ -67,7 +71,7 @@ export function table(id, vars = {}) {
   for (const src of text === builtin ? [text] : [builtin, text]) {
     for (const line of src.split('\n')) {
       const i = line.indexOf('=');
-      if (i > 0) out[line.slice(0, i).trim()] = fill(line.slice(i + 1), vars, id);
+      if (i > 0) out[line.slice(0, i).trim()] = vars === undefined ? line.slice(i + 1) : fill(line.slice(i + 1), vars, id);
     }
   }
   return out;
