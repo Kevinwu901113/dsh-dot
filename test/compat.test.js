@@ -245,7 +245,7 @@ test('hiddenFor: her hands are offered the tools of the device the thing is on, 
   assert.deepEqual(seen('hands:computer'), ['account', 'ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image', `${V}browser_click`, `${V}sandbox_execute_bash`]);
   assert.deepEqual(seen('hands:web'), ['ask_her', 'done', 'web_search', 'web_fetch']);
   // on the machine dsh runs on: the shell and reading, none of her devices and none of her accounts
-  assert.deepEqual(seen('hands:host'), ['ask_her', 'done', 'web_search', 'web_fetch', 'bash', 'job_output', 'job_kill', 'read', 'read_image']);
+  assert.deepEqual(seen('hands:host'), ['ask_her', 'done', 'bash', 'job_output', 'job_kill', 'read', 'read_image']);
   // the place not known (a session not made with one of the places' presets): no device, no shell, no accounts — fail closed
   assert.deepEqual(seen('hands'), ['ask_her', 'done']);
   // which place: what the session was made with (dsh keeps the preset on the session), asked of dot

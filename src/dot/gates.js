@@ -10,6 +10,10 @@
 // judged by the words under it; when the screen cannot be read, or the app in front is not known, it is asked about
 // too. A batch is its steps, each judged the same way.
 // The lists are here and nowhere else: a word added to a list is the whole change.
+import { realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { resolve } from 'node:path';
+import { sandboxAvailable } from '../computer/host-sandbox.js';
 import { PHONE_LOOK_TOOLS, PHONE_PASTE_TOOLS, PHONE_HANDS_TOOLS, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 
 export const KINDS = {
@@ -233,7 +237,32 @@ const HOST_GIT_FORMS = {
 };
 const HOST_FIND_ACTS = /^-(?:delete|exec|execdir|ok|okdir|fprint|fprint0|fprintf|fls)$/;
 const HOST_SECRET = /(?:^|[\s/'"=~])(\.ssh|\.aws|\.gnupg|\.netrc|\.npmrc|\.env(?:\.\w+)?|id_rsa\w*|id_ed25519\w*|\.dsh(?!\/dsh-dot-hands))(?=$|[\s/'"])|(credentials?|secrets?|keychains?|passwords?|tokens?|cookies)\b/i;
-const HOST_FREE_TOOLS = new Set(['read', 'read_image', 'job_output', 'job_list', 'job_kill', 'web_search', 'web_fetch', 'ask_her', 'done', 'wait_for']);
+// Not the web: her hands on this machine read his files, and what they read must not leave by a lookup of theirs —
+// looking things up is a thing for the web place (11-26). Only her judgement moves anything from one to the other.
+const HOST_FREE_TOOLS = new Set(['read', 'read_image', 'job_output', 'job_list', 'job_kill', 'ask_her', 'done', 'wait_for']);
+
+/** A path as it really is (~ expanded, links followed, as far as it exists), so a link or `..` cannot hide a key folder. */
+export function realOf(p) {
+  const abs = resolve(String(p).replace(/^~(?=$|\/)/, homedir()));
+  let head = abs, tail = '';
+  for (;;) {
+    try { return realpathSync(head) + tail; } catch { /* go up */ }
+    const i = head.lastIndexOf('/');
+    if (i <= 0) return abs;
+    tail = head.slice(i) + tail; head = head.slice(0, i);
+  }
+}
+
+/**
+ * May her own conversation write here? Only under <home>/her — her notes, what she learned (howto), what she keeps. Her
+ * persona card, its parts and checks, the canon and the prompt overrides are his (11-25: the card is his alone to
+ * change); her hands' notes are written through her, not by them. A path is judged where it really is (realOf).
+ */
+export function herWritable(path, home) {
+  const mine = realOf(resolve(home, 'her'));
+  const p = realOf(resolve(home, String(path ?? '').replace(/^~(?=$|\/)/, homedir())));
+  return p === mine || p.startsWith(`${mine}/`);
+}
 
 /** A command line as a row of commands, each a row of words — or null when it is more than that (a redirect, a substitution, something left running). */
 export function plainCommands(command) {
@@ -287,7 +316,7 @@ export function hostLooks(command) {
  * @param {string} a.tool
  * @param {any} a.input
  */
-export function classifyHost({ tool, input }) {
+export function classifyHost({ tool, input, boxed = sandboxAvailable() }) {
   const t = short(tool), args = argsOf(input);
   const where = '他这台电脑本机上';
   // A command is sent to this machine or into her computer by the folder it starts in (computer/subprocess.js), and a
@@ -299,7 +328,9 @@ export function classifyHost({ tool, input }) {
     if (FORBIDDEN_WORDS.test(cmd)) return { tier: 'forbid', kind: 'money', what: '转账、提现一类的操作' };
     const secret = HOST_SECRET.exec(cmd);
     if (secret) { const subject = secret[1] ?? secret[2]; return { tier: 'ask', kind: 'secret-file', what: `${KINDS['secret-file']}（${where}）：${subject}`, subject }; }
-    if (hostLooks(cmd)) return null;
+    // A look is not asked about only where it runs in the read-only, offline box (computer/host-sandbox.js): the list
+    // of looks saves him a question, the box is what keeps a "look" that is not one (rg --pre, sort -o) from acting.
+    if (boxed && hostLooks(cmd)) return null;
     for (const [re, kind] of SHELL_KINDS) {
       const m = re.exec(cmd);
       if (!m || (kind === 'disk' && !m[1] && m[0].startsWith('>'))) continue; // writing to a file is not a whole disk
@@ -309,7 +340,7 @@ export function classifyHost({ tool, input }) {
     return { tier: 'ask', kind: 'host', what: `在${where}：${shown}`, subject: '' };
   }
   if (t === 'read' || t === 'read_image') {
-    const secret = HOST_SECRET.exec(String(args.path ?? args.file_path ?? args.file ?? ''));
+    const secret = HOST_SECRET.exec(realOf(String(args.path ?? args.file_path ?? args.file ?? '')));
     if (secret) { const subject = secret[1] ?? secret[2]; return { tier: 'ask', kind: 'secret-file', what: `${KINDS['secret-file']}（${where}）：${subject}`, subject }; }
     return null;
   }

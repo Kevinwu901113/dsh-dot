@@ -15,8 +15,9 @@ import { VM_SCREENSHOT } from '../qq/qq.js';
 import { batchLaunch, createHowto, errorType, howtoTool, isRefusal, placeName } from './howto.js';
 import { HANDS_SOURCE, createHands } from './hands.js';
 import { checkInput, checkTool, settle as settleCheck, report as checkReport, hashOf } from './nightcheck.js';
-import { approvalKind, classify, classifyComputer, classifyHost, HIM_KINDS } from './gates.js';
+import { approvalKind, classify, classifyComputer, classifyHost, herWritable, HIM_KINDS } from './gates.js';
 import { REACHES } from './consent.js';
+import { letThrough } from '../computer/host-sandbox.js';
 import { KNOWN_APPS } from '../interlude/core.js';
 import { outcomeText } from '../llm-gate.js';
 import { WORK, callModel, modelOf } from '../llm-call.js';
@@ -550,8 +551,11 @@ export function createHandsWiring(dot) {
     const onHost = theirs && handsPlace(exec.agent?.session?.header?.cwd, exec.agent?.session?.header?.agentPreset) === 'host';
     if (onHost) {
       exec.dotGated = true;
-      const stop = gateHands(classifyHost({ tool: exec.name, input: args }), id, 'host');
+      const g = classifyHost({ tool: exec.name, input: args });
+      const stop = gateHands(g, id, 'host');
       if (stop) return stop;
+      // His yes covers this very command: it runs outside the read-only box, once (computer/host-sandbox.js).
+      if (g && exec.name === 'bash') letThrough(String(args.command ?? ''));
     }
     if (theirs && !onHost && (exec.name === 'bash' || exec.name.startsWith(VM_TOOL_PREFIX))) {
       const pc = computer();
@@ -560,6 +564,11 @@ export function createHandsWiring(dot) {
       exec.dotGated = true;
       const stop = gateHands(classifyComputer({ tool: exec.name, input: args, risk: pc?.gate?.riskOf?.(exec) ?? null, acts: doing, page }), id, 'computer');
       if (stop) return stop;
+    }
+    // What she writes herself goes under her/ only: her persona card, the canon and the prompt overrides are his.
+    if (/^(?:write|edit|apply_patch)$/.test(exec.name) && isDotSession(id, exec.agent?.session?.header?.cwd)) {
+      const path = String(args.path ?? args.file_path ?? args.file ?? '');
+      if (!herWritable(path, home)) { audit('her-write-refused', { session: id, tool: exec.name, path: path.slice(0, 120) }); return deny(prompt('dot.write.not-hers', { path })); }
     }
     // A lean conversation of hers has her own tools only; one the host still answers to by name is not run.
     if (sessions.isLean(id) && !isHerTool(exec.name)) { audit('lean-refused', { session: id, tool: exec.name }); return deny(prompt('dot.lean.not-hers', { tool: exec.name })); }

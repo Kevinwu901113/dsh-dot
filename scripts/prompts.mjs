@@ -104,6 +104,8 @@ export const entries = [
     } },
   { id: 'reach', group: 'system', name: '主动找他：发生了什么', note: '她在不是他开的那一轮里给他发了消息，算一次主动。「现在」那行下面多一行今天的数（几次、他回了几次、上一次什么时候）；一条过了 dot.reachUnansweredMs（默认 2 小时）他没回，在她对话里留一句。只给事实，没有次数上限：什么时候找他是她自己从这些里学的', files: ['dot.reach', 'dot.reach.waiting', 'dot.reach.unanswered'],
     render: () => variant([['现在那行下面', D.reachText([{ at: Date.now() - 7200000, answeredAt: Date.now() - 7000000 }, { at: Date.now() - 600000 }])], ['没回', P.prompt('dot.reach.unanswered', { time: '14:20', hours: 2 })]]) },
+  { id: 'write-not-hers', group: 'wake', name: '写到不是她的地方', note: '她自己的对话用 write/edit 写到 her/ 以外（人设卡、canon、提示词覆写）时被拦下的工具结果', files: ['dot.write.not-hers'],
+    render: () => P.prompt('dot.write.not-hers', { path: '~/dot/persona.md' }) },
   { id: 'loop', group: 'wake', name: '重复调用', note: '一轮里同一个调用重复 dot.loopRepeat 次后被拦下的工具结果；她正在聊天时，自己的事记下的「在忙什么」', files: ['dot.loop-stopped', 'dot.busy.chat'],
     render: () => variant([['重复调用被拦', P.prompt('dot.loop-stopped', { times: 5 })], ['在忙什么', P.prompt('dot.busy.chat')]]) },
   { id: 'handoff', group: 'wake', name: '交接', note: '对话太长换新会话时，新会话的开头', files: ['memory.handoff'],

@@ -280,3 +280,27 @@ test('sharing with the computer: only what is configured; a folder shared before
     assert.equal(remounts.length, 1);
   } finally { shut(gw.server); process.env.DSH_HOME = old; if (old === undefined) delete process.env.DSH_HOME; }
 });
+
+test('her hands on this machine: what they run is boxed read-only and offline unless he said yes to that very command; nobody else\'s commands are touched', async () => {
+  const { default: Subprocess } = await import('../src/computer/subprocess.js');
+  const { setSandboxAvailable, letThrough, profile, SANDBOX_EXEC } = await import('../src/computer/host-sandbox.js');
+  const fake = (owner) => ({ hostArgv: Subprocess.prototype.hostArgv, compat: () => ({ ownerOfCwd: () => owner }) });
+  const on = (owner, cmd) => Subprocess.prototype.onHost.call(fake(owner), { argv: ['bash', '-c', cmd], cwd: '/x', env: { A: '1' } });
+  try {
+    setSandboxAvailable(true);
+    const b = on('hands:host', 'rg --pre=/tmp/x foo .');
+    assert.equal(b.how, 'boxed');
+    assert.deepEqual(b.argv.slice(0, 2), [SANDBOX_EXEC, '-p']);
+    assert.deepEqual(b.argv.slice(3), ['bash', '-c', 'rg --pre=/tmp/x foo .']);
+    assert.equal(b.env.GIT_OPTIONAL_LOCKS, '0'); assert.equal(b.env.A, '1');
+    letThrough('cd ~/p && npm install');
+    assert.equal(on('hands:host', 'cd ~/p && npm install').how, 'his-yes', 'his yes: this command, outside the box');
+    assert.equal(on('hands:host', 'cd ~/p && npm install').how, 'boxed', 'once');
+    assert.equal(on('qqb-owner', 'make').how, 'host', 'a qq-bridge owner chat on this machine is as dsh runs it');
+    setSandboxAvailable(false);
+    assert.equal(on('hands:host', 'ls').how, 'unboxed', 'no box here: the gate asked him about every command');
+    const p = profile('/Users/me');
+    assert.match(p, /\(deny network\*\)/); assert.match(p, /\(deny file-write\*\)/);
+    assert.match(p, /\(subpath "\/Users\/me\/\.ssh"\)/); assert.match(p, /\(allow file-read\* \(subpath "\/Users\/me\/\.dsh\/dsh-dot-hands"\)\)/);
+  } finally { setSandboxAvailable(null); }
+});

@@ -185,7 +185,10 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
         ...tasks.slice(-6).map((t) => `「${t.task}」做成 ${t.done}/${t.runs} 次${t.steps.length ? `，步数 ${t.steps.slice(-4).join('→')}` : ''}${t.route ? `；捷径（这样走成过 ${t.walked} 次）：${t.route.join(' → ')}` : ''}`),
         ...last.map((r) => `${day(r.at)} ${r.steps} 步${r.errors ? `、错 ${r.errors} 次` : ''}${r.outcome && r.outcome !== 'done' ? '、没做成' : ''}`),
       ];
-      return { app, notes, recent: said.join('；') };
+      // The cap is where the notes are used: the file is hers to write (she can, or he), what her hands are given is at
+      // most maxChars of it (11-26: computer.md had grown to 2,355 characters past an 800 cap kept only on one way in).
+      const given = notes.length > maxChars ? `${notes.slice(0, maxChars)}\n（后面还有 ${notes.length - maxChars} 字没给：笔记太长了）` : notes;
+      return { app, notes: given, recent: said.join('；') };
     },
     /**
      * The thing in this session ended: log each place's run; a place worth learning from comes back as

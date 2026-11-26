@@ -197,7 +197,8 @@ export function hiddenFor(owner, names, { ownerDevices = true, hideBridgeTools =
       // the machine dsh runs on: computer/subprocess.js routes by the session's folder).
       const shell = HANDS_HOST_TOOLS.includes(n) && HANDS_COMPUTER_HOST_TOOLS.includes(n);
       const pc = n.startsWith(VM_TOOL_PREFIX) || shell;
-      const ok = n === HANDS_ASK_TOOL || n === HANDS_DONE_TOOL || n === HANDS_WAIT_TOOL || HANDS_WEB_TOOLS.includes(n)
+      // Looking things up: everywhere but this machine itself, whose files must not leave by a lookup (gates.js HOST_FREE_TOOLS).
+      const ok = n === HANDS_ASK_TOOL || n === HANDS_DONE_TOOL || n === HANDS_WAIT_TOOL || (HANDS_WEB_TOOLS.includes(n) && device !== 'host')
         || ((device === 'phone' || device === 'computer') && n === 'account')
         || (device === 'phone' && phone)
         || (device === 'computer' && pc)

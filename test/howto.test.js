@@ -178,3 +178,17 @@ test('howto: a thing is known where most of it happened; a run the notes are wri
   assert.ok(!JSON.stringify(h.records('信息')).includes('778899'));
   h.amend('信息', '## 教训\n- 一条'); assert.equal(h.notes('信息'), '## 教训\n- 一条');
 });
+
+test('notes longer than the cap are kept as written, and her hands are given the first maxChars of them', async () => {
+  const { createHowto } = await import('../src/dot/howto.js');
+  const { mkdtempSync, mkdirSync, writeFileSync } = await import('node:fs');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const dir = join(mkdtempSync(join(tmpdir(), 'howto-cap-')), 'howto'); mkdirSync(dir, { recursive: true });
+  const h = createHowto({ dir, maxChars: 20 });
+  writeFileSync(join(dir, 'computer.md'), `${'甲'.repeat(50)}\n`);
+  const got = h.take('s1', 'computer');
+  assert.ok(got.notes.startsWith('甲'.repeat(20)));
+  assert.match(got.notes, /后面还有 30 字没给/);
+  assert.equal(h.notes('computer'), '甲'.repeat(50));
+});

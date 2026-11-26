@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { apply, ownerSource } from '../src/dot/core.js';
 import { apply as applyMemory } from '../src/memory/memory.js';
 import { hookTable } from './hooks.js';
+import { setSandboxAvailable } from '../src/computer/host-sandbox.js';
 
 const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 const text = (m) => m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
@@ -686,6 +687,7 @@ test('waiting is one step: wait_for watches the screen and the notifications by 
 });
 
 test('this machine is a place for her hands too, and his: only on his business; looking is theirs, anything else is asked of him once a thing', async () => {
+  setSandboxAvailable(true); // as on macOS: a look runs in the read-only box (computer/host-sandbox.js)
   const h = harness();
   // in her own time: not given
   const own = await h.tools.hands.execute({ device: 'host', do: '看看他的项目' });
@@ -708,7 +710,7 @@ test('this machine is a place for her hands too, and his: only on his business; 
   assert.deepEqual(h.audit.findLast((a) => a.event === 'consent-asked'), { kind: 'dot', event: 'consent-asked', session: 'h1', device: 'host', what: '在他这台电脑本机上：cd ~/Claude/dsh-dot-src && npm install', thing: 't1', of: 'host' });
   const write = await h.pre('h1', 'write', { path: '/Users/me/x', content: 'y' });
   assert.ok(write.reason, 'nothing more is done once they have asked');
-  h.stop();
+  h.stop(); setSandboxAvailable(null);
 });
 
 test('an answer someone owes a thing is a record on it, not her hands\' time: the thing ends as sent, and when they write she is woken with it as that thing\'s — his business when the thing was his', async () => {
@@ -1079,4 +1081,17 @@ test('a model without a price is counted without a discount, and /dot says so fo
   assert.match((await h.command('')).text, /price: none known for openrouter\/some-model — counted without a cache discount, no yuan \(interlude\.price sets your own\) · a thing stops at 1000000 折算 token\n/);
   h.stop();
   resetPrices();
+});
+
+test('what she writes herself goes under her/ only: her persona card, the canon and the prompt overrides are his', async () => {
+  const h = harness();
+  try {
+    assert.equal(await h.pre('s1', 'write', { path: 'her/howto/QQ.md', content: 'x' }), 'ran');
+    assert.equal(await h.pre('s1', 'edit', { path: join(h.home, 'her', 'notes.md') }), 'ran');
+    for (const p of ['persona.md', 'interlude/canon.json', 'prompts/dot.rules.txt', 'her/../persona.md', join(h.home, '..', 'elsewhere.txt')]) {
+      const r = await h.pre('s1', 'write', { path: p, content: 'x' });
+      assert.equal(r.kind, 'deny', p); assert.match(r.reason, /不是你写的地方/);
+    }
+    assert.ok(h.audit.some((a) => a.event === 'her-write-refused'));
+  } finally { h.stop(); }
 });

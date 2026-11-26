@@ -10,6 +10,7 @@ import { promisify } from 'node:util';
 import { LocalSubprocessRuntime } from '@deepseek-ai/dsh-subprocess-local';
 import { SubprocessExecutableNotFoundError } from '@deepseek-ai/dsh-subprocess';
 import { clip } from './audit.js';
+import { boxed, commandOf, sandboxAvailable, takeLetThrough } from './host-sandbox.js';
 
 const run = promisify(execFile);
 const PROC_DIR = '/tmp/.dsh-computer-procs';
@@ -145,14 +146,29 @@ export default class DshComputerSubprocess extends LocalSubprocessRuntime {
     return isAbsolute(cmd) && !existsSync(cmd) ? [basename(cmd), ...rest] : argv;
   }
 
+  /**
+   * What runs on this machine for her hands goes into the read-only, offline box (host-sandbox.js) unless he said
+   * yes to that very command; a qq-bridge owner chat routed here runs as dsh would run it without this plugin.
+   */
+  onHost(spec) {
+    const argv = this.hostArgv(spec.argv);
+    const hands = this.compat()?.ownerOfCwd?.(spec.cwd) === 'hands:host';
+    if (!hands) return { ...spec, argv, how: 'host' };
+    if (takeLetThrough(commandOf(argv))) return { ...spec, argv, how: 'his-yes' };
+    if (!sandboxAvailable()) return { ...spec, argv, how: 'unboxed' }; // no box here: the gate asked him about every command
+    const b = boxed(argv);
+    return { ...spec, argv: b.argv, env: { ...(spec.env ?? process.env), ...b.env }, how: 'boxed' };
+  }
+
   spawnOnHost(spec) {
-    this.vm.audit?.({ kind: 'exec-host', argv: clip(spec.argv.join(' ')), cwd: spec.cwd });
-    return super.spawn({ ...spec, argv: this.hostArgv(spec.argv) });
+    const { how, ...run } = this.onHost(spec);
+    this.vm.audit?.({ kind: 'exec-host', argv: clip(spec.argv.join(' ')), cwd: spec.cwd, how });
+    return super.spawn(run);
   }
 
   async spawnTerminal(spec) {
     const route = this.routeFor(spec.cwd);
-    if (route === 'host') return super.spawnTerminal({ ...spec, argv: this.hostArgv(spec.argv) });
+    if (route === 'host') { const { how, ...run } = this.onHost(spec); void how; return super.spawnTerminal(run); }
     this.usable();
     const shared = route !== 'vm' || this.vm.isShared(spec.cwd) ? null : this.vm.ensureShared?.(spec.cwd);
     if (shared) await shared;

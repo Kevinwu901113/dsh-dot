@@ -3,6 +3,9 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { classify, classifyComputer, classifyHost, hostLooks, plainCommands, approvalKind, wordsAt, KINDS, HIM_KINDS } from '../src/dot/gates.js';
 import { createConsent } from '../src/dot/consent.js';
+import { mkdirSync, mkdtempSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 const NOW = 1_000_000;
 const screen = (...items) => ({ items: items.map(([words, x, y]) => ({ words, x, y })), at: NOW });
@@ -171,7 +174,7 @@ test('gates on her computer: money sites are not used, a till / captcha / QR pag
 });
 
 test('host: on the machine dsh runs on only looking is theirs; what changes, connects out or cannot be read is asked of him', () => {
-  const sh = (command) => classifyHost({ tool: 'bash', input: { command } });
+  const sh = (command) => classifyHost({ tool: 'bash', input: { command }, boxed: true });
   for (const c of ['ls -la ~/Claude', 'cat package.json | head -20', 'git status && git log --oneline -5', 'git -C ~/x diff', 'grep -rn "a|b;c" src | wc -l', 'find . -name "*.js" 2>/dev/null', 'node --version', 'df -h; uptime', '/bin/ls /tmp', 'git branch --show-current', 'git branch -a', 'git remote -v', 'git stash list', 'git tag -l', 'git config --get user.name'])
     assert.equal(sh(c), null, c);
   for (const c of ['rm -rf build', 'npm install', 'echo hi > a.txt', 'cat a >> b', 'ls $(pwd)', 'ls `pwd`', 'FOO=1 ls', 'find . -name x -delete', 'find . -exec rm {} ;', 'git commit -m x', 'git checkout main', 'git branch new', 'git branch -D old', 'git remote add o u', 'git stash', 'git tag v1', 'git config user.name x', 'sleep 5 &', 'python3 -c "print(1)"', 'sed -i s/a/b/ f', 'xargs rm', 'mv a b', 'open -a Safari', 'ls "unclosed'])
@@ -187,13 +190,19 @@ test('host: on the machine dsh runs on only looking is theirs; what changes, con
   assert.equal(sh('ls ~/.dsh').kind, 'secret-file');
   assert.equal(sh('ls ~/.dsh/dsh-dot-hands/host'), null);
   assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/.env' } }).kind, 'secret-file');
+  // a link does not hide where it points
+  { const dir = mkdtempSync(join(tmpdir(), 'gates-')); mkdirSync(join(dir, '.ssh')); symlinkSync(join(dir, '.ssh'), join(dir, 'keys'));
+    assert.equal(classifyHost({ tool: 'read', input: { path: join(dir, 'keys', 'id_rsa') } })?.kind, 'secret-file'); }
+  // without the read-only box (not macOS, or no sandbox-exec) nothing of the shell passes as a look: every command is asked
+  assert.deepEqual(classifyHost({ tool: 'bash', input: { command: 'ls -la' }, boxed: false })?.kind, 'host');
   assert.equal(classifyHost({ tool: 'read', input: { path: '/Users/me/app/README.md' } }), null);
   assert.equal(sh('echo 转账 100').tier, 'forbid');
   // where it starts is what sends it here: a folder given beside the command is not taken
   assert.deepEqual([classifyHost({ tool: 'bash', input: { command: 'git status', workdir: '/Users/me/x' } }).tier, classifyHost({ tool: 'bash', input: { command: 'git status', workdir: '/Users/me/x' } }).kind], ['refuse', 'elsewhere']);
   // other tools: what only reads or reports is theirs, anything else (known or not) is asked about
-  for (const t of ['job_output', 'web_search', 'done', 'ask_her', 'wait_for']) assert.equal(classifyHost({ tool: t, input: {} }), null, t);
-  for (const t of ['write', 'edit', 'mcp__x__anything']) assert.equal(classifyHost({ tool: t, input: {} })?.kind, 'host', t);
+  for (const t of ['job_output', 'done', 'ask_her', 'wait_for']) assert.equal(classifyHost({ tool: t, input: {} }), null, t);
+  // looking things up is not theirs on this machine: what they read here must not leave by a lookup (11-26)
+  for (const t of ['write', 'edit', 'web_search', 'web_fetch', 'mcp__x__anything']) assert.equal(classifyHost({ tool: t, input: {} })?.kind, 'host', t);
   assert.ok(KINDS.host);
   assert.deepEqual(plainCommands("a 'b c' | d\\ e && f"), [['a', 'b c'], ['d e'], ['f']]);
   assert.equal(hostLooks(''), true);

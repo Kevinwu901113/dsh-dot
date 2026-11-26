@@ -209,11 +209,7 @@
               edit: false
           - id: tool-jobs
             name: '@deepseek-ai/dsh-tool-jobs'
-          - id: tool-web
-            name: '@deepseek-ai/dsh-tool-web'
-            config:
-              fetch: true
-              searchTimeoutMs: 60000
+          # not the web: what they read on this machine must not leave by a lookup of theirs (that is the web place's)
           - id: compaction
             name: cordis:group
             group: true
