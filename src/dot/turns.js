@@ -4,6 +4,13 @@
 // the parts of the short message that goes with whatever has just reached her (turn notes).
 // The turn objects themselves are shared: the voice, the tools and the gates write on them (spoke, opened, stopped,
 // cancelled, calls, reached) — see the list in each of those.
+// Whose a turn is, is one field, `by`, written here from what enters the turn and read everywhere through the
+// predicates below:
+//   by.whose  'him' (his words opened it, or a thing of his woke it) · 'her' (a notification, her hands on her own
+//             things, her own time) · 'schedule' (a reminder of the host's schedule: it stays the schedule's)
+//   by.where  where his words in it came from: 'qq' · 'desk' (her own window, an IM bot) · '' (none); QQ wins
+//   by.form   the kind of message of ours that woke it (hands-result, phone-notification, free, …)
+//   by.thing  the thing of his it is about (his hands came back, an answer it waited for)
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { drift } from '../integrity.js';
 import { prompt } from '../prompts.js';
@@ -15,6 +22,16 @@ import { TURN_NOTE_SOURCE, addressed, contentText, nowText, scheduledRule } from
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
 export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 
+// What a turn is, as everyone asks it. Each is defined here once.
+/** His words are in this turn (over QQ or at her window): a yes of his can be kept, a stop is his, the voice has words of his to answer. */
+export const heSpoke = (t) => Boolean(t?.by.where);
+/** The turn is on his business — his words are in it, or a thing of his woke it — and is not the schedule's: what comes of it is told to him, what she starts in it is his. */
+export const forHim = (t) => Boolean(t) && t.by.whose !== 'schedule' && (t.by.whose === 'him' || heSpoke(t));
+/** He wrote to her on QQ in this turn: he waits for her answer there. */
+export const overQq = (t) => t?.by.where === 'qq';
+/** He is talking to her in her own window: what she writes is on his screen there. */
+export const atHisWindow = (t) => t?.by.where === 'desk';
+
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
  *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, releaseHeld, nextTask), voice (turnEnded)
@@ -23,7 +40,7 @@ export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '')
  */
 export function createTurns(dot) {
   const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
-  const turns = new Map(); // session id → { turn, scheduled, text, startedAt, lastEventAt, doing, said }
+  const turns = new Map(); // session id → { turn, by, startedAt, lastEventAt, doing, said, hisWords, tools, cost }
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
   // What became of his words. Each message of his ends one of three ways: she answered, she chose not to, or it
@@ -86,50 +103,53 @@ export function createTurns(dot) {
       return;
     }
     if (event.type === 'turn/start') {
-      turns.set(id, { turn: event.data?.turn, scheduled: incoming.delete(id), origin: origins.get(id), text: '', startedAt: Date.now(), lastEventAt: Date.now() });
+      turns.set(id, { turn: event.data?.turn, by: { whose: incoming.delete(id) ? 'schedule' : 'her', where: '', form: origins.get(id), thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now() });
       origins.delete(id);
       return;
     }
     const t = turns.get(id);
     if (!t) return;
-    if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.scheduled = true; return; }
-    // His words came over his QQ: the turn's answer goes back there (unless she already sent one herself).
-    if (event.type === 'user/message' && addressed(event.data?.source) === 'qq') {
-      t.fromQq = true;
-      if (event.data?.source?.kind === 'user') taken(id);
-      if (event.data?.source?.kind === 'user' && !t.origin && !t.scheduled && !t.tools) { // a turn his own words opened
-        t.his = true;
-        const said = ownerSaid(unstamp(contentText(event.data?.content))).trim();
-        if (said) t.said = [t.said, said].filter(Boolean).join(' ').slice(0, 120);
+    if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.by.whose = 'schedule'; return; }
+    // His words: over his QQ (the turn's answer goes back there), or anywhere else — her window, an IM bot — where her
+    // answer is on his screen. Where he speaks to her is where her conversation is from here on (setLast at this
+    // turn's end), so a window that is not her conversation yet counts already; one she has left does not.
+    const at = event.type === 'user/message' ? addressed(event.data?.source) : '';
+    if (at === 'qq' || (at === 'desk' && !sessions.retired(id))) {
+      if (at === 'qq' || !t.by.where) t.by.where = at;
+      const user = event.data?.source?.kind === 'user';
+      if (at === 'qq' && user) taken(id);
+      const words = user ? ownerSaid(unstamp(contentText(event.data?.content))).trim() : '';
+      if (user && t.by.whose === 'her' && !t.by.form && !t.tools) { // a turn his own words opened
+        t.by.whose = 'him';
+        if (at === 'qq' && words) t.said = [t.said, words].filter(Boolean).join(' ').slice(0, 120);
       }
       // His own words of this turn, as he typed them (t.said goes on to hold what she last wrote): what a yes of his is kept with.
-      if (event.data?.source?.kind === 'user') { const words = ownerSaid(unstamp(contentText(event.data?.content))).trim(); if (words) t.hisWords = [t.hisWords, words].filter(Boolean).join(' ').slice(-200); }
-      return;
+      if (words) t.hisWords = [t.hisWords, words].filter(Boolean).join(' ').slice(-200);
+      if (at === 'qq') return;
     }
     const ended = event.type === 'turn/end' && (event.data?.turn === undefined || event.data.turn === t.turn);
     // What woke this turn besides him (a notification, her own time) and what the turn cost: a task of hers that ran
     // in it (dshDot.task) gets its result and its cost back when the turn ends.
-    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind) && event.data.source.form !== 'turn-note') t.origin ??= event.data.source.form;
-    // Her hands came back on something of his: the turn is on his business (a thing she starts from it is his too),
-    // and what she tells him in it she says with qq_send.
-    if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') { t.forHim = true; if (event.data.source.thing) t.thing = event.data.source.thing; }
+    if (event.type === 'user/message' && ['dsh-dot', 'dsh-interlude'].includes(event.data?.source?.kind) && event.data.source.form !== 'turn-note') t.by.form ??= event.data.source.form;
+    // Her hands came back on something of his (or an answer it waited for): the turn is on his business (a thing she
+    // starts from it is his too), unless it is the schedule's.
+    if (event.type === 'user/message' && event.data?.source?.kind === 'dsh-dot' && event.data.source.for === 'him') { if (t.by.whose !== 'schedule') t.by.whose = 'him'; if (event.data.source.thing) t.by.thing = event.data.source.thing; }
     if (event.type === 'assistant/message') {
       const u = event.data?.usage;
       if (u) { t.cost ??= { in: 0, cached: 0, out: 0 }; t.cost.in += (Number(u.inputTokens ?? 0) || 0) + (Number(u.cacheWriteTokens ?? 0) || 0); t.cost.cached += Number(u.cacheReadTokens ?? 0) || 0; t.cost.out += Number(u.outputTokens ?? 0) || 0; }
-      if (!event.data?.interrupted) { const said = contentText(event.data?.message?.content); if (said.trim()) t.last = said; }
     }
     // The turn broke (the model call failed, a prompt could not be put together): not her silence. Nothing is written
     // in her name about a turn that did not happen; he is told by the plugin when the turn was his.
     const broke = ended && event.data?.reason?.kind === 'error';
     if (broke) {
-      const lost = owed?.session === id && !t.fromQq;
+      const lost = owed?.session === id && !overQq(t);
       taken(id);
-      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: Boolean(lost || ((t.fromQq || t.hisHere || t.forHim) && !t.scheduled)) });
+      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: lost || forHim(t) });
     }
     // A question of hers to him is waiting until his next words have been read: the turn they open either keeps his
     // yes (his_ok) or does not — said no, said something else — and after it the question is not waiting any more
     // (11-23: a yes was matched to yesterday's text message he had called off).
-    if (ended && t.his && !broke) {
+    if (ended && heSpoke(t) && !broke) {
       for (const e of dot.ledger.recent(10)) if (e.outcome === 'stuck' && e.ask?.for === 'him' && !e.askSettled && (e.told ?? e.endedAt ?? 0) < t.startedAt) dot.ledger.note(e.id, { askSettled: Date.now() });
       dot.consent.settle(t.startedAt);
     }
@@ -140,14 +160,8 @@ export function createTurns(dot) {
       // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
       if (id === sessions.last()) setTimeout(() => { void dot.arrive.releaseHeld(id).then(dot.arrive.nextTask); }, 50);
     }
-    // He spoke to her somewhere else than QQ (the desktop, an IM bot): her answer is on his screen there — said.
-    if (event.type === 'user/message' && addressed(event.data?.source) === 'desk') {
-      t.elsewhere = true;
-      // Where he speaks to her is where her conversation is from here on (setLast at this turn's end), so it counts already.
-      if (!t.scheduled && !sessions.retired(id)) { t.hisHere = true; }
-    }
-    // A turn he is in that ends is answered by the voice (voice.js turnEnded).
-    if (ended && !t.scheduled && (t.fromQq || t.hisHere || t.forHim)) dot.voice.turnEnded(id, t, event, broke);
+    // A turn on his business that ends is answered by the voice (voice.js turnEnded).
+    if (ended && forHim(t)) dot.voice.turnEnded(id, t, event, broke);
   };
 
   // What goes with whatever has just reached her, said once per arrival: the time, what recall found for these words,
@@ -179,7 +193,7 @@ export function createTurns(dot) {
     const id = agent.session.id, started = turns.get(id)?.startedAt ?? Date.now();
     return [nowText(Date.now(), ctx.get('dotMemory')?.lastSaidAt?.(started) ?? 0), id === sessions.last() ? dot.voice.reachLine() : '', id === sessions.last() ? dot.things.thingsLines() : ''].filter(Boolean).join('\n');
   };
-  const scheduledNote = ({ agent, messages }) => (turns.get(agent.session.id)?.scheduled || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '');
+  const scheduledNote = ({ agent, messages }) => (turns.get(agent.session.id)?.by.whose === 'schedule' || messages.some((m) => m?.source?.kind === 'schedule') ? scheduledRule() : '');
 
   /** What she is busy with right now (an interlude task records it when it has to wait). */
   const busyWith = () => (turns.has(sessions.last()) ? prompt('dot.busy.chat') : '');

@@ -6,6 +6,7 @@ import { HIS_OK_TOOL, SAY_TOOL } from '../tool-prefixes.js';
 import { prompt } from '../prompts.js';
 import { head } from '../cut.js';
 import { isOwnerTarget } from './text.js';
+import { forHim as onHisBusiness, heSpoke } from './turns.js';
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, audit, sessions, turns, voice, hw; read when used: hands, ledger, consent
@@ -24,7 +25,7 @@ export function createTools(dot) {
         // Which of her things she means by stop and add. She does not say (there is one under way at a time): stop is
         // everything, add is the one under way. Once she can say which, it goes here as { thing } and nothing else changes.
         const which = undefined;
-        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her', ...which }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
+        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...which }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -38,13 +39,13 @@ export function createTools(dot) {
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(sessions.last());
-        const forHim = Boolean(t && !t.scheduled && (t.fromQq || t.elsewhere || t.forHim));
+        const forHim = onHisBusiness(t);
         // This machine is his: her hands go there on his business only, never in her own time.
         if (device === 'host' && !forHim) { audit('hands-host-refused', { session: sessions.last() }); return { status: 'failed', why: prompt('dot.hands.host.his').trim() }; }
         if (device === 'phone') hw.cancelPhoneHome();
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
         // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
-        const before = t?.thing ? dot.ledger.get(t.thing) : args?.after ? dot.ledger.recent(10).find((e) => e.device === device) : null;
+        const before = t?.by.thing ? dot.ledger.get(t.by.thing) : args?.after ? dot.ledger.recent(10).find((e) => e.device === device) : null;
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
         const started = await dot.hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : device === 'host' ? 'dot.hands.where.host' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
@@ -80,7 +81,7 @@ export function createTools(dot) {
       async execute(args) {
         const t = turns.get(sessions.last());
         const kind = String(args?.kind ?? '');
-        if (!KINDS[kind] || !(t?.fromQq || t?.elsewhere)) { audit('consent-refused', { session: sessions.last(), kind }); return { status: 'refused', kind }; }
+        if (!KINDS[kind] || !heSpoke(t)) { audit('consent-refused', { session: sessions.last(), kind }); return { status: 'refused', kind }; }
         // A yes answers a question: the newest thing of this kind that stopped to ask him, or that she was told to ask
         // him about. With none waiting there is nothing for it to be a yes to.
         const since = Date.now() - 6 * 3600_000;

@@ -7,6 +7,7 @@ import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { prompt } from '../prompts.js';
 import { head } from '../cut.js';
 import { titleOf } from './things.js';
+import { forHim, overQq } from './turns.js';
 import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, handsStatus, pushesText, conversationTitle, wakeText } from './text.js';
 
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
@@ -71,7 +72,7 @@ export function createArrive(dot) {
     // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
     // it is started over with what he just said, so the reply she writes is to all of it. A turn that has
     // used a tool is not undone; his words go into it at its next step.
-    const restart = busy && open?.fromQq && !open.scheduled && !open.tools && !open.spoke && typeof agent.cancel === 'function' && voice.preempts() < cfg.ownerPreemptMax;
+    const restart = busy && overQq(open) && forHim(open) && !open.tools && !open.spoke && typeof agent.cancel === 'function' && voice.preempts() < cfg.ownerPreemptMax;
     // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
     // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
     const via = restart ? 'restart' : busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
@@ -190,7 +191,7 @@ export function createArrive(dot) {
   const taskTurnEnded = (id, t) => {
     // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
     // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
-    if (taskRunning?.session === id && (t.origin === taskRunning.source?.form || (t.origin === 'hands-result' && !t.forHim))) {
+    if (taskRunning?.session === id && (t.by.form === taskRunning.source?.form || (t.by.form === 'hands-result' && !t.by.thing))) {
       const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
       if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
       // What came of her own time is what the book has of the things she did in it — not what she wrote about it.

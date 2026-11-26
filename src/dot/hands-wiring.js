@@ -560,8 +560,6 @@ export function createHandsWiring(dot) {
       if (own.length) { hands.note('own-words', { session: id }); audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
     }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
-    // What she tells him on something her hands brought back counts as said in that turn, like her answer in a turn of his words.
-    const told = () => { if (toOwner && t?.forHim && id === sessions.last()) t.spoke = true; return next(); };
     // Her words can still be handed back, to anyone and anywhere: him, someone else, a group, a comment typed on
     // her phone. Once a turn — a second draft goes out as it is, so a phrase list that is wrong costs one call.
     // Typed by her hands, the words are still hers: the line goes back to her, through them.
@@ -575,8 +573,8 @@ export function createHandsWiring(dot) {
     if (round) return next();
     if (!toOwner) return next();
     const buffered = Boolean(id) && id === sessions.last() && arrive.ownerPending() > 0;
-    if (!buffered && !ownerUnread(exec.agent)) return told();
-    if (voice.preempts() >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts: voice.preempts() }); return told(); }
+    if (!buffered && !ownerUnread(exec.agent)) return next();
+    if (voice.preempts() >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts: voice.preempts() }); return next(); }
     const n = voice.preempted();
     const flushed = buffered ? arrive.flushOwner(exec.agent) : 0;
     audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });

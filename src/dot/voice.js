@@ -13,6 +13,7 @@ import { headTail } from './ledger.js';
 import { createOutlet } from './outlet.js';
 import { createSay } from './say.js';
 import { nameOf, titleOf } from './things.js';
+import { atHisWindow, forHim, heSpoke, overQq } from './turns.js';
 import { reachText, voiceHow } from './text.js';
 
 /**
@@ -97,7 +98,7 @@ export function createVoice(dot) {
   };
   const factsFor = (t) => {
     const out = [];
-    const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.thing].filter(Boolean));
+    const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.by.thing].filter(Boolean));
     const rest = dot.ledger.unfinished().filter((e) => !mine.has(e.id));
     for (const e of rest.filter((x) => x.state === 'running')) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
     const waiting = rest.filter((x) => x.state === 'queued').length;
@@ -107,7 +108,7 @@ export function createVoice(dot) {
   };
   const outlet = createOutlet({
     qq: () => ctx.get('dshQq'), im,
-    here: () => { const t = turns.get(sessions.last()); return Boolean(t?.elsewhere && !t.fromQq); },
+    here: () => atHisWindow(turns.get(sessions.last())),
     herSaid: (text) => herSaid(sessions.last(), text),
   });
   // What she says (say.js): written by a call that is only her card, checked once, and carried out from here —
@@ -147,9 +148,9 @@ export function createVoice(dot) {
     const plan = planFor(t), facts = plan ? [] : factsFor(t);
     audit('say-facts', { facts: (plan ? plan.must : facts).map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160), ...(plan ? { report: true, may: plan.may.length } : {}) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
-    const ended = t?.thing ? dot.ledger.get(t.thing) : null;
+    const ended = t?.by.thing ? dot.ledger.get(t.by.thing) : null;
     const shots = ended?.outcome === 'stuck' && ended.ask?.screen && (ended.device === 'phone' || ended.device === 'computer') ? [`${ended.device}:screen`] : [];
-    const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !(t?.fromQq || t?.elsewhere) });
+    const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !heSpoke(t) });
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
@@ -158,8 +159,8 @@ export function createVoice(dot) {
     // turn those words open says it).
     if (plan?.things?.length && !r.unsent?.length) for (const id of plan.things) dot.ledger.note(id, { told: Date.now() });
     saidNote = saidText(r); // hers to know: shown with whatever reaches her next
-    // She wrote to him in a turn he did not open: kept as a fact of the day (reachText), with what came of it.
-    if (t && !t.his && !t.fromQq && !t.forHim && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.origin ?? (t.scheduled ? 'schedule' : '') }); }
+    // She wrote to him in a turn that is not on his business: kept as a fact of the day (reachText), with what came of it.
+    if (t && !heSpoke(t) && !forHim(t) && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.by.form ?? (t.by.whose === 'schedule' ? 'schedule' : '') }); }
     return r;
   }
   // Nothing she writes leaves, and nothing she writes is read: a turn he is in that ends — his words, or a thing of
@@ -169,7 +170,7 @@ export function createVoice(dot) {
   // she was asked to write them every turn, wrote "发出去了" before her hands had moved, and 0.25.1 then had to drop
   // them whenever a thing had just ended — taking her real questions with them.
   // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
-  // Called by turns.js for a turn that ended, was not scheduled, and he is in (fromQq, hisHere or forHim).
+  // Called by turns.js for a turn on his business that ended (forHim).
   const turnEnded = (id, t, event, broke) => {
     if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
     if (broke) return;
@@ -177,8 +178,8 @@ export function createVoice(dot) {
     // book has an end of his he has not heard (planFor's `things`): not when it was already said in an earlier turn,
     // nor when she carries the thing on (a later thing `after` it: that one's end is told). What else she did in the
     // turn does not decide it (11-24: she added a line to another thing, and the end that woke the turn was not said).
-    const news = t.fromQq || Boolean(planFor(t)?.things?.length);
-    const speak = !t.spoke && news && !(t.elsewhere && !t.fromQq) && event.data?.reason?.kind !== 'aborted';
+    const news = overQq(t) || Boolean(planFor(t)?.things?.length);
+    const speak = !t.spoke && news && !atHisWindow(t) && event.data?.reason?.kind !== 'aborted';
     const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
     // The call that writes her words failed: that is not her choosing to say nothing.
     const told = (r) => { if (r?.status === 'failed') { preempts = 0; turns.turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
@@ -186,7 +187,7 @@ export function createVoice(dot) {
     // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
     // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.
     // His next words call the wait off (that turn answers all of it).
-    if (t.fromQq && t.opened?.length && cfg.ackHoldMs > 0) {
+    if (overQq(t) && t.opened?.length && cfg.ackHoldMs > 0) {
       dropAck('another turn');
       const ack = { timer: null };
       ack.timer = setTimeout(() => {
