@@ -190,9 +190,9 @@ setx DSH_DOT_COMPUTER off
 |---|---|---|
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和另外两处保持一致 |
-| `idleMinutes` | `10` | 她上一轮结束后这么久之内不开「自己的时间」 |
+| `idleMinutes` | `10` | 他上一句话（或她的一天开始）之后安静这么久，来一次「自己的时间」；她自己做的事不推迟它 |
 | `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
-| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天几次、每次和每天的 token 上限；`0` 次关 |
+| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天最多几次、每次和每天的 token 上限（她的手替她做的事算在里面）；`0` 次关 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
 
 ### `dot`
