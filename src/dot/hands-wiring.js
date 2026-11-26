@@ -187,12 +187,12 @@ export function createHandsWiring(dot) {
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
       });
       if (reply.outcome.kind === 'no-model') return;
-      if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
-      seen = { text: String(reply.text ?? ''), args: String(reply.args ?? '') };
+      seen = { text: String(reply.text ?? ''), args: String(reply.args ?? ''), outcome: reply.outcome.kind };
+      if (!reply.ok) throw new Error(outcomeText(reply.outcome)); // cut short at maxTokens, nothing back, failed: said as that, not as a JSON error
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
       if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
       if (howto.keep(r.app, out, r.id)) audit('howto-learned', { app: r.app, steps: r.steps, errors: r.errors.length, outcome: r.outcome, ...(out.task ? { task: String(out.task).slice(0, 12) } : {}) });
-    } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200), ...(seen ? { chars: seen.text.length, args: seen.args.length } : {}) }); }
+    } catch (error) { logger.warn(`howto reflection (${r.app}) failed: ${error.message}`); audit('howto-failed', { app: r.app, error: String(error.message).slice(0, 200), ...(seen ? { chars: seen.text.length, args: seen.args.length, outcome: seen.outcome } : {}) }); }
   }
   // Her notes held against the records (nightcheck.js). The check writes what it would do to a file and changes
   // nothing; applying is asked for separately, and only where the notes are still the ones that were checked.
@@ -225,8 +225,8 @@ export function createHandsWiring(dot) {
             system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 12000, // what it thinks counts too: at 4000 the answer for a place with eight lessons was cut mid-JSON
             messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
           });
-          if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
           seen = { finish: reply.finish?.kind ?? '', text: String(reply.text ?? '').length, args: String(reply.args ?? '').length, out: reply.usage?.outputTokens ?? 0 };
+          if (!reply.ok) throw new Error(outcomeText(reply.outcome));
           const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
           judged = Array.isArray(out?.lines) ? out.lines : [];
         } catch (error) { failed = `${String(error.message).slice(0, 120)}${seen ? `（finish ${seen.finish || '?'}，正文 ${seen.text} 字，参数 ${seen.args} 字，输出 ${seen.out} token）` : ''}`; }

@@ -5,7 +5,6 @@
 import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { checkReply } from '../persona/card.js';
-import { outcomeText } from '../llm-gate.js';
 import { callModel } from '../llm-call.js';
 import { prompt } from '../prompts.js';
 import { ago } from '../clock.js';
@@ -127,8 +126,7 @@ export function createVoice(dot) {
       audit('say-call', { systemChars: system.length, systemSha: createHash('sha256').update(system).digest('hex').slice(0, 12), userChars: text.length });
       const reply = await callModel(ctx, { effort: cfg.sayEffort || undefined, system, maxTokens: cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot', form: 'say' } })] });
       if (reply.outcome.kind === 'no-model') throw new Error('no model to say it with');
-      if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
-      return reply.text;
+      return reply;
     },
     recent: (n) => { try { return ctx.get('dotMemory')?.recent?.(n) ?? []; } catch { return []; } },
     stickers: () => { try { return ctx.get('dshQq')?.stickerList?.() ?? []; } catch { return []; } },

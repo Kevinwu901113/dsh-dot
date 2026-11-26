@@ -87,7 +87,7 @@ export function createStatus(dot) {
     for (const k of spec.cases ?? []) {
       const said = await Promise.all(Array.from({ length: Math.min(20, spec.times ?? 5) }, async () => {
         const r = await callModel(ctx, { effort: k.effort || cfg.sayEffort || undefined, system: k.system || system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] });
-        return r.outcome.kind === 'aborted' || r.finish?.kind === 'error' ? `!! ${outcomeText(r.outcome)}` : r.text;
+        return r.ok ? r.text : `!! ${outcomeText(r.outcome)}${r.text ? `｜${r.text}` : ''}`; // cut short or nothing back is measured as that
       }));
       out.push({ name: k.name, said });
     }

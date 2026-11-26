@@ -933,3 +933,52 @@ test('a handoff moves her to a new lean conversation; a session opened by hand i
   assert.equal((await h.pre(next, 'bash', { command: 'ls' })).kind, 'deny');
   h.stop();
 });
+
+test('nothing came back from the call that writes her words: asked once more, then a failure told by the plugin — never her silence, never a loop', async () => {
+  const h = harness({ failureNoticeMs: 0 });
+  const notices = () => h.qqSent.filter(([, t]) => /^⚠️ dot/.test(t)).map(([, t]) => t);
+  const script = [];
+  h.services.llm.stream = (o) => (async function* () { h.llmCalls.push(o); const r = script.shift() ?? { kind: 'stop', text: '' }; if (r.text) yield { type: 'text-delta', text: r.text }; yield { type: 'finish', reason: { kind: r.kind } }; })();
+  const turn = async (n, text) => { h.emit('s1', 'turn/start', { turn: n }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text }] }); h.emit('s1', 'turn/end', { turn: n, reason: { kind: 'completed' } }); await tick(40); };
+  // the first call brings back nothing (all its output went to thinking), the second writes: what it wrote goes out
+  script.push({ kind: 'max-tokens', text: '' }, { kind: 'stop', text: '在呢' });
+  await turn(2, '在吗');
+  assert.equal(h.llmCalls.length, 2);
+  assert.deepEqual(h.qqSent.at(-1), ['owner', '在呢', []]);
+  assert.deepEqual(h.audit.filter((a) => a.event === 'say-empty').map((a) => [a.outcome, a.attempt]), [['truncated', 0]]);
+  // nothing, twice: a failure, told as one; not counted as silence; no third call
+  const before = h.llmCalls.length;
+  await turn(3, '喂');
+  assert.equal(h.llmCalls.length - before, 2, 'asked once more, and no more');
+  assert.equal(h.audit.filter((a) => a.event === 'silent').length, 0);
+  assert.equal(h.audit.findLast((a) => a.event === 'say-failed').outcome, 'empty');
+  assert.match(notices().at(-1), /^⚠️ dot：她这一轮出错了，没有回你。\n原因：替她写话的那次调用没成：empty: no words and no tool call came back/);
+  // "[不回]" written is hers: silence, one call
+  script.push({ kind: 'stop', text: '[不回]' });
+  const n = h.llmCalls.length;
+  await turn(4, '晚安');
+  assert.equal(h.llmCalls.length - n, 1);
+  assert.equal(h.audit.filter((a) => a.event === 'silent').length, 1);
+  // cut short with words in it: those words
+  script.push({ kind: 'max-tokens', text: '好的我' });
+  await turn(5, '记得吃饭');
+  assert.deepEqual(h.qqSent.at(-1), ['owner', '好的我', []]);
+  h.stop();
+});
+
+test('the know-how reflection cut short at maxTokens is said as that, not as half a JSON', async () => {
+  const h = harness({ howtoMinSteps: 3 });
+  h.services.dshPhone = { foreground: async () => 'com.max.xiaoheihe/.Main' };
+  h.services.llm.stream = (o) => (async function* () { h.llmCalls.push(o); if (/手艺簿/.test(o.system)) { yield { type: 'text-delta', text: '{"task":"搜游戏","notes":"## 教训\\n- 搜' }; yield { type: 'finish', reason: { kind: 'max-tokens' } }; return; } yield { type: 'text-delta', text: '好' }; yield { type: 'finish', reason: { kind: 'stop' } }; })();
+  const post = (id, name, args, result = { isError: false, content: [] }) => h.hooks['tools/post-execute']({ callId: String(Math.random()), name, arguments: args, agent: h.agentOf(id) }, result, async () => ({ kind: 'accept' }));
+  h.emit('s1', 'turn/start', { turn: 2 });
+  await h.tools.hands.execute({ device: 'phone', do: '去小黑盒搜浮游世界' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  for (const [name, args] of [['mcp__dot-phone__mobile_launch_app', { packageName: 'com.max.xiaoheihe' }], ['phone_type', { text: '浮游世界' }], ['mcp__dot-phone__mobile_press_button', { button: 'BACK' }]]) await post('h1', name, args);
+  await h.tools.done.execute({ summary: '搜到了。', reached: true });
+  for (let i = 0; i < 30 && !h.audit.some((e) => e.event === 'howto-failed'); i++) await tick();
+  const f = h.audit.find((e) => e.event === 'howto-failed');
+  assert.equal(f.outcome, 'truncated');
+  assert.match(f.error, /^truncated \(max-tokens\): output cut at maxTokens/);
+  h.stop();
+});

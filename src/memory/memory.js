@@ -513,7 +513,8 @@ export function apply(ctx, config = {}) {
     // not wait behind his own turn (llm-gate).
     const r = await callModel(ctx, { effort: foreground ? undefined : WORK, background: !foreground, maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] });
     if (r.outcome.kind === 'no-model') return { skipped: 'no model' };
-    if (r.outcome.kind === 'aborted' || r.finish?.kind === 'error') {
+    // Cut short at maxTokens, the words so far are given back marked (facts are lines: the whole ones count; a JSON is not whole).
+    if (!r.ok && r.outcome.kind !== 'truncated') {
       const error = outcomeText(r.outcome);
       logger.warn(`${reason} failed: ${error}`); audit('consolidate-failed', { reason, error: clip(error, 200) });
       return { error };
@@ -521,7 +522,7 @@ export function apply(ctx, config = {}) {
     const raw = r.text, usage = r.usage;
     const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), cached: Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
     if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
-    return { raw, spent };
+    return { raw, spent, ...(r.ok ? {} : { truncated: true }) };
   }
 
   // ── consolidation ──
@@ -568,6 +569,7 @@ export function apply(ctx, config = {}) {
     const r = await complete(ask, 'consolidation');
     if (!r.raw && r.raw !== '') return r;
     try { appendFileSync(files.calls, `${JSON.stringify({ at: new Date().toISOString(), reason, lines: fresh.length, usage: r.spent, reply: clip(r.raw, 4000) })}\n`); } catch (error) { void error; }
+    if (r.truncated) { audit('consolidate-failed', { reason, error: `output cut at maxTokens (${r.spent?.out ?? '?'} output tokens)` }); return { error: 'reply cut at maxTokens' }; }
     const out = parseLooseJson(r.raw);
     if (!out) { audit('consolidate-unparsed', { reason, chars: r.raw.length, out: r.spent?.out ?? 0 }); return { error: r.raw.trim() ? 'reply was not JSON' : `empty reply (${r.spent?.out ?? '?'} output tokens: the output cap went to reasoning?)` }; }
     const report = applyExtraction(memory, out, { limits: cfg.limits, ...keep, segment: text });

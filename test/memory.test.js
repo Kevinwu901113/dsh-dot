@@ -1199,3 +1199,19 @@ test('consolidation is shown the book of things: what her hands are on or ended 
   assert.doesNotMatch(extractPrompt({ text: 'x', open: '- x' }), /事情簿：|\{things\}/, 'no book, no section');
   assert.match(extractPrompt({ text: 'x' }), /事情簿上有的事[^\n]*不记进这里/);
 });
+
+test('consolidation cut short at maxTokens is said as that: nothing applied, the cursor stays', async () => {
+  const h = harness();
+  let finish = 'max-tokens', text = '{"day":"搬家","open":[{"text":"周六搬';
+  h.ctx.llm.stream = (opts) => { h.calls.push(opts); return (async function* () { yield { type: 'text-delta', text }; yield { type: 'usage', usage: { inputTokens: 10, outputTokens: 16384 } }; yield { type: 'finish', reason: { kind: finish } }; })(); };
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  say(h, '下周六我搬家');
+  const r = await h.services.dotMemory.consolidate();
+  assert.deepEqual(r, { error: 'reply cut at maxTokens' });
+  assert.deepEqual(h.audit.filter((e) => e.event === 'consolidate-failed').map((e) => e.error), ['output cut at maxTokens (16384 output tokens)']);
+  assert.equal(h.audit.filter((e) => e.event === 'consolidate-unparsed').length, 0, 'not a JSON that could not be read');
+  assert.ok(h.services.dotMemory.status().sinceCursor > 0, 'what it did not read is still to be read');
+  // nothing came back at all: a failure of its own, not an "empty reply" guess
+  finish = 'stop'; text = '';
+  assert.match((await h.services.dotMemory.consolidate()).error, /^empty: no words/);
+});

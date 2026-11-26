@@ -15,6 +15,7 @@
 // What she is in the middle of comes from the code (her hands' own state), never from what her thinking says it
 // is doing: "我去翻翻" with nothing in her hands was 19 of 25 replays, and a call told only "这就去找" will say so.
 import { prompt } from '../prompts.js';
+import { outcomeText } from '../llm-gate.js';
 
 const STICKER = /\[表情包?\s*sticker:([a-f0-9]{6,12})[^\]]*\]/gi;
 const FACE = /\[face:(\d{1,3})\]/gi;
@@ -157,7 +158,8 @@ export function parseLead(text, n) {
 /**
  * @param {object} deps
  * @param {() => string} deps.card - her card, as she reads it ('' = none: nothing can be said)
- * @param {(o: { system: string, text: string }) => Promise<string>} deps.call - one model call: that system, that message, no tools
+ * @param {(o: { system: string, text: string }) => Promise<string | { ok: boolean, text: string, outcome: object }>} deps.call - one model call: that
+ *   system, that message, no tools → what it wrote, or the call itself (llm-call.js callModel) to read how it ended
  * @param {(n: number) => { who: string, text: string }[]} deps.recent - the last lines between her and him
  * @param {() => string} deps.state - what is in her hands right now, as a line
  * @param {() => { id: string, note: string }[]} deps.stickers - the stickers she has
@@ -166,13 +168,26 @@ export function parseLead(text, n) {
  * @param {(o: { to: string, text: string, images: string[] }) => Promise<{ said?: string[], images?: string[], interrupted?: boolean, unsent?: string[] }>} deps.send
  */
 export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12 }) {
+  // What one call wrote. A call that brought back no words (the model returned nothing, or spent all of its output on
+  // thinking) is not her choosing to say nothing — that is "[不回]", written: it is asked once more, and the second
+  // time it is a failure (said to him as one, never recorded as her silence). Cut short with words in it: those words.
+  async function wrote(system, text) {
+    for (let attempt = 0; ; attempt++) {
+      const r = await call({ system, text });
+      if (typeof r === 'string' || r.ok) return typeof r === 'string' ? r : r.text;
+      const none = r.outcome.kind === 'empty' || (r.outcome.kind === 'truncated' && !String(r.text ?? '').trim());
+      if (r.outcome.kind === 'truncated' && !none) return r.text;
+      if (none) audit('say-empty', { outcome: r.outcome.kind, attempt });
+      if (!none || attempt) throw Object.assign(new Error(outcomeText(r.outcome)), { outcome: r.outcome });
+    }
+  }
   /** Write it: the card and what is in front of her. A line the check catches is written once more; the second goes as it is. */
   async function write(input, { has, pictures, pre = (t) => t }) {
     const system = String(card() ?? '').trim();
     if (!system) throw new Error('no persona card');
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
-      const parsed = tidy(parseSaid(pre(await call({ system, text: input })), { has, pictures }));
+      const parsed = tidy(parseSaid(pre(await wrote(system, input)), { has, pictures }));
       // Her card's check reads chat a line at a time; a block she fenced goes as she wrote it.
       const lines = [], hits = [];
       for (const l of parsed.lines) { if (l.includes(WITHIN)) { lines.push(l); continue; } const c = check(l); lines.push(...c.lines); hits.push(...c.hits); }
@@ -233,7 +248,7 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
         const r = await send({ to, text: out.lines.join('\n'), images: pictures });
         audit('said', { to, lines: (r?.said ?? out.lines).length, images: (r?.images ?? pictures).length, ...(r?.interrupted ? { interrupted: true } : {}) });
         return { status: 'said', said: r?.said ?? out.lines, images: r?.images ?? pictures, ...(r?.interrupted ? { interrupted: true, unsent: r.unsent ?? [] } : {}) };
-      } catch (err) { audit('say-failed', { to, error: String(err?.message ?? err).slice(0, 200) }); return { status: 'failed', why: String(err?.message ?? err) }; }
+      } catch (err) { audit('say-failed', { to, error: String(err?.message ?? err).slice(0, 200), ...(err?.outcome ? { outcome: err.outcome.kind } : {}) }); return { status: 'failed', why: String(err?.message ?? err), ...(err?.outcome ? { outcome: err.outcome } : {}) }; }
     },
     /** Words for her hands to type somewhere (a comment, a post, a reply in an app): the text only, '' when she would rather not. */
     async compose({ about = '', where = '' } = {}) {
