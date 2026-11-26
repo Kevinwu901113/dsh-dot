@@ -32,7 +32,8 @@ import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { lastEnd, lastStart } from '../hours.js';
 import { sectionOf, setValues } from '../settings.js';
-import { background, installLlmGate, workEffort } from '../llm-gate.js';
+import { installLlmGate, outcomeText } from '../llm-gate.js';
+import { WORK, callModel } from '../llm-call.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
 import { head } from '../cut.js';
@@ -508,26 +509,16 @@ export function apply(ctx, config = {}) {
   // ── model calls ──
   /** One completion with her default model: { raw, spent } or { error }. Every call is counted in the day's ledger. */
   async function complete(text, reason, { foreground = false } = {}) {
-    const sel = ctx.agentDefaultModel?.currentSelection?.() ?? {};
-    if (!ctx.llm?.stream || !sel.model) return { skipped: 'no model' };
-    let raw = '';
-    let usage = null;
-    try {
-      let finish = null;
-      // A background call thinks at the work effort; the pick, part of answering him, at the model's own.
-      const effort = foreground ? sel.reasoningEffort : await workEffort(ctx, sel);
-      const options = { provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] };
-      // The pick of facts is part of answering him: it must not wait behind his own turn (llm-gate).
-      for await (const chunk of ctx.llm.stream(foreground ? options : background(options))) {
-        if (chunk.type === 'text-delta') raw += chunk.text;
-        if (chunk.type === 'usage') usage = chunk.usage ?? null;
-        if (chunk.type === 'finish') finish = chunk.reason;
-      }
-      if (finish && (finish.kind === 'error' || finish.kind === 'aborted')) throw new Error(`model call ended with ${finish.kind}: ${finish.failure?.message ?? ''}`);
-    } catch (err) {
-      logger.warn(`${reason} failed: ${err.message}`); audit('consolidate-failed', { reason, error: clip(err.message, 200) });
-      return { error: err.message };
+    // A background call thinks at the work effort; the pick, part of answering him, at the model's own — and it must
+    // not wait behind his own turn (llm-gate).
+    const r = await callModel(ctx, { effort: foreground ? undefined : WORK, background: !foreground, maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] });
+    if (r.outcome.kind === 'no-model') return { skipped: 'no model' };
+    if (r.outcome.kind === 'aborted' || r.finish?.kind === 'error') {
+      const error = outcomeText(r.outcome);
+      logger.warn(`${reason} failed: ${error}`); audit('consolidate-failed', { reason, error: clip(error, 200) });
+      return { error };
     }
+    const raw = r.text, usage = r.usage;
     const spent = usage ? { in: Number(usage.inputTokens ?? 0) + Number(usage.cacheReadTokens ?? 0), cached: Number(usage.cacheReadTokens ?? 0), out: Number(usage.outputTokens ?? 0) } : null;
     if (spent) { const d = dayLabel(new Date()).slice(0, 10); if (memory.ledger?.day !== d) memory.ledger = { day: d, in: 0, out: 0, calls: 0 }; memory.ledger.in += spent.in; memory.ledger.out += spent.out; memory.ledger.calls++; }
     return { raw, spent };

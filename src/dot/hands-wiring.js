@@ -17,8 +17,9 @@ import { HANDS_SOURCE, createHands } from './hands.js';
 import { checkInput, checkTool, settle as settleCheck, report as checkReport, hashOf } from './nightcheck.js';
 import { approvalKind, classify, classifyComputer, classifyHost, HIM_KINDS } from './gates.js';
 import { REACHES } from './consent.js';
-import { KNOWN_APPS, collectReply } from '../interlude/core.js';
-import { background, workEffort } from '../llm-gate.js';
+import { KNOWN_APPS } from '../interlude/core.js';
+import { outcomeText } from '../llm-gate.js';
+import { WORK, callModel, modelOf } from '../llm-call.js';
 import { prompt } from '../prompts.js';
 import { stamp } from '../clock.js';
 import { head } from '../cut.js';
@@ -180,16 +181,13 @@ export function createHandsWiring(dot) {
     let seen = null; // what the call gave back, for the audit when it cannot be read
     try {
       if (r.review && !howto.needsReview(r.app)) return; // read over meanwhile
-      // Not injected into dsh-dot (it would wait on them): taken when needed.
-      const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
-      const llm = ctx.get('llm');
-      if (!sel || !llm?.stream) return;
-      const effort = await workEffort(ctx, sel);
-      const reply = await collectReply(llm.stream(background({
-        provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
+      const reply = await callModel(ctx, {
+        effort: WORK, background: true,
         system: prompt(r.review ? 'dot.howto.review' : 'dot.howto.reflect', { maxChars: cfg.howtoMaxChars }), tools: [howtoTool()], maxTokens: 12000, // thinking counts too: cut short, the notes came back as half a JSON (howto-failed, "Unexpected end of JSON input")
         messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(howto.input(r), null, 1) }], source: { kind: 'dsh-dot', form: 'howto' } })],
-      })));
+      });
+      if (reply.outcome.kind === 'no-model') return;
+      if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
       seen = { text: String(reply.text ?? ''), args: String(reply.args ?? '') };
       const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
       if (r.review) { if (howto.keep(r.app, { notes: out.notes })) audit('howto-reviewed', { app: r.app }); return; }
@@ -214,22 +212,20 @@ export function createHandsWiring(dot) {
       }
       return done.length ? done.join('\n') : '上次核对没有要改的';
     }
-    const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
-    const llm = ctx.get('llm');
-    const places = [], said = [];
+    const { sel, llm } = modelOf(ctx), places = [], said = [];
     for (const app of howto.apps()) {
       const notes = howto.notes(app);
       if (!notes || app.startsWith('_')) continue; // files of the book's own keeping are not places
       const records = howto.records(app), input = checkInput({ place: placeName(app), notes, records });
       let judged = [], failed = '', seen = null; // seen: what the call gave back, said when it cannot be read
-      if (input.lessons.length && sel && llm?.stream) {
+      if (input.lessons.length && sel && llm) {
         try {
-          const effort = await workEffort(ctx, sel);
-          const reply = await collectReply(llm.stream(background({
-            provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}),
+          const reply = await callModel(ctx, {
+            effort: WORK, background: true,
             system: prompt('dot.howto.nightcheck'), tools: [checkTool()], maxTokens: 12000, // what it thinks counts too: at 4000 the answer for a place with eight lessons was cut mid-JSON
             messages: [createUserMessage({ content: [{ type: 'text', text: JSON.stringify(input, null, 1) }], source: { kind: 'dsh-dot', form: 'nightcheck' } })],
-          })));
+          });
+          if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
           seen = { finish: reply.finish?.kind ?? '', text: String(reply.text ?? '').length, args: String(reply.args ?? '').length, out: reply.usage?.outputTokens ?? 0 };
           const out = JSON.parse(reply.args || reply.text.slice(reply.text.indexOf('{'), reply.text.lastIndexOf('}') + 1));
           judged = Array.isArray(out?.lines) ? out.lines : [];

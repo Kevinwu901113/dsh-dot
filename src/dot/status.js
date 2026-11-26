@@ -8,8 +8,8 @@ import { homedir } from 'node:os';
 import { join, isAbsolute, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
-import { collectReply } from '../interlude/core.js';
-import { effortFor, statusLine as llmGateLine } from '../llm-gate.js';
+import { effortFor, outcomeText, statusLine as llmGateLine } from '../llm-gate.js';
+import { callModel, modelOf } from '../llm-call.js';
 import { drift } from '../integrity.js';
 import { KINDS } from './gates.js';
 import { createRecorder, replay as replayKept } from './replay.js';
@@ -80,14 +80,14 @@ export function createStatus(dot) {
     const f = isAbsolute(file) ? file : join(dshHome(), 'dot-replay', file);
     const spec = JSON.parse(readFileSync(f, 'utf8'));
     const system = String(ctx.get('dshInterlude')?.cardText?.() ?? '').trim();
-    const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
-    const llm = ctx.get('llm');
-    if (!system || !sel || !llm?.stream) return 'no card or no model';
+    const { sel, llm } = modelOf(ctx);
+    if (!system || !sel || !llm) return 'no card or no model';
     const effort = cfg.sayEffort ? (await effortFor(ctx, sel, cfg.sayEffort)).effort : sel.reasoningEffort;
     const out = [];
     for (const k of spec.cases ?? []) {
       const said = await Promise.all(Array.from({ length: Math.min(20, spec.times ?? 5) }, async () => {
-        try { const e = k.effort ? (await effortFor(ctx, sel, k.effort)).effort : effort; return (await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(e ? { reasoningEffort: e } : {}), system: k.system || system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] }))).text; } catch (error) { return `!! ${error.message}`; }
+        const r = await callModel(ctx, { effort: k.effort || cfg.sayEffort || undefined, system: k.system || system, maxTokens: k.effort ? 4000 : cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text: k.text }], source: { kind: 'dsh-dot', form: 'say-test' } })] });
+        return r.outcome.kind === 'aborted' || r.finish?.kind === 'error' ? `!! ${outcomeText(r.outcome)}` : r.text;
       }));
       out.push({ name: k.name, said });
     }

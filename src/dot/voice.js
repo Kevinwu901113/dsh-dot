@@ -5,8 +5,8 @@
 import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { checkReply } from '../persona/card.js';
-import { collectReply } from '../interlude/core.js';
-import { effortFor } from '../llm-gate.js';
+import { outcomeText } from '../llm-gate.js';
+import { callModel } from '../llm-call.js';
 import { prompt } from '../prompts.js';
 import { ago } from '../clock.js';
 import { headTail } from './ledger.js';
@@ -125,11 +125,9 @@ export function createVoice(dot) {
     call: async ({ system, text }) => {
       // What this side sends (compare with the model gate's say-request: the same system, nothing added on the way).
       audit('say-call', { systemChars: system.length, systemSha: createHash('sha256').update(system).digest('hex').slice(0, 12), userChars: text.length });
-      const sel = ctx.get('agentDefaultModel')?.currentSelection?.();
-      const llm = ctx.get('llm');
-      if (!sel || !llm?.stream) throw new Error('no model to say it with');
-      const effort = cfg.sayEffort ? (await effortFor(ctx, sel, cfg.sayEffort)).effort : sel.reasoningEffort;
-      const reply = await collectReply(llm.stream({ provider: sel.provider, model: sel.model, ...(effort ? { reasoningEffort: effort } : {}), system, maxTokens: cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot', form: 'say' } })] }));
+      const reply = await callModel(ctx, { effort: cfg.sayEffort || undefined, system, maxTokens: cfg.sayMaxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot', form: 'say' } })] });
+      if (reply.outcome.kind === 'no-model') throw new Error('no model to say it with');
+      if (reply.outcome.kind === 'aborted' || reply.finish?.kind === 'error') throw new Error(outcomeText(reply.outcome));
       return reply.text;
     },
     recent: (n) => { try { return ctx.get('dotMemory')?.recent?.(n) ?? []; } catch { return []; } },
