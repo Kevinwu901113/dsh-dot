@@ -22,14 +22,14 @@ function harness(cfg = {}) {
   writeFileSync(join(dsh, 'dsh-memory.json'), JSON.stringify({ recall: { backend: 'off' } }));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const { add: addHook } = hookTable();
-  const listeners = [], effects = [], audit = [], archived = [], qqSent = [], agents = new Map(), made = new Map();
+  const listeners = [], effects = [], audit = [], archived = [], qqSent = [], agents = new Map(), made = new Map(), tools = {};
   let n = 0;
   const agentOf = (id) => {
     if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: made.get(id)?.cwd ?? home, agentPreset: made.get(id)?.agentPreset } }, got: [], steered: [], noted: [], cancels: [], followup(m) { this.got.push(m); }, steer(m) { this.steered.push(m); }, inject(m) { this.noted.push(m); }, cancel(c) { this.cancels.push(c.reason); } });
     return agents.get(id);
   };
   const services = {
-    tools: { register: () => () => {} },
+    tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
     commands: { register: () => () => {} },
     sessionController: { create: async (req = {}) => { const sessionId = `c${++n}`; made.set(sessionId, req); return { sessionId }; }, rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentOf(id) }) },
     agents: { get: (id) => agents.get(id) },
@@ -61,7 +61,7 @@ function harness(cfg = {}) {
   const notices = () => qqSent.filter(([, t]) => /^⚠️ dot/.test(t)).map(([, t]) => t);
   const events = (name) => audit.filter((a) => a.event === name);
   turn('s1', 1, [{ source: ownerSource(), content: [{ type: 'text', text: '早上好' }] }]); // something said before, for the lines a handoff carries over
-  return { ctx, home, services, dot, emit, turn, his, someone, notices, events, audit, archived, qqSent, agentOf, stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
+  return { ctx, home, services, tools, dot, emit, turn, his, someone, notices, events, audit, archived, qqSent, agentOf, stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
 }
 
 test('his words woke a turn that no longer fits: handed over, they arrive again in the new conversation and open a turn there; he is not told anything went wrong', async () => {
@@ -108,6 +108,26 @@ test('a notification woke the turn that no longer fits: it wakes her again in th
   assert.deepEqual(h.notices(), []);
   assert.equal(h.events('turn-failed').length, 0);
   assert.deepEqual(h.events('overflow-resent').at(-1).kinds, ['person']);
+  h.stop();
+});
+
+test('her hands came back on a thing of his and the turn that woke no longer fits: the result wakes her again in the new conversation', async () => {
+  const h = harness();
+  const s1 = h.agentOf('s1');
+  h.his('查一下明天天气'); await tick(60);
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: s1.got[0].source, content: s1.got[0].content });
+  assert.equal((await h.tools.hands.execute({ device: 'web', do: '查明天天气' })).status, 'started'); await tick();
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'completed' } }); await tick(80);
+  await h.tools.done.execute({ summary: '明天晴，二十度', reached: true }); await tick(80);
+  const back = s1.got.at(-1);
+  assert.equal(back.source.form, 'hands-result');
+  h.turn('s1', 3, [back], OVERFLOW); await tick(200);
+  const id = h.dot.session(), next = h.agentOf(id);
+  assert.notEqual(id, 's1');
+  assert.deepEqual(next.got.map((m) => m.source), [back.source]);
+  assert.match(text(next.got[0]), /明天晴，二十度/);
+  assert.deepEqual(h.notices(), []);
+  assert.equal(h.events('turn-failed').length, 0);
   h.stop();
 });
 
