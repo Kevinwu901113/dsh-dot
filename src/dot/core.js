@@ -314,12 +314,12 @@ export function apply(ctx, config = {}) {
     if (s.state === 'error') void im.send(`⚠️ dot: 虚拟机出错\n${s.error ?? '未知错误'}\n日志：~/.dsh/dsh-computer.log`, 'plain');
   }) ?? (() => {}), 'dsh-dot: computer status'));
   // Her sleep (sleep.js): asleep, only he wakes her; what her phone and her QQ show waits, and is shown when she wakes.
-  const sleep = createSleep({ cfg, store, audit, logger, effect: (fn, label) => ctx.effect(fn, label), quiet: () => arrive.quiet(),
-    onWake: () => arrive.onWake() });
+  const sleep = createSleep({ cfg, store, audit, logger, quiet: () => arrive.quiet(), onWake: () => arrive.onWake() });
   // Her deciding, run again on kept requests (replay.js): kept only with replayKeep > 0 — else nothing listens.
   if (cfg.replayKeep > 0) ctx.on('llm/stream', status.replayObserver(), { global: true });
   // Each night, once she is asleep: checked, then amended where the check would change something (hands-wiring.js nightly).
-  ctx.effect(() => sleep.onSleep(hw.nightly), 'dsh-dot: nightcheck when she falls asleep');
+  // Once a night: the night it was done for is kept, so a restart while she sleeps does not do it again.
+  ctx.effect(() => sleep.onSleep((night) => { if (store.get('nightcheckNight') === night) return; store.set('nightcheckNight', night); hw.nightly(); }), 'dsh-dot: nightcheck when she falls asleep');
   dot.sleep = sleep;
   const awake = sleep.awake;
   const sleeps = sleepsAtAll(cfg.awakeHours);
@@ -349,8 +349,17 @@ export function apply(ctx, config = {}) {
   ctx.inject(['dshComputer'], (c) => c.effect(() => { const pc = c.dshComputer; pc.handsOf = hw.handsOf; return () => { delete pc.handsOf; }; }, 'dsh-dot: computer gate defers to hands gates'));
   // Read before you speak, the gates of her hands, loops (hands-wiring.js preExecute).
   ctx.on('tools/pre-execute', hw.preExecute);
-  // Turn watchdog: a stalled turn (turns.js), an unanswered reach (voice.js), the plugin's drift, a task of hers waiting.
-  ctx.effect(() => { const timer = setInterval(() => { watchTurns(); voice.noteUnanswered(); watchDrift(); void nextTask(); }, 60000); return () => clearInterval(timer); }, 'dsh-dot: turn watchdog');
+  // Her clock: the one timer for what comes of time passing, in this order — her sleep (sleep.js), a stalled turn
+  // (turns.js), an unanswered reach (voice.js), the plugin's drift, what other parts watch on it (dshDot.onTick: her
+  // own time, interlude), then a thing of hers waiting to go in (arrive.js). Whatever it brings goes in by arrive().
+  // The budget's watch (budget.js) is not on it: it asks another plugin's state for him, at its own setting.
+  const tickers = new Set();
+  const tick = () => {
+    sleep.tick(); watchTurns(); voice.noteUnanswered(); watchDrift();
+    for (const fn of [...tickers]) { try { fn(); } catch (err) { logger.warn(`tick: ${err.message}`); } }
+    void nextTask();
+  };
+  ctx.effect(() => { const timer = setInterval(tick, 30000); timer.unref?.(); return () => clearInterval(timer); }, 'dsh-dot: her clock');
   // Doctor (checkup.js): on /dot doctor, once a start when something still has to be installed, and when a device fails.
   const checkup = dot.checkup = createCheckup({ items: () => ({ phone: phone(), computer: computer(), compat: ctx.get('dshDotCompat'), home: dshHome() }), im, audit, logger });
   const doctorTell = (why) => checkup.tell(why);
@@ -409,6 +418,8 @@ export function apply(ctx, config = {}) {
     awake,
     get asleepSince() { return sleep.asleepSince(); },
     onSleep: sleep.onSleep,
+    /** Her clock (every 30 s): `fn()` is called on each tick, after her sleep and before what waits goes in; returns its disposer. */
+    onTick: (fn) => { tickers.add(fn); return () => tickers.delete(fn); },
     stats,
     retired,
     /** Is this session hers (her conversation, the one the plugin made for her, or one that was hers): what compat, the interlude and memory ask. */

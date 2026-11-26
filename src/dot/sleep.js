@@ -3,7 +3,12 @@
 // what arrives just as she dozes off still reaches her. Asleep, only he wakes her (his words, or any turn of her
 // conversation); what her phone and her QQ show waits. She wakes at her usual hour, or when woken; either way what
 // waited is shown to her then, and her next turn is told how long she slept — how she takes that is hers.
-// (Taken out of core.js as it was.)
+// Her clock (core.js) ticks it. Its quiet runs the other way from her own time's (interlude): anything of hers — a
+// turn, a notification reaching her — starts the quiet over (stir); her own time counts only from his words and the
+// start of her day, so what she does herself does not put it off.
+// Falling asleep is the night's one event (onSleep: the day's end in memory, the nightcheck). The night is offered
+// to each listener once per run: when she falls asleep, or — dsh restarted while she sleeps, or the listener came up
+// later — at the next tick. A listener that must not do the night twice keeps which night it did (asleepSince).
 import { inHours, msUntilHours } from '../hours.js';
 import { prompt } from '../prompts.js';
 
@@ -11,31 +16,40 @@ const span = (ms) => { const m = Math.max(1, Math.round(ms / 60000)); return m <
 
 /**
  * @param deps.quiet   () => is nothing of hers going on right now
- * @param deps.onWake  () => she just woke: show her what waited
- * @param deps.effect  (fn, label) => register a disposable with the host
+ * @param deps.onWake  (by) => she just woke ('morning' | 'him' | 'turn'): show her what waited
+ * → { tick (her clock calls it), awake, wakeUp, stir, asleepSince, onSleep, wokeNote }
  */
-export function createSleep({ cfg, store, audit, logger, effect, quiet, onWake = () => {} }) {
+export function createSleep({ cfg, store, audit, logger, quiet, onWake = () => {} }) {
   let asleepSince = Number(store.get('asleepSince') || 0), lastStir = Date.now(), woke = null;
   const sleepListeners = new Set();
+  const offered = new Map(); // listener → the night (asleepSince) it was given in this run
+  const offerNight = () => {
+    if (!asleepSince) return;
+    for (const fn of [...sleepListeners]) {
+      if (offered.get(fn) === asleepSince) continue;
+      offered.set(fn, asleepSince);
+      try { fn(asleepSince); } catch (err) { logger.warn(`onSleep failed: ${err.message}`); }
+    }
+  };
   const stir = () => { lastStir = Date.now(); };
   const wakeUp = (by) => {
     if (!asleepSince) { stir(); return; }
     woke = { by, at: Date.now(), sleptMs: Date.now() - asleepSince, untilUsualMs: msUntilHours(cfg.awakeHours) };
     asleepSince = 0; store.set('asleepSince', 0); stir();
     audit('woke', { by, sleptMs: woke.sleptMs });
-    onWake();
+    onWake(by);
   };
-  const sleepTick = () => {
+  const tick = () => {
     const usual = inHours(cfg.awakeHours);
-    if (asleepSince) { if (usual) wakeUp('morning'); return; }
+    if (asleepSince) { if (usual) wakeUp('morning'); else offerNight(); return; }
     if (usual) return;
     if (!quiet() || Date.now() - lastStir < cfg.sleepAfterQuietMinutes * 60000) return;
     asleepSince = Date.now(); store.set('asleepSince', asleepSince); woke = null;
     audit('asleep', { quietMs: asleepSince - lastStir });
-    for (const fn of sleepListeners) { try { fn(asleepSince); } catch (err) { logger.warn(`onSleep failed: ${err.message}`); } }
+    offerNight();
   };
-  effect(() => { const t = setInterval(sleepTick, 30000); t.unref?.(); return () => clearInterval(t); }, 'dsh-dot: her sleep');
   return {
+    tick,
     awake: () => !asleepSince,
     wakeUp,
     /** Something of hers just happened: she is not dozing off yet. */
