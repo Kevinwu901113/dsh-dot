@@ -102,7 +102,7 @@ function ownHarness({ home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot'), 
     llm: { stream: () => (async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; })() },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm' }) },
   };
-  applyInterlude(ctx, { home, canon: { characterName: 'dot', characterProfile: '话少' }, ...config });
+  applyInterlude(ctx, { home, canon: { characterName: 'dot', characterProfile: '话少' }, idleMinutes: 10, ...config });
   const emit = (id, type, data, cwd = home) => listeners.forEach((fn) => fn({ id, header: { cwd } }, { type, data, surfaceOp: 'append' }));
   const meta = () => JSON.parse(readFileSync(join(home, 'interlude', 'meta.json'), 'utf8'));
   return {

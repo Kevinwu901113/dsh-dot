@@ -55,7 +55,7 @@ export const defaults = {
   // `voice` field, or interlude.voice from her name). false: none.
   voice: false,
   identityFile: '',           // optional extra Canon text file; not read unless set
-  idleMinutes: 10,            // her own time comes this long after his last word, or after her day began; what she does herself does not put it off
+  idleMinutes: 30,            // her own time comes this long after his last word, or after her day began; what she does herself does not put it off
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.

@@ -40,7 +40,7 @@
 | `canonOnly` | `false` | `true` 时只留 Canon、dot 的规则和 MCP 段 |
 | `voice` | `true` | 每轮最后的说话提醒 |
 | `identityFile` | 无 | 追加到 Canon 后面的文本文件 |
-| `idleMinutes` | `10` | 他上一句话（或她的一天开始）之后安静这么久，来一次自己的时间；`later` 最短也是这么久 |
+| `idleMinutes` | `30` | 他上一句话（或她的一天开始）之后安静这么久，来一次自己的时间；`later` 最短也是这么久 |
 | `freeTimesPerDay` | `2` | 每天最多几次自己的时间（`/interlude free` 不算），`0` 关；需要 dot 组件 |
 | `freeTokenCap` / `freeDailyTokens` | `150000` / `300000` | 每次 / 每天的 token 上限 |
 | `price` | `null` | `{ in, cached, out }` 元 / 百万 token |
