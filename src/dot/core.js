@@ -408,6 +408,8 @@ export function apply(ctx, config = {}) {
     /** A new conversation of hers, made with her own preset when lean is on (and this host knows the preset). → { sessionId } */
     createConversation: (controller) => createConversation(controller),
     setSession: (id) => { const from = sessions.last(); sessions.setSession(id); if (id && id !== from) arrive.movedOn(from, id); },
+    /** After an overflow, what of his will arrive again in the conversation after `id` ({ since, words } | null): memory's handoff leaves it out of the lines it carries over. */
+    comingAgain: (id) => arrive.comingAgain(id),
     /** Memory did not move her after an overflow of `id` (r: the handoff's { error } | { skipped }, or { again: true }): he is told. */
     notMoved: (id, r) => arrive.notMoved(id, r),
     /**

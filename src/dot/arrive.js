@@ -19,7 +19,7 @@ export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, bump, sessions, things, turns, voice;
  *             read when used: sleep (awake, wakeUp), hands (busy, thingById), ledger
  * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnStarted, turnEnded,
- *     overflowed, movedOn, notMoved, note,
+ *     overflowed, comingAgain, movedOn, notMoved, note,
  *     pushesNote, seenNotes, herState, quiet, enqueueTask, nextTask, taskTurnEnded, watchSetup }
  */
 export function createArrive(dot) {
@@ -77,6 +77,12 @@ export function createArrive(dot) {
     overflow.set(id, o);
     audit('turn-overflowed', { session: id, held: es.length, his: info.his });
     return true;
+  };
+  /** What of his will arrive again in the conversation after `from` ({ since, words }, or null): memory leaves it out of the lines it carries over. */
+  const comingAgain = (from) => {
+    const o = overflow.get(from);
+    if (!o) return null;
+    return { since: o.since, words: [...o.es, ...sent.filter((s) => s.session === from).map((s) => s.e)].filter((e) => e.kind === 'his' && !e.again).map((e) => String(e.n?.text ?? e.text ?? '')) };
   };
   /** He is told what became of a turn that broke because her conversation no longer fits, and what was kept for it is let go. */
   const overflowTold = (from, o, why, es, error = o.error) => {
@@ -420,7 +426,7 @@ export function createArrive(dot) {
     arrive, wake, qqMessage, ownerTypingNow, flushOwner,
     /** His messages waiting in his buffer (or for her bubbles to be out). */
     ownerPending: () => onTheWay('his').length,
-    hisUnread, freeze, turnStarted, turnEnded, overflowed, movedOn, notMoved, note, pushesNote,
+    hisUnread, freeze, turnStarted, turnEnded, overflowed, comingAgain, movedOn, notMoved, note, pushesNote,
     /** She just woke (sleep.js onWake): what waited is shown to her. */
     onWake: () => pump(),
     /** The last notifications of her phone (the array itself: wait_for and done look through it). */

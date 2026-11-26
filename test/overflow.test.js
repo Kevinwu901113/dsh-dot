@@ -74,9 +74,10 @@ test('his words woke a turn that no longer fits: handed over, they arrive again 
   assert.deepEqual(h.archived, ['s1']);
   const id = h.dot.session(), next = h.agentOf(id);
   assert.notEqual(id, 's1');
-  // the new conversation opens with the old one's last lines; his words come again, as they came
+  // the new conversation opens with the old one's last lines, without his words: they come again, as they came
   assert.equal(next.noted.length, 1);
   assert.match(text(next.noted[0]), /早上好/);
+  assert.doesNotMatch(text(next.noted[0]), /在吗/, 'not read twice');
   assert.equal(next.got.length, 1);
   assert.equal(text(next.got[0]), text(s1.got[0]), 'the same words, the same stamp');
   assert.equal(next.got[0].source.kind, 'user');
@@ -84,6 +85,7 @@ test('his words woke a turn that no longer fits: handed over, they arrive again 
   assert.equal(h.events('turn-failed').length, 0);
   assert.deepEqual(h.events('turn-overflowed').map((a) => [a.session, a.held, a.his]), [['s1', 1, true]]);
   assert.deepEqual(h.events('overflow-resent').map((a) => [a.from, a.to, a.count, a.kinds]), [['s1', id, 1, ['his']]]);
+  assert.equal(h.events('handoff').at(-1).leftOut, 1);
   // she answers there, as she would have
   h.turn(id, 1, [next.got[0]]); await tick(80);
   assert.deepEqual(h.qqSent.at(-1), ['owner', '在的']);
@@ -124,6 +126,7 @@ test('his words steered into the turn that no longer fits arrive again too, with
   assert.deepEqual(next.got.map((m) => m.source.kind), ['user', 'dsh-dot'], 'his words first, as they always go');
   assert.match(text(next.got[0]), /他：谁啊$/, 'a message of his that opens a turn, not one steered into one');
   assert.equal(text(next.got[1]), text(s1.got[0]));
+  assert.doesNotMatch(text(next.noted[0]), /谁啊/);
   assert.equal(h.events('turn-failed').length, 0);
   assert.deepEqual(h.notices(), []);
   // what came again is not kept for a turn after the one it opens

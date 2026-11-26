@@ -682,13 +682,18 @@ export function apply(ctx, config = {}) {
       try { await ctx.get('workspaceRegistry')?.archiveSession?.(fromId); } catch (err) { logger.warn(`archive of ${fromId} failed: ${err.message}`); }
       const { sessionId } = await (d.createConversation?.(controller) ?? controller.create({ cwd: home }));
       try { await controller.rename?.({ sessionId, title: `dot · 第 ${memory.gen} 段` }); } catch (error) { void error; }
+      // After an overflow, dot sends what the turn that broke was given into the new conversation again: his words
+      // among it are not in its opening lines as well (she would read them twice, once as "not a new message").
+      const again = d.comingAgain?.(fromId), words = new Set((again?.words ?? []).flatMap((w) => w.split('\n')).map((w) => w.trim()).filter(Boolean));
+      const comes = (l) => l.who === 'owner' && l.at >= again.since && l.text.split('\n').map((x) => x.trim()).filter(Boolean).every((x) => words.has(x));
+      const leftOut = again ? lines.filter((l) => l.session === fromId && comes(l)) : [];
       d.setSession?.(sessionId);
-      const tail = lines.filter((l) => l.session === fromId && ['owner', 'her'].includes(l.who)).slice(-cfg.handoffTailLines);
+      const tail = lines.filter((l) => l.session === fromId && ['owner', 'her'].includes(l.who) && !leftOut.includes(l)).slice(-cfg.handoffTailLines);
       const note = renderHandoff(tail, memory.gen);
       const found = await controller.resolveAgent(sessionId);
       if (found && !('error' in found)) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: note }], source: { ...HANDOFF_SOURCE, generation: memory.gen } }));
       appendFileSync(files.handoffs, `${JSON.stringify({ at: new Date().toISOString(), from: fromId, to: sessionId, gen: memory.gen, tokens, ms: Date.now() - t0, consolidated: Boolean(c?.ok), tail: tail.length })}\n`);
-      audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens, ...(why ? { why } : {}) });
+      audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens, ...(why ? { why } : {}), ...(leftOut.length ? { leftOut: leftOut.length } : {}) });
       logger.info(`handoff: ${fromId} → ${sessionId} (第 ${memory.gen} 段, ${tokens} tokens)`);
       return { ok: true, sessionId };
     } catch (err) {
