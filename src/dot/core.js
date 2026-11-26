@@ -130,7 +130,9 @@ export const defaults = {
   failureNoticeMs: 600000,
   // What one thing of her hands may cost before it stops and he is asked, in 折算 token (src/price.js: uncached input 1,
   // a cache hit 0.02, output 4 on deepseek-flash — the idle price; a million is 1 yuan idle, 2 at peak hours). 0: no limit.
-  thingCostCap: 1500000,
+  // 1.5M under the old weights (a cache hit a tenth, output one) was ¥0.7–1.2 at idle prices, depending on how much of a
+  // thing is cache hits (docs/DESIGN.md, 11-26 补「按实际花费计」): 1M keeps that bound, ¥1 idle, ¥2 at peak hours.
+  thingCostCap: 1000000,
   // Her conversation's model requests kept as sent, the newest this many, for /dot replay (replay.js). 0: none kept.
   replayKeep: 0,
 };

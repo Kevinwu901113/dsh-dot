@@ -67,8 +67,10 @@ export const defaults = {
   // list of what to do. Limits live in the gates (approvals, QQ refused, typing in social apps asks) and in the token
   // budget, which ends the turn when it runs out; what her hands do for her in it counts against the same budget.
   freeTimesPerDay: 2,         // at most this many a day; 0 = off; needs dsh-dot
-  freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
-  freeDailyTokens: 300000,    // all free time in a day
+  // In 折算 token (src/price.js: a million is ¥1 at idle prices, ¥2 at DeepSeek's peak hours); 150k / 300k under the
+  // old weights were about ¥0.07–0.12 / ¥0.14–0.23 at idle prices (docs/DESIGN.md, 11-26 补「按实际花费计」).
+  freeTokenCap: 100000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
+  freeDailyTokens: 200000,    // all free time in a day
   imBot: '',
   imTarget: '',
 };

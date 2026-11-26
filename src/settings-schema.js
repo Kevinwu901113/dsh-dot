@@ -71,7 +71,7 @@ export const SCHEMA = [
   e('dot', 'replyCheck', 'dot', 'bool', 'restart-dsh', '她发给你的话先过一遍代码：去掉括号写的动作；话里有 persona.checks.txt 列的说法时退回让她改一次（直接写的和用 qq_send 发的都一样）'),
   e('dot', 'lean', 'dot', 'bool', 'restart-dsh', '她的新对话用自带的 dot 预设来建：只带她自己的工具（交代手、QQ、记忆、定时、目标、自己的文件；查资料也交给手），DSH 其余的工具不给她。已有的对话不变，新的一段才生效'),
   e('dot', 'howto', 'dot', 'bool', 'restart-dsh', '手艺簿：记下她的手在手机本身、各个 App、电脑上做事的经验，下次到那里时给它'),
-  e('dot', 'thingCostCap', 'dot', 'int', 'restart-dsh', '一件事花到这么多 token（缓存命中按十分之一算）就停下问你要不要接着做（0 = 不管）', { min: 0 }),
+  e('dot', 'thingCostCap', 'dot', 'int', 'restart-dsh', '一件事花到这么多折算 token 就停下问你要不要接着做（以 DeepSeek 空闲时段的未命中输入为 1：缓存命中 0.02、输出 4；100 万 ≈ 空闲 1 元、高峰 2 元；0 = 不管）', { min: 0 }),
   e('dot', 'ackHoldMs', 'dot', 'int', 'restart-dsh', '你的话让她去做一件事时，回你之前等多久：这之前做完的，只回一次、带着结果（毫秒，0 = 马上回）', { min: 0, max: 120000 }),
   e('dot', 'sayDetailChars', 'dot', 'int', 'restart-dsh', '一件事做完，替她说话那次调用拿到的细节最多多少字（结果只从事情簿来）', { min: 0, max: 4000 }),
   e('dot', 'sameErrorNudge', 'dot', 'int', 'restart-dsh', '她的手连着碰到同一个错这么多次，提醒它换办法或照实收尾（没做到）；0 = 不提醒', { min: 0, max: 50 }),
