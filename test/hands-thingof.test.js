@@ -7,6 +7,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createHands } from '../src/dot/hands.js';
 import { createLedger } from '../src/dot/ledger.js';
+import { writeFileSync } from 'node:fs';
+import { apply, ownerSource } from '../src/dot/core.js';
+import { hookTable } from './hooks.js';
 
 function harness(opts = {}) {
   const listeners = new Set(), sent = [], cancelled = [], kv = new Map(), done = [];
@@ -126,4 +129,112 @@ test('hands, stop: everything by default; with a thing\'s id that one only, wait
   assert.equal(h.hands.stop({ by: 'him', cause: 'command' }), true);
   assert.deepEqual([h.hands.busy(), h.hands.stop()], [false, false]);
   assert.deepEqual(h.done.map(([r, j]) => [j.id, r.outcome, r.by]), [['t2', 'stopped', 'her'], ['t1', 'stopped', 'her'], ['t3', 'stopped', 'him']]);
+});
+
+// The same, wired into the host (core.js): each hook of a hands session asks for that session's thing.
+const text = (m) => m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
+function coreHarness(cfg = {}) {
+  const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
+  process.env.DSH_HOME = dsh;
+  writeFileSync(join(dsh, 'dsh-dot-state.json'), '{}');
+  const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
+  const { hooks, add: addHook } = hookTable();
+  const listeners = [], effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
+  let command, n = 0;
+  const made = new Map(); // session id → what it was made with ({ cwd, agentPreset }), as dsh keeps it on the session
+  const agentOf = (id) => { if (!agents.has(id)) agents.set(id, { session: { id, header: { cwd: made.get(id)?.cwd ?? (id.startsWith('h') ? join(dsh, 'dsh-dot-hands') : home), agentPreset: made.get(id)?.agentPreset } }, got: [], cancels: [], selected: [], model: { current: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: agents.get(id).selected.at(-1)?.reasoningEffort ?? 'off' }), select: (sel) => { agents.get(id).selected.push(sel); } }, noted: [], inject(m) { this.noted.push(m); }, followup(m) { this.got.push(m); }, cancel(c) { this.cancels.push(c.reason); } }); return agents.get(id); };
+  const services = {
+    tools: { register: (t) => { tools[t.name] = t; return () => {}; } },
+    commands: { register: (c) => { command = c; return () => {}; } },
+    sessionController: { create: async (req = {}) => { const sessionId = `h${++n}`; made.set(sessionId, req); return { sessionId }; }, rename: async () => ({}), resolveAgent: async (id) => ({ agent: agentOf(id) }) },
+    agents: { get: (id) => agents.get(id) },
+    workspaceRegistry: { archiveSession: async (id) => { archived.push(id); } },
+    llm: {
+      resolveCallConfig: async (c) => { if (c.reasoningEffort === 'nope') throw Object.assign(new Error('no'), { code: 'UNSUPPORTED_REASONING_EFFORT' }); return c; },
+      stream: (o) => (async function* () { llmCalls.push(o); yield { type: 'text-delta', text: replies.shift() ?? '好' }; yield { type: 'finish', reason: { kind: 'stop' } }; })(),
+    },
+    agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'low' }) },
+    dshInterlude: { cardText: () => '# 你是 小点\n话不多。', checks: () => [] },
+    dotMemory: { recent: () => [{ who: 'owner', text: '在干嘛呀' }], herSaid: (x) => herSaid.push(x) },
+    dshQq: { connected: true, owner: '20002', onMessage: (fn) => { services.qqMessage = fn; return () => {}; }, onTyping: () => () => {}, stickerList: () => [{ id: '31d44003ce', note: '开心猫' }], send: async (to, t, images) => { qqSent.push([to, t, images]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: images ?? [] }; } },
+    dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },
+  };
+  const ctx = {
+    logger: () => ({ info() {}, warn() {}, error() {}, debug() {} }),
+    on: (name, fn, opts) => { if (name === 'session/event') listeners.push(fn); else addHook(name, fn, opts); },
+    effect(fn) { effects.push(fn()); },
+    systemPrompt: { context() {}, section() { return () => {}; }, getSectionOrder: () => 0 },
+    inject(deps, fn) { if (deps.every((d) => this.get(d))) fn({ ...this, ...Object.fromEntries(deps.map((d) => [d, this.get(d)])) }); },
+    get: (name) => (name === 'systemPrompt' ? ctx.systemPrompt : services[name]),
+    provide: (name, v) => { services[name] = v; },
+  };
+  apply(ctx, { home, budgetPollSeconds: 0, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, awakeHours: '00:00-24:00', ackHoldMs: 0, ...cfg });
+  const emit = (id, type, data) => { const a = agentOf(id); for (const fn of [...listeners]) fn(a.session, { type, data }); };
+  emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation
+  const pre = (id, name, input = {}) => hooks['tools/pre-execute']({ name, input, agent: agentOf(id) }, async () => 'ran');
+  const shown = (name, v) => tools[name].output.render({}, v)[0].text;
+  return { ctx, home, made, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
+}
+const as = (h, id) => ({ agent: h.agentOf(id) }); // what the host passes a tool as its second argument
+
+test('wired, kept on the thing: when its hands last did something is its own — a notification seen during one thing is not "already here" for the next', async () => {
+  const h = coreHarness({ waitPollMs: 10, waitMaxMs: 200 });
+  h.services.dshPhone = { isReady: true, get lastScreen() { return { items: [], at: Date.now() }; }, screenItems: async () => [], foreground: async () => 'com.example/.Main', onNotification: () => () => {} };
+  const click = (id) => h.hooks['tools/post-execute']({ name: 'mcp__dot-phone__mobile_click_on_screen_at_coordinates', input: {}, agent: h.agentOf(id) }, { content: [{ type: 'text', text: 'ok' }] }, async () => ({}));
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '帮我登录一下' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '登录' }); await tick();
+  await click('h1'); await tick(5);
+  h.services.qqMessage({ kind: 'private', userId: '30003', who: '小明', text: '验证通过了', at: new Date().toISOString() });
+  assert.equal((await h.tools.wait_for.execute({ notification: '验证通过', seconds: 0.05 }, as(h, 'h1'))).status, 'met', 'after its own last action: here already');
+  assert.deepEqual(await h.tools.done.execute({ summary: '登录了', reached: true }, as(h, 'h1')), { status: 'done' });
+  await h.tools.hands.execute({ device: 'phone', do: '再看一眼' }); await tick();
+  // the next thing has done nothing yet: what came before it began is not what it waits for
+  assert.equal((await h.tools.wait_for.execute({ notification: '验证通过', seconds: 0.05 }, as(h, 'h2'))).status, 'timeout');
+  await click('h2'); await tick(5);
+  h.services.qqMessage({ kind: 'private', userId: '30003', who: '小明', text: '验证通过了 again', at: new Date().toISOString() });
+  assert.equal((await h.tools.wait_for.execute({ notification: '验证通过', seconds: 0.05 }, as(h, 'h2'))).status, 'met');
+  h.stop();
+});
+
+test('wired, by session: her hands\' own tools act on the thing of the session that calls them — a late call from a session whose thing is over does nothing', async () => {
+  const h = coreHarness({ waitPollMs: 10, waitMaxMs: 200 });
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查两件事' }] });
+  await h.tools.hands.execute({ device: 'web', do: '查第一件' }); await tick();
+  assert.equal((await h.tools.hands.execute({ device: 'web', do: '查第二件' })).status, 'queued');
+  assert.deepEqual(await h.tools.done.execute({ summary: '查到了', reached: true }, as(h, 'h1')), { status: 'done' });
+  await tick();
+  const ended = () => h.audit.filter((a) => a.event === 'hands-thing').map((a) => [a.thing, a.outcome]);
+  assert.deepEqual(ended(), [['t1', 'done']]);
+  // h1's thing is over; t2 is under way in h2
+  assert.deepEqual(await h.tools.ask_her.execute({ question: '还查吗？' }, as(h, 'h1')), { status: 'idle' });
+  assert.deepEqual(await h.tools.wait_for.execute({ seconds: 0.02 }, as(h, 'h1')), { status: 'idle' });
+  assert.deepEqual(await h.tools.done.execute({ summary: '假的', reached: true }, as(h, 'h1')), { status: 'idle' });
+  assert.equal(await h.pre('h2', 'web_search', { query: 'x' }), 'ran', 'not taken for asked');
+  assert.deepEqual(ended(), [['t1', 'done']], 'nothing of h1\'s reached t2');
+  assert.deepEqual(await h.tools.done.execute({ summary: '第二件也查到了', reached: true }, as(h, 'h2')), { status: 'done' });
+  assert.deepEqual(ended(), [['t1', 'done'], ['t2', 'done']]);
+  h.stop();
+});
+
+test('wired, a thing that waited begins with its own counts: the same error and the same screen of the one before are not its', async () => {
+  const h = coreHarness();
+  const post = (id, name, result) => h.hooks['tools/post-execute']({ name, callId: `c${Math.random()}`, input: {}, agent: h.agentOf(id) }, result, async () => ({ kind: 'accept' }));
+  const failed = { isError: true, content: [{ type: 'text', text: 'Error: Navigation failed net::ERR_CONNECTION_CLOSED at https://x.example/' }] };
+  const look = (id, t) => post(id, 'mcp__dot-phone__mobile_list_elements_on_screen', { content: [{ type: 'text', text: t }] });
+  const said = (d) => (d?.additionalContexts ?? []).map((m) => text(m)).join('\n');
+  const NAV = 'mcp__dot-vm__browser_navigate';
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '开两个站' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '打开 B 站' }); await tick();
+  assert.equal((await h.tools.hands.execute({ device: 'computer', do: '打开知乎' })).status, 'queued');
+  await post('h1', NAV, failed); await post('h1', NAV, failed);
+  await look('h1', 'A');
+  await h.tools.done.execute({ summary: '打不开', reached: false }, as(h, 'h1')); await tick();
+  // t2 now, in h2: its first error is its first, its first look is its first
+  assert.equal(said(await post('h2', NAV, failed)), '');
+  assert.equal(said(await post('h2', NAV, failed)), '', 'two of its own: the one before had two as well');
+  assert.match(said(await post('h2', NAV, failed)), /同一个错已经连着出了 3 次/, 'counted from its own first');
+  assert.equal(said(await look('h2', 'A')), '', 'not the same screen as the last thing\'s look');
+  assert.deepEqual(h.audit.filter((a) => a.event === 'same-error-nudge').map((a) => a.thing), ['t2']);
+  assert.equal(h.audit.filter((a) => a.event === 'same-screen').length, 0);
+  h.stop();
 });

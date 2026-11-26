@@ -1,9 +1,10 @@
 // dsh-dot/hands-wiring: her hands (hands.js) wired into the host (taken out of core.js as it was).
 // Holds: the hands themselves (made by makeHands, also set on dot.hands), the know-how book (howto.js) and what is
-// learned from it (reflections, the night's check), the calls waiting for his yes (askedCalls), the same error and the
-// same screen counted per thing, when her hands last did something, the phone's way back to its home screen, the
-// things in which a step that reaches someone was let through (reached). Its hooks: approval/request,
-// tools/post-execute, the device sections of system-prompt/assemble, and the gates of tools/pre-execute.
+// learned from it (reflections, the night's check), the calls waiting for his yes (askedCalls), the phone's way back to
+// its home screen. What is counted per thing — the same error, the same screen, when her hands last did something,
+// whether a step that reaches someone was let through — is kept on the thing itself (hands.keptOf) and goes with it.
+// Every hook of a hands session asks for that session's thing (hands.thingOf), never for "the" thing. Its hooks:
+// approval/request, tools/post-execute, the device sections of system-prompt/assemble, and the gates of tools/pre-execute.
 import { mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join, resolve, sep } from 'node:path';
 import { homedir } from 'node:os';
@@ -51,9 +52,9 @@ export function createHandsWiring(dot) {
     const s = req.agent.session;
     const k = approvalKind(req.toolName, req.reason);
     const theirs = Boolean(hands?.isHands(s.id, s.header?.cwd));
-    const thing = theirs ? hands.doing()?.id ?? '' : '';
+    const thing = theirs ? hands.thingOf(s.id)?.id ?? '' : '';
     if (dot.consent.allows({ kind: k.kind, subject: k.subject, thing })) { audit('consent-used', { session: s.id, kind: k.kind, thing }); return 'approved'; }
-    if (theirs) hands.ask(prompt('dot.gates.ask.q', { what: k.what }), { for: 'him', kind: k.kind, subject: k.subject, tier: 'ask', what: k.what });
+    if (theirs) hands.ask(prompt('dot.gates.ask.q', { what: k.what }), { for: 'him', kind: k.kind, subject: k.subject, tier: 'ask', what: k.what }, { session: s.id });
     else dot.consent.ask(k);
     if (req.callId !== undefined) askedCalls.set(req.callId, { what: k.what, theirs });
     audit('consent-asked', { session: s.id, kind: k.kind, tool: req.toolName, thing });
@@ -94,7 +95,7 @@ export function createHandsWiring(dot) {
     const onPhone = exec.name.startsWith(PHONE_TOOL_PREFIX) || exec.name === PHONE_TYPE_TOOL;
     if (!onPhone && !exec.name.startsWith(VM_TOOL_PREFIX)) return null;
     const s = exec.agent?.session;
-    if (!s?.id || hands?.doing()?.session !== s.id) return null; // a late result of a thing that is over
+    if (!s?.id || !hands?.thingOf(s.id)) return null; // a late result of a thing that is over
     const input = exec.arguments ?? exec.input;
     let app = 'computer';
     if (onPhone) {
@@ -117,19 +118,20 @@ export function createHandsWiring(dot) {
   // The same error over and over (11-22: nine tries at a page the browser could not reach): counted by code, per thing,
   // by its type (addresses left out); anything that goes through, or a refusal of ours, starts the count again. At
   // sameErrorNudge the hands are told to change course or end it as not reached; at sameErrorStop the code ends it.
-  const errorRuns = new Map(); // thing id → { type, n }
+  // The count is kept on the thing (hands.keptOf(id).errorRun: { type, n }).
   const sameErrorFor = (exec, result) => {
-    const t = hands?.doing(), sid = exec.agent?.session?.id;
-    if (!t || !sid || t.session !== sid || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_ASK_TOOL) return null;
+    const sid = exec.agent?.session?.id, t = sid ? hands?.thingOf(sid) : null;
+    if (!t || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_ASK_TOOL) return null;
+    const kept = hands.keptOf(t.id);
     const raw = result?.isError ? contentText(result?.content ?? []) || String(result?.error?.message ?? result?.error ?? '') : '';
     const type = raw && !isRefusal(raw) ? errorType(raw) : '';
-    if (!type) { errorRuns.delete(t.id); return null; }
-    const before = errorRuns.get(t.id), run = { type, n: before?.type === type ? before.n + 1 : 1 };
-    errorRuns.set(t.id, run);
+    if (!type) { delete kept.errorRun; return null; }
+    const before = kept.errorRun, run = { type, n: before?.type === type ? before.n + 1 : 1 };
+    kept.errorRun = run;
     if (cfg.sameErrorStop > 0 && run.n >= cfg.sameErrorStop) {
-      errorRuns.delete(t.id);
+      delete kept.errorRun;
       audit('same-error-stop', { session: sid, thing: t.id, n: run.n, error: type });
-      hands.fail({ cause: 'same-error', error: type });
+      hands.fail({ cause: 'same-error', error: type }, { session: sid });
       return null;
     }
     if (cfg.sameErrorNudge > 0 && run.n === cfg.sameErrorNudge) {
@@ -141,18 +143,19 @@ export function createHandsWiring(dot) {
   // Looking again at a screen that has not changed (11-23: 24 of a thing's 39 steps were looks, waiting for a text
   // message to be answered): counted by code, per thing. A look that shows what the look before it showed, with no
   // action in between, is told so — to wait with wait_for, or to end the thing if what it waits for is someone's answer.
-  const lookRuns = new Map(); // thing id → { seen: { tool: text }, n }
-  let handsActedAt = 0;       // when her hands last did something (wait_for counts notifications from then on)
+  // Kept on the thing (hands.keptOf(id)): lookRun { seen: { tool: text }, n }, and actedAt — when its hands last did
+  // something (its wait_for counts notifications from then on).
   const sameScreenFor = (exec, result) => {
-    const t = hands?.doing(), sid = exec.agent?.session?.id;
-    if (!t || !sid || t.session !== sid) return null;
+    const sid = exec.agent?.session?.id, t = sid ? hands?.thingOf(sid) : null;
+    if (!t) return null;
+    const kept = hands.keptOf(t.id);
     const name = shortTool(exec.name);
-    if (!PHONE_LOOK_TOOLS.includes(name) || name === 'phone_zoom') { if (exec.name !== HANDS_WAIT_TOOL) handsActedAt = Date.now(); lookRuns.delete(t.id); return null; }
+    if (!PHONE_LOOK_TOOLS.includes(name) || name === 'phone_zoom') { if (exec.name !== HANDS_WAIT_TOOL) kept.actedAt = Date.now(); delete kept.lookRun; return null; }
     const text = result?.isError ? '' : contentText(result?.content ?? []);
-    const run = lookRuns.get(t.id) ?? { seen: {}, n: 0 };
+    const run = kept.lookRun ?? { seen: {}, n: 0 };
     run.n = text && run.seen[name] === text ? run.n + 1 : 0;
     run.seen[name] = text;
-    lookRuns.set(t.id, run);
+    kept.lookRun = run;
     if (run.n < 1) return null;
     audit('same-screen', { session: sid, thing: t.id, tool: name, n: run.n + 1 });
     return prompt('dot.hands.same-screen', { n: run.n + 1 });
@@ -377,6 +380,10 @@ export function createHandsWiring(dot) {
     return out.length > 100 ? Buffer.from(out, 'base64') : null;
   };
 
+  // Her hands' own tools act on the thing of the session that calls them (exec, the host's second argument). Called
+  // with no session (directly, not by the host): on the one under way — there is only one while one is done at a time.
+  const callerOf = (exec) => { const sid = exec?.agent?.session?.id; return sid ? { session: sid } : undefined; };
+  const thingFor = (which) => (which ? hands.thingOf(which.session) : hands.doing());
   // Her hands' one way of coming back with a question (hands.js): a choice that is hers, words that have to be hers.
   // Said with a tool, so "they need her" is a fact the code has and not something read out of a report.
   const askTool = () => ({
@@ -384,7 +391,7 @@ export function createHandsWiring(dot) {
     description: prompt('dot.hands.ask-tool'),
     parameters: { type: 'object', properties: { question: { type: 'string', description: '要定的事，一两句说清；要选的东西一条一条列出来' }, for: { type: 'string', enum: ['her', 'him'], description: 'her：她来定（默认）；him：只有他能做的一步（发到他手机上的验证码、扫码、人脸、付款最后一步）' }, screen: { type: 'boolean', description: '要把现在的屏幕一起给他看（比如二维码）' } }, required: ['question'], additionalProperties: false },
     output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'asked' ? 'dot.hands.asked' : 'dot.hands.idle') }] },
-    async execute(args) { return { status: hands.ask(args?.question, { for: args?.for, kind: args?.for === 'him' ? (/验证码|校验码|动态码/.test(String(args?.question ?? '')) ? 'code' : 'him') : undefined, screen: args?.screen }) ? 'asked' : 'idle' }; },
+    async execute(args, exec) { return { status: hands.ask(args?.question, { for: args?.for, kind: args?.for === 'him' ? (/验证码|校验码|动态码/.test(String(args?.question ?? '')) ? 'code' : 'him') : undefined, screen: args?.screen }, callerOf(exec)) ? 'asked' : 'idle' }; },
   });
   // Her hands' one way of waiting (11-23): what they wait for is said as a condition the code can see — words that
   // come onto the screen, words that leave it, a notification — with a limit. The code looks; they pay one step,
@@ -395,20 +402,20 @@ export function createHandsWiring(dot) {
     description: prompt('dot.hands.wait-tool', { max: Math.round(cfg.waitMaxMs / 1000) }),
     parameters: { type: 'object', properties: { text: { type: 'string', description: '等屏幕上出现这几个字' }, gone: { type: 'string', description: '等屏幕上这几个字消失（"加载中""下载中"）' }, notification: { type: 'string', description: '等一条通知：填 App 名、标题或内容里的几个字' }, seconds: { type: 'number', description: '最多等多少秒；只填它就是单纯等这么久' } }, additionalProperties: false },
     output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'idle' ? prompt('dot.hands.idle') : prompt(v?.status === 'met' ? 'dot.hands.wait.met' : v?.status === 'waited' ? 'dot.hands.wait.waited' : 'dot.hands.wait.timeout', { what: v?.what ?? '', seconds: v?.seconds ?? 0, screen: v?.screen || '（屏幕上的字读不出来）' }) }] },
-    async execute(args) {
-      const mine = hands.doing();
+    async execute(args, exec) {
+      const mine = thingFor(callerOf(exec));
       if (!mine) return { status: 'idle' };
       const want = { text: String(args?.text ?? '').trim(), gone: String(args?.gone ?? '').trim(), note: String(args?.notification ?? '').trim() };
       const any = Boolean(want.text || want.gone || want.note);
       const limit = Math.max(1000, Math.min(cfg.waitMaxMs, (Number(args?.seconds) > 0 ? Number(args.seconds) * 1000 : any ? cfg.waitMaxMs : 5000)));
       // What came since they last did something counts: the notification may be here before the wait is asked for.
-      const since = handsActedAt || Date.now(), began = Date.now();
+      const since = hands.keptOf(mine.id)?.actedAt || Date.now(), began = Date.now();
       const onPhone = mine.device === 'phone' && Boolean(phone()?.isReady);
       const look = async () => { try { return onPhone ? await phone().screenItems() : []; } catch { return []; } };
       const words = (items) => items.map((it) => it.words ?? '').join('\n');
       let items = [], met = '';
       for (;;) {
-        if (hands.doing()?.id !== mine.id) return { status: 'idle' }; // the thing was stopped meanwhile
+        if (!hands.thingById(mine.id)) return { status: 'idle' }; // the thing was stopped meanwhile
         if (want.note) { const n = arrive.seenNotes().find((x) => x.at >= since && `${x.pkg}\n${x.title}\n${x.text}`.toLowerCase().includes(want.note.toLowerCase())); if (n) met = `来了一条通知：${[n.title, n.text].filter(Boolean).join('：').slice(0, 200)}`; }
         if (!met && (want.text || want.gone) && onPhone) { items = await look(); const w = words(items); if (want.text && w.includes(want.text)) met = `屏幕上出现了「${want.text}」`; else if (want.gone && items.length && !w.includes(want.gone)) met = `屏幕上没有「${want.gone}」了`; }
         if (met || Date.now() - began >= limit) break;
@@ -430,19 +437,19 @@ export function createHandsWiring(dot) {
     parameters: { type: 'object', properties: { summary: { type: 'string', description: '一句话的结果，不超过 40 个字，写事实，不用「我」' }, detail: { type: 'string', description: '给她看的细节：做成了什么、屏幕上现在是什么、卡在哪，最多五六行' }, task: { type: 'string', description: '这件事的短名，八个字以内（如「看消息」「装App」「搜商品」）；同一件事每次用同一个名字' }, awaiting: { type: 'string', description: '这件事里给谁发了东西（短信、消息、申请）就要填：还在等对方回，填对方在屏幕上显示的名字或号码（会话标题那样）——回了会带着这件事叫她，不用守着；不用等谁回（对方已经回了、或者本来就不会回），填空字符串' }, reached: { type: 'boolean', description: '要的那个样子到了没有：到了 true，没到 false' } }, required: ['summary', 'reached'], additionalProperties: false },
     output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: prompt(v?.status === 'done' ? 'dot.hands.done' : v?.status === 'unsaid' ? 'dot.hands.done.unsaid' : v?.status === 'unsaid-awaiting' ? 'dot.hands.done.unsaid-awaiting' : 'dot.hands.idle') }] },
     // Whether what was wanted was reached is theirs to say and nobody's to guess: left out, the thing is not ended either way.
-    async execute(args) {
+    async execute(args, exec) {
       if (typeof args?.reached !== 'boolean') return { status: 'unsaid' };
       // Sent, and an answer is owed: written on the thing before it ends (its end is told from the book). Whoever
       // has answered meanwhile — a notification since the thing began — is on the record as the answer.
-      const doing = hands.doing(), from = String(args?.awaiting ?? '').trim().slice(0, 60);
-      if (doing?.id && args.reached && reached.has(doing.id) && typeof args?.awaiting !== 'string') return { status: 'unsaid-awaiting' };
+      const which = callerOf(exec), doing = thingFor(which), from = String(args?.awaiting ?? '').trim().slice(0, 60);
+      if (doing?.id && args.reached && hands.keptOf(doing.id)?.reached && typeof args?.awaiting !== 'string') return { status: 'unsaid-awaiting' };
       if (doing?.id && from && args.reached) {
         const began = dot.ledger.get(doing.id)?.startedAt ?? Date.now();
         const got = [...arrive.seenNotes()].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
         dot.ledger.note(doing.id, { awaiting: { from, since: Date.now(), until: Date.now() + cfg.awaitMs, ...(got ? { answeredAt: got.at, text: head(got.text, 300) } : {}) } });
         audit('awaiting', { thing: doing.id, from, answered: Boolean(got) });
       }
-      const ended = hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached });
+      const ended = hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached }, which);
       if (!ended && doing?.id && from) dot.ledger.note(doing.id, { awaiting: null });
       return { status: ended ? 'done' : 'idle' };
     },
@@ -456,27 +463,26 @@ export function createHandsWiring(dot) {
   // Things in which a step that reaches someone was let through (a text, a call, a message, a request to be added):
   // whether an answer is owed is then a fact of the thing, and only her hands know it — like whether what was wanted
   // was reached, it is theirs to say and nobody's to guess (11-24: told how, they still left it out, and the reply
-  // would again have been tied to nothing).
-  const reached = new Set();
+  // would again have been tied to nothing). Kept on the thing: hands.keptOf(id).reached.
   const gateHands = (g, id, device) => {
     if (!g) return null;
-    const thing = hands.doing()?.id ?? '';
+    const thing = hands.thingOf(id)?.id ?? '';
     if (g.tier === 'forbid') { audit('gate-forbid', { session: id, device, kind: g.kind, what: g.what, thing }); return deny(prompt('dot.gates.forbid', { what: g.what })); }
     // Not done the way it was asked (a batch that has to be cut shorter): said back to her hands, nobody is asked.
     if (g.tier === 'refuse') { audit('gate-refuse', { session: id, device, kind: g.kind, thing }); return deny(prompt('dot.gates.refuse', { what: g.what })); }
     if (g.tier === 'him') {
       const what = HIM_KINDS[g.kind] ?? g.what;
-      hands.ask(prompt('dot.gates.him.q', { what }), { for: 'him', kind: g.kind, tier: 'him', what, ...(g.screen ? { screen: true } : {}) });
+      hands.ask(prompt('dot.gates.him.q', { what }), { for: 'him', kind: g.kind, tier: 'him', what, ...(g.screen ? { screen: true } : {}) }, { session: id });
       audit('gate-him', { session: id, device, kind: g.kind, what: g.what, thing });
       return deny(prompt('dot.gates.him', { what }));
     }
     if (!dot.consent.allows({ kind: g.kind, subject: g.subject, thing })) {
-      hands.ask(prompt('dot.gates.ask.q', { what: g.what }), { for: 'him', kind: g.kind, tier: 'ask', what: g.what, ...(g.subject ? { subject: g.subject } : {}) });
+      hands.ask(prompt('dot.gates.ask.q', { what: g.what }), { for: 'him', kind: g.kind, tier: 'ask', what: g.what, ...(g.subject ? { subject: g.subject } : {}) }, { session: id });
       audit('consent-asked', { session: id, device, kind: g.kind, what: g.what, thing });
       return deny(prompt('dot.gates.ask', { what: g.what }));
     }
     audit('consent-used', { session: id, device, kind: g.kind, thing });
-    if (thing && REACHES.has(g.kind)) { reached.add(thing); if (reached.size > 50) reached.delete(reached.values().next().value); }
+    if (thing && REACHES.has(g.kind)) hands.keptOf(thing).reached = true;
     return null;
   };
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
@@ -497,7 +503,7 @@ export function createHandsWiring(dot) {
     // Her hands: asking her is theirs alone, and once they have asked, this stretch of theirs is over — nothing more is done until she answers.
     const theirs = Boolean(hands?.isHands(id, exec.agent?.session?.header?.cwd));
     if ((exec.name === HANDS_ASK_TOOL || exec.name === HANDS_DONE_TOOL || exec.name === HANDS_WAIT_TOOL) && !theirs) return deny(prompt('dot.lean.not-hers', { tool: exec.name }));
-    if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked()) return deny(prompt('dot.hands.asked'));
+    if (theirs && exec.name !== HANDS_ASK_TOOL && hands.asked({ session: id })) return deny(prompt('dot.hands.asked'));
     // A tool that is not the place's (compat's set for this session) is not theirs to call, and not a question for him:
     // refused here, before the gates below would judge it as if it were (11-24: a shell call of a thing on the web was
     // asked of him as deleting in a shared folder). compat's guard refuses it too, but after this hook.
@@ -548,10 +554,10 @@ export function createHandsWiring(dot) {
     if (spoken.via === 'qq' && exec.name !== SAY_TOOL && isDotSession(id, exec.agent?.session?.header?.cwd)) return deny(prompt('dot.say.instead'));
     // Her hands do not write. What they type on her phone is hers (in the task she gave them) or was shown to them
     // (the screen, an account) — an address is not words. Anything else goes back to her to be said.
-    const round = hands?.isHands(id, exec.agent?.session?.header?.cwd) && hands.busy() ? hands.doing() : null;
+    const round = hands?.isHands(id, exec.agent?.session?.header?.cwd) ? hands.thingOf(id) : null;
     if (round && spoken.via === 'phone') {
-      const own = ownWords(spoken.text, hands.has);
-      if (own.length) { hands.note('own-words'); audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
+      const own = ownWords(spoken.text, (line) => hands.has(line, { session: id }));
+      if (own.length) { hands.note('own-words', { session: id }); audit('hands-own-words', { session: id, chars: own.join('').length }); return deny(prompt('dot.hands.own-words', { text: own[0].slice(0, 60) })); }
     }
     const toOwner = spoken.via === 'qq' && isOwnerTarget(spoken.to, ctx.get('dshQq')?.owner);
     // What she tells him on something her hands brought back counts as said in that turn, like her answer in a turn of his words.
@@ -562,7 +568,7 @@ export function createHandsWiring(dot) {
     const c = spoken.text && (round || t) ? voice.handBack(spoken.text, { strict: true }) : null;
     if (c) {
       const why = c.hits.length ? prompt('dot.reply-check.phrases', { phrases: c.hits.slice(0, 3).map((h) => `「${h}」`).join('') }) : prompt('dot.reply-check.stage');
-      if (round) hands.note('reply-check');
+      if (round) hands.note('reply-check', { session: id });
       audit('reply-check', { session: id, via: round ? 'hands' : exec.name === 'qq_send' ? 'qq_send' : spoken.via === 'phone' ? 'phone' : 'qq-tool', ...(toOwner ? {} : { to: spoken.to || 'app' }), stripped: c.stripped, hits: c.hits, denied: true });
       return deny(round ? prompt('dot.hands.reply-check', { why }) : replyCheckText(c));
     }
