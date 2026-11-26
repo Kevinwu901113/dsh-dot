@@ -104,6 +104,8 @@ h2 select{float:right;font:inherit;font-size:11px;background:var(--card);color:v
 const $=(id)=>document.getElementById(id);
 const esc=(s)=>String(s??'').replace(/[&<>"]/g,(c)=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const fmt=(n)=>Number(n??0).toLocaleString('zh-CN');
+// Yuan at DeepSeek's official price of each call's hour (src/price.js yuanText); '' when the model has no price.
+const yuan=(y)=>y==null||!isFinite(y)?'':'¥'+(y>=0.1?y.toFixed(2):y>=0.01?y.toFixed(3):y>0?y.toFixed(4):'0');
 const ago=(ms)=>{if(!ms)return '';const d=Date.now()-ms;const m=Math.round(d/60000);if(m<1)return '刚才';if(m<60)return m+' 分钟前';const h=Math.round(m/60);if(h<48)return h+' 小时前';return Math.round(h/24)+' 天前'};
 const at=(ms)=>ms?new Date(ms).toLocaleString('zh-CN',{month:'numeric',day:'numeric',hour:'2-digit',minute:'2-digit'}):'';
 const badge=(cls,label,text)=>'<span class="badge '+cls+'"><i class="dotc"></i>'+esc(label)+(text?' <span class="mute">'+esc(text)+'</span>':'')+'</span>';
@@ -164,7 +166,7 @@ function render(s){
   if(it){
     let h='<div class="kv">';
     const f=it.free||{};
-    h+='<span>自己的时间</span><span>'+(f.perDay?('今天 '+(f.today||0)+'/'+f.perDay+' 次 · '+fmt(f.tokens||0)+'/'+fmt(f.dailyTokens||0)+' token'+(f.next?' <span class="mute">· 下一次约 '+esc(at(f.next))+'</span>':'')):'关着')+'</span>';
+    h+='<span>自己的时间</span><span>'+(f.perDay?('今天 '+(f.today||0)+'/'+f.perDay+' 次 · 折算 '+fmt(f.tokens||0)+'/'+fmt(f.dailyTokens||0)+' token'+(yuan(f.yuan)?' · 约 '+yuan(f.yuan)+'（按官方价估）':'')+(f.next?' <span class="mute">· 下一次约 '+esc(at(f.next))+'</span>':'')):'关着')+'</span>';
     if(it.growth) h+='<span>她现在的样子</span><span>'+(it.growth.portrait?'<div class="pre">'+esc(it.growth.portrait)+'</div>'+(it.growth.week?'<span class="mute">'+esc(it.growth.week)+' 写的</span>':''):'<span class="mute">还没有（每周回顾一次）</span>')+'</span>';
     h+='</div>';
     $('now').innerHTML=h;
@@ -172,7 +174,7 @@ function render(s){
   if(dot&&dot.things&&dot.things.length){
     const word={done:'做完',stopped:'被停',failed:'没做成',timeout:'太久',stuck:'卡住'};
     let h='<div class="kv">';
-    for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.tokens?Math.round((e.tokens.in||0)+(e.tokens.out||0)+0.1*(e.tokens.cached||0)):0,ck=e.tokens?(e.tokens.cached||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+(e.summary?'<br>'+esc(String(e.summary).slice(0,80)):'')+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?' · 约 '+fmt(tk)+' token'+(ck?'（缓存命中 '+fmt(ck)+' 按一成算）':''):'')+'</span></span>';}
+    for(const e of dot.things.slice(0,8)){const st=e.state==='running'?'在做':e.state==='queued'?'排队':(word[e.outcome]||e.outcome||'');const tk=e.units||0,all=e.tokens?(e.tokens.in||0)+(e.tokens.cached||0)+(e.tokens.out||0):0,ck=e.tokens?(e.tokens.cached||0):0;h+='<span>'+esc(st)+'</span><span>'+esc(String(e.task).slice(0,60))+(e.summary?'<br>'+esc(String(e.summary).slice(0,80)):'')+' <span class="mute">· '+(e.asker==='him'?'你要的':'她自己的')+' · '+(e.steps||0)+' 步'+(tk?(yuan(e.yuan)?' · 约 '+yuan(e.yuan)+'（按官方价估）':'')+' · 折算 '+fmt(tk)+' token（共 '+fmt(all)+(ck?'，其中缓存命中 '+fmt(ck):'')+'）':'')+'</span></span>';}
     h+='</div>';
     $('now').innerHTML+=h;
   }
@@ -196,6 +198,7 @@ function render(s){
   if(dot&&dot.today){t+=tile(dot.today.woke,'通知叫醒')+tile(dot.today.owner,'你的消息');}
   const tin=(it?it.today.tokensIn:0)+(m?m.ledger.in:0), tout=(it?it.today.tokensOut:0)+(m?m.ledger.out:0);
   t+=tile(fmt(tin),'token 入')+tile(fmt(tout),'token 出');
+  if(m&&m.ledger&&yuan(m.ledger.yuan))t+=tile(yuan(m.ledger.yuan),'记忆调用 · 按官方价估');
   $('today').innerHTML=t;
   if(m){
     let h='<div class="kv">';
@@ -218,7 +221,7 @@ function render(s){
   } else {$('memory').innerHTML='<span class="mute">记忆未加载</span>';$('diary').innerHTML='';}
   const dz=(it&&it.doings&&it.doings.recent)||[];
   if(dz.length){
-    $('script').innerHTML=dz.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.at)+' · '+esc(e.status||'')+(e.tokens?' · '+fmt(e.tokens)+' token':'')+'</b><div class="pre">'+esc(e.what)+(e.result?'\\n'+esc(e.result):'')+(e.feedback?'\\n'+e.feedback.map(esc).join('\\n'):'')+'</div></div>').join('');
+    $('script').innerHTML=dz.slice().reverse().map(e=>'<div style="margin-bottom:8px"><b class="mute">'+esc(e.at)+' · '+esc(e.status||'')+(e.tokens?' · '+fmt(e.tokens)+' token'+(yuan(e.yuanSpent)?' · 约 '+yuan(e.yuanSpent):''):'')+'</b><div class="pre">'+esc(e.what)+(e.result?'\\n'+esc(e.result):'')+(e.feedback?'\\n'+e.feedback.map(esc).join('\\n'):'')+'</div></div>').join('');
   } else $('script').innerHTML='<span class="mute">还没有（自己的时间里做的事会记在这里）</span>';
   renderActivity(s.activity);
   $('foot').textContent='更新于 '+new Date(s.at).toLocaleTimeString('zh-CN');

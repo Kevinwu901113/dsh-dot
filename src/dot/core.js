@@ -19,7 +19,7 @@ import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createSessions } from './sessions.js';
-import { createThings } from './things.js';
+import { costOf, createThings } from './things.js';
 import { createTurns } from './turns.js';
 import { createVoice } from './voice.js';
 import { createArrive } from './arrive.js';
@@ -36,7 +36,7 @@ import { installLlmGate } from '../llm-gate.js';
 import { configure as configurePrompts, prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { today } from '../clock.js';
-import { configure as configurePrice, noteRoute } from '../price.js';
+import { configure as configurePrice, noteRoute, routeFor } from '../price.js';
 import { workingRules, stripSilent, SILENT } from './text.js';
 // What used to be defined here and now lives with the part that uses it: the same names, the same values.
 export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
@@ -455,8 +455,11 @@ export function apply(ctx, config = {}) {
     turn: (id) => turnInfo(id),
     /** Every open turn of hers. */
     turns: () => [...turns.keys()].map((id) => turnInfo(id)).filter(Boolean),
-    /** The book of things (ledger.js), newest first: what she set out to do and what came of each. */
-    things: (n = 20) => dot.ledger.recent(n),
+    /**
+     * The book of things (ledger.js), newest first: what she set out to do and what came of each — each with `units`, its
+     * cost in 折算 token as thingCostCap counts it (things.js costOf), and `yuan` at each call's price (null: not known).
+     */
+    things: (n = 20) => dot.ledger.recent(n).map((e) => ({ ...e, units: Math.round(costOf(e, routeFor(ctx, e.session))), yuan: e.yuan ?? null })),
     /** What waits for his yes, and his standing yeses (consent.js). */
     consent: () => ({ asking: dot.consent.asking(), standing: dot.consent.standing() }),
     /** The know-how book, place by place: notes or not, how each task went (howto.js summary). */

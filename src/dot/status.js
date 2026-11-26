@@ -13,6 +13,7 @@ import { callModel, modelOf } from '../llm-call.js';
 import { drift } from '../integrity.js';
 import { KINDS } from './gates.js';
 import { createRecorder, replay as replayKept } from './replay.js';
+import { priceLine, routeFor, unitsYuan, yuanText } from '../price.js';
 
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 const PACKAGE_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
@@ -119,6 +120,14 @@ export function createStatus(dot) {
     return out.length ? out : [`liveness: nothing waits for his yes, no stalled or failed turn (stalled after ${mins(cfg.turnStallMs)})`];
   };
 
+  // What a call costs and what a thing may cost (src/price.js): the price in use — or that the model has none, said
+  // here as long as it lasts — and thingCostCap in yuan.
+  const costLine = () => {
+    const route = routeFor(ctx, sessions.last()), cap = Number(cfg.thingCostCap) || 0, y = unitsYuan(cap, route);
+    const capText = cap > 0 ? `a thing stops at ${cap} 折算 token${y ? ` (≈ ${yuanText(y.idle)}${y.peak !== y.idle ? ` idle, ${yuanText(y.peak)} peak` : ''})` : ''}` : 'a thing has no cost cap';
+    return `${priceLine(route)} · ${capText}`;
+  };
+
   // /dot (command.js): the command's surface; what it reports of her state is said here.
   const statusText = async (arg) => {
     const t = await im.target();
@@ -136,6 +145,7 @@ export function createStatus(dot) {
       `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${arrive.ownerPending() ? ` · ${arrive.ownerPending()} waiting` : ''}`,
       ...statusLiveness(),
       `budget: ${ctx.get('budget') ? (dot.budget.blocked().length ? `BLOCKED (${dot.budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,
+      costLine(),
       (() => { try { return llmGateLine(dot.llmGate?.status()); } catch (err) { return `model requests: ${err.message}`; } })(),
       `schedule: ${ctx.get('schedule') ? 'ok' : 'not installed'}`,
     ];

@@ -32,7 +32,7 @@ import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
 import { cardFor } from '../persona/parts.js';
 import { head } from '../cut.js';
-import { addYuan, charge, configure as configurePrice, noteRoute, routeFor } from '../price.js';
+import { addYuan, charge, configure as configurePrice, noteRoute, routeFor, yuanText } from '../price.js';
 
 export const name = 'dot-interlude';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -451,7 +451,7 @@ export function apply(ctx, config = {}) {
   }) ?? (() => {}), 'dsh-interlude: how she talks, last'));
 
   // 4b. Her own hands on the ledger: in her conversation, when he reacts to something she did on her own.
-  const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;
+  const doingsLine = (d) => `#${d.id} ${new Date(d.at).toLocaleString('zh-CN', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false })} ${d.kind} ${d.app ? `${d.app} ${d.action} ` : ''}${d.what} → ${d.status}${d.result ? `：${clip(d.result, 80)}` : ''}${d.cost ? ` · ${tokensOf(d.cost)} token${yuanText(d.cost.yuan) ? ` ≈ ${yuanText(d.cost.yuan)}` : ''}` : ''}${(d.feedback ?? []).map((f) => ` ｜${f.from === 'owner' ? '他' : '我'}：${f.text}`).join('')}`;
 
   // 5. /interlude
   ctx.inject(['commands'], (scope) => {
@@ -487,7 +487,7 @@ export function apply(ctx, config = {}) {
         const lines = [
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
-          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${nextFree() ? describeNow(new Date(nextFree())) : '- (after he speaks, or tomorrow)'}${meta.later ? ' (hers)' : ''}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · he spoke ${meta.hisAt ? Math.round((Date.now() - meta.hisAt) / 60000) : '-'} min ago · awake ${hours() || 'always'}`,
+          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens${yuanText(meta.dayFreeYuan) ? ` (≈ ${yuanText(meta.dayFreeYuan)} at the official price)` : ''}, next ${nextFree() ? describeNow(new Date(nextFree())) : '- (after he speaks, or tomorrow)'}${meta.later ? ' (hers)' : ''}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · he spoke ${meta.hisAt ? Math.round((Date.now() - meta.hisAt) / 60000) : '-'} min ago · awake ${hours() || 'always'}`,
           `doings: ${doings.all().length} on the ledger`, `today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
@@ -520,8 +520,9 @@ export function apply(ctx, config = {}) {
       return {
         name: canon?.storyDefaults?.characterName ?? 'dot',
         today: { tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
-        doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8 }),
-        free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: nextFree() },
+        doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8, spent: true }),
+        // tokens / dailyTokens: 折算 token, as the budget counts them; yuan: what today's own time cost at each call's price (null: not known)
+        free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, yuan: meta.dayFreeYuan ?? null, next: nextFree() },
         awakeHours: hours(),
       };
     },

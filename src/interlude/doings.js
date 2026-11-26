@@ -17,7 +17,11 @@ const startOfDay = (ms) => { const d = new Date(ms); d.setHours(0, 0, 0, 0); ret
 
 /** Tokens of one cost record (fresh input + cached input + output). */
 export const tokensOf = (c) => (c ? (c.in ?? 0) + (c.cached ?? 0) + (c.out ?? 0) : 0);
-/** Yuan for a cost record at `price` (yuan per million: { in, cached, out }), or null without a price. */
+/**
+ * Yuan for a cost record at `price` (yuan per million: { in, cached, out }), or null without a price. This is his own
+ * price (interlude.price) laid flat over every hour — what her account (yourDoings) has shown since it had money in it;
+ * what a call really cost at the official price of its hour is src/price.js's, kept on the record as `yuan`.
+ */
 export function yuanOf(c, price) {
   if (!c || !price) return null;
   return ((c.in ?? 0) * (price.in ?? 0) + (c.cached ?? 0) * (price.cached ?? price.in ?? 0) + (c.out ?? 0) * (price.out ?? 0)) / 1e6;
@@ -93,8 +97,10 @@ export function createDoings(file, { now = () => Date.now() } = {}) {
     /**
      * What the round shows her. `rounds` is today's round cost ({ in, cached, out }); `apps` the apps she
      * could play in, so the ones she has left alone this week can be named; `price` turns tokens into yuan.
+     * `spent`: for the panel, not for her — each record's own yuan at the official price of its hour (src/price.js) as
+     * `yuanSpent`, today's as well (null when some call had no price).
      */
-    view({ rounds = null, apps = [], price = null, recent = 8 } = {}) {
+    view({ rounds = null, apps = [], price = null, recent = 8, spent: withSpent = false } = {}) {
       const t = now();
       const week = list.filter((d) => d.at >= t - 7 * DAY);
       const groups = new Map();
@@ -110,14 +116,15 @@ export function createDoings(file, { now = () => Date.now() } = {}) {
       const spent = addUsage({ ...todayCost }, rounds);
       const touched = new Set(week.filter((d) => d.kind === 'play').map((d) => d.app));
       const money = (c) => { const y = yuanOf(c, price); return y === null ? {} : { yuan: Math.round(y * 1000) / 1000 }; };
+      const paid = (c) => (withSpent && c && c.yuan !== undefined ? { yuanSpent: c.yuan } : {});
       return {
-        today: { doings: today.length, tokens: tokensOf(spent), livingTokens: tokensOf(rounds), ...money(spent) },
+        today: { doings: today.length, tokens: tokensOf(spent), livingTokens: tokensOf(rounds), ...money(spent), ...paid(todayCost) },
         last7Days: [...groups.values()].sort((a, b) => b.times - a.times),
         leftAloneThisWeek: apps.filter((a) => !touched.has(a)),
         recent: list.slice(-recent).map((d) => ({
           id: d.id, at: hhmm(d.at), what: `${labelOf(d)}：${d.what}`, status: d.status,
           ...(d.result ? { result: d.result } : {}),
-          ...(d.cost ? { tokens: tokensOf(d.cost), ...money(d.cost) } : {}),
+          ...(d.cost ? { tokens: tokensOf(d.cost), ...money(d.cost), ...paid(d.cost) } : {}),
           ...(d.feedback?.length ? { feedback: d.feedback.map((f) => `${f.from === 'owner' ? '他' : '我'}：${f.text}`) } : {}),
         })),
       };

@@ -38,7 +38,7 @@ import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
 import { head } from '../cut.js';
 import { ownerSaid } from '../said.js';
-import { addYuan, charge } from '../price.js';
+import { addYuan, charge, yuanText } from '../price.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -911,7 +911,7 @@ export function apply(ctx, config = {}) {
       const id = dot()?.session?.();
       const tokens = id ? await measure(id) : 0;
       const led = memory.ledger?.day === dayLabel(new Date()).slice(0, 10) ? memory.ledger : { in: 0, out: 0, calls: 0 };
-      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens · diary ${memory.lastDiary ?? 'never'} (the day ends when she falls asleep; awake ${awakeHours() || 'always, days end at midnight'})`,
+      return [`memory: 第 ${s.gen} 段 · owner ${bankUsage(memory.owner, cfg.limits.owner)} · self ${bankUsage(memory.self, cfg.limits.self)} · open ${s.open} · people ${s.people} · today ${led.calls} call(s), ${led.in} in / ${led.out} out tokens${yuanText(led.yuan) ? ` (≈ ${yuanText(led.yuan)} at the official price)` : ''} · diary ${memory.lastDiary ?? 'never'} (the day ends when she falls asleep; awake ${awakeHours() || 'always, days end at midnight'})`,
         `conversation: ${id || '(none)'} · ${tokens} tokens (handoff at ${cfg.handoffTokens}) · ${s.sinceCursor} line(s) since the last consolidation (every ${cfg.consolidateEveryLines})`,
         (await recall.command([])).split('\n').slice(0, 2).join('\n'),
         `files: ${files.md} · ${files.diary}`, '/dot memory now | diary | handoff | recall … · /dot people [approve <m…> | merge <a> <b> | forget <name>]'].join('\n');

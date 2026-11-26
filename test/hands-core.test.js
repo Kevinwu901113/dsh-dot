@@ -1055,5 +1055,28 @@ test('a thing\'s cost is what its calls were charged at deepseek-flash\'s price:
   close(e.yuan, charge(a, { at, route: FLASH }).yuan + charge(b, { at, route: FLASH }).yuan); // (no hour boundary crossed between the two calls)
   assert.deepEqual(e.tokens, { in: 0, cached: 20000, out: 200 }, 'the tokens are kept as they were');
   assert.match(e.question, /约 1k token/, 'the question he is asked says the 折算 count');
+  // the panel gets the same count, and the yuan; /dot says the price and what the cap is in money
+  assert.equal(e.units, 1200);
+  const { collectState } = await import('../src/dot/panel.js');
+  const shown = (await collectState(h.ctx)).dot.things[0];
+  assert.deepEqual([shown.units, shown.yuan], [e.units, e.yuan]);
+  assert.match((await h.command('')).text, /price: deepseek-account\/deepseek-flash at the official price, now (idle 0\.02\/1\/4|peak 0\.04\/2\/8) yuan per million \(cached\/in\/out\).* · a thing stops at 1000 折算 token \(≈ ¥0\.0010 idle, ¥0\.0020 peak\)/);
   h.stop();
+});
+
+test('a model without a price is counted without a discount, and /dot says so for as long as it is used', async () => {
+  const { resetPrices, unknownRoutes } = await import('../src/price.js');
+  resetPrices();
+  const h = harness();
+  h.services.agentDefaultModel = { currentSelection: () => ({ provider: 'openrouter', model: 'some-model' }) };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '看看电量' }] });
+  assert.equal((await h.tools.hands.execute({ device: 'phone', do: '看看电量' })).status, 'started');
+  await tick();
+  h.emit('h1', 'assistant/message', { message: { content: [{ type: 'tool-call', name: 'x' }] }, usage: { inputTokens: 100, cacheReadTokens: 1000, outputTokens: 10 } });
+  const e = h.services.dshDot.things(5)[0];
+  assert.deepEqual([e.units, e.yuan], [1110, null], 'every token one unit, no yuan');
+  assert.deepEqual(unknownRoutes(), ['openrouter/some-model']);
+  assert.match((await h.command('')).text, /price: none known for openrouter\/some-model — counted without a cache discount, no yuan \(interlude\.price sets your own\) · a thing stops at 1000000 折算 token\n/);
+  h.stop();
+  resetPrices();
 });

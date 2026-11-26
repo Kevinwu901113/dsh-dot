@@ -332,3 +332,39 @@ test('her card: a home with a canon gets persona.md and persona.checks.txt once;
   writeFileSync(join(again.home, 'persona.md'), '');
   assert.match(again.canonText(), /## 角色设定\n22岁的女大学生。/);
 });
+
+test('doings: what each cost at the official price is kept on the record and shown on the panel, never in what she reads', async () => {
+  const { createDoings } = await import('../src/interlude/doings.js');
+  const d = createDoings(join(mkdtempSync(join(tmpdir(), 'doings-')), 'doings.json'));
+  const a = d.add({ kind: 'free', what: '自己的时间' });
+  d.settle(a, { status: 'done', usage: { in: 4000, cached: 50000, out: 800, units: 8200, yuan: 0.0082 } });
+  const b = d.add({ kind: 'free', what: '自己的时间' });
+  d.settle(b, { status: 'done', usage: { in: 100, cached: 0, out: 0 } }); // from before costs were kept
+  const hers = d.view({ recent: 5 }), panel = d.view({ recent: 5, spent: true });
+  assert.ok(!JSON.stringify(hers).includes('yuanSpent') && !JSON.stringify(hers).includes('units'), 'what she reads is as it was');
+  assert.equal(hers.recent[0].tokens, 54800);
+  assert.equal(panel.recent[0].yuanSpent, 0.0082);
+  assert.equal('yuanSpent' in panel.recent[1], false);
+  assert.equal(panel.today.yuanSpent, 0.0082);
+});
+
+test('free time: what it cost today is counted in 折算 token and in yuan at the hour\'s price, and both are shown', async () => {
+  const { costOf, resetPrices } = await import('../src/price.js');
+  resetPrices();
+  const provided = {};
+  const h = harness({ reply: GOOD, vm: {}, config: { freeTokenCap: 100000, freeDailyTokens: 200000 }, wire: (ctx) => { ctx.provide = (n, v) => { provided[n] = v; }; } });
+  const tasks = [];
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: (t) => { tasks.push(t); return 'queued'; }, retired: () => true }
+    : n === 'agentDefaultModel' ? { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash' }) } : get(n)))(h.ctx.get);
+  await h.cmd().handler({ rawInput: 'free' });
+  tasks[0].onStart('e1');
+  const u = { inputTokens: 1500, cacheReadTokens: 100000, outputTokens: 500 }; // 1500 + 2000 + 2000
+  const before = Date.now();
+  h.emit('e1', 'assistant/message', { message: { content: [] }, usage: u });
+  const s = provided.dshInterlude.status();
+  assert.equal(s.free.tokens, 5500);
+  assert.ok([costOf(u, before, { provider: 'deepseek-account', model: 'deepseek-flash' }), costOf(u, Date.now(), { provider: 'deepseek-account', model: 'deepseek-flash' })].some((y) => Math.abs(y - s.free.yuan) < 1e-12));
+  assert.match((await h.cmd().handler({ rawInput: '' })).text, /free time: 1\/2 today, 5500\/200000 tokens \(≈ ¥0\.0(055|11) at the official price\)/);
+  h.stop();
+  resetPrices();
+});
