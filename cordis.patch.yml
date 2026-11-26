@@ -326,7 +326,7 @@
         home: !!js "process.env.DSH_DOT_HOME ?? ''"
         # Next to another memory plugin: auto (people-only when one is found) · full · people-only.
         coexist: !!js "process.env.DSH_DOT_MEMORY_COEXIST ?? 'auto'"
-        # handoffTokens: 150000
+        # handoffTokens: 200000
     # 7. Her persona and her own time (the component keeps the name interlude). Shares dot's home: <home>/interlude/.
     - id: dot-interlude
       name: 'dsh-dot-life/interlude'

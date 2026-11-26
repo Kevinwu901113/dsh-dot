@@ -113,7 +113,7 @@
 
 ## 交班
 
-她的对话会话每轮结束量一次 token。超过 `handoffTokens`（6 万）且这一段至少涨了 2 万（或者这一轮因为上下文超长直接失败了：立刻交班，这样交出来的新一段再超长不再交班，审计 `handoff-skipped`）：
+她的对话会话每轮结束量一次 token。超过 `handoffTokens`（20 万）且这一段至少涨了 2 万（或者这一轮因为上下文超长直接失败了：立刻交班，这样交出来的新一段再超长不再交班，审计 `handoff-skipped`）：
 
 1. 冻结投递（这期间来的消息排队）；
 2. 把还没整理的记录整理掉（三栏笔记先是最新的）；
@@ -144,7 +144,7 @@ dsh 自己的压缩要到窗口的 80% 才发生，而且摘要模板是给编�
 
 ## 配置（`dot-memory`）
 
-`handoffTokens` 60000 · `minTokensBetweenHandoffs` 20000 · `consolidateEveryLines` 120 · `chunkLines` 160 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
+`handoffTokens` 200000 · `minTokensBetweenHandoffs` 20000 · `consolidateEveryLines` 120 · `chunkLines` 160 · `minChunkLines` 10 · `handoffTailLines` 12 · `inputChars` 40000 · `maxTokens` 16384 · `limits: { owner: 1375, self: 2200, open: 800, impression: 80 }` · `openKeepDaysAfterDue` 3 · `openKeepDaysIdle` 14 · `coexist` auto · `otherMemoryServices` [hermesMemory, autoMemory, dshMemory, memoryBank]
 
 事实条：`facts` true · `factsShown` 60 · `factsPicked` 6 · `factsWaitMs` 8000。
 

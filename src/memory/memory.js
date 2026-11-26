@@ -44,7 +44,7 @@ export const inject = ['llm', 'agentDefaultModel'];
 
 export const defaults = {
   home: '',
-  handoffTokens: 60000,         // her conversation is handed over to a fresh session past this (her hands do the long work in their own sessions; past this a conversation is mostly old turns resent at every step)
+  handoffTokens: 200000,        // her conversation is handed over to a fresh session past this (her hands do the long work in their own sessions; past this a conversation is mostly old turns resent at every step)
   minTokensBetweenHandoffs: 20000,
   consolidateEveryLines: 120,   // transcript lines since the last consolidation that trigger one (also: before the diary, and every handoff)
   chunkLines: 160,              // at most this many lines per consolidation call (above the trigger, so one batch is one call); a backlog is read in several

@@ -165,7 +165,7 @@ setx DSH_DOT_COMPUTER off
 |---|---|---|
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和 `dot.home`、`interlude.home` 保持一致 |
-| `handoffTokens` | `60000` | 对话多长换新会话 |
+| `handoffTokens` | `200000` | 对话多长换新会话（11-26 从 6 万提到 20 万：交接一次要整理一回记忆、她只带走最后 12 句原话；V4.1-Flash 有 100 万的窗口，多重发的部分几乎都命中缓存） |
 | `consolidateEveryLines` | `120` | 新记录攒满多少行整理一次（每天写日记前、交班前也各整理一次） |
 | `limits` | `{ owner: 1375, self: 2200, open: 800, impression: 80 }` | 三栏笔记各多少字（关于他 / 她自己：硬上限，放不下的加不进去，满了要记新的就换掉一条；还没了的事是每轮显示多少，存的不限）、人物印象多少字 |
 | `openKeepDaysAfterDue` | `3` | 还没了的事过了到期日几天后拿掉 |
