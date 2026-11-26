@@ -49,15 +49,12 @@ export function createArrive(dot) {
   };
   const all = (kind) => waiting.filter((e) => e.kind === kind);
   const take = (es) => { for (const e of es) waiting.splice(waiting.indexOf(e), 1); return es; };
-  // His words and someone writing that are on their way and not held by a handoff (that is `moving`, not theirs).
-  const onTheWay = (kind) => all(kind).filter((e) => e.held !== 'handoff');
+  const onTheWay = (kind) => all(kind).filter((e) => e.held !== 'handoff'); // a handoff is `moving`, not theirs
 
   /** The way in: the arrival waits in the list, and whatever may go in now goes. */
   const arrive = (e) => {
-    const now = Date.now();
-    if (e.kind === 'his') { if (!onTheWay('his').length) his.firstAt = now; his.typing = false; armHis(now); } // he pressed send
-    waiting.push({ at: now, for: 'her', external: false, ...e });
-    pump();
+    if (e.kind === 'his') { if (!onTheWay('his').length) his.firstAt = Date.now(); his.typing = false; armHis(); } // he pressed send
+    waiting.push({ at: Date.now(), for: 'her', external: false, ...e }); pump();
   };
 
   let timer = null, settling = false;

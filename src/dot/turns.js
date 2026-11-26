@@ -18,7 +18,6 @@ import { TURN_NOTE_SOURCE, addressed, contentText, nowText, scheduledRule } from
 /** Tool name without its MCP server prefix (mcp__dot-vm__browser_click → browser_click). */
 export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 
-// What a turn is, as everyone asks it. Each is defined here once.
 /** His words are in this turn (over QQ or at her window): a yes of his can be kept, a stop is his, the voice has words of his to answer. */
 export const heSpoke = (t) => Boolean(t?.by.where);
 /** The turn is on his business — his words are in it, or a thing of his woke it — and is not the schedule's: what comes of it is told to him, what she starts in it is his. */
@@ -32,7 +31,7 @@ export const atHisWindow = (t) => t?.by.where === 'desk';
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
  *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, turnEnded), voice (turnEnded)
  * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, lastFailure, driftLine, watchDrift,
- *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns }
+ *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns, spoke, opened, stopped, startedOver }
  */
 export function createTurns(dot) {
   const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
@@ -105,9 +104,8 @@ export function createTurns(dot) {
     const t = turns.get(id);
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.by.whose = 'schedule'; return; }
-    // His words: over his QQ (the turn's answer goes back there), or anywhere else — her window, an IM bot — where her
-    // answer is on his screen. Where he speaks to her is where her conversation is from here on (setLast at this
-    // turn's end), so a window that is not her conversation yet counts already; one she has left does not.
+    // His words: over his QQ, or anywhere else (her window, an IM bot) where her answer is on his screen — a window
+    // that is not her conversation yet counts already (setLast at this turn's end), one she has left does not.
     const at = event.type === 'user/message' ? addressed(event.data?.source) : '';
     if (at === 'qq' || (at === 'desk' && !sessions.retired(id))) {
       if (at === 'qq' || !t.by.where) t.by.where = at;
@@ -226,14 +224,10 @@ export function createTurns(dot) {
     onSessionEvent, disposeOwed, turnFailed, taken, owe,
     lastFailure: () => lastFailure,
     driftLine, watchDrift, turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns,
-    // What happened in a turn, said by the part it happened in (a turn that is not there takes nothing).
-    /** Something of hers reached him in it. */
-    spoke: (t) => { if (t) t.spoke = true; },
-    /** She gave her hands a thing in it. */
-    opened: (t, id) => { if (t && id) t.opened.push(id); },
-    /** She stopped what was in her hands in it (these things). */
-    stopped: (t, ids) => { if (t) t.stopped.push(...ids); },
-    /** It was cancelled to be started over with his new words: it ends with nothing of its own said. */
-    startedOver: (t) => { if (t) t.startedOver = true; },
+    // What happened in a turn, said by the part it happened in (a turn that is not there takes nothing):
+    spoke: (t) => { if (t) t.spoke = true; },                   // something of hers reached him in it
+    opened: (t, id) => { if (t && id) t.opened.push(id); },     // she gave her hands a thing in it
+    stopped: (t, ids) => { if (t) t.stopped.push(...ids); },    // she stopped what was in her hands in it
+    startedOver: (t) => { if (t) t.startedOver = true; },       // cancelled to start over with his new words: nothing of its own is said
   };
 }

@@ -343,7 +343,6 @@ export function createHandsWiring(dot) {
   };
   /** What came of a thing, for her: the hands' summary, then their details. */
   const resultText = (r) => [r.summary, r.detail].map((x) => String(x ?? '').trim()).filter(Boolean).join('\n') || '（没说什么）';
-  // It goes in by the one way in (arrive.js): while her conversation is being handed over, to the new one.
   function handsBack(r, job) {
     dot.sleep.stir();
     arrive.arrive({ kind: 'hands', for: job.forHim ? 'him' : 'her', thing: job.id, external: true, into: (agent) => (agent ? handsInto(agent, r, job) : audit('hands-result-dropped', { why: 'no conversation' })) });
@@ -495,10 +494,9 @@ export function createHandsWiring(dot) {
     const t = turns.get(id);
     // Looking and scrolling repeat by nature (the screen changes, the call does not): never a loop.
     if (t && cfg.loopRepeat > 0 && !LOOP_EXEMPT.test(exec.name)) {
-      if (!calls.has(t)) calls.set(t, new Map());
-      const key = loopKey(exec.name, args), times = calls.get(t).get(key) ?? 0;
+      const made = calls.get(t) ?? calls.set(t, new Map()).get(t), key = loopKey(exec.name, args), times = made.get(key) ?? 0;
       if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return deny(prompt('dot.loop-stopped', { times })); }
-      calls.get(t).set(key, times + 1);
+      made.set(key, times + 1);
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.

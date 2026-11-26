@@ -59,13 +59,9 @@ export function createVoice(dot) {
   let ackHold = null;   // the answer to his turn that opened a thing, held for a moment (see the voice at a turn's end)
   const dropAck = (why) => { if (!ackHold) return; clearTimeout(ackHold.timer); ackHold = null; audit('ack-dropped', { why }); };
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
-  /**
-   * Read before you speak — one rule for every way her words go to him (the voice's answer, her say, a turn of his
-   * words started over): what of hers has not reached him gives way to what he said and she has not read
-   * (`unread`, arrive.hisUnread), at most ownerPreemptMax times in a row; past that hers go out first, so he cannot
-   * keep her silent by talking. Anything of hers reaching him starts the count again. → 'clear' (nothing unread) ·
-   * 'gave-way' (counted: the caller holds hers back) · 'past' (hers go out).
-   */
+  // Read before you speak, one rule for every way her words go to him (the voice, her say, a turn started over): hers
+  // that have not reached him give way to his unread ones (arrive.hisUnread), at most ownerPreemptMax times in a row.
+  // → 'clear' · 'gave-way' (counted; the caller holds hers back) · 'past' (hers go out: he cannot keep her silent).
   const readFirst = (unread) => { if (!unread) return 'clear'; if (preempts >= cfg.ownerPreemptMax) return 'past'; preempts++; return 'gave-way'; };
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
