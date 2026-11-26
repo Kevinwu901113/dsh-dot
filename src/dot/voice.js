@@ -95,18 +95,16 @@ export function createVoice(dot) {
     const said = must.length;
     const going = (t?.opened ?? []).map((id) => dot.ledger.get(id)).filter((e) => e && e.state !== 'ended');
     if (going.length > 1) must.push(prompt('dot.plain.opened.many', { n: going.length }));
-    else if (going.length) must.push(prompt(going[0].state === 'queued' ? 'dot.plain.queued' : 'dot.plain.opened'));
+    else if (going.length) must.push(prompt('dot.plain.opened'));
     // One thing, begun: the progress has sayings of hers to be said in (say.js leadInput). Otherwise the sentence itself.
-    const sayings = !said && going.length === 1 && going[0].state !== 'queued' ? prompt('dot.plain.opened.sayings').split('\n').map((x) => x.trim()).filter(Boolean) : [];
+    const sayings = !said && going.length === 1 ? prompt('dot.plain.opened.sayings').split('\n').map((x) => x.trim()).filter(Boolean) : [];
     return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, sayings, things } : null;
   };
   const factsFor = (t) => {
     const out = [];
     const mine = new Set([...(t?.opened ?? []), ...(t?.stopped ?? []), t?.by.thing].filter(Boolean));
     const rest = dot.ledger.unfinished().filter((e) => !mine.has(e.id));
-    for (const e of rest.filter((x) => x.state === 'running')) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
-    const waiting = rest.filter((x) => x.state === 'queued').length;
-    if (waiting) out.push(prompt('dot.say.fact.waiting', { n: waiting }));
+    for (const e of rest) out.push(prompt('dot.say.fact.running', { what: titleOf(e.task), since: ago(e.startedAt ?? e.openedAt, Date.now()) ? `（${ago(e.startedAt ?? e.openedAt, Date.now())}前开始的）` : '' }));
     if (!out.length) out.push(prompt('dot.say.fact.none'));
     return out.map((x) => x.trim());
   };

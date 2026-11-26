@@ -127,11 +127,11 @@ test('his stop is a command on the thing; her conversation moving on stops the o
   assert.deepEqual(h.agentOf('h1').cancels, ['dot-hands: stopped']);
   assert.equal(her.got.length, 0, 'a thing stopped on his word does not wake her');
   assert.match(text(her.noted[0]), /（他叫停的：[^\n]*到此为止，不要接着做）/, 'she finds a line about it, the next time she is up');
-  // her own stop: she knows, nothing comes back; and a thing given while one is under way waits its turn
+  // her own stop: she knows, nothing comes back; and a thing given to a place that is held does not begin — she is told what holds it
   await h.tools.hands.execute({ device: 'phone', do: '甲' }); await tick();
-  const queued = await h.tools.hands.execute({ device: 'web', do: '乙' });
-  assert.equal(queued.status, 'queued');
-  assert.match(h.shown('hands', queued), /^排上了，前面还有一件没完：（在手机上）甲。/);
+  const busy = await h.tools.hands.execute({ device: 'phone', do: '乙' });
+  assert.equal(busy.status, 'busy');
+  assert.match(h.shown('hands', busy), /^那个地方正在做：（在手机上）甲（你自己的，刚开始的），这件没开始/);
   assert.deepEqual(await h.tools.hands.execute({ stop: true }), { status: 'stopped' });
   await tick();
   assert.deepEqual([her.got.length, her.noted.length], [0, 1]);
@@ -322,7 +322,7 @@ test('what she decides by: the book, a line a thing — what is under way, what 
   await h.tools.hands.execute({ device: 'web', do: '查明天天气' });
   const n1 = await note();
   assert.match(n1, /在做：（在手机上）打开贴吧看首页（[^）]*开始的）。还没完，别再开一件一样的/);
-  assert.match(n1, /排着：（查资料[^）]*）查明天天气。/);
+  assert.match(n1, /在做：（查资料[^）]*）查明天天气（[^）]*开始的）/, 'two places, two under way');
   h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
   // his "stop": she stops it in his turn — the book has it as his stop, and says not to take it up again
   h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '停' }] });
@@ -475,9 +475,9 @@ test('the know-how book: every device call of a thing is a step where it happene
 
 test('his words opened a thing: the answer waits a moment — a quick thing is answered once, with its result; one still going gets word that it is under way; his next words call the wait off', async () => {
   const h = harness({ ackHoldMs: 60 });
-  const his = async (turn, words, things) => {
+  const his = async (turn, words, things, device = 'web') => {
     h.emit('s1', 'turn/start', { turn }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: words }] });
-    for (const d of things) await h.tools.hands.execute({ device: 'web', do: d });
+    for (const d of things) await h.tools.hands.execute({ device, do: d });
     await tick();
     h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '交出去了' }] } });
     h.emit('s1', 'turn/end', { turn, reason: { kind: 'completed' } });
@@ -499,7 +499,7 @@ test('his words opened a thing: the answer waits a moment — a quick thing is a
   await tick(100);
   assert.equal(h.qqSent.length, 2);
   // his next words call the wait off: the turn they open answers all of it
-  await his(5, '再查个东西', ['查后天的']);
+  await his(5, '再查个东西', ['查后天的'], 'computer'); // the web is still on the one before
   await tick(10);
   h.services.qqMessage({ kind: 'private', userId: '20002', who: '宽', text: '算了不用了', fromOwner: true, at: new Date().toISOString() });
   await tick(100);

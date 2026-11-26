@@ -39,10 +39,10 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   h.emit('h1', 'tool/result', { message: { content: '显卡又涨价了，纯纯坐牢' } }); h.emit('h1', 'tool/result', { message: { content: [{ text: '猫把杯子推下去了' }] } });
   h.emit('h1', 'assistant/message', { message: { content: '我先看看' } });
   assert.deepEqual([h.hands.doing().task, h.hands.doing().state, h.hands.doing().said, h.hands.doing().steps], ['打开贴吧，说说首页有什么', 'running', '我先看看', 2]);
-  // one pair of hands, one thing at a time: a second waits its turn
-  const queued = h.hands.start({ device: 'phone', task: '再做一件' });
-  assert.deepEqual([queued.status, queued.id, queued.doing.task], ['queued', 't2', '打开贴吧，说说首页有什么']);
-  assert.deepEqual(h.ledger.unfinished().map((e) => [e.id, e.state, e.asker]), [['t1', 'running', 'him'], ['t2', 'queued', 'her']]);
+  // one thing a place: a second on the phone does not begin, and nothing waits — what holds the phone is said at once
+  const busy = h.hands.start({ device: 'phone', task: '再做一件' });
+  assert.deepEqual([busy.status, busy.device, busy.holder.thing.id, busy.holder.thing.task, busy.id], ['busy', 'phone', 't1', '打开贴吧，说说首页有什么', undefined]);
+  assert.deepEqual(h.ledger.unfinished().map((e) => [e.id, e.state, e.asker]), [['t1', 'running', 'him']], 'nothing opened for it');
   assert.equal(h.done.length, 0, 'nothing reaches her while it is under way');
   // done is their word, with their tool: it ends there, the run is stopped (nothing more to say)
   assert.equal(h.hands.finish({ summary: '首页三个帖子：显卡、猫、游戏', detail: '首页有三个帖子：第一个讲显卡，第二个讲猫' }), true);
@@ -56,7 +56,8 @@ test('hands: a thing starts at once and is not waited for; nothing comes back un
   assert.deepEqual([e.state, e.outcome, e.steps, e.summary, e.detail, e.session], ['ended', 'done', 2, r.summary, r.detail, 'h1'], 'on the book: facts, not a sentence for anyone');
   h.emit('h1', 'turn/end', { reason: { kind: 'aborted' } });
   assert.equal(h.done.length, 1, 'the cancelled run ending late is nothing');
-  // the one that waited is done next, by hands of its own
+  // the phone is free now: given again, it is done by hands of its own
+  h.hands.start({ device: 'phone', task: '再做一件' });
   await tick();
   assert.deepEqual([h.hands.doing().task, h.hands.doing().id, h.sent.at(-1)[0]], ['再做一件', 't2', 'h2']);
   h.emit('h2', 'assistant/message', { message: { content: '做了', }, usage: { inputTokens: 10, cacheReadTokens: 90, outputTokens: 3 } });
@@ -136,8 +137,8 @@ test('hands: stopped (by whom), too long, ended by someone else, broke off; what
   assert.deepEqual(h.cancelled[0], ['h1', 'dot-hands: stopped']);
   assert.deepEqual(h.ledger.unfinished(), []);
   assert.equal(h.hands.stop(), false, 'nothing under way');
-  // stop is for everything in her hands: what waited goes with what was under way; his /dot stop is a command
-  h.hands.start({ task: '甲' }); h.hands.start({ task: '乙' }); await tick();
+  // stop is for everything in her hands, in every place; his /dot stop is a command
+  h.hands.start({ device: 'phone', task: '甲' }); h.hands.start({ device: 'web', task: '乙' }); await tick();
   assert.equal(h.hands.stop({ by: 'him', cause: 'command' }), true);
   assert.deepEqual(h.ledger.recent(2).map((e) => [e.task, e.outcome, e.by, e.cause]), [['乙', 'stopped', 'him', 'command'], ['甲', 'stopped', 'him', 'command']]);
   h.done.splice(1); await tick();

@@ -1,5 +1,5 @@
 // dsh-dot/hands: what is under way is found by the hands' session it is done in, or by its id — not as "the" thing.
-// What the code keeps on a thing (keptOf) goes with it; a thing that waited its turn begins with its own state.
+// What the code keeps on a thing (keptOf) goes with it; a thing given after another begins with its own state.
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdtempSync } from 'node:fs';
@@ -46,10 +46,12 @@ test('hands, by session: thingOf finds the thing done in that session, thingById
   assert.deepEqual(h.hands.things().map((t) => [t.id, t.session]), [['t1', 'h1']]);
   assert.equal(h.hands.thingOf('h2'), null, 'another session has nothing under way');
   assert.equal(h.hands.thingOf(undefined), null);
-  // a second waits its turn: not under way, so not found by its id
-  assert.equal(h.hands.start({ device: 'computer', task: '再做一件' }).status, 'queued');
-  assert.equal(h.hands.thingById('t2'), null);
-  assert.equal(h.hands.things().length, 1);
+  // a second, in another place: under way beside it, found by its id at once and by its own session once made
+  assert.equal(h.hands.start({ device: 'computer', task: '再做一件' }).status, 'started');
+  assert.equal(h.hands.thingById('t2').task, '再做一件');
+  await tick();
+  assert.deepEqual(h.hands.things().map((t) => [t.id, t.session, t.device]), [['t1', 'h1', 'phone'], ['t2', 'h2', 'computer']]);
+  assert.deepEqual([h.hands.on('phone').id, h.hands.on('computer').id, h.hands.on('web')], ['t1', 't2', null], 'a place names the one there');
   h.hands.finish({ summary: '开了' }, { session: 'h1' });
   await tick();
   // the session of a thing that is over is still hers (isHands), but nothing is under way in it
@@ -62,7 +64,7 @@ test('hands, by session: thingOf finds the thing done in that session, thingById
 test('hands, by session: a call that names a session acts on that session\'s thing only — a late one from a session that is over acts on nothing', async () => {
   const h = harness();
   h.hands.start({ device: 'phone', task: '第一件' }); await tick();
-  h.hands.start({ device: 'phone', task: '第二件 喝咖啡的猫' });
+  h.hands.start({ device: 'web', task: '第二件 喝咖啡的猫' }); await tick();
   h.hands.finish({ summary: '好了' }, { session: 'h1' }); await tick();
   assert.equal(h.hands.thingOf('h2').id, 't2');
   const late = { session: 'h1' }, mine = { session: 'h2' };
@@ -86,7 +88,7 @@ test('hands, by session: a call that names a session acts on that session\'s thi
   assert.deepEqual([r.outcome, r.question, r.notes], ['stuck', '存哪张？', []], 'the late note did not land on it');
 });
 
-test('hands, kept on the thing: what the code keeps on one thing does not reach the next; a thing that waited begins with its own state', async () => {
+test('hands, kept on the thing: what the code keeps on one thing does not reach the next; a thing given after it begins with its own state', async () => {
   const h = harness();
   h.hands.start({ device: 'phone', task: '第一件' }); await tick();
   const k1 = h.hands.keptOf('t1');
@@ -96,14 +98,15 @@ test('hands, kept on the thing: what the code keeps on one thing does not reach 
   h.emit('h1', 'tool/call'); h.emit('h1', 'tool/result', { message: { content: '屏幕上的字 甲乙丙' } });
   h.hands.note('reply-check', { session: 'h1' });
   h.hands.ask('选哪个？', {}, { session: 'h1' });
-  // the second waits behind it
-  assert.equal(h.hands.start({ device: 'phone', task: '第二件' }).status, 'queued');
-  assert.equal(h.hands.keptOf('t2'), null, 'not under way yet');
+  // the phone is held: a second there does not begin (nothing is kept for it)
+  assert.equal(h.hands.start({ device: 'phone', task: '第二件' }).status, 'busy');
+  assert.equal(h.hands.keptOf('t2'), null, 'not under way');
   h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); // ends stuck on its question
   assert.equal(h.done[0][0].outcome, 'stuck');
   assert.equal(h.hands.keptOf('t1'), null, 'gone with it');
+  assert.equal(h.hands.start({ device: 'phone', task: '第二件' }).status, 'started', 'given again, once the phone is free');
   await tick();
-  // its turn: its own state, nothing of the first's
+  // its own state, nothing of the first's
   const t2 = h.hands.thingOf('h2');
   assert.deepEqual([t2.id, t2.task, t2.question, t2.steps, t2.said], ['t2', '第二件', '', 0, '']);
   assert.deepEqual(h.hands.keptOf('t2'), {}, 'nothing kept on the first is on it');
@@ -115,14 +118,14 @@ test('hands, kept on the thing: what the code keeps on one thing does not reach 
   assert.deepEqual(h.done[0][0].notes, ['reply-check']);
 });
 
-test('hands, stop: everything by default; with a thing\'s id that one only, waiting or under way', async () => {
+test('hands, stop: everything by default; with a thing\'s id that one only — the others go on', async () => {
   const h = harness();
   h.hands.start({ device: 'phone', task: '一' }); await tick();
-  h.hands.start({ device: 'phone', task: '二' });
-  h.hands.start({ device: 'phone', task: '三' });
-  assert.equal(h.hands.stop({ by: 'her', thing: 't2' }), true, 'one that waits');
+  h.hands.start({ device: 'web', task: '二' });
+  h.hands.start({ device: 'computer', task: '三' });
+  assert.equal(h.hands.stop({ by: 'her', thing: 't2' }), true, 'one of three');
   assert.deepEqual(h.ledger.unfinished().map((e) => e.id), ['t1', 't3']);
-  assert.equal(h.hands.stop({ by: 'her', thing: 't1' }), true, 'the one under way: the next begins');
+  assert.equal(h.hands.stop({ by: 'her', thing: 't1' }), true);
   await tick();
   assert.equal(h.hands.doing().id, 't3');
   assert.equal(h.hands.stop({ thing: 't9' }), false);
@@ -200,7 +203,7 @@ test('wired, by session: her hands\' own tools act on the thing of the session t
   const h = coreHarness({ waitPollMs: 10, waitMaxMs: 200 });
   h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查两件事' }] });
   await h.tools.hands.execute({ device: 'web', do: '查第一件' }); await tick();
-  assert.equal((await h.tools.hands.execute({ device: 'web', do: '查第二件' })).status, 'queued');
+  assert.equal((await h.tools.hands.execute({ device: 'computer', do: '查第二件' })).status, 'started');
   assert.deepEqual(await h.tools.done.execute({ summary: '查到了', reached: true }, as(h, 'h1')), { status: 'done' });
   await tick();
   const ended = () => h.audit.filter((a) => a.event === 'hands-thing').map((a) => [a.thing, a.outcome]);
@@ -216,7 +219,7 @@ test('wired, by session: her hands\' own tools act on the thing of the session t
   h.stop();
 });
 
-test('wired, a thing that waited begins with its own counts: the same error and the same screen of the one before are not its', async () => {
+test('wired, a thing given after another begins with its own counts: the same error and the same screen of the one before are not its', async () => {
   const h = coreHarness();
   const post = (id, name, result) => h.hooks['tools/post-execute']({ name, callId: `c${Math.random()}`, input: {}, agent: h.agentOf(id) }, result, async () => ({ kind: 'accept' }));
   const failed = { isError: true, content: [{ type: 'text', text: 'Error: Navigation failed net::ERR_CONNECTION_CLOSED at https://x.example/' }] };
@@ -225,10 +228,12 @@ test('wired, a thing that waited begins with its own counts: the same error and 
   const NAV = 'mcp__dot-vm__browser_navigate';
   h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '开两个站' }] });
   await h.tools.hands.execute({ device: 'computer', do: '打开 B 站' }); await tick();
-  assert.equal((await h.tools.hands.execute({ device: 'computer', do: '打开知乎' })).status, 'queued');
+  assert.equal((await h.tools.hands.execute({ device: 'computer', do: '打开知乎' })).status, 'busy');
   await post('h1', NAV, failed); await post('h1', NAV, failed);
   await look('h1', 'A');
   await h.tools.done.execute({ summary: '打不开', reached: false }, as(h, 'h1')); await tick();
+  assert.equal((await h.tools.hands.execute({ device: 'computer', do: '打开知乎' })).status, 'started', 'the computer is free now');
+  await tick();
   // t2 now, in h2: its first error is its first, its first look is its first
   assert.equal(said(await post('h2', NAV, failed)), '');
   assert.equal(said(await post('h2', NAV, failed)), '', 'two of its own: the one before had two as well');

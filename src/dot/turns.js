@@ -2,7 +2,7 @@
 // Holds: the open turns (session id → turn), what waits in a session's inbox for its next turn (upcoming), his words
 // not yet taken by a turn (owed), the last failed turn, whether the plugin's drift was told, and the parts of the short
 // message that goes with whatever has just reached her (turn notes).
-// A turn is written here only; what happens in it elsewhere is said through spoke, opened, stopped and startedOver.
+// A turn is written here only; what happens in it elsewhere is said through spoke, opened, stopped, startedOver and busyAt.
 // Whose it is, is one field, written here from what enters it and read through the predicates below: by.whose 'him'
 // (his words opened it, or a thing of his woke it) · 'her' · 'schedule' (a reminder of the host's: it stays the
 // schedule's); by.where — where his words in it came from, 'qq' · 'desk' (her window, an IM bot) · '' (QQ wins);
@@ -32,7 +32,7 @@ export const atHisWindow = (t) => t?.by.where === 'desk';
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
  *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, turnEnded), voice (turnEnded)
  * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, account, lastFailure, driftLine, watchDrift,
- *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns, spoke, opened, stopped, startedOver }
+ *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns, spoke, opened, stopped, startedOver, busyAt }
  */
 export function createTurns(dot) {
   const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
@@ -243,5 +243,6 @@ export function createTurns(dot) {
     opened: (t, id) => { if (t && id) t.opened.push(id); },     // she gave her hands a thing in it
     stopped: (t, ids) => { if (t) t.stopped.push(...ids); },    // she stopped what was in her hands in it
     startedOver: (t) => { if (t) t.startedOver = true; },       // cancelled to start over with his new words: nothing of its own is said
+    busyAt: (t, device) => { if (!t) return 0; t.busy ??= {}; return (t.busy[device] = (t.busy[device] ?? 0) + 1); }, // she gave a thing to a place that is held: how often in it, for that place
   };
 }

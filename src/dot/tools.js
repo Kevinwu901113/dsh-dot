@@ -7,6 +7,18 @@ import { prompt } from '../prompts.js';
 import { head } from '../cut.js';
 import { isOwnerTarget } from './text.js';
 import { forHim as onHisBusiness, heSpoke } from './turns.js';
+import { titleOf } from './things.js';
+import { ago } from '../clock.js';
+
+const PLACES = ['phone', 'computer', 'web', 'host'];
+/** What holds the place she gave a thing to: a thing of hers there (what, whose, since when), or someone else on the device. */
+const busyText = (v) => {
+  if (v.again) return prompt('dot.hands.busy.again');
+  const t = v.holder?.thing;
+  if (!t) return prompt('dot.hands.busy.other', { tool: v.holder?.tool ?? '' });
+  const since = ago(t.startedAt, Date.now());
+  return prompt('dot.hands.busy', { task: titleOf(t.task), whose: t.forHim ? '他要的' : '你自己的', since: since ? `${since}前` : '刚' });
+};
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, audit, sessions, turns, voice, hw; read when used: hands, ledger, consent
@@ -19,13 +31,24 @@ export function createTools(dot) {
     scope.effect(() => scope.tools.register({
       name: 'hands',
       description: prompt('dot.hands-tool'),
-      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web', 'host'], description: 'phone / computer：在你的那台设备上做；web：查资料，不碰设备；host：在他这台电脑本机上用命令行做（他开口要的才交）' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
+      parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web', 'host'], description: 'phone / computer：在你的那台设备上做；web：查资料，不碰设备；host：在他这台电脑本机上用命令行做（他开口要的才交）' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做；几个地方都有事在做时，device 填那件所在的地方' }, stop: { type: 'boolean', description: '手上的事不做了；填了 device 只停那个地方的那件，不填就全停' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'busy' ? busyText(v) : v?.status === 'which' ? prompt('dot.hands.which', { things: v.things ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
-        // Which of her things she means by stop and add. She does not say (there is one under way at a time): stop is
-        // everything, add is the one under way. Once she can say which, it goes here as { thing } and nothing else changes.
-        const which = undefined;
-        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...which }); if (stopped) turns.stopped(t, open); return { status: stopped ? 'stopped' : 'idle' }; }
+        // Which of her things she means by stop and add: the place it is in (one thing a place). Stop without one is
+        // everything; add without one is the thing under way when there is only one. A place with nothing in it while
+        // other things are under way: she is told what is where ('which').
+        const named = PLACES.includes(args?.device) ? args.device : '';
+        const under = dot.hands.things();
+        const which = named ? (dot.hands.on(named) ? { thing: dot.hands.on(named).id } : null) : under.length === 1 ? { thing: under[0].id } : null;
+        const where = () => ({ status: 'which', things: under.map((x) => titleOf(x.task)).join('；') });
+        if (args?.stop) {
+          if (named && !which) return under.length ? where() : { status: 'idle' };
+          const open = named ? [which.thing] : dot.ledger.unfinished().map((e) => e.id);
+          const t = turns.get(sessions.last());
+          const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...(named ? which : {}) });
+          if (stopped) turns.stopped(t, open);
+          return { status: stopped ? 'stopped' : 'idle' };
+        }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -35,7 +58,7 @@ export function createTools(dot) {
         }
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // One more thing for the hands at work: read between two of their steps.
-        if (String(args?.add ?? '').trim()) { return dot.hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n'), which); }
+        if (String(args?.add ?? '').trim()) { if (!which && under.length) return where(); return dot.hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n'), which ?? undefined); }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(sessions.last());
@@ -49,6 +72,9 @@ export function createTools(dot) {
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
         const started = await dot.hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : device === 'host' ? 'dot.hands.where.host' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         turns.opened(t, started?.id);
+        // A place that is held, said again and again in one turn: the code counts it (a cheap model may give the same
+        // thing over and over); past the first time she is told it is the same answer, not anything new.
+        if (started?.status === 'busy' && turns.busyAt(t, device) > 1) return { ...started, again: true };
         return started;
       },
     }), 'dsh-dot: hands tool');

@@ -50,11 +50,11 @@ export function createThings(dot) {
   };
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
-  // delegation ledger): what is under way and waits, what ended in the last hour that is not just "done", and what of
+  // delegation ledger): what is under way, what ended in the last hour that is not just "done", and what of
   // his has ended and he has not heard yet.
   const thingsLines = (now = Date.now()) => {
     const title = (task) => { const t = String(task ?? '').split(/[。\n]/)[0].trim(); return t.length > 40 ? `${head(t, 40)}…` : t; };
-    const lines = dot.ledger.unfinished().map((e) => prompt(e.state === 'running' ? 'dot.things.running' : 'dot.things.queued', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
+    const lines = dot.ledger.unfinished().map((e) => prompt('dot.things.running', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
     const recent = dot.ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
     const untold = new Set(owedToHim(now).map((e) => e.id));
     for (const e of recent) {
@@ -70,7 +70,7 @@ export function createThings(dot) {
     for (const a of dot.consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
     return lines.join('\n');
   };
-  /** Is something he asked for still in her hands (queued or running)? */
+  /** Is something he asked for still in her hands? */
   const hisUnderWay = () => dot.ledger.unfinished().some((e) => e.asker === 'him');
   return { awaited, answerTo, owedToHim, thingsLines, hisUnderWay };
 }
