@@ -10,7 +10,7 @@
 //               还没了的事, which code lets go after their date) and the people (store.js). In front of her every turn.
 //   consolidate one model call over the transcript since the last one: 还没了的事 and people. When
 //               `consolidateEveryLines` new lines have piled up, before the diary, and before a handoff.
-//   daily       once a day, when she falls asleep (dot.awakeHours), when there was anything that day: one call writes the diary
+//   daily       once a day, on the night (dshDot.onSleep; without dot at her first turn after midnight), when there was anything that day: one call writes the diary
 //               and is the only writer of the owner / self banks besides her own tool — what of the
 //               day is lasting, as adds and replaces code applies. A full bank takes something new only by a replace.
 //   handoff     after dsh-whale-inurqq's: when her conversation passes `handoffTokens`, consolidate,
@@ -448,6 +448,8 @@ export function apply(ctx, config = {}) {
     if (!memory.lastDiary) { memory.lastDiary = endedDay().slice(0, 10); return false; } // a new memory: nothing before it existed; its first day ends tonight
     return memory.lastDiary < dayToEnd().slice(0, 10);
   };
+  // A new memory: nothing before it existed, its first day ends tonight (said now, not at the first night: by then the day that has ended is that one).
+  if (!memory.lastDiary) memory.lastDiary = endedDay().slice(0, 10);
   const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
   // ── her conversation, as it happens ──
@@ -495,6 +497,7 @@ export function apply(ctx, config = {}) {
       }
       case 'turn/end': {
         running.delete(id); recall.clear(id); facts.clear(id); recall.turnEnded();
+        if (!dot()?.onSleep && dailyDue()) void dayEnd(); // no dot: no night to end the day on
         void afterTurn(id);
         return;
       }
@@ -713,7 +716,9 @@ export function apply(ctx, config = {}) {
     const pending = sinceCursor().length;
     if (pending >= cfg.consolidateEveryLines && pending >= holdUntil) void consolidate({ reason: 'lines' });
   }
-  // Once a minute: the day's end, once she is asleep, once a day (a failed diary is tried again next minute).
+  // The day's end, once a day, on the night (dshDot.onSleep: when she falls asleep, or after a restart while she
+  // sleeps). Without dot her day ends at midnight, and is ended at the first turn of hers after it. A failed diary is
+  // tried again the next night, and reads everything since the last one written (sinceDayEnd).
   // The day's unread lines are consolidated first: what he said tonight about tomorrow is in 还没了的事
   // before the day ends, and the diary call reads that call's note, not the lines again. A failed
   // consolidation leaves them unread, and the diary reads them as before.
@@ -725,11 +730,7 @@ export function apply(ctx, config = {}) {
     })().finally(() => { endingDay = null; });
     return endingDay;
   }
-  ctx.effect(() => {
-    const timer = setInterval(() => { if (dailyDue()) void dayEnd(); }, 60000);
-    timer.unref?.();
-    return () => clearInterval(timer);
-  }, 'dsh-dot/memory: daily diary');
+  ctx.inject?.(['dshDot'], (c) => c.effect(() => (c.dshDot ?? dot())?.onSleep?.(() => { if (dailyDue()) void dayEnd(); }) ?? (() => {}), 'dsh-dot/memory: the day ends when she falls asleep'));
 
   // One query per arrival: asked for where the words are about to reach her (the turn note) and again when they
   // are on record (the session event) — the second asking of the same words is the first.

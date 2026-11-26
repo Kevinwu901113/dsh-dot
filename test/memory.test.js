@@ -1,5 +1,5 @@
 process.env.DSH_DOT_FACTS = 'off'; // facts have their own tests (facts.test.js): here every model call counted is the notes'
-import { test } from 'node:test';
+import { test, mock } from 'node:test';
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -581,6 +581,50 @@ test('daily diary: its own call about today, only when anything happened; headed
   const status = await h.services.dotMemory.command('memory');
   assert.match(status, /diary \d{4}-\d{2}-\d{2} \(the day ends when she falls asleep; awake always, days end at midnight\)/);
   assert.deepEqual(aboutHim(h), [], 'nothing about him yet');
+});
+
+test('day end: on the night dot offers (dshDot.onSleep), once a day; nothing ends the day by the minute', async () => {
+  const day = new Date(); day.setHours(12, 0, 0, 0);
+  mock.timers.enable({ apis: ['Date'], now: day.getTime() });
+  try {
+    const h = harness({ llmReply: JSON.stringify({ day: '他说明早九点半去洗牙。', diary: '他明天要去洗牙。' }) });
+    let night = null, asleepSince = 0;
+    h.services.dshDot = { ...h.services.dshDot, awakeHours: '08:00-23:00', sleeps: true, get asleepSince() { return asleepSince; }, onSleep: (fn) => { night = fn; return () => { night = null; }; } };
+    const realSetInterval = globalThis.setInterval;
+    let intervals = 0;
+    globalThis.setInterval = (...a) => { intervals++; return realSetInterval(...a); };
+    try { apply(h.ctx, { home: h.home }); } finally { globalThis.setInterval = realSetInterval; }
+    assert.ok(night, 'the day\'s end listens for the night');
+    mock.timers.setTime(day.getTime() + 8 * 3600000); // 20:00
+    say(h, '明早九点半我去洗牙');
+    await wait(20);
+    assert.equal(h.calls.length, 0);
+    mock.timers.setTime(day.getTime() + 11.7 * 3600000); asleepSince = Date.now(); // she fell asleep at 23:42
+    night(asleepSince);
+    await wait(50);
+    assert.equal(h.calls.length, 2, 'the unread lines, then the day');
+    assert.match(h.calls[1].messages[0].content[0].text, /^这是她每天一次的收拾/);
+    night(asleepSince); await wait(20);
+    assert.equal(h.calls.length, 2, 'once a day');
+    assert.equal(intervals, 1, 'no timer for the day\'s end (the one left is the qq identities\')');
+  } finally { mock.timers.reset(); }
+});
+
+test('day end without dot\'s night: the day ends at midnight, and is ended at her first turn after it', async () => {
+  const day = new Date(); day.setHours(12, 0, 0, 0);
+  mock.timers.enable({ apis: ['Date'], now: day.getTime() });
+  try {
+    const h = harness({ llmReply: JSON.stringify({ day: '他说明早去洗牙。', diary: '他说他要去洗牙。' }) });
+    apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+    say(h, '明早九点半我去洗牙'); await wait(20);
+    assert.equal(h.calls.length, 0, 'the day has not ended');
+    mock.timers.setTime(day.getTime() + 21 * 3600000); // 09:00 the next day
+    say(h, '我出门了'); await wait(50);
+    assert.ok(h.calls.some((c) => /^这是她每天一次的收拾/.test(c.messages[0].content[0].text)), 'yesterday is ended now');
+    const n = h.calls.length;
+    say(h, '到了'); await wait(20);
+    assert.equal(h.calls.length, n, 'once');
+  } finally { mock.timers.reset(); }
 });
 
 test('day end: the unread lines are consolidated first, then the diary reads that call\'s note instead of the lines', async () => {
