@@ -258,6 +258,8 @@ export function apply(ctx, config = {}) {
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
   const llmGate = dot.llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(dot.hands?.isHands(id)) && !dot.hands.thingOf(id)?.forHim });
+  // The account run out or unusable (quota, auth), whichever call of this dsh found it: he is told what it is (turns.js).
+  if (llmGate?.onAccount) ctx.effect(() => llmGate.onAccount(turns.account), 'dsh-dot: the account told');
   selfCheck();
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));

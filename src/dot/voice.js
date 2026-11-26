@@ -182,7 +182,7 @@ export function createVoice(dot) {
     const speak = !t.spoke && news && !atHisWindow(t) && event.data?.reason?.kind !== 'aborted';
     const over = () => { if (!t.spoke) { preempts = 0; audit('silent', { session: id }); } };
     // The call that writes her words failed: that is not her choosing to say nothing.
-    const told = (r) => { if (r?.status === 'failed') { preempts = 0; turns.turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`); } else over(); };
+    const told = (r) => { if (r?.status === 'failed') { preempts = 0; turns.turnFailed(id, `替她写话的那次调用没成：${r.why ?? ''}`, { outcome: r.outcome }); } else over(); };
     if (!speak) { over(); return; }
     // His words opened a thing: the answer waits a moment (ackHoldMs). When nothing of his is under way by then, what
     // came of it is told once, by the turn its end wakes; while something is, he gets word that it is under way.

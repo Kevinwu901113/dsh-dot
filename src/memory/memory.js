@@ -513,6 +513,7 @@ export function apply(ctx, config = {}) {
     // not wait behind his own turn (llm-gate).
     const r = await callModel(ctx, { effort: foreground ? undefined : WORK, background: !foreground, maxTokens: cfg.maxTokens, messages: [createUserMessage({ content: [{ type: 'text', text }], source: { kind: 'dsh-dot-memory' } })] });
     if (r.outcome.kind === 'no-model') return { skipped: 'no model' };
+    if (r.outcome.held) return { skipped: `account held: ${r.outcome.kind}`, held: true }; // not sent (llm-gate): no failure of the call's own
     // Cut short at maxTokens, the words so far are given back marked (facts are lines: the whole ones count; a JSON is not whole).
     if (!r.ok && r.outcome.kind !== 'truncated') {
       const error = outcomeText(r.outcome);
@@ -546,6 +547,7 @@ export function apply(ctx, config = {}) {
         if (!all.length) return result;
         const fresh = takeChunk(all.slice(0, chunkLines()), cfg.inputChars);
         result = await consolidateOnce(fresh, { reason: round ? `${reason}+${round}` : reason });
+        if (result.held) return result; // the account, not the size of the chunk: tried again as it was
         if (!result.ok) {
           failStreak = Math.min(failStreak + 1, 6);
           holdUntil = sinceCursor().length + cfg.consolidateEveryLines;

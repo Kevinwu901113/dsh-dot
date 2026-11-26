@@ -1215,3 +1215,18 @@ test('consolidation cut short at maxTokens is said as that: nothing applied, the
   finish = 'stop'; text = '';
   assert.match((await h.services.dotMemory.consolidate()).error, /^empty: no words/);
 });
+
+test('consolidation while the account is held: not a failure of its own — no warning, nothing halved — and it goes on once the hold is over', async () => {
+  const h = harness();
+  let held = true;
+  const stream = h.ctx.llm.stream;
+  h.ctx.llm.stream = (opts) => (held ? (async function* () { h.calls.push(opts); yield { type: 'finish', reason: { kind: 'error', failure: { code: 'QUOTA', message: 'not sent: the account is held (quota)', held: true } } }; })() : stream(opts));
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
+  say(h, '下周六我搬家');
+  for (let i = 0; i < 3; i++) assert.deepEqual(await h.services.dotMemory.consolidate(), { skipped: 'account held: quota', held: true });
+  assert.equal(h.audit.filter((e) => e.event === 'consolidate-failed').length, 0);
+  assert.equal(h.warns.filter((w) => /consolidation failed/.test(w)).length, 0);
+  held = false;
+  assert.equal((await h.services.dotMemory.consolidate()).ok, true);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0);
+});

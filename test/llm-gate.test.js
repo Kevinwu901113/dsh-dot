@@ -428,3 +428,42 @@ test('llm gate: a request of dot\'s voice is recorded as it reaches the listener
   for await (const _ of gate.wrap({ ...options, messages: [{ role: 'user', content: 'hi' }] }, () => (async function* () {})())) { void _; }
   assert.ok(!events.some((x) => x.event === 'say-request'), 'other requests are not recorded');
 });
+
+test('account run out or unusable: background requests are not sent, never once a minute, until a foreground request goes through (or the retry-after passes); listeners told once each way', async () => {
+  const c = clock(), audit = [], told = [];
+  const gate = gateWith(c, { backgroundRpm: 0 }, { audit: (e, d) => audit.push({ e, ...d }) });
+  gate.onAccount((event, info) => told.push([event, info.kind]));
+  const QUOTA = { kind: 'error', failure: { code: 'QUOTA', message: 'Insufficient Balance', status: 402 } };
+  // the memory's consolidation is the first to find it
+  const first = request(gate, background({ provider: 'p', model: 'm' })); first.release(QUOTA); await first.promise;
+  assert.deepEqual(told, [['held', 'quota']]);
+  // every later background request ends at once with that failure, and nothing is sent
+  for (let i = 0; i < 3; i++) {
+    const r = request(gate, background({ provider: 'p', model: 'm' })); await r.promise; await c.advance(60000);
+    assert.equal(r.started, false, 'not sent');
+    assert.deepEqual([r.chunks.at(-1).reason.failure.code, r.chunks.at(-1).reason.failure.held], ['QUOTA', true]);
+  }
+  assert.equal(prov(gate).heldOff, 3);
+  assert.match(statusLine(gate.status()), /account quota since \d\d:\d\d:\d\d: background not sent \(3\)/);
+  // another provider is not held; a foreground request still goes (it is how he finds out it is fixed)
+  const other = request(gate, background({ provider: 'q', model: 'm' })); other.release(); await other.promise; assert.equal(other.started, true);
+  const his = request(gate, { provider: 'p', model: 'm', sessionId: 's1' }); his.release(QUOTA); await his.promise;
+  assert.equal(his.started, true);
+  assert.deepEqual(told, [['held', 'quota']], 'the same hold is not told again');
+  const again = request(gate, { provider: 'p', model: 'm', sessionId: 's1' }); again.release(); await again.promise;
+  assert.deepEqual(told, [['held', 'quota'], ['resumed', 'quota']]);
+  const after = request(gate, background({ provider: 'p', model: 'm' })); after.release(); await after.promise;
+  assert.equal(after.started, true, 'background goes again');
+  assert.deepEqual(audit.filter((a) => a.e.startsWith('account-')).map((a) => [a.e, a.kind, a.why ?? a.class]), [['account-held', 'quota', 'background'], ['account-resumed', 'quota', 'a request went through']]);
+  // auth the same; with a retry-after the next background request after it is let through to try
+  const AUTH = { kind: 'error', failure: { code: 'AUTH', message: 'invalid api key', status: 401, providerRetryAfterMs: 30000 } };
+  const bad = request(gate, background({ provider: 'p', model: 'm' })); bad.release(AUTH); await bad.promise;
+  const early = request(gate, background({ provider: 'p', model: 'm' })); await early.promise; assert.equal(early.started, false);
+  await c.advance(30000);
+  const late = request(gate, background({ provider: 'p', model: 'm' })); late.release(); await late.promise; assert.equal(late.started, true);
+  assert.deepEqual(told.slice(2), [['held', 'auth'], ['resumed', 'auth']]);
+  // a rate limit is not the account's
+  const rl = request(gate, background({ provider: 'r', model: 'm' })); rl.release(RATE_LIMIT()); await rl.promise;
+  assert.equal(prov(gate, 'r').held, null);
+  gate.stop();
+});

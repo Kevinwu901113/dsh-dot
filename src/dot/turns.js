@@ -9,6 +9,7 @@
 // by.form — the kind of message of ours that woke it; by.thing — the thing of his it is about.
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { drift } from '../integrity.js';
+import { outcomeOf } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
 import { unstamp } from '../clock.js';
 import { ownerSaid } from '../said.js';
@@ -30,7 +31,7 @@ export const atHisWindow = (t) => t?.by.where === 'desk';
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
  *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, turnEnded), voice (turnEnded)
- * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, lastFailure, driftLine, watchDrift,
+ * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, account, lastFailure, driftLine, watchDrift,
  *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns, spoke, opened, stopped, startedOver }
  */
 export function createTurns(dot) {
@@ -45,12 +46,25 @@ export function createTurns(dot) {
   let lastFailure = null; // { at, session, error, lost }
   let failureTold = 0, driftTold = false;
   const driftLine = () => { const d = drift(); return d ? prompt('dot.drift', { loaded: d.loaded || '?', disk: d.disk || '?', missing: d.missing.length }).trim() : ''; };
-  const turnFailed = (id, why, { lost = false, his = true } = {}) => {
+  // The account, not the call (llm-gate.js outcomeOf: quota run out, the key or sign-in unusable): said for what it
+  // is, once when it is found — whoever's call found it, his turn or her background — and for his turns after that
+  // at most once per failureNoticeMs, like any failure. In the plugin's name; nothing of it goes into her conversation.
+  const ACCOUNT = { quota: 'dot.account.quota', auth: 'dot.account.auth' };
+  let accountHeld = ''; // the kind of the account's hold he has been told of ('' none, or it is over)
+  const accountText = (kind, error, until) => prompt(ACCOUNT[kind], { error, until: until ? prompt('dot.account.until', { time: new Date(until).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false }) }).trim() : '' });
+  const account = (event, info) => {
+    if (event === 'resumed') { accountHeld = ''; return; }
+    if (event !== 'held' || !ACCOUNT[info?.kind] || accountHeld === info.kind) return;
+    accountHeld = info.kind; failureTold = Date.now();
+    void im.send(accountText(info.kind, `${info.message}（${info.code}）`, info.until), 'plain');
+  };
+  const turnFailed = (id, why, { lost = false, his = true, outcome = null } = {}) => {
     const error = String(why ?? '').replace(/\s+/g, ' ').trim().slice(0, 200) || '没有说原因';
     lastFailure = { at: Date.now(), session: id, error, lost };
-    audit('turn-failed', { session: id, error, lost, his });
+    audit('turn-failed', { session: id, error, lost, his, ...(outcome?.kind ? { outcome: outcome.kind } : {}) });
     if (!his || Date.now() - failureTold < cfg.failureNoticeMs) return;
     failureTold = Date.now();
+    if (ACCOUNT[outcome?.kind]) { accountHeld = outcome.kind; void im.send(accountText(outcome.kind, `${outcome.message}（${outcome.code}）`, outcome.retryAfterMs ? Date.now() + outcome.retryAfterMs : 0), 'plain'); return; }
     void im.send(prompt(lost ? 'dot.turn-lost' : 'dot.turn-failed', { error, hint: driftLine() }), 'plain');
   };
   const taken = (id) => { if (owed?.session === id) { clearTimeout(owed.timer); owed = null; } };
@@ -137,7 +151,7 @@ export function createTurns(dot) {
     if (broke) {
       const lost = owed?.session === id && !overQq(t);
       taken(id);
-      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: lost || forHim(t) });
+      turnFailed(id, event.data.reason.error?.message ?? event.data.reason.message, { lost, his: lost || forHim(t), outcome: outcomeOf(event.data.reason) });
     }
     // A question of hers to him is waiting until his next words have been read: the turn they open either keeps his
     // yes (his_ok) or does not — said no, said something else — and after it the question is not waiting any more
@@ -221,7 +235,7 @@ export function createTurns(dot) {
     has: (id) => turns.has(id),
     keys: () => turns.keys(),
     get size() { return turns.size; },
-    onSessionEvent, disposeOwed, turnFailed, taken, owe,
+    onSessionEvent, disposeOwed, turnFailed, taken, owe, account,
     lastFailure: () => lastFailure,
     driftLine, watchDrift, turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns,
     // What happened in a turn, said by the part it happened in (a turn that is not there takes nothing):

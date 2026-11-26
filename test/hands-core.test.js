@@ -982,3 +982,48 @@ test('the know-how reflection cut short at maxTokens is said as that, not as hal
   assert.match(f.error, /^truncated \(max-tokens\): output cut at maxTokens/);
   h.stop();
 });
+
+test('the account run out: he is told what it is, once, whoever found it — not "she broke", not as her; background stops until a request goes through', async () => {
+  const { background } = await import('../src/llm-gate.js');
+  const h = harness({ failureNoticeMs: 600000 });
+  const notices = () => h.qqSent.filter(([, t]) => /^⚠️ dot/.test(t)).map(([, t]) => t);
+  const through = async (options, reason) => { const out = []; for await (const c of h.hooks['llm/stream'](options, () => (async function* () { yield { type: 'finish', reason }; })())) out.push(c); return out.at(-1).reason; };
+  const QUOTA = { kind: 'error', failure: { code: 'QUOTA', message: 'Insufficient Balance', status: 402 } };
+  // her memory's consolidation finds it first (a background request)
+  await through(background({ provider: 'deepseek-account', model: 'deepseek-flash' }), QUOTA);
+  assert.deepEqual(notices(), ['⚠️ dot：模型账户的额度或余额用完了。这不是她出了故障，也不是她不理你。\n额度恢复之前她回不了话；整理记忆、写经验笔记这些后台的事也先停下，不再去试。\n充值或额度恢复以后给她发一句话：她能正常回你，后台的事就自动接着做。\n原因：Insufficient Balance（QUOTA）']);
+  // his turn breaks on it right after: not told again as "她这一轮出错了"
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在吗' }] });
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'error', error: QUOTA.failure } });
+  await tick(30);
+  assert.equal(notices().length, 1);
+  assert.equal(h.audit.findLast((a) => a.event === 'turn-failed').outcome, 'quota');
+  assert.equal(h.agentOf('s1').noted.length + h.agentOf('s1').got.length, 0, 'nothing of it goes into her conversation');
+  // a background request now is not sent
+  let sent = false;
+  for await (const c of h.hooks['llm/stream'](background({ provider: 'deepseek-account', model: 'deepseek-flash' }), () => { sent = true; return (async function* () { yield { type: 'finish', reason: { kind: 'stop' } }; })(); })) void c;
+  assert.equal(sent, false);
+  // a foreground request goes through: it is over, and the next time it runs out he is told again
+  await through({ provider: 'deepseek-account', model: 'deepseek-flash', sessionId: 's1' }, { kind: 'stop' });
+  assert.ok(h.audit.some((a) => a.event === 'account-resumed'));
+  const AUTH = { kind: 'error', failure: { code: 'AUTH', message: 'Authentication Fails', status: 401 } };
+  await through({ provider: 'deepseek-account', model: 'deepseek-flash', sessionId: 's1' }, AUTH);
+  assert.match(notices().at(-1), /^⚠️ dot：模型账户的登录或 API key 用不了。[\s\S]*原因：Authentication Fails（AUTH）$/);
+  h.stop();
+});
+
+test('his turn that broke on the account, with no one having found it before: told what it is, with when it comes back', async () => {
+  const h = harness({ failureNoticeMs: 0 });
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在吗' }] });
+  h.emit('s1', 'turn/end', { turn: 2, reason: { kind: 'error', error: { code: 'ACCOUNT_QUOTA', message: 'usage limit reached', providerRetryAfterMs: 3600000 } } });
+  await tick(30);
+  const t = h.qqSent.at(-1)[1];
+  assert.match(t, /^⚠️ dot：模型账户的额度或余额用完了。[\s\S]*\n提供方给的恢复时间：\d\d:\d\d，到时后台会再试一次。\n原因：usage limit reached（ACCOUNT_QUOTA）$/);
+  // any other failure is still "she broke", with its reason
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '喂' }] });
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'error', error: { code: 'SERVER', message: 'Service Unavailable' } } });
+  await tick(30);
+  assert.equal(h.qqSent.at(-1)[1], '⚠️ dot：她这一轮出错了，没有回你。\n原因：Service Unavailable');
+  assert.equal(h.audit.findLast((a) => a.event === 'turn-failed').outcome, 'transient');
+  h.stop();
+});

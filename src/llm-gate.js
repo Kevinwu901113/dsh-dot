@@ -35,6 +35,10 @@
 //     turnStallMs, so an errand step is never taken for a stalled turn), and stops waiting at once
 //     when its signal aborts (the adapter then ends it with dsh's own aborted finish);
 //   - `holdRetries`: see holdFor() — the one case a foreground request is touched;
+//   - the account run out (quota) or unusable (auth), by any request's finish: background requests are not sent at all
+//     (each is ended at once with that failure, `held` on it) until a foreground request on the provider succeeds, or
+//     the provider's retry-after has passed (the next one is then let through to try); whoever listens (onAccount)
+//     is told when it starts and ends;
 //   - nothing in here may break a model call: any error in the bookkeeping lets the request through.
 import { createHash } from 'node:crypto';
 import { sectionOf } from './settings.js';
@@ -200,6 +204,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   const pacing = cfg.backgroundRpm > 0;
   const providers = new Map();
   const sessionTests = new Map(); // name → (sessionId) => boolean
+  const accountListeners = new Set(); // (event: 'held' | 'resumed', info) => void
   const limits = new Map(); // provider \0 session → { at, retryAfterMs, inWindow }: its last RATE_LIMIT
   const debug = (m) => { try { logger.debug?.(m); } catch { /* ignore */ } };
   const info = (m) => { try { logger.info?.(m); } catch { /* ignore */ } };
@@ -210,7 +215,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
   const P = (name) => {
     let p = providers.get(name);
     if (!p) {
-      p = { name, starts: [], bgStarts: [], fg: new Map(), fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, lastAnyHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, effort: {}, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0 };
+      p = { name, starts: [], bgStarts: [], fg: new Map(), fgLastEnd: -Infinity, lastBgStart: -Infinity, cap: cfg.backgroundRpm, raiseAt: Infinity, hits: 0, lastHitAt: -Infinity, lastAnyHitAt: -Infinity, coolingUntil: 0, coolTimer: null, queue: [], timer: null, effort: {}, timerAt: Infinity, delayed: 0, rateLimited: 0, heldRetries: 0, held: null, heldOff: 0 };
       providers.set(name, p);
     }
     return p;
@@ -379,14 +384,45 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
     }
   }
 
+  const tell = (event, info) => { for (const fn of accountListeners) { try { fn(event, info); } catch (err) { debug(`llm gate: account listener failed (${err.message})`); } } };
+  /** The account answered quota or auth: every request would fail the same way until he does something. */
+  function hold(p, rec, o, t) {
+    if (p.held?.kind === o.kind) return;
+    p.held = { kind: o.kind, code: o.code, message: o.message, at: t, until: o.retryAfterMs ? t + o.retryAfterMs : 0 };
+    info(`${p.name}: ${o.kind} (${o.code}: ${o.message}); background requests are not sent until a request of hers or his goes through`);
+    note('account-held', { provider: p.name, kind: o.kind, code: o.code, class: rec.cls, until: p.held.until ? new Date(p.held.until).toISOString() : undefined });
+    tell('held', { provider: p.name, ...p.held });
+  }
+  function resume(p, why, t) {
+    const was = p.held;
+    if (!was) return;
+    p.held = null;
+    info(`${p.name}: ${was.kind} over (${why}); background requests resume`);
+    note('account-resumed', { provider: p.name, kind: was.kind, why, afterMs: t - was.at, refused: p.heldOff });
+    tell('resumed', { provider: p.name, kind: was.kind, why });
+  }
+  /** A background request while the account is held: ended at once, never sent (null: let it through). */
+  function refuse(options) {
+    const p = providers.get(String(options?.provider ?? '?'));
+    if (!p?.held || classify(options) !== 'background') return null;
+    const t = now();
+    if (p.held.until && t >= p.held.until) { resume(p, 'retry-after', t); return null; }
+    p.heldOff++;
+    const failure = { code: p.held.code, message: `not sent: the account is held (${p.held.kind}) since ${stamp(p.held.at)} — ${p.held.message}`, held: true };
+    return (async function* refused() { yield { type: 'finish', reason: { kind: 'error', failure } }; })();
+  }
+
   /** The request ended: `reason` is its finish chunk's reason, or null (stopped early, thrown). */
   function finish(rec, reason) {
     const p = rec.p, t = now();
     refresh(p, t);
     if (rec.cls === 'foreground' && rec.started) { p.fg.delete(rec); p.fgLastEnd = t; }
     rec.started = false;
-    if (reason?.kind === 'error' && reason.failure?.code === 'RATE_LIMIT') hit(p, rec, reason.failure, t);
+    const o = reason?.kind === 'error' ? outcomeOf(reason) : null;
+    if (o?.kind === 'rate-limit') hit(p, rec, reason.failure, t);
     else if (rec.session && reason) limits.delete(`${p.name}\0${rec.session}`);
+    if (o && ACCOUNT_KINDS.has(o.kind) && !o.held) hold(p, rec, o, t);
+    else if (p.held && rec.cls === 'foreground' && ['stop', 'tool-calls', 'max-tokens'].includes(reason?.kind)) resume(p, 'a request went through', t);
     pump(p);
   }
 
@@ -414,6 +450,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
           note('say-request', { systemChars: sys.length, systemSha: createHash('sha256').update(sys).digest('hex').slice(0, 12), tools: Array.isArray(options.tools) ? options.tools.length : 0, roles: options.messages.map((m) => m.role).join(','), userChars: options.messages.reduce((n, m) => n + (Array.isArray(m.content) ? m.content.reduce((k, c) => k + String(c?.text ?? '').length, 0) : String(m.content ?? '').length), 0) });
         }
       } catch { /* never in the way */ }
+      try { const refused = refuse(options); if (refused) return refused; } catch (err) { debug(`llm gate: ${err.message}; request let through`); }
       let booked;
       try { booked = begin(options); } catch (err) { debug(`llm gate: ${err.message}; request let through`); return next(); }
       const { rec, wait } = booked;
@@ -430,6 +467,8 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
       })();
     },
     classify,
+    /** Be told when an account is held ('held', { provider, kind, code, message, at, until }) and when it is over ('resumed', { provider, kind, why }); returns the remover. */
+    onAccount(fn) { accountListeners.add(fn); return () => accountListeners.delete(fn); },
     /** Register which sessions are background (a predicate on the session id); returns the remover. */
     backgroundSessions(name, test) {
       sessionTests.set(name, test);
@@ -442,7 +481,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
         workEffort: cfg.workEffort, pacing, backgroundRpm: cfg.backgroundRpm, quietSeconds: cfg.quietMs / 1000, maxWaitSeconds: cfg.maxWaitMs / 1000, holdRetries: cfg.holdRetries,
         providers: [...providers.values()].map((p) => {
           try { refresh(p, t); } catch { /* status only */ }
-          return { provider: p.name, effort: { ...p.effort }, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fg.size, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries };
+          return { provider: p.name, effort: { ...p.effort }, lastMinute: p.starts.length, backgroundLastMinute: p.bgStarts.length, cap: p.cap, coolingUntil: p.coolingUntil || null, waiting: p.queue.length, foregroundInFlight: p.fg.size, delayed: p.delayed, rateLimited: p.rateLimited, heldRetries: p.heldRetries, held: p.held ? { kind: p.held.kind, code: p.held.code, since: p.held.at, until: p.held.until || null } : null, heldOff: p.heldOff };
         }),
       };
     },
@@ -462,7 +501,7 @@ export function createGate({ config = {}, now = Date.now, setTimer = setTimeout,
 export function statusLine(st) {
   if (!st) return 'model requests: gate not installed';
   const head = st.pacing ? `background ≤${st.backgroundRpm}/min, waits ${st.quietSeconds} s after yours, ≤${st.maxWaitSeconds} s` : 'pacing off (llm.backgroundRpm 0)';
-  const per = st.providers.map((p) => `${p.provider} ${p.lastMinute}/min (bg cap ${p.cap}${p.coolingUntil ? `, cooling until ${new Date(p.coolingUntil).toTimeString().slice(0, 8)}` : ''}${p.waiting ? `, ${p.waiting} waiting` : ''}, ${p.delayed} delayed, ${p.rateLimited}×429${p.heldRetries ? `, ${p.heldRetries} retries held` : ''}${p.effort?.foreground || p.effort?.background ? `; thinking: chat ${p.effort.foreground ?? '—'}, background ${p.effort.background ?? '—'}` : ''})`);
+  const per = st.providers.map((p) => `${p.provider} ${p.lastMinute}/min (bg cap ${p.cap}${p.coolingUntil ? `, cooling until ${new Date(p.coolingUntil).toTimeString().slice(0, 8)}` : ''}${p.waiting ? `, ${p.waiting} waiting` : ''}, ${p.delayed} delayed, ${p.rateLimited}×429${p.heldRetries ? `, ${p.heldRetries} retries held` : ''}${p.held ? `, account ${p.held.kind} since ${new Date(p.held.since).toTimeString().slice(0, 8)}: background not sent (${p.heldOff})` : ''}${p.effort?.foreground || p.effort?.background ? `; thinking: chat ${p.effort.foreground ?? '—'}, background ${p.effort.background ?? '—'}` : ''})`);
   return `model requests: ${per.join(' · ') || 'none yet'} — ${head}`;
 }
 
