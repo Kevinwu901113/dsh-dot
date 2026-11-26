@@ -42,8 +42,8 @@
 | `identityFile` | 无 | 追加到 Canon 后面的文本文件 |
 | `idleMinutes` | `30` | 他上一句话（或她的一天开始）之后安静这么久，来一次自己的时间；`later` 最短也是这么久 |
 | `freeTimesPerDay` | `2` | 每天最多几次自己的时间（`/interlude free` 不算），`0` 关；需要 dot 组件 |
-| `freeTokenCap` / `freeDailyTokens` | `150000` / `300000` | 每次 / 每天的 token 上限 |
-| `price` | `null` | `{ in, cached, out }` 元 / 百万 token |
+| `freeTokenCap` / `freeDailyTokens` | `100000` / `200000` | 每次 / 每天的折算 token 上限（见 [SETTINGS.md](SETTINGS.md)「花费怎么算」） |
+| `price` | `null` | 你自己的价格 `{ in, cached, out }` 元 / 百万 token，代替内置价目表；她的账上也就有钱数 |
 | `maxTokens`、`imBot` / `imTarget` | | 不再读取：这个组件现在不自己调模型，也不自己往 IM 发 |
 
 ## 文件

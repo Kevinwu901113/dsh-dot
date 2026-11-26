@@ -66,7 +66,7 @@ dsh-dot 的所有个人设置都写在**一个文件**里：
 | 回复不拆条、不模拟打字 | `qq.typingMsPerChar: 0` | |
 | 发 QQ 的审批松紧 | `qq.sendPolicy`：`reply`（默认）/ `always` / `off` | |
 | 她自己的时间多久来一次 | `interlude.idleMinutes`（你上一句话、或她的一天开始之后安静多久来一次，默认 30）、`interlude.freeTimesPerDay`（每天最多几次，默认 2，`0` 关） | 来过一次就要等你再找她、或第二天；她可以在那段时间里自己留一个「下次」（`later`）。她自己做的事不推迟它 |
-| 省 token | `interlude.freeTokenCap` / `freeDailyTokens`（自己的时间每次 / 每天的上限，她的手替她做的事算在里面）、`dot.thingCostCap`（一件事花到多少就停下问你）、`memory.handoffTokens`（交班阈值，默认 60000） | 每天的用量在 dot 面板；记忆的调用在 `~/dot/memory/calls.jsonl` |
+| 省 token | `interlude.freeTokenCap` / `freeDailyTokens`（自己的时间每次 / 每天的上限，她的手替她做的事算在里面）、`dot.thingCostCap`（一件事花到多少就停下问你）、`memory.handoffTokens`（交班阈值，默认 60000） | 三个上限的单位都是**折算 token**（见下「花费怎么算」）。每天的用量在 dot 面板，按官方价估的钱数在旁边；记忆的调用在 `~/dot/memory/calls.jsonl` |
 | 模型额度用完 / API key 失效 | 不用设：插件用自己的名义告诉你一次是哪一种（不是「她出错了」），后台的请求（整理记忆、写经验、她自己的事）先不发，直到有一次请求成功、或提供方给的恢复时间到了 | 充值或改好 key 以后给她发一句话就接着。同一类出错提示 `dot.failureNoticeMs`（10 分钟）内只发一次 |
 | 和别的记忆插件一起用 | `memory.coexist`：`auto`（默认）/ `people-only` / `full` | |
 | **和她聊天时报 429 / `rate limit reached for RPM`** | `llm.backgroundRpm` 调小（默认 20，她后台的请求每分钟最多几次；你们的对话不受限） | 被限流后闸门自己会减半、冷却，`/dot` 有一行「model requests」看近一分钟的请求数 |
@@ -184,6 +184,23 @@ setx DSH_DOT_COMPUTER off
 | `facts` | `true` | 事实条（memory.md）：整理时把以后用得上的事各写成一句话，他叫醒她时挑出用得上的几条给她看；`false` 或环境变量 `DSH_DOT_FACTS=off` 关掉 |
 | `factsShown` / `factsPicked` / `factsWaitMs` | `60` / `6` / `8000` | 挑的那次调用读多少条；最多几条进她的提示词；提示词拼装最多等它多久 |
 
+### 花费怎么算
+
+一次模型调用的花费由 `src/price.js` 算，一件事、自己的时间、面板和 `/dot` 用的是同一个算法：
+
+- **钱**：按调用时的官方价。内置的价目表只有一行，DeepSeek 官方的 `deepseek-flash`（DeepSeek-V4.1-Flash，provider `deepseek-account` 或 `deepseek`），元/百万 token：
+
+  | | 空闲时段 | 高峰时段 |
+  |---|---|---|
+  | 输入，缓存命中 | 0.02 | 0.04 |
+  | 输入，缓存未命中 | 1.00 | 2.00 |
+  | 输出（含思考） | 4.00 | 8.00 |
+
+  高峰时段是北京时间周一至周五 9:00–12:00、14:00–18:00，其余（含周末）是空闲。落在工作日的法定节假日这里不认得，按高峰算（只会多估）。面板和 `/dot` 上的钱数标着「按官方价估」，是按这张表算的，不是账单。
+- **折算 token**：同一次调用按**空闲价**、以「缓存未命中的输入」为 1 折算的数：缓存命中 0.02、输出 4。它不随时段变，所以 `dot.thingCostCap`、`interlude.freeTokenCap` / `freeDailyTokens` 用它：同样的活在上午和晚上停在同一个地方。100 万折算 token = 空闲时段 1 元、高峰时段 2 元（三样价格高峰都正好翻倍）。
+- **表里没有的模型**（也没设 `interlude.price`）：每个 token 都算 1（缓存不打折），不显示钱数；日志里说一次，`/dot` 一直有一行写着这个模型没有价格。
+- 0.25.2 以前缓存命中按 0.1、输出按 1 算：缓存多算了 5 倍、输出少算了 4 倍。上限的名字和单位名都没变，你在 `dsh-dot.json` 里自己写过的值照新的算法解释，不换算（两种算法之比看这件事里缓存和输出各占多少，换不准）：缓存占大头的活（一般都是）同一个数现在放过的钱约是以前的 1.3–2 倍，输出占得多的少一些。默认值已经按这个重新定过（见 DESIGN.md「11-26 补：按实际花费计」）；想按钱定上限，用上面「100 万 ≈ 空闲 1 元」来定。
+
 ### `interlude`
 
 | 键 | 默认 | 作用 |
@@ -191,8 +208,8 @@ setx DSH_DOT_COMPUTER off
 | `enabled` | `true` | `false` 关掉 |
 | `home` | `~/dot` | 和另外两处保持一致 |
 | `idleMinutes` | `30` | 他上一句话（或她的一天开始）之后安静这么久，来一次「自己的时间」；她自己做的事不推迟它 |
-| `price` | `null` | `{ in, cached, out }` 元/百万 token；给了她的账上就有钱数 |
-| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `150000` / `300000` | 「自己的时间」：每天最多几次（`/interlude free` 不算）、每次和每天的 token 上限（她的手替她做的事算在里面，到了上限这一轮停、手在这件事上的下一步也被拒）；`0` 次关 |
+| `price` | `null` | 你自己的价格 `{ in, cached, out }` 元/百万 token（`cached` 不写按 `in` 算）：给了就代替内置价目表，用于所有模型、所有时段（不分高峰），三个上限的折算也跟着它（以 `in` 为 1）；她的账上也就有钱数。`null`：用内置的 DeepSeek 官方价，她的账上只有 token 数（见下「花费怎么算」） |
+| `freeTimesPerDay` / `freeTokenCap` / `freeDailyTokens` | `2` / `100000` / `200000` | 「自己的时间」：每天最多几次（`/interlude free` 不算）、每次和每天的折算 token 上限（她的手替她做的事算在里面，到了上限这一轮停、手在这件事上的下一步也被拒）；`0` 次关。10 万 ≈ 空闲时段 0.1 元 |
 | `presetHub` | `https://typ0.space` | HDSI 预设站 |
 
 ### `dot`
@@ -208,7 +225,7 @@ setx DSH_DOT_COMPUTER off
 | `lean` | `true` | 她的新对话用插件自带的 `dot` 预设来建（第一次开、每次交接）：宿主的工具只带读写自己的文件、定时、目标（查资料交给手：`hands` 的 `device: web`）；加上插件自己的 `hands`、`say`、`his_ok`、`qq_sticker_keep`、`memory`、`recall`、`later` 和她 QQ 的 action。提示词也只留插件为她写的几段。已有的对话不变（预设是建会话时定的）；想马上换：`/dot memory handoff`。宿主不认这个预设时照旧建会话 |
 | `nightcheck` | `true` | 她睡着时把手艺簿对着记账核对一遍并照着改（教训里的原因推测去掉、和后来记录对不上的去掉；改之前的原样留在 `~/dot/her/howto/_nightcheck.json`）。`false`：只在 `/dot nightcheck` 时核对，`/dot nightcheck apply` 才改 |
 | `howto` / `howtoMinSteps` / `howtoMaxChars` | `true` / `12` / `800` | 手艺簿（`~/dot/her/howto/`）：她的手做一件事时按地方（手机本身、各个 App、电脑）记步数，一件事结束按地方各记一行（步数、错、记账里的结果、用时、花费）；出过错、没做成或太久、或步数明显比平常多（≥ `howtoMinSteps`）的地方，一次小调用重写那里的笔记（教训、捷径，≤ `howtoMaxChars` 字），并给这件事起个短名，好看同一件事是不是越做越快、越省。一件事里第一次到某个地方，那里的笔记跟着给手。`/dot howto [<地方>]` 看 |
-| `thingCostCap` | `1500000` | 一件事花到这么多 token（缓存命中按十分之一算）就停下，变成一件要你点头的事（「还要接着做吗」）；0 = 不管 |
+| `thingCostCap` | `1000000` | 一件事花到这么多折算 token 就停下，变成一件要你点头的事（「还要接着做吗」）；0 = 不管。100 万 ≈ 空闲时段 1 元、高峰时段 2 元 |
 | `handsStuckHoldMs` | `1800000` | 一件事停在要人来的地方，手机这么久不回桌面（屏幕留着，接着做时还在那一页） |
 | `ackHoldMs` | `15000` | 你的话让她去做一件事时，回你之前等多久：到点时你要的事都做完了，就只回一次、带着结果；还在做，就先说一声在弄；这期间你又说话，就不单独回 |
 | `sayDetailChars` | `800` | 一件事做完，替她说话那次调用拿到的细节（手在 `done` 里写的 `detail`）最多多少字；结果只从事情簿来，她自己那句话只写看法 |

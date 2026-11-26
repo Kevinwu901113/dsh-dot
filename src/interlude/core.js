@@ -68,7 +68,7 @@ export const defaults = {
   // budget, which ends the turn when it runs out; what her hands do for her in it counts against the same budget.
   freeTimesPerDay: 2,         // at most this many a day; 0 = off; needs dsh-dot
   // In 折算 token (src/price.js: a million is ¥1 at idle prices, ¥2 at DeepSeek's peak hours); 150k / 300k under the
-  // old weights were about ¥0.07–0.12 / ¥0.14–0.23 at idle prices (docs/DESIGN.md, 11-26 补「按实际花费计」).
+  // old weights were about ¥0.05–0.12 / ¥0.10–0.23 at idle prices (docs/DESIGN.md, 11-26 补「按实际花费计」).
   freeTokenCap: 100000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
   freeDailyTokens: 200000,    // all free time in a day
   imBot: '',
