@@ -5,6 +5,7 @@
 import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { checkReply } from '../persona/card.js';
+import { saysHowToTalk } from '../persona/parts.js';
 import { callModel } from '../llm-call.js';
 import { prompt } from '../prompts.js';
 import { ago } from '../clock.js';
@@ -131,6 +132,11 @@ export function createVoice(dot) {
     check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
     unread: (to) => to === 'owner' && readFirst(dot.arrive.hisUnread()) === 'gave-way',
     lines: cfg.sayLines,
+    // How she talks comes from her card alone; only a card that does not say gets the plugin's few lines after it.
+    style: () => { try { return saysHowToTalk(ctx.get('dshInterlude')?.cardText?.() ?? '') ? '' : prompt('dot.say.style'); } catch { return ''; } },
+    // How she answered him before on the same kind of thing (memory.js sayings): dot.sayPast of them, 0 = none.
+    past: async (q, o) => { const n = Number(cfg.sayPast) || 0; if (!n) return []; return (await ctx.get('dotMemory')?.sayings?.(q, { ...o, n })) ?? []; },
+    pastWaitMs: cfg.sayPastWaitMs,
     audit: (event, data) => audit(event, { session: sessions.last(), ...data }),
     send: (m) => outlet.send(m),
   });

@@ -17,7 +17,7 @@ test('say: what the call wrote is what goes out — lines, stickers she has, fac
 
 test('say: the one message the call is given — her stickers first, the conversation as it went, what is in her hands, what she knows', () => {
   const text = sayInput({ dialogue: [{ who: 'owner', text: '开机' }, { who: 'her', text: '醒啦\n我在呢' }, { who: 'owner', text: '在干嘛呀' }], stickers: [{ id: '31d44003ce', note: '开心猫' }], facts: ['你手上没有在做的事，这一轮也没有开始做任何事'], about: '刚把余额提醒脚本写好了' });
-  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息。说多少、怎么说，你自己看场合[^\n]*不想回就只写 \[不回\]。）$/);
+  assert.match(text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫。要发就单独一行写 \[表情包 sticker:编号\]。QQ 小表情单独一行写 \[face:编号\]：14 微笑[^\n]*）\n\n（你和他在 QQ 上刚才的对话，最后一句是他刚发的）\n他：开机\n你：醒啦 \/ 我在呢\n他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息，照你平时跟他说话的样子。[^\n]*不想回就只写 \[不回\]。）$/);
   assert.match(sayInput({ stickers: [], facts: ['x'] }), /^（你的表情包夹现在是空的。/);
   assert.doesNotMatch(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'] }), /你自己想说的意思/, 'nothing to tell: no such line');
   assert.match(sayInput({ dialogue: [{ who: 'owner', text: '好' }], stickers: [], facts: ['x'], unprompted: true }), /（你和他在 QQ 上最近的对话）[\s\S]*（他这会儿没说话，是你有事要告诉他。/);
@@ -135,4 +135,35 @@ test('a report from the book is said from its sentences, not from the conversati
   const once = mk(['发了，16:50 发的', '去弄了']);
   await once.say.speak({ plan });
   assert.deepEqual(once.sent, ['去弄了']);
+});
+
+test('say: how she answered him before goes in as a look, found by his last words, from before what she is shown; late or failing, she speaks without it', async () => {
+  const text = sayInput({ dialogue: [{ who: 'owner', text: '好困啊' }], stickers: [], facts: ['x'], past: [{ his: '困死了', her: '那就去睡 / 别硬撑' }, { his: '', her: '没他的不算' }] });
+  assert.match(text, /（以前聊到差不多的事，你是这么回他的。只看你当时怎么说，不照抄[^\n]*\n他：困死了\n你：那就去睡 \/ 别硬撑）\n\n（你和他在 QQ 上刚才的对话/);
+  assert.doesNotMatch(sayInput({ about: 'x', where: '评论框', past: [{ his: 'a', her: 'b' }] }), /以前聊到/, 'not for words typed somewhere else');
+  const asked = [];
+  const make = (past, extra = {}) => {
+    const calls = [];
+    const say = createSay({
+      card: () => '# 你是 小点', call: async (o) => { calls.push(o); return '嗯'; },
+      recent: () => [{ who: 'owner', text: '搬家', at: 100 }, { who: 'her', text: '搬去哪', at: 200 }, { who: 'owner', text: '好累啊今天', at: 300 }],
+      stickers: () => [], check: (t) => ({ lines: [t], hits: [] }), send: async (m) => ({ said: [m.text] }), past, ...extra,
+    });
+    return { say, calls };
+  };
+  const a = make(async (q, o) => { asked.push([q, o.before]); return [{ his: '累', her: '那歇会儿' }]; });
+  await a.say.speak({ facts: ['x'] });
+  assert.deepEqual(asked, [['好累啊今天', 100]]);
+  assert.match(a.calls[0].text, /他：累\n你：那歇会儿/);
+  assert.equal(a.calls[0].system, '# 你是 小点', 'the card stays the whole system');
+  const late = make(() => new Promise((r) => setTimeout(() => r([{ his: '累', her: '晚了' }]), 200)), { pastWaitMs: 20 });
+  assert.equal((await late.say.speak({ facts: ['x'] })).status, 'said');
+  assert.doesNotMatch(late.calls[0].text, /以前聊到/);
+  const broken = make(async () => { throw new Error('index gone'); });
+  assert.equal((await broken.say.speak({ facts: ['x'] })).status, 'said');
+  assert.doesNotMatch(broken.calls[0].text, /以前聊到/);
+  // a card that does not say how she talks gets the plugin's lines after it; one that does, nothing
+  const styled = make(async () => [], { style: () => '## 怎么说话\n一两句' });
+  await styled.say.speak({ facts: ['x'] });
+  assert.equal(styled.calls[0].system, '# 你是 小点\n\n## 怎么说话\n一两句');
 });

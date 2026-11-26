@@ -75,6 +75,8 @@ export const SCHEMA = [
   e('dot', 'thingCostCap', 'dot', 'int', 'restart-dsh', '一件事花到这么多折算 token 就停下问你要不要接着做（以 DeepSeek 空闲时段的未命中输入为 1：缓存命中 0.02、输出 4；100 万 ≈ 空闲 1 元、高峰 2 元；0 = 不管）', { min: 0 }),
   e('dot', 'ackHoldMs', 'dot', 'int', 'restart-dsh', '你的话让她去做一件事时，回你之前等多久：这之前做完的，只回一次、带着结果（毫秒，0 = 马上回）', { min: 0, max: 120000 }),
   e('dot', 'sayDetailChars', 'dot', 'int', 'restart-dsh', '一件事做完，替她说话那次调用拿到的细节最多多少字（结果只从事情簿来）', { min: 0, max: 4000 }),
+  e('dot', 'sayPast', 'dot', 'int', 'restart-dsh', '替她说话那次调用看几段以前聊到差不多的事时她是怎么回的（按他最后一句话找；0 = 不看）', { min: 0, max: 12 }),
+  e('dot', 'sayPastWaitMs', 'dot', 'int', 'restart-dsh', '找以前那几段最多等多久（毫秒），到点没找到就不带', { min: 0, max: 10000 }),
   e('dot', 'sameErrorNudge', 'dot', 'int', 'restart-dsh', '她的手连着碰到同一个错这么多次，提醒它换办法或照实收尾（没做到）；0 = 不提醒', { min: 0, max: 50 }),
   e('dot', 'sameErrorStop', 'dot', 'int', 'restart-dsh', '连着碰到同一个错这么多次，这件事由代码停下、记为没做成；0 = 不停', { min: 0, max: 100 }),
   e('dot', 'replayKeep', 'dot', 'int', 'restart-dsh', '留下她对话最近几次发给模型的完整请求，供 /dot replay 重放（存在 ~/.dsh/dot-replay/decide/；含对话全文；0 = 不留）', { min: 0, max: 500 }),

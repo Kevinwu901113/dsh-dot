@@ -34,7 +34,7 @@ function harness(cfg = {}, state = { lastSession: 's1' }) {
       stream: (o) => (async function* () { llmCalls.push(o); yield { type: 'text-delta', text: replies.shift() ?? '好' }; yield { type: 'finish', reason: { kind: 'stop' } }; })(),
     },
     agentDefaultModel: { currentSelection: () => ({ provider: 'deepseek-account', model: 'deepseek-flash', reasoningEffort: 'low' }) },
-    dshInterlude: { cardText: () => '# 你是 小点\n话不多。', checks: () => [] },
+    dshInterlude: { cardText: () => '# 你是 小点\n## 怎么说话\n话不多。', checks: () => [] },
     dotMemory: { recent: () => [{ who: 'owner', text: '在干嘛呀' }], herSaid: (x) => herSaid.push(x) },
     dshQq: { connected: true, owner: '20002', onMessage: (fn) => { services.qqMessage = fn; return () => {}; }, onTyping: () => () => {}, stickerList: () => [{ id: '31d44003ce', note: '开心猫' }], send: async (to, t, images) => { qqSent.push([to, t, images]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: images ?? [] }; } },
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },
@@ -189,7 +189,7 @@ test('what she writes in her conversation goes to no one; what she says is writt
   assert.deepEqual([r.status, r.said], ['said', ['在整你交代的那个余额的事']]);
   assert.deepEqual(h.qqSent, [['owner', '在整你交代的那个余额的事', ['sticker:31d44003ce']]]);
   const call = h.llmCalls[0];
-  assert.equal(call.system, '# 你是 小点\n话不多。', 'the system prompt is her card and nothing else');
+  assert.equal(call.system, '# 你是 小点\n## 怎么说话\n话不多。', 'the system prompt is her card and nothing else');
   assert.ok(!('tools' in call) && call.reasoningEffort === 'off' && !('sessionId' in call), 'no tools, no thinking, nobody\'s session');
   assert.match(call.messages[0].content[0].text, /^（你的表情包夹里现在有：sticker:31d44003ce 开心猫[\s\S]*他：在干嘛呀\n\n（你手上没有在做的事，这一轮也没有开始做任何事）\n（你自己想说的意思：刚把余额提醒脚本写好了）\n（下面写你这次发给他的消息/);
   assert.match(h.shown('say', r), /^说出去了：\n在整你交代的那个余额的事\n\[sticker:31d44003ce\]$/);
@@ -220,7 +220,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   await tick(30);
   assert.deepEqual(h.qqSent, [['owner', '醒着呢', []]]);
   assert.match(fed(0), /（你手上没有在做的事，这一轮也没有开始做任何事）\n（下面写你这次发给他的消息/);
-  assert.equal(h.llmCalls[0].system, '# 你是 小点\n话不多。');
+  assert.equal(h.llmCalls[0].system, '# 你是 小点\n## 怎么说话\n话不多。');
   assert.equal(her.noted.length, 0, 'nothing is put into her conversation for it');
   // she says she will go and do it, and gives her hands nothing: the voice is told nothing was begun
   h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '吃饭去了' }] });

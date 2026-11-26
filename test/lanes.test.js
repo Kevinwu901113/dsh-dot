@@ -122,7 +122,7 @@ function coreHarness(cfg = {}) {
     workspaceRegistry: { archiveSession: async () => {} },
     llm: { resolveCallConfig: async (c) => c, stream: () => (async function* () { yield { type: 'text-delta', text: '好' }; yield { type: 'finish', reason: { kind: 'stop' } }; })() },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm', reasoningEffort: 'low' }) },
-    dshInterlude: { cardText: () => '# 你是 小点\n话不多。', checks: () => [] },
+    dshInterlude: { cardText: () => '# 你是 小点\n## 怎么说话\n话不多。', checks: () => [] },
     dotMemory: { recent: () => [], herSaid: () => {} },
     dshQq: { connected: true, owner: '20002', onMessage: () => () => {}, onTyping: () => () => {}, stickerList: () => [], send: async (to, t) => ({ sent: 1, said: String(t).split('\n').filter(Boolean), images: [] }) },
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },

@@ -16,6 +16,10 @@ export const PARTS_DIR = 'persona';
 const LIST = 'parts.json';
 /** Headings that are about speaking; everything else is who she is. */
 const VOICE = [[/怎么说话|说话方式|语气|口吻/, 'voice.md'], [/说话的样子|例句|示例|对话示例/, 'examples.md']];
+/** Does a card say how she talks: a `## ` heading about speaking (a canon's 回复规则 counts). */
+export function saysHowToTalk(card) {
+  return String(card ?? '').split('\n').some((l) => { const h = /^##\s+(.*)$/.exec(l); return h && (VOICE[0][0].test(h[1]) || /回复规则/.test(h[1])); });
+}
 const DEFAULT_FOR = { 'who.md': ['decide', 'say'], 'voice.md': ['say'], 'examples.md': ['say'] };
 const read = (file) => { try { return readFileSync(file, 'utf8').replace(/^﻿/, '').replace(/\r\n/g, '\n').trim(); } catch { return ''; } };
 const mtime = (file) => { try { return statSync(file).mtimeMs; } catch { return 0; } };

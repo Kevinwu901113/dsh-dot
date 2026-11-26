@@ -112,6 +112,10 @@ export const defaults = {
   sameErrorNudge: 3, // her hands hit the same error this many times in a row: told to change course or end it (not reached)
   sameErrorStop: 6,  // … this many: the code ends the thing as failed (same-error); 0 = never // a thing's details as the voice gets them (the book is where results come from; her own words carry her stance)
   sayLines: 12,
+  // … and how many exchanges of long ago on the same kind of thing (how she answered him then: memory.js sayings), found
+  // by his last words and waited for at most sayPastWaitMs. 0 = none.
+  sayPast: 4,
+  sayPastWaitMs: 1500,
   // She wrote to him unasked and he has not answered for this long: noted once in her conversation, as a fact. 0 = never.
   reachUnansweredMs: 2 * 3600000,
   interludeQueueMax: 3,        // queued past this, the oldest is dropped

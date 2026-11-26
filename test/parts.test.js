@@ -36,3 +36,11 @@ test('parts: the card is cut by its headings; who she is goes to both, how she t
   // no card at all: nothing (the caller renders the canon as before)
   assert.equal(cardFor(mkdtempSync(join(tmpdir(), 'parts-')), 'say', ''), '');
 });
+
+test('parts: a card says how she talks when it has a heading for it', async () => {
+  const { saysHowToTalk } = await import('../src/persona/parts.js');
+  assert.equal(saysHowToTalk('# 你是 木槿\n## 怎么说话\n1. 一条一行'), true);
+  assert.equal(saysHowToTalk('# 你是 小点\n## 回复规则\n一句话一行'), true);
+  assert.equal(saysHowToTalk('# 你是 小点\n## 角色设定\n话少\n说话方式写在这里也不算标题'), false);
+  assert.equal(saysHowToTalk(''), false);
+});

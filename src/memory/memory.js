@@ -853,12 +853,54 @@ export function apply(ctx, config = {}) {
     }), 'dsh-dot/memory: recall tool');
   });
 
+  // An exchange as recall keeps it ("[date] 他：…\n我：…"): his lines and her lines to him (not to anyone else).
+  const exchangeOf = (text, maxChars) => {
+    const rows = String(text ?? '').replace(/^\[[^\]]*\]\s*/, '').split('\n');
+    const his = rows.filter((x) => x.startsWith('他：')).map((x) => x.slice(2).trim()).filter(Boolean).join(' / ');
+    const her = rows.filter((x) => x.startsWith('我：')).map((x) => x.slice(2).trim()).filter(Boolean).join(' / ');
+    const cut = (x) => (x.length > maxChars ? `${x.slice(0, maxChars)}…` : x);
+    return his && her ? { his: cut(his), her: cut(her) } : null;
+  };
+  // Did he go on after her answer in the exchange that begins at `at`: his next words within half an hour of her last.
+  const wentOn = (at) => {
+    let i = 0, hi = lines.length;
+    while (i < hi) { const m = (i + hi) >> 1; if (lines[m].at < at) i = m + 1; else hi = m; }
+    let herAt = 0;
+    for (let k = 0; i < lines.length && k < 200; i++, k++) {
+      const l = lines[i];
+      if (l.who === 'her' && (!l.to || l.to === 'owner')) herAt = l.at;
+      else if (l.who === 'owner' && herAt) return l.at - herAt <= 30 * 60000;
+    }
+    return false;
+  };
+
   // ── the service: dot touches people from real events and shows their cards when they wake her ──
   const api = {
     /** What she said that reached him, as dot delivered it (a QQ turn's answer: the bubbles that went out). */
     /** The last lines between her and him, oldest first: [{ who: 'owner' | 'her', text, at }] — what was said, as it went out. */
     recent(n = 12, { withinMs = 12 * 3600000, now = Date.now() } = {}) {
       return lines.filter((l) => (l.who === 'owner' || (l.who === 'her' && (!l.to || l.to === 'owner'))) && now - l.at <= withinMs).slice(-n).map((l) => ({ who: l.who, text: l.text, at: l.at }));
+    },
+    /**
+     * Exchanges of long ago that bear on `q`, as they went: [{ his, her, at }] — what he said, what she answered him.
+     * For the call that writes what she says (say.js): how she put it back then, not what was said (the dialogue it
+     * is given is the last lines; anything from `before` on is in it already). Only an exchange he went on from
+     * — he wrote again within half an hour of her answer — is one she said well enough to look at again; best
+     * match first, at most `n`, each side clipped to `maxChars`. Recall off, nothing found, or a failure: [].
+     */
+    async sayings(q, { n = 4, before = Infinity, maxChars = 200 } = {}) {
+      if (!(n > 0) || !String(q ?? '').trim()) return [];
+      let r;
+      try { r = await recall.query(q, { session: '\u0000say', record: false, whole: true }); } catch { return []; }
+      const out = [];
+      for (const h of [...(r?.hits ?? [])].sort((a, b) => b.score - a.score)) {
+        if (!(h.at < before)) continue;
+        const ex = exchangeOf(h.text, maxChars);
+        if (!ex || !wentOn(h.at)) continue;
+        out.push({ ...ex, at: h.at });
+        if (out.length >= n) break;
+      }
+      return out;
     },
     herSaid({ session, text, at, to }) {
       if (!String(text ?? '').trim()) return;

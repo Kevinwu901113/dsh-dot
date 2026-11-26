@@ -77,9 +77,12 @@ export function tidy(parsed) {
   return { lines, images, silent: parsed.silent || (!lines.length && !images.length) };
 }
 
-export function sayInput({ dialogue = [], stickers = null, facts = [], about = '', where = '', unprompted = false } = {}) {
+export function sayInput({ dialogue = [], stickers = null, facts = [], about = '', where = '', unprompted = false, past = [] } = {}) {
   const parts = [];
   if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((s) => `sticker:${s.id} ${s.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  // How she answered him before on the same kind of thing: hers to look at, not to copy (memory.js sayings).
+  const before = [].concat(past ?? []).filter((x) => x?.his && x?.her).map((x) => `他：${x.his}\n你：${x.her}`);
+  if (before.length && !where) parts.push(prompt('dot.say.past', { past: before.join('\n\n') }).trim());
   const said = dialogue.filter((l) => String(l.text ?? '').trim()).map((l) => `${l.who === 'her' ? '你' : '他'}：${String(l.text).replace(/\s*\n+\s*/g, ' / ')}`);
   if (said.length && !where) parts.push(`${prompt(unprompted ? 'dot.say.dialogue.unprompted' : 'dot.say.dialogue').trim()}\n${said.join('\n')}`);
   const notes = [];
@@ -161,13 +164,16 @@ export function parseLead(text, n) {
  * @param {(o: { system: string, text: string }) => Promise<string | { ok: boolean, text: string, outcome: object }>} deps.call - one model call: that
  *   system, that message, no tools → what it wrote, or the call itself (llm-call.js callModel) to read how it ended
  * @param {(n: number) => { who: string, text: string }[]} deps.recent - the last lines between her and him
+ * @param {(q: string, o: { before: number }) => Promise<{ his: string, her: string }[]>} [deps.past] - exchanges of long ago that bear on q, from before `before` (memory.js sayings)
+ * @param {number} [deps.pastWaitMs] - how long the call waits for them
+ * @param {string | (() => string)} [deps.style] - put after her card: how to talk, for a card that does not say
  * @param {() => string} deps.state - what is in her hands right now, as a line
  * @param {() => { id: string, note: string }[]} deps.stickers - the stickers she has
  * @param {(text: string) => { lines: string[], hits: string[] }} deps.check - her card's check of what she says
  * @param {(to: string) => boolean} deps.unread - has the one this goes to said something she has not read?
  * @param {(o: { to: string, text: string, images: string[] }) => Promise<{ said?: string[], images?: string[], interrupted?: boolean, unsent?: string[] }>} deps.send
  */
-export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12 }) {
+export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12, past = async () => [], pastWaitMs = 1500, style = '' }) {
   // What one call wrote. A call that brought back no words (the model returned nothing, or spent all of its output on
   // thinking) is not her choosing to say nothing — that is "[不回]", written: it is asked once more, and the second
   // time it is a failure (said to him as one, never recorded as her silence). Cut short with words in it: those words.
@@ -183,8 +189,11 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
   }
   /** Write it: the card and what is in front of her. A line the check catches is written once more; the second goes as it is. */
   async function write(input, { has, pictures, pre = (t) => t }) {
-    const system = String(card() ?? '').trim();
-    if (!system) throw new Error('no persona card');
+    const own = String(card() ?? '').trim();
+    if (!own) throw new Error('no persona card');
+    // How she talks is her card's (its 怎么说话 part). A card without one gets the plugin's few lines on it, after it.
+    const extra = typeof style === 'function' ? String(style() ?? '').trim() : String(style ?? '').trim();
+    const system = extra ? `${own}\n\n${extra}` : own;
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       const parsed = tidy(parseSaid(pre(await wrote(system, input)), { has, pictures }));
@@ -239,7 +248,21 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
             if (attempt === 1) { out = tidy(parseSaid(plan.must.join('\n'), { has, pictures: false })); audit('say-plain', { lines: out.lines.length }); }
           }
         } else {
-          const input = sayInput({ dialogue: his ? recent(historyLines) : [], stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted });
+          const dialogue = his ? recent(historyLines) : [];
+          // What she said to him back then on the same kind of thing: found by his last words (by what she has to say,
+          // when he has said nothing), from before the lines she is shown; waited for a short while, never for long.
+          let before = [];
+          if (his) {
+            const oldest = Math.min(...dialogue.map((l) => Number(l.at) || Infinity));
+            const q = unprompted ? about : ([...dialogue].reverse().find((l) => l.who === 'owner')?.text ?? about);
+            let timer;
+            before = await Promise.race([Promise.resolve().then(() => past(String(q ?? ''), { before: oldest })).catch(() => []), new Promise((r) => { timer = setTimeout(() => r(null), pastWaitMs); timer.unref?.(); })]);
+            clearTimeout(timer);
+            if (before !== null && !Array.isArray(before)) before = [];
+            if (before === null) { audit('say-past-late', { ms: pastWaitMs }); before = []; }
+            if (before.length) audit('say-past', { n: before.length });
+          }
+          const input = sayInput({ dialogue, stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted, past: before });
           out = await write(input, { has, pictures: true });
         }
         const pictures = [...out.images, ...[].concat(images ?? []).filter(Boolean)];

@@ -1271,3 +1271,22 @@ test('her conversation no longer fits the model: handed over at once, whatever i
   assert.deepEqual(h.archived, ['s1'], 'the one it made is not handed over again');
   assert.ok(h.audit.some((e) => e.event === 'handoff-skipped' && e.why === 'overflowed again'));
 });
+
+test('sayings: how she answered him before on the same kind of thing — only exchanges he went on from, older than what she is shown', async () => {
+  const h = harness({ recall: true });
+  apply(h.ctx, { home: h.home, consolidateEveryLines: 1000, recallEmbedder: h.recallEmbedder, recallMinQueryLength: 0 });
+  const mem = h.services.dotMemory;
+  const his = (text) => h.emit('s0', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text }] }, { surfaceOp: 'append' });
+  const ats = [];
+  for (const [a, b] of [['下周六我搬家', '搬去哪'], ['搬到天河那边', '那挺近的 / 要帮忙吗'], ['搬家好累', '辛苦啦']]) {
+    ats.push(Date.now()); his(a); await wait(3); mem.herSaid({ session: 's0', text: b }); await wait(3);
+  }
+  await wait(10);
+  const got = await mem.sayings('搬家', { n: 4 });
+  assert.deepEqual(got.map((x) => [x.his, x.her]).sort(), [['下周六我搬家', '搬去哪'], ['搬到天河那边', '那挺近的 / 要帮忙吗']], 'the last one he did not go on from');
+  const older = await mem.sayings('搬家', { n: 4, before: ats[1] });
+  assert.deepEqual(older.map((x) => x.her), ['搬去哪'], 'what she is shown already is left out');
+  assert.deepEqual(await mem.sayings('搬家', { n: 0 }), []);
+  assert.deepEqual(await mem.sayings('', { n: 4 }), []);
+  for (const d of h.effects) if (typeof d === 'function') d();
+});

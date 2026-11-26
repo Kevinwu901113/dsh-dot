@@ -37,7 +37,7 @@ function harness(cfg = {}) {
     tokenMeter: { measure: () => ({ totalTokens: 1000 }) },
     llm: { resolveCallConfig: async (c) => c, stream: () => (async function* () { yield { type: 'text-delta', text: '在的' }; yield { type: 'finish', reason: { kind: 'stop' } }; })() },
     agentDefaultModel: { currentSelection: () => ({ provider: 'p', model: 'm', reasoningEffort: 'low' }) },
-    dshInterlude: { cardText: () => '# 你是 小点\n话不多。', checks: () => [] },
+    dshInterlude: { cardText: () => '# 你是 小点\n## 怎么说话\n话不多。', checks: () => [] },
     dshQq: { connected: true, owner: '20002', onMessage: (fn) => { services.qqMessage = fn; return () => {}; }, onTyping: () => () => {}, send: async (to, t) => { qqSent.push([to, t]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: [] }; } },
     dshComputer: { audit: (e) => audit.push(e), status: () => ({ state: 'ready' }), onStatus: () => () => {} },
   };
