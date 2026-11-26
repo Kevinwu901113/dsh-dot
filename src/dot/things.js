@@ -24,6 +24,8 @@ export const nameOf = (task) => titleOf(String(task ?? '').replace(/^（[^）]*�
 export const sameName = (a, b) => { const x = String(a ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(), y = String(b ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(); return x.length >= 2 && y.length >= 2 && (x.includes(y) || y.includes(x)); };
 // How long an ended thing stays in front of her, and owed to him while he has not heard how it ended.
 const ENDED_SHOWN_MS = 3600000;
+// QQ as the phone's app and as her own QQ's messages: the same people.
+const QQ_APPS = new Set(['qq', 'com.tencent.mobileqq', 'com.tencent.tim']);
 // The most lines of the book in front of her at once: one under way in each of the four places, and as many again of
 // what ended, waits or is asked. The note is sent with every arrival; past this many she is told how many more there are.
 export const THINGS_LINES_MAX = 8;
@@ -34,10 +36,19 @@ export const THINGS_LINES_MAX = 8;
  */
 export function createThings(dot) {
   const { audit } = dot;
-  const awaited = (now = Date.now()) => dot.ledger.recent(40).filter((e) => e.awaiting?.from && !e.awaiting.answeredAt && now < (e.awaiting.until ?? 0));
-  /** Is this message the answer a thing is waiting for? → the thing, marked answered, or null. */
+  // Read from what the book still owes (ledger.owed): no window of the last so many entries (it was 40) cuts one off.
+  const awaited = (now = Date.now()) => dot.ledger.owed().filter((e) => e.awaiting?.from && !e.awaiting.answeredAt && now < (e.awaiting.until ?? 0));
+  /**
+   * Is this message the answer a thing is waiting for? → the thing, marked answered, or null. By the name it was sent
+   * to, in the same app when the thing says which (`awaiting.app`). Two things waiting on the same name: neither is
+   * taken for answered — the message says it may be either (`maybe`), and which it answers is hers to see.
+   */
   const answerTo = (n) => {
-    const e = awaited().find((x) => sameName(x.awaiting.from, n?.name) || sameName(x.awaiting.from, conversationTitle(n?.title)));
+    const app = (x) => QQ_APPS.has(x) ? 'qq' : x;
+    const fits = awaited().filter((x) => (sameName(x.awaiting.from, n?.name) || sameName(x.awaiting.from, conversationTitle(n?.title)))
+      && (!x.awaiting.app || !n?.pkg || app(x.awaiting.app) === app(n.pkg)));
+    if (fits.length > 1) { audit('awaited-maybe', { things: fits.map((x) => x.id), from: fits[0].awaiting.from, pkg: n?.pkg ?? '' }); return { maybe: fits }; }
+    const e = fits[0];
     if (!e) return null;
     dot.ledger.note(e.id, { awaiting: { ...e.awaiting, answeredAt: Date.now(), text: head(String(n?.text ?? ''), 300) } });
     audit('awaited-answer', { thing: e.id, from: e.awaiting.from, pkg: n?.pkg ?? '', forHim: e.asker === 'him' });
@@ -50,11 +61,9 @@ export function createThings(dot) {
    * after he was told. Whichever turn of hers comes first — the one the result woke, or one of his words that the
    * result has not reached yet (11-24: a handoff held it 85 s) — has it in front of her, and its end tells him once.
    */
-  const owedToHim = (now = Date.now()) => {
-    const recent = dot.ledger.recent(20), takenUp = new Set(recent.map((e) => e.after).filter(Boolean));
-    return recent.filter((e) => e.asker === 'him' && e.state === 'ended' && !(e.outcome === 'stopped' && e.by === 'him') && !takenUp.has(e.id)
-      && now - (e.awaiting?.answeredAt ?? e.endedAt ?? 0) <= ENDED_SHOWN_MS && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)).reverse();
-  };
+  // However long ago, and however many things came since: what is owed stays owed until he hears it (ledger.owed).
+  const owedToHim = () => dot.ledger.owed().filter((e) => e.asker === 'him' && e.state === 'ended' && !(e.outcome === 'stopped' && e.by === 'him')
+    && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told));
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
   // delegation ledger): what is under way, what ended in the last hour that is not just "done", and what of
@@ -64,9 +73,14 @@ export function createThings(dot) {
     const lines = dot.ledger.unfinished().map((e) => prompt('dot.things.running', { what: title(e.task), since: ago(e.startedAt ?? e.openedAt, now) || '刚' }).trim());
     const recent = dot.ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
     const untold = new Set(owedToHim(now).map((e) => e.id));
-    for (const e of recent) {
-      if (e.state !== 'ended' || now - (e.endedAt ?? 0) > ENDED_SHOWN_MS || takenUp.has(e.id)) continue;
-      if (e.outcome === 'stopped' && e.by === 'him') lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
+    // What he stopped himself, in the last hour (he knows: a reminder, not owed); then what is owed, however old.
+    for (const e of recent) if (e.state === 'ended' && e.outcome === 'stopped' && e.by === 'him' && now - (e.endedAt ?? 0) <= ENDED_SHOWN_MS && !takenUp.has(e.id)) lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
+    // Ended things in front of her: what is still owed, however old, and what came back stuck in the last hour.
+    const ended = new Map();
+    for (const e of dot.ledger.owed()) if (e.state === 'ended') ended.set(e.id, e);
+    for (const e of [...recent].reverse()) if (e.state === 'ended' && e.outcome === 'stuck' && now - (e.endedAt ?? 0) <= ENDED_SHOWN_MS && !ended.has(e.id)) ended.set(e.id, e);
+    for (const e of ended.values()) {
+      if (takenUp.has(e.id) || (e.outcome === 'stopped' && e.by === 'him')) continue;
       // A question put to him that his next words have been read since is not waiting any more (askSettled, below):
       // he said yes and the thing was taken up, or he said no or something else — either way it is not "stuck" now.
       else if (e.outcome === 'stuck' && e.ask?.for === 'him' && e.askSettled) continue;

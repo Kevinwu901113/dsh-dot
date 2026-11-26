@@ -368,7 +368,7 @@ export function createHandsWiring(dot) {
       try {
         const images = ctx.get('attachments');
         const png = typeof images?.saveImages !== 'function' ? null : job.device === 'phone' ? (phone()?.isReady ? await phone().screenshot() : null) : await computerScreen();
-        if (png?.length && job.id) { try { const dir = join(dshHome(), 'dsh-dot-things'); mkdirSync(dir, { recursive: true }); const shot = join(dir, `${job.id}.png`); writeFileSync(shot, png); dot.ledger.note(job.id, { shot }); const kept = new Set(dot.ledger.recent(100).map((e) => `${e.id}.png`)); for (const f of readdirSync(dir)) if (!kept.has(f)) rmSync(join(dir, f), { force: true }); } catch (err) { logger.debug?.(`thing ${job.id}: screen not kept: ${err.message}`); } }
+        if (png?.length && job.id) { try { const dir = join(dshHome(), 'dsh-dot-things'); mkdirSync(dir, { recursive: true }); const shot = join(dir, `${job.id}.png`); writeFileSync(shot, png); dot.ledger.note(job.id, { shot }); const kept = new Set([...dot.ledger.recent(100), ...dot.ledger.owed()].map((e) => `${e.id}.png`)); for (const f of readdirSync(dir)) if (!kept.has(f)) rmSync(join(dir, f), { force: true }); } catch (err) { logger.debug?.(`thing ${job.id}: screen not kept: ${err.message}`); } }
         if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
       } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
     }
@@ -459,7 +459,10 @@ export function createHandsWiring(dot) {
       if (doing?.id && from && args.reached) {
         const began = dot.ledger.get(doing.id)?.startedAt ?? Date.now();
         const got = [...arrive.seenNotes()].reverse().find((n) => n.at >= began && sameName(from, conversationTitle(n.title)));
-        dot.ledger.note(doing.id, { awaiting: { from, since: Date.now(), until: Date.now() + cfg.awaitMs, ...(got ? { answeredAt: got.at, text: head(got.text, 300) } : {}) } });
+        // The app it was sent in (her phone's, in front now): an answer is looked for there, not under the same name elsewhere.
+        let app = '';
+        if (doing.device === 'phone') { try { app = String((await phone()?.foreground?.()) ?? '').split('/')[0]; } catch (error) { void error; } }
+        dot.ledger.note(doing.id, { awaiting: { from, since: Date.now(), until: Date.now() + cfg.awaitMs, ...(app ? { app } : {}), ...(got ? { answeredAt: got.at, text: head(got.text, 300) } : {}) } });
         audit('awaiting', { thing: doing.id, from, answered: Boolean(got) });
       }
       const ended = hands.finish({ summary: args?.summary, detail: args?.detail, task: args?.task, reached: args.reached }, which);

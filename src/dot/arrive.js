@@ -167,7 +167,9 @@ export function createArrive(dot) {
           const cards = ctx.get('dotMemory')?.cardsFor?.(items) ?? '';
           // An answer a thing of his was waiting for makes this turn his business: what comes of it is told to him.
           const answer = items.find((n) => n.answers);
-          const noted = answer ? `\n${prompt('dot.notification.awaited', { task: head(String(answer.answersTask ?? '').split(/[。\n]/)[0], 60) }).trim()}${answer.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : ''}` : '';
+          const maybe = !answer && items.find((n) => n.maybeAnswers?.length);
+          const noted = answer ? `\n${prompt('dot.notification.awaited', { task: head(String(answer.answersTask ?? '').split(/[。\n]/)[0], 60) }).trim()}${answer.forHim ? `\n${prompt('dot.hands.result.his').trim()}` : ''}`
+            : maybe ? `\n${prompt('dot.notification.awaited.maybe', { tasks: maybe.maybeAnswers.map((t) => `「${head(String(t ?? '').split(/[。\n]/)[0], 40)}」`).join('、') }).trim()}` : '';
           for (const e of persons) track(e, id);
           found.agent.followup(createUserMessage({ content: contentFor(wakeText(items, { whileBusy, cards }) + noted, items), source: answer ? { ...PHONE_NOTIFICATION_SOURCE, thing: answer.answers, ...(answer.forHim ? { for: 'him' } : {}) } : PHONE_NOTIFICATION_SOURCE }));
           bump('woke', 1);
@@ -297,7 +299,11 @@ export function createArrive(dot) {
     }
     // The answer a thing was waiting for (see `awaited`): it wakes her whatever kind of notification carries it, as
     // that thing's — and as his business when the thing was his.
-    if (!n.fromOwner) { const e = things.answerTo(n); if (e) n = { ...n, answers: e.id, answersTask: e.task, forHim: e.asker === 'him', handles: n.handles ?? [`${n.pkg}:name:${conversationTitle(n.title)}`] }; }
+    if (!n.fromOwner) {
+      const e = things.answerTo(n);
+      if (e?.maybe) n = { ...n, maybeAnswers: e.maybe.map((x) => x.task) }; // two things wait on this name: which it answers is hers to see
+      else if (e) n = { ...n, answers: e.id, answersTask: e.task, forHim: e.asker === 'him', handles: n.handles ?? [`${n.pkg}:name:${conversationTitle(n.title)}`] };
+    }
     const said = { text: n.text, images: n.images ?? [], n };
     if (n.fromOwner) {
       voice.dropAck('he spoke');

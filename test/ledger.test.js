@@ -64,3 +64,51 @@ test('ledger: an entry from before it kept facts only is read once as fields —
   const book = createLedger({ store: { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) } });
   assert.deepEqual([book.get('t5').by, book.get('t5').detail, 'why' in kv.get('things')[0]], ['her', 'x', false], 'written back as fields');
 });
+
+test('what is still owed is never cut for room nor aged out: a thing under way, an end of his not told, an answer owed — the history keeps the newest only', async () => {
+  const { createLedger } = await import('../src/dot/ledger.js');
+  let t = 1_000_000;
+  const kv = new Map([['thingsOwedSince', 1]]);
+  const store = { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) };
+  const L = createLedger({ store, keep: 100, now: () => t });
+  const long = L.open({ asker: 'him', task: '长任务' }); L.begin(long);
+  const his = L.open({ asker: 'him', task: '他要的' }); L.begin(his); L.end(his, { outcome: 'done', summary: '做完了' });
+  const asked = L.open({ asker: 'her', task: '发消息' }); L.begin(asked); L.end(asked, { outcome: 'done' }); L.note(asked, { awaiting: { from: '小明', since: t, until: t + 3 * 86400000 } });
+  for (let i = 0; i < 100; i++) { const id = L.open({ task: `t${i}` }); L.begin(id); L.end(id, { outcome: 'done' }); t += 60_000; }
+  t += 86400000; // a day later
+  assert.ok(L.get(long), 'under way'); assert.ok(L.get(his), 'his end, not told'); assert.ok(L.get(asked), 'an answer owed');
+  assert.deepEqual(L.owed().map((e) => e.id), [long, his, asked]);
+  assert.equal(L.recent(1000).length, 103);
+  L.note(his, { told: t }); L.end(long, { outcome: 'done' }); L.note(long, { told: t }); L.note(asked, { awaiting: { from: '小明', since: 0, until: 0, answeredAt: t } });
+  assert.deepEqual(L.owed(), []);
+  assert.equal(L.recent(1000).length, 100, 'settled: they go with the history');
+});
+
+test('a book from before owed things were kept apart: what ended more than an hour ago is closed as it stood, not brought back as owed', async () => {
+  const { createLedger } = await import('../src/dot/ledger.js');
+  const now = 10 * 86400000;
+  const kv = new Map([['things', [
+    { id: 't1', asker: 'him', task: '旧的', state: 'ended', outcome: 'stopped', by: 'her', endedAt: now - 5 * 86400000, steps: 0, tokens: { in: 0, cached: 0, out: 0 } },
+    { id: 't2', asker: 'him', task: '刚才的', state: 'ended', outcome: 'done', endedAt: now - 60_000, steps: 0, tokens: { in: 0, cached: 0, out: 0 } },
+  ]]]);
+  const L = createLedger({ store: { get: (k) => kv.get(k), set: (k, v) => kv.set(k, v) }, now: () => now });
+  assert.deepEqual(L.owed().map((e) => e.id), ['t2']);
+  assert.equal(L.get('t1').closed.why, 'before');
+  assert.ok(kv.get('thingsOwedSince'));
+});
+
+test('an answer is tied to the thing waiting on that name in that app; two things waiting on the same name are not guessed between', async () => {
+  const { createThings } = await import('../src/dot/things.js');
+  const t = Date.now();
+  const L = createLedger({ store: mem(new Map([['thingsOwedSince', 1]])) });
+  const mk = (task, from, app) => { const id = L.open({ asker: 'him', task }); L.begin(id); L.end(id, { outcome: 'done' }); L.note(id, { told: t, awaiting: { from, since: t, until: t + 86400000, ...(app ? { app } : {}) } }); return id; };
+  const audit = [];
+  const things = createThings({ audit: (e, d) => audit.push([e, d]), ledger: L, consent: { asking: () => [] } });
+  const sms = mk('给 10086 发短信', '10086', 'com.google.android.apps.messaging');
+  assert.equal(things.answerTo({ name: '10086', pkg: 'com.tencent.mobileqq', text: 'x' }), null, 'the same name in another app');
+  assert.equal(things.answerTo({ name: '10086', pkg: 'com.google.android.apps.messaging', text: '余额 3 元' }).id, sms);
+  const a = mk('问小明周六来不来', '小明', 'com.tencent.mobileqq'), b = mk('问小明借书', '小明', 'com.tencent.mobileqq');
+  const r = things.answerTo({ name: '小明', pkg: 'qq', text: '来' });
+  assert.deepEqual(r.maybe.map((e) => e.id), [a, b], 'her QQ and the phone\'s QQ are the same people; two waiting: neither is taken');
+  assert.equal(L.get(a).awaiting.answeredAt, undefined); assert.equal(L.get(b).awaiting.answeredAt, undefined);
+});

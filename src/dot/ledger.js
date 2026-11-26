@@ -7,7 +7,13 @@
 //             steps, tokens: { in, cached, out }, units?: 折算 token, yuan?: yuan at each call's price (null: a call had
 //             no price) — both from src/price.js, call by call — openedAt, startedAt?, endedAt?, session?,
 //             shot?: path of the screen as it was at the end, back?: when its end was put in front of her,
-//             told?: when he was told how it ended (what the voice said of it reached him) }
+//             told?: when he was told how it ended (what the voice said of it reached him),
+//             closed?: { at, why } — no longer owed, for a reason other than the ones below (an entry from before the
+//             book kept owed things apart, 0.25.3) }
+// The book is two things kept in one list: what is still owed (openOf: under way; an end of his he has not heard; a
+// question to him not yet answered; an answer someone owes it) and the history of what is not. The history keeps the
+// newest `keep`; what is owed is never cut for room and never ages out — it leaves when it is settled (11-26: an end
+// of his could drop out of the last 100, or the last 20 / the last hour, before he was told).
 // Only facts are kept, never a sentence written for one of its readers: who stopped it is a field, why it ended is one
 // of a few causes (CAUSES), what came of it is the hands' own one-line summary and their details. Each reader (her
 // conversation, the voice, the line in her notes, the panel) words these for itself.
@@ -44,6 +50,21 @@ export function headTail(text, max = 900) {
 }
 
 /**
+ * Is this entry still owed? `takenUp`: the ids a later thing carries on from (its end is the one to tell). The reasons,
+ * each of which ends only when it is settled: not ended yet; his, ended, not stopped by him, and he has not been told
+ * how (again when an answer it waited for came after he was told); a question to him not yet answered; an answer
+ * someone owes it, within the time its hands gave it.
+ */
+export function openOf(e, { takenUp = new Set(), at = Date.now() } = {}) {
+  if (!e || e.closed) return false;
+  if (e.state !== 'ended') return true;
+  if (e.asker === 'him' && !(e.outcome === 'stopped' && e.by === 'him') && !takenUp.has(e.id) && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)) return true;
+  if (e.outcome === 'stuck' && e.ask?.for === 'him' && !e.askSettled) return true;
+  if (e.awaiting?.from && !e.awaiting.answeredAt && at < (e.awaiting.until ?? 0)) return true;
+  return false;
+}
+
+/**
  * @param deps.store  { get(key), set(key, value) } — kept across restarts
  * @param deps.keep   how many entries are kept (the newest)
  */
@@ -54,8 +75,22 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
   const cut = [];
   for (const e of list) if (e.state !== 'ended') { Object.assign(e, { state: 'ended', outcome: 'failed', by: 'code', cause: 'restart', endedAt: now() }); cut.push(e); }
   let n = list.reduce((m, e) => Math.max(m, Number(String(e.id).slice(1)) || 0), 0);
-  const save = () => { list = list.slice(-keep); store.set(key, list); };
-  if (cut.length || folded) save();
+  const takenUpOf = () => new Set(list.map((e) => e.after).filter(Boolean));
+  // The newest `keep`, and every older one still owed.
+  const save = () => {
+    const newest = new Set(list.slice(-keep).map((e) => e.id)), takenUp = takenUpOf(), at = now();
+    list = list.filter((e) => newest.has(e.id) || openOf(e, { takenUp, at }));
+    store.set(key, list);
+  };
+  // A book from before owed things were kept apart: what ended more than an hour ago was out of sight by then (the
+  // old window), and is not brought back as owed now — told or not, it is closed as it stood.
+  const since = `${key}OwedSince`;
+  let migrated = false;
+  if (!store.get(since)) {
+    for (const e of list) if (e.state === 'ended' && now() - (e.endedAt ?? 0) > 3600000 && !e.closed && openOf(e, { takenUp: takenUpOf(), at: now() })) { e.closed = { at: now(), why: 'before' }; migrated = true; }
+    store.set(since, now());
+  }
+  if (cut.length || folded || migrated) save();
   const find = (id) => list.find((e) => e.id === id) ?? null;
   return {
     /** A new thing, queued. → its id */
@@ -91,6 +126,10 @@ export function createLedger({ store, key = 'things', keep = 100, now = () => Da
     unfinished: () => list.filter((e) => e.state !== 'ended').sort((a, b) => (a.state === 'running' ? 0 : 1) - (b.state === 'running' ? 0 : 1)).map((e) => ({ ...e })),
     /** The newest entries, newest first. */
     recent: (count = 20) => list.slice(-count).reverse().map((e) => ({ ...e })),
+    /** Everything still owed (openOf), oldest first, however old: what is under way, what he has not heard, what waits on an answer. */
+    owed: () => { const takenUp = takenUpOf(), at = now(); return list.filter((e) => openOf(e, { takenUp, at })).map((e) => ({ ...e })); },
+    /** No longer owed, for this reason (a thing she settled otherwise): it stays in the history. */
+    close(id, why = '') { const e = find(id); if (!e || e.state !== 'ended') return; e.closed = { at: now(), why: String(why).slice(0, 120) }; save(); },
     /** What a restart ended, told once. */
     interrupted() { return cut.splice(0).map((e) => ({ ...e })); },
     /** Everything forgotten (a reset). */
