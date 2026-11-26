@@ -243,3 +243,30 @@ test('wired: the phone goes home only when nothing is on the phone — a thing e
   assert.equal(h.adb.length, 1, 'a qq-bridge chat is on it');
   h.stop();
 });
+
+test('wired: her own time waits for what she gave her hands in it — not for a thing of his in another place', async () => {
+  const h = coreHarness();
+  // his thing on the web, under way all along
+  h.his(2, '查快递'); await h.tools.hands.execute({ device: 'web', do: '查快递' }); h.emit('s1', 'turn/end', { turn: 2 }); await tick(80);
+  const done = [];
+  h.dot().task({ kind: 'free', key: 'k1', text: '自己的时间', source: { kind: 'dsh-interlude', form: 'free' }, onDone: (r) => done.push([r.status, r.report]) });
+  await tick(80);
+  // (her hands are busy with his thing: her own time does not begin while a thing of hers is under way — herState.hands)
+  assert.equal(done.length, 0);
+  await h.tools.done.execute({ summary: '快递到了', reached: true }, as(h, 'h1')); await tick();
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'hands-result', for: 'him', thing: 't1' }, content: [{ type: 'text', text: 'r' }] });
+  h.emit('s1', 'turn/end', { turn: 3 }); await tick(120);
+  // her own time: she gives a thing on the phone; meanwhile he asks for one on the web
+  h.emit('s1', 'turn/start', { turn: 4 }); h.emit('s1', 'user/message', { source: { kind: 'dsh-interlude', form: 'free' }, content: [{ type: 'text', text: '自己的时间' }] });
+  await h.tools.hands.execute({ device: 'phone', do: '逛逛小红书' });
+  h.emit('s1', 'turn/end', { turn: 4 }); await tick(30);
+  assert.equal(done.length, 0, 'what she gave in it is under way');
+  h.his(5, '再查个天气'); await h.tools.hands.execute({ device: 'web', do: '查天气' }); h.emit('s1', 'turn/end', { turn: 5 }); await tick(30);
+  await h.tools.done.execute({ summary: '逛完了', reached: true }, as(h, 'h2')); await tick();
+  const back = h.agentOf('s1').got.at(-1);
+  h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: back.source, content: back.content });
+  h.emit('s1', 'turn/end', { turn: 6 }); await tick(30);
+  assert.ok(h.dot().things(5).some((e) => e.task.includes('查天气') && e.state === 'running'), 'his thing still under way');
+  assert.deepEqual(done, [['done', '（在手机上）逛逛小红书：逛完了']], 'her own time is over: its own thing is');
+  h.stop();
+});

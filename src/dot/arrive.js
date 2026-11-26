@@ -17,7 +17,7 @@ export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, bump, sessions, things, turns, voice;
- *             read when used: sleep (awake, wakeUp), hands (busy), ledger
+ *             read when used: sleep (awake, wakeUp), hands (busy, thingById), ledger
  * → { arrive, wake, qqMessage, ownerTypingNow, flushOwner, ownerPending, hisUnread, freeze, onWake, turnEnded, note,
  *     pushesNote, seenNotes, herState, quiet, enqueueTask, nextTask, taskTurnEnded, watchSetup }
  */
@@ -279,7 +279,7 @@ export function createArrive(dot) {
   const herState = () => ({
     writing: Boolean(sessions.last()) && turns.has(sessions.last()),            // a turn of her conversation is running
     sending: voice.outlet.busy(),                                               // her bubbles are going out
-    hands: Boolean(dot.hands?.busy()),                                          // her hands are on a round (any thing under way)
+    hands: Boolean(dot.hands?.busy()),                                          // a thing of hers is under way, in any place (its end will wake her)
     his: onTheWay('his').length > 0 || his.typing,                              // he said something she has not got yet, or is typing
     moving: frozen > 0,                                                         // her conversation is being handed over
     waiting: Boolean(taskRunning) || onTheWay('person').length > 0,             // something is already on its way to her
@@ -298,7 +298,7 @@ export function createArrive(dot) {
     const t = all('own').find((x) => x.task === 'ask') ?? all('own')[0];
     if (!t || holdFor(t, now)) return; // her own things do not wake her
     taskRunning = take([t])[0];
-    t.startedAt = now;
+    t.startedAt = now; t.things = []; // what she gives her hands in this stretch of her own
     try {
       // Her own time and what her phone shows her come to her conversation: there is one of her.
       let id = sessions.last();
@@ -328,16 +328,17 @@ export function createArrive(dot) {
     void nextTask();
     return 'queued';
   };
-  /** A turn of a session ended (turns.js): a thing of her own that ran in it gets its cost, and its end when her hands are free. */
+  /** A turn of a session ended (turns.js): a thing of her own that ran in it gets its cost, and its end once what she gave her hands in it is over. */
   const taskTurnEnded = (id, t) => {
-    // A thing of her own (her own time) lasts as long as her hands are still on it: the turn that started it, then
-    // every turn her hands come back to, until one ends with her hands free. Its cost is all of those turns'.
+    // A thing of her own (her own time) lasts as long as what she gave her hands in it is under way: the turn that
+    // started it, then every turn her hands come back to, until one ends with none of the things of this stretch
+    // under way — things of his in other places do not hold it. Its cost is all of those turns'.
     if (taskRunning?.session === id && (t.by.form === taskRunning.source?.form || (t.by.form === 'hands-result' && !t.by.thing))) {
       const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
       if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
+      taskRunning.things.push(...(t.opened ?? []));
       // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
-      // Her hands free: nothing of anyone's under way (one at a time, so a thing of this stretch of hers is the one there would be).
-      if (!dot.hands?.busy()) finishTask(taskRunning, 'done', dot.ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
+      if (!taskRunning.things.some((x) => dot.hands?.thingById(x))) finishTask(taskRunning, 'done', taskRunning.things.map((x) => dot.ledger.get(x)).filter((e) => e?.state === 'ended').map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
     }
   };
 
