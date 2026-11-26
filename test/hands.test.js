@@ -113,14 +113,14 @@ test('hands: they need her — said with their tool, the thing ends there as stu
   assert.deepEqual([h.ledger.get(next.id).after, h.sent.at(-1)[0]], [job.id, 'h3']);
   // one more thing for the hands at work
   assert.equal(h.hands.has('再存一张发呆的'), false);
-  assert.deepEqual(h.hands.add('再存一张发呆的'), { status: 'added', id: next.id });
+  assert.deepEqual(await h.hands.add('再存一张发呆的'), { status: 'added', id: next.id });
   await tick();
   assert.deepEqual(h.sent.at(-1), ['h3', '再存一张发呆的'], 'into the run under way');
   assert.ok(h.hands.has('再存一张发呆的') && h.hands.has('续命'), 'what she added is hers to type from, like the task');
   assert.deepEqual(h.ledger.get(next.id).added, ['再存一张发呆的']);
   h.hands.finish({ summary: '存好了' });
   assert.deepEqual([h.done[2][0].outcome, h.done[2][0].summary], ['done', '存好了']);
-  assert.deepEqual(h.hands.add('还有一张'), { status: 'idle' }, 'nothing under way: nothing to add to');
+  assert.deepEqual(await h.hands.add('还有一张'), { status: 'idle' }, 'nothing under way: nothing to add to');
   const { handsStatus } = await import('../src/dot/core.js');
   assert.match(handsStatus(q), /卡在一个要你定的地方/);
 });

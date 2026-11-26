@@ -83,7 +83,13 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   let offDirect = null;        // their turns' ends are listened for while any of them holds a device
   /** The first one begun: what a call that does not say which acts on. */
   const first = () => under.values().next().value ?? null;
+  // A thing whose run is being stopped holds its place until the stop has landed (or CANCEL_WAIT_MS has passed): the
+  // next thing there does not begin while the last one may still be pressing (11-26: the place was let go first and
+  // the cancel sent after, unawaited).
+  const CANCEL_WAIT_MS = 5000;
+  const stopping = new Map(); // device → the thing being stopped there
   const onDevice = (device) => [...under.values()].find((t) => t.device === device) ?? null;
+  const holding = (device) => onDevice(device) ?? stopping.get(device) ?? null;
   const letGo = (device, why) => { const d = direct.get(device); if (!d) return; direct.delete(device); lane('expired', { device, session: d.session, holder: d.session, why }); if (!direct.size && offDirect) { try { offDirect(); } catch (e) { void e; } offDirect = null; } };
   /** The thing `which` names, under way: { session } its hands' session, { thing } its entry; left out, first(). */
   const pick = (which) => (which == null ? first() : 'thing' in which ? under.get(which.thing) ?? null : 'session' in which ? bySession.get(which.session) ?? null : first());
@@ -95,7 +101,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const now_ = (t) => (t ? { id: t.entry, session: t.id, device: t.device, task: t.task, state: 'running', question: t.question, startedAt: t.startedAt, said: clip(t.said || t.last, 120), steps: t.steps, forHim: Boolean(t.extra?.forHim) } : null);
   /** Who holds this place now: { thing } (a thing under way there, as doing() shows it), { session, tool, at } (a session on the device directly), or null. */
   const holderOf = (device) => {
-    const t = onDevice(device);
+    const t = holding(device);
     if (t) return { thing: now_(t) };
     const d = direct.get(device);
     if (d && now() - d.at > DIRECT_IDLE_MS) letGo(device, 'idle');
@@ -113,7 +119,17 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     const running = under.get(t.entry) === t && t.state === 'running';
     free(t);
     // A run still going is ended here: stopped or too long, or done by their own word (their tool, nothing more to say).
-    if (running && (outcome === 'stopped' || outcome === 'timeout' || t.result || cause === 'same-error')) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
+    // Cut off mid-run (stopped, too long, the same error over and over), its place stays held until that stop has
+    // landed (stopping), so nothing new begins there while it may still be pressing. Done by their own word, it is free
+    // at once: the cancel only ends what is left of their turn.
+    if (running && (outcome === 'stopped' || outcome === 'timeout' || t.result || cause === 'same-error')) {
+      const landed = Promise.resolve().then(() => withAgent(t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }))).catch(() => {});
+      if (!t.result) {
+        stopping.set(t.device, t);
+        const waited = new Promise((r) => { const w = setTimeout(r, CANCEL_WAIT_MS); w.unref?.(); });
+        t.stopped = Promise.race([landed, waited]).then(() => { if (stopping.get(t.device) === t) stopping.delete(t.device); });
+      }
+    }
     // What came of it: their own summary and details when they gave them (finish), else what they last said, as details.
     const summary = String(t.result?.summary ?? '').trim(), detail = headTail(t.result ? t.result.detail : t.said, maxChars);
     const facts = { outcome, by, ...(cause ? { cause } : {}), ...(error ? { error: String(error).slice(0, 160) } : {}), ...(summary ? { summary } : {}), ...(detail ? { detail } : {}), ...(t.result?.name ? { name: t.result.name } : {}), ...(outcome === 'stuck' ? { question: t.question, ...(t.ask ? { ask: t.ask } : {}) } : {}) };
@@ -134,6 +150,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const begin = (mine) => {
     under.set(mine.entry, mine); mine.startedAt = now();
     ledger.begin(mine.entry);
+    // Its time starts now, not at its first round: a session that is never made does not hold the place for ever.
+    mine.timer = setTimeout(() => settle(mine, 'timeout', { cause: 'timeout' }), maxMs); mine.timer.unref?.();
     void (async () => {
       try {
         try { mkdirSync(dir, { recursive: true }); } catch (error) { void error; }
@@ -141,7 +159,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
         if (id && !mine.over) bySession.set(id, mine);
         if (id) { remember(id); audit('hands-opened', { session: id, thing: mine.entry }); }
         if (id) ledger.note(mine.entry, { session: id });
-        if (mine.over) return;
+        if (mine.over) { if (id) call(retire, id); return; } // over before its session came: that session is put away
         if (!id) { settle(mine, 'failed', { cause: 'no-session' }); return; }
         mine.off = onEvent((session, event) => {
           if (session?.id !== id || mine.over || mine.state !== 'running') return;
@@ -174,7 +192,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
             settle(mine, 'stuck');
           }
         }) ?? (() => {});
-        await round(mine, mine.task);
+        // What was added before their session was there goes with the first message (add()).
+        await round(mine, [mine.task, ...(mine.early ?? [])].join('\n'));
       } catch (err) { settle(mine, 'failed', { cause: 'broke-off', error: err.message }); }
     })();
   };
@@ -280,6 +299,9 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
       if (!what) return { status: 'failed', why: 'no task' };
       // One a place: whatever holds this one, and this thing is not begun. (The one place that decides what may run together.)
       const held = holderOf(device);
+      // Held only by a thing being stopped: this one begins once that stop has landed (a few seconds at most).
+      const ending = held?.thing ? stopping.get(device) : null;
+      if (ending && ending.entry === held.thing.id) return ending.stopped.then(() => api.start({ device, task, ...extra }));
       if (held) { audit('hands-busy', { device, forHim: Boolean(extra.forHim), ...(held.thing ? { thing: held.thing.id } : { holder: held.session }) }); return { status: 'busy', device, holder: held }; }
       const entry = ledger.open({ asker: extra.forHim ? 'him' : 'her', device, task: what, ...(extra.after ? { after: extra.after } : {}) });
       const mine = { entry, device, task: what, extra, state: 'running', question: '', words: what, startedAt: now(), said: '', last: '', shown: '', steps: 0, rounds: 0, notes: [], kept: {}, over: false };
@@ -290,14 +312,21 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * One more thing said to the hands at work (he added something, she thought of something): read between two of
      * their steps, the thing goes on. → 'added' | 'idle' (nothing under way) | 'failed'.
      */
-    add(text, which) {
+    async add(text, which) {
       const said = String(text ?? '').trim();
       if (!said) return { status: 'failed', why: 'nothing to add' };
       const t = pick(which);
       if (!t || t.over) return { status: 'idle' };
-      t.words = `${t.words}\n${said}`;
-      ledger.note(t.entry, { added: [...(ledger.get(t.entry)?.added ?? []), said] });
-      withAgent(t, (agent) => (typeof agent.steer === 'function' ? agent.steer(message(said)) : typeof agent.send === 'function' ? agent.send(message(said), 'next-step', true) : agent.followup(message(said)))).catch((err) => audit('hands-add-failed', { thing: t.entry, why: String(err?.message ?? err).slice(0, 120) }));
+      const kept = () => { t.words = `${t.words}\n${said}`; ledger.note(t.entry, { added: [...(ledger.get(t.entry)?.added ?? []), said] }); };
+      // Their session not made yet: it goes with their first message.
+      if (!t.id) { (t.early ??= []).push(said); kept(); return { status: 'added', id: t.entry }; }
+      // Said to be added only once it reached them: a word that did not get there is said so to her, not taken as given.
+      try { await withAgent(t, (agent) => (typeof agent.steer === 'function' ? agent.steer(message(said)) : typeof agent.send === 'function' ? agent.send(message(said), 'next-step', true) : agent.followup(message(said)))); } catch (err) {
+        const why = String(err?.message ?? err).slice(0, 120);
+        audit('hands-add-failed', { thing: t.entry, why });
+        return { status: 'failed', why: `没传到手上：${why}`, id: t.entry };
+      }
+      kept();
       return { status: 'added', id: t.entry };
     },
   };

@@ -21,13 +21,14 @@ function harness(opts = {}) {
   const ledger = createLedger({ store });
   const hands = createHands({
     dir, ledger,
-    create: async () => { const id = `h${++n}`; agents.set(id, { followup: (m) => sent.push([id, m]), cancel: (c) => cancelled.push([id, c.reason]) }); return id; },
+    create: opts.create ?? (async () => { const id = `h${++n}`; agents.set(id, { followup: (m) => sent.push([id, m]), cancel: opts.cancel ? (c) => opts.cancel(id, c) : (c) => cancelled.push([id, c.reason]), ...(opts.steer ? { steer: opts.steer } : {}) }); return id; }),
     agentFor: async (id) => agents.get(id) ?? null,
     onEvent: (fn) => { listeners.add(fn); return () => listeners.delete(fn); },
     message: (text) => text, textOf: (c) => c,
     store, done: () => 'MISSING',
     onDone: (r, j) => done.push([r, j]), lane: (event, d) => lanes.push([event, d.device, d.session, d.holder]),
     ...(clock ? { now: () => clock.t } : {}),
+    ...(opts.maxMs ? { maxMs: opts.maxMs } : {}),
   });
   const emit = (id, type, data) => { for (const fn of [...listeners]) fn({ id }, { type, data }); };
   return { hands, ledger, sent, cancelled, emit, done, lanes, listeners, kv };
@@ -287,4 +288,36 @@ test('wired: the board of things has a limit; past it she is told how many more 
   assert.equal(lines.filter((l) => /^卡住了：.*要定的是：第\d件要查哪个/.test(l)).length, 8);
   assert.ok(lines.includes('还有 2 件没列在这里。'), lines.join('\n'));
   h.stop();
+});
+
+test('lanes: a thing cut off mid-run holds its place until the stop has landed — the next one there begins after, not beside it', async () => {
+  let land;
+  const h = harness({ cancel: (id, c) => new Promise((r) => { land = () => { h.cancelled.push([id, c.reason]); r(); }; }) });
+  h.hands.start({ device: 'phone', task: '逛小红书' }); await tick();
+  h.hands.stop({ by: 'him', cause: 'command' }); await tick();
+  assert.equal(h.hands.on('phone'), null, 'no longer under way');
+  assert.equal(h.hands.holder('phone').thing.id, 't1', 'but its place is held while the stop lands');
+  let second = null;
+  const p = Promise.resolve(h.hands.start({ device: 'phone', task: '查快递' })).then((r) => { second = r; });
+  await tick(20);
+  assert.equal(second, null, 'waits for the stop');
+  land(); await p;
+  assert.equal(second.status, 'started');
+  assert.deepEqual(h.cancelled.map(([id]) => id), ['h1']);
+});
+
+test('lanes: a thing whose session never comes is over when its time is up, and lets its place go; a word added before its session goes with its first message, one that does not reach them is said so', async () => {
+  const never = harness({ maxMs: 30, create: () => new Promise(() => {}) });
+  never.hands.start({ device: 'web', task: '查一下' });
+  await tick(60);
+  assert.deepEqual(never.done.map(([r]) => [r.outcome, r.cause]), [['timeout', 'timeout']]);
+  assert.equal(never.hands.holder('web'), null);
+  const h = harness({ steer: () => { throw new Error('busy'); } });
+  h.hands.start({ device: 'web', task: '查天气' });
+  assert.deepEqual(await h.hands.add('顺便看看明天'), { status: 'added', id: 't1' }, 'before their session: kept for the first message');
+  await tick();
+  assert.match(String(h.sent.find(([id]) => id === 'h1')?.[1]), /查天气\n顺便看看明天/);
+  const r = await h.hands.add('再看看后天');
+  assert.equal(r.status, 'failed'); assert.match(r.why, /没传到手上：busy/);
+  assert.deepEqual(h.ledger.get('t1').added, ['顺便看看明天'], 'only what reached them is on the book');
 });

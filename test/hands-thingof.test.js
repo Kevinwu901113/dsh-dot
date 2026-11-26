@@ -74,12 +74,12 @@ test('hands, by session: a call that names a session acts on that session\'s thi
   assert.equal(h.hands.has('喝咖啡的猫', late), false);
   assert.equal(h.hands.has('喝咖啡的猫', mine), true);
   h.hands.note('own-words', late);
-  assert.deepEqual(h.hands.add('再存一张', late), { status: 'idle' });
+  assert.deepEqual(await h.hands.add('再存一张', late), { status: 'idle' });
   assert.equal(h.hands.fail({ cause: 'same-error', error: 'x' }, late), false);
   assert.equal(h.hands.finish({ summary: '假的' }, late), false);
   assert.ok(h.hands.busy() && h.hands.thingOf('h2'), 'still under way');
   // by its id, the same
-  assert.deepEqual(h.hands.add('再存一张', { thing: 't2' }), { status: 'added', id: 't2' });
+  assert.deepEqual(await h.hands.add('再存一张', { thing: 't2' }), { status: 'added', id: 't2' });
   assert.ok(h.hands.has('再存一张', { thing: 't2' }));
   assert.equal(h.hands.ask('存哪张？', {}, { thing: 't2' }), true);
   assert.equal(h.hands.asked({ session: 'h2' }), true);
