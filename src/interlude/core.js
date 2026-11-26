@@ -6,7 +6,8 @@
 // into her conversation as fact. What is left is what does not need a narrator:
 //   - the Canon (her persona) as the first section of her prompt, dsh's own openers trimmed, her voice
 //     as the last thing before she answers;
-//   - 自己的时间: a few times a day she has time of her own, in her conversation, inside a token budget;
+//   - 自己的时间: time of her own, in her conversation, inside a token budget — when he has gone quiet or her day
+//     has begun, or when she said she wanted more of it (later);
 //   - the ledger of what she did on her own, what it cost and what he said about it (doings.js).
 // Her life is what she really did. The component, service, settings section, folder and prompt ids keep
 // the name "interlude" so that nothing an installed copy has (canon.json, dsh-dot.json, prompt
@@ -26,7 +27,7 @@ import { installLlmGate } from '../llm-gate.js';
 import { prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { describeNow, stamp } from '../clock.js';
-import { inHours, msLeftInHours } from '../hours.js';
+import { inHours, lastStart, msLeftInHours } from '../hours.js';
 import { createDoings, tokensOf } from './doings.js';
 import { readCard, readChecks, syncCard } from '../persona/card.js';
 import { cardFor } from '../persona/parts.js';
@@ -54,15 +55,15 @@ export const defaults = {
   // `voice` field, or interlude.voice from her name). false: none.
   voice: false,
   identityFile: '',           // optional extra Canon text file; not read unless set
-  idleMinutes: 10,            // her own time does not start within this long of her last turn
+  idleMinutes: 10,            // her own time comes this long after his last word, or after her day began; what she does herself does not put it off
   // DeepSeek's reasoning shares this budget with the reply (the weekly review).
   maxTokens: 16384,
   // Yuan per million tokens ({ in, cached, out }) so she sees cost in money too; null = tokens only.
   price: null,
-  // 自己的时间: a few times a day she is woken with nothing to do but her own time — all her
-  // tools, her own folder (<home>/her), no list of what to do. Limits live in the gates (approvals, QQ
-  // refused, typing in social apps asks) and in the token budget, which ends the turn when it runs out.
-  freeTimesPerDay: 2,         // 0 = off; needs dsh-dot
+  // 自己的时间: she is woken with nothing to do but her own time — all her tools, her own folder (<home>/her), no
+  // list of what to do. Limits live in the gates (approvals, QQ refused, typing in social apps asks) and in the token
+  // budget, which ends the turn when it runs out; what her hands do for her in it counts against the same budget.
+  freeTimesPerDay: 2,         // at most this many a day; 0 = off; needs dsh-dot
   freeTokenCap: 150000,       // per free time; past 80% she is told to wrap up, at 100% the turn is stopped
   freeDailyTokens: 300000,    // all free time in a day
   imBot: '',
@@ -230,12 +231,10 @@ export function apply(ctx, config = {}) {
     catch (error) { logger.warn(`persona card not written: ${error.message}`); }
   }
 
-  // 1. Her sessions: which ones are hers, whether a turn is running, when she was last busy.
+  // 1. Her sessions: which ones are hers, and when he last spoke in one.
   const homeSessions = new Set(); // sessions that are acts: cwd inside home, or opened from an IM bot
   const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
-  let lastActivity = 0;
-  let running = 0;
   const dshDot = () => ctx.get('dshDot');
   // Which sessions are hers is dot's to say when it is here (dshDot.hers: her conversation, made by the plugin, and the
   // ones she has left) — a session opened by hand in her home is not hers. null: dot is not here, her home decides.
@@ -258,9 +257,8 @@ export function apply(ctx, config = {}) {
       if (wantIm && event.type === 'user/message' && isImMessage(event.data)) homeSessions.add(id);
       if (!homeSessions.has(id)) return;
     }
-    // What the scheduler needs to know: a turn is running, and when she was last busy.
-    if (event.type === 'turn/start') { running++; return; }
-    if (event.type === 'turn/end') { running = Math.max(0, running - 1); lastActivity = Date.now(); }
+    // What her own time needs to know: when he last spoke (over QQ or at her window). Nothing of hers counts.
+    if (event.type === 'user/message' && event.data?.source?.kind === 'user' && (!event.surfaceOp || event.surfaceOp === 'append')) { meta.hisAt = Date.now(); saveMeta(); }
   });
 
   /** A task queued now expires when her active hours end (or at dot's own TTL, whichever is first). */
@@ -268,27 +266,18 @@ export function apply(ctx, config = {}) {
   const ttlInHours = () => { const left = msLeftInHours(hours()); return Number.isFinite(left) ? Math.max(60000, Math.min(left, dshDot()?.taskTtlMs ?? 1800000)) : undefined; };
 
 
-  // 自己的时间: a few times a day, at random moments in her active hours, she gets time of her own, in her conversation.
-  const free = new Map(); // session id → { cost, budget, warned, stopped }
+  // 自己的时间, in her conversation. When it comes is her clock's (dshDot.onTick, below); what it is, is here.
+  const free = new Map(); // session id → { cost, budget, warned, stopped, origin }
   let freeQueued = false; // one free time at a time, from queued to done
   const freeLeft = () => Math.max(0, cfg.freeDailyTokens - (meta.dayFreeTokens ?? 0));
-  const planFree = (now = Date.now()) => {
-    const m = /^(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})$/.exec(String(hours()).trim());
-    const day = new Date(now); day.setHours(0, 0, 0, 0);
-    let start = day.getTime(), end = start + 86400000;
-    if (m) { start = day.getTime() + (+m[1] * 60 + +m[2]) * 60000; end = day.getTime() + (+m[3] * 60 + +m[4]) * 60000; if (end <= start) end += 86400000; }
-    const from = Math.max(now, start), to = end - 30 * 60000;
-    // Slots still ahead (yesterday's, past midnight when the hours wrap) are kept.
-    const kept = (meta.freeAt ?? []).filter((t) => t > now && t < start);
-    meta.freeAt = [...kept, ...(to > from ? Array.from({ length: Math.max(0, cfg.freeTimesPerDay) }, () => Math.round(from + Math.random() * (to - from))) : [])].sort((a, b) => a - b);
-    meta.freeDay = dayOf(new Date(now)); saveMeta();
-  };
+  // phase: what brought it — 'quiet' (he went quiet, or her day began), 'later' (she said so), 'command' (/interlude free).
   async function freeTime(phase = 'free') {
     rollDay();
     const held = (why) => { audit('free-held', { phase, why }); return { skipped: why }; };
     if (!dshDot()?.task) return held('needs dot (dsh-dot)');
     if (free.size || freeQueued) return held('already running');
     if (freeLeft() < Math.min(cfg.freeTokenCap, 20000)) return held('daily budget used');
+    if (phase !== 'command' && (meta.dayFrees ?? 0) >= cfg.freeTimesPerDay) return held('daily count used');
     const budget = Math.min(cfg.freeTokenCap, freeLeft());
     const mem = ctx.get('dotMemory');
     const context = {
@@ -300,7 +289,7 @@ export function apply(ctx, config = {}) {
     const text = freePrompt({ budget, left: freeLeft(), place: herPlace, listing: listPlace(herPlace), context });
     const r = dshDot().task({
       kind: 'free', key: `free|${dayOf()}|${meta.dayFrees ?? 0}`, text, source: FREE_SOURCE, ttlMs: ttlInHours(),
-      onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false }; free.set(id, f); },
+      onStart: (id) => { sid = id; f = { cost: 0, budget, warned: false, stopped: false, origin: phase }; free.set(id, f); },
       onDone: (res) => {
         freeQueued = false;
         if (sid && free.get(sid) === f) free.delete(sid);
@@ -325,10 +314,13 @@ export function apply(ctx, config = {}) {
     if (a) return a;
     try { const found = await ctx.get('sessionController')?.resolveAgent(id); return found && !('error' in found) ? found.agent : null; } catch (error) { void error; return null; }
   };
+  // Her hands' steps on a thing of hers while her own time runs are part of what it costs (one at a time: the one there is).
+  const freeOf = (id, cwd) => free.get(id) ?? (free.size && dshDot()?.isHands?.(id, cwd) && dshDot()?.handsFor?.(id) === 'her' ? [...free.values()][0] : null);
   ctx.on('session/event', (session, event) => {
-    const id = session?.id;
-    const f = free.get(id);
-    if (!f || event?.type !== 'assistant/message' || !event.data?.usage) return;
+    if (event?.type !== 'assistant/message' || !event.data?.usage) return;
+    const f = freeOf(session?.id, session?.header?.cwd);
+    if (!f) return;
+    const id = [...free].find(([, v]) => v === f)[0]; // her conversation: the one stopped or told
     const step = Math.round(freeWeight(event.data.usage));
     f.cost += step; meta.dayFreeTokens = (meta.dayFreeTokens ?? 0) + step; saveMeta();
     if (!f.stopped && f.cost >= f.budget) {
@@ -361,7 +353,7 @@ export function apply(ctx, config = {}) {
     // Her own time runs in her conversation; her hands (dsh-dot/hands) do the typing, so the rule about typing looks at them too.
     const hands = Boolean(free.size && dshDot()?.isHands?.(sessionId, exec.agent?.session?.header?.cwd));
     if (!sessionId || !(free.has(sessionId) || hands)) return next();
-    if (free.get(sessionId)?.stopped) return deny(prompt('interlude.free.over'));
+    if (freeOf(sessionId, exec.agent?.session?.header?.cwd)?.stopped) return deny(prompt('interlude.free.over'));
     const tool = exec.name === PHONE_TYPE_TOOL ? exec.name : exec.name.startsWith(PHONE_TOOL_PREFIX) ? exec.name.slice(PHONE_TOOL_PREFIX.length) : '';
     const input = exec.input ?? exec.args ?? exec.arguments;
     if (tool && typesText(tool, input)) {
@@ -386,20 +378,35 @@ export function apply(ctx, config = {}) {
   }, { prepend: true });
 
 
-  // 3. Scheduling: the weekly review and her own time.
-  function tick() {
-    if (running > 0) return;
-    const now = Date.now();
-    rollDay();
-    if (cfg.freeTimesPerDay > 0 && dshDot()?.task) {
-      if (meta.freeDay !== dayOf(new Date(now))) planFree(now);
-      if ((meta.freeAt ?? []).length && meta.freeAt[0] <= now && inHours(hours()) && (!lastActivity || now - lastActivity >= cfg.idleMinutes * 60000)) {
-        meta.freeAt = meta.freeAt.slice(1); saveMeta();
-        void freeTime('scheduled'); return;
-      }
-    }
+  // 3. When her own time comes, on her clock (dshDot.onTick): a quiet after something new, used once.
+  // The something new is his last word or the start of her day, whichever is later (`from`); once it has been quiet
+  // idleMinutes since then — with her awake, in her usual hours, nothing else going on — her own time comes, and that
+  // `from` is used up (meta.ownFrom). Until he speaks again or a new day begins, the quiet brings nothing more: no
+  // looking, no running on. What she does herself (a turn, a notification answered, her own time) does not put it off —
+  // her sleep counts the other way (dot/sleep.js: anything of hers starts that quiet over). Besides, she may have
+  // said when she wants the next one (`later`, kept in meta.later); whatever comes next uses it up. Kept across a
+  // restart: neither the quiet nor what was used of it starts over.
+  const fromOf = (now) => Math.max(meta.hisAt ?? 0, lastStart(hours(), new Date(now)));
+  const nextFree = (now = Date.now()) => {
+    if (!(cfg.freeTimesPerDay > 0)) return null;
+    const quiet = fromOf(now) > (meta.ownFrom ?? 0) ? fromOf(now) + cfg.idleMinutes * 60000 : Infinity;
+    const at = Math.min(quiet, meta.later?.at ?? Infinity);
+    return Number.isFinite(at) ? at : null;
+  };
+  function tick(now = Date.now()) {
+    const d = dshDot();
+    if (!(cfg.freeTimesPerDay > 0) || !d?.task) return;
+    // A later left on a day that has ended is gone with it.
+    if (meta.later && meta.later.at < lastStart(hours(), new Date(now))) { audit('free-later-lapsed', { at: meta.later.at }); meta.later = null; saveMeta(); }
+    if (!inHours(hours(), new Date(now)) || d.awake?.() === false || d.quiet?.() === false) return;
+    const from = fromOf(now);
+    const origin = from > (meta.ownFrom ?? 0) && now - from >= cfg.idleMinutes * 60000 ? 'quiet' : meta.later && now >= meta.later.at ? 'later' : '';
+    if (!origin) return;
+    if (origin === 'quiet') meta.ownFrom = from;
+    meta.later = null; saveMeta();
+    void freeTime(origin);
   }
-  ctx.effect(() => { const timer = setInterval(tick, 60000); return () => clearInterval(timer); }, 'dsh-interlude: scheduler');
+  ctx.inject?.(['dshDot'], (c) => c.effect(() => (c.dshDot ?? dshDot())?.onTick?.(() => tick()) ?? (() => {}), 'dsh-interlude: her own time, on her clock'));
   // Model requests (src/llm-gate.js): her own time runs in her conversation and her hands' session (dot registers those).
   installLlmGate(ctx, { name: 'dot-interlude' });
 
@@ -478,7 +485,7 @@ export function apply(ctx, config = {}) {
         const lines = [
           `home: ${home} · scope: ${cfg.scope}`,
           `canon: ${canon ? `${canon.storyDefaults.characterName}${canon.source?.title ? ` ← ${canon.source.title} (@${canon.source.author}, ${canon.source.shareCode})` : ` (${canon.source?.kind ?? 'canon.json'})`}` : '(none) — /interlude preset <share code>'}`,
-          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${(meta.freeAt ?? [])[0] ? describeNow(new Date(meta.freeAt[0])) : '-'}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · idle ${lastActivity ? Math.round((Date.now() - lastActivity) / 60000) : '-'} min · awake ${hours() || 'always'}`,
+          `free time: ${cfg.freeTimesPerDay > 0 ? `${meta.dayFrees ?? 0}/${cfg.freeTimesPerDay} today, ${meta.dayFreeTokens ?? 0}/${cfg.freeDailyTokens} tokens, next ${nextFree() ? describeNow(new Date(nextFree())) : '- (after he speaks, or tomorrow)'}${meta.later ? ' (hers)' : ''}${dshDot()?.task ? '' : ' (needs dsh-dot)'}` : 'off'} · he spoke ${meta.hisAt ? Math.round((Date.now() - meta.hisAt) / 60000) : '-'} min ago · awake ${hours() || 'always'}`,
           `doings: ${doings.all().length} on the ledger`, `today ${meta.dayTokensIn ?? 0} in / ${meta.dayTokensOut ?? 0} out tokens`,
         ];
         return { kind: 'success', text: lines.join('\n') + result };
@@ -512,7 +519,7 @@ export function apply(ctx, config = {}) {
         name: canon?.storyDefaults?.characterName ?? 'dot',
         today: { tokensIn: meta.dayTokensIn ?? 0, tokensOut: meta.dayTokensOut ?? 0 },
         doings: doings.view({ rounds: roundCost(), price: cfg.price, recent: 8 }),
-        free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: (meta.freeAt ?? [])[0] ?? null },
+        free: { today: meta.dayFrees ?? 0, perDay: cfg.freeTimesPerDay, tokens: meta.dayFreeTokens ?? 0, dailyTokens: cfg.freeDailyTokens, next: nextFree() },
         awakeHours: hours(),
       };
     },

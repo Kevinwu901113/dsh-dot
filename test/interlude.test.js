@@ -292,18 +292,6 @@ test('free time: one step past the whole budget stops it without a wake-up messa
   h.stop();
 });
 
-test('free time: planned at random moments in her active hours, once a day', async () => {
-  const h = harness({ reply: GOOD, config: { freeTimesPerDay: 2 } });
-  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { task: () => 'queued', retired: () => false } : get(n)))(h.ctx.get);
-  h.tick();
-  const meta = JSON.parse(readFileSync(join(h.home, 'interlude', 'meta.json'), 'utf8'));
-  assert.ok(meta.freeDay, 'planned today');
-  const end = new Date(); end.setHours(23, 29, 0, 0);
-  for (const at of meta.freeAt) assert.ok(at >= Date.now() - 60000 && at <= end.getTime() + 60000);
-  if (Date.now() < end.getTime() - 60000) assert.equal(meta.freeAt.length, 2); else assert.equal(meta.freeAt.length, 0);
-  h.stop();
-});
-
 test('voice: how she talks is the last thing she reads with what has just reached her, from the Canon or the built-in; not in retired sessions', async () => {
   const voiceOf = (opts) => {
     const notes = [];
