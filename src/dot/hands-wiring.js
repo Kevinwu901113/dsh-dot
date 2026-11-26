@@ -486,6 +486,7 @@ export function createHandsWiring(dot) {
     return null;
   };
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
+  const calls = new WeakMap(); // turn → how often each call (loopKey) was made in it
   const handsOf = (exec) => Boolean(hands?.isHands(exec?.agent?.session?.id, exec?.agent?.session?.header?.cwd));
   const preExecute = async (exec, next) => {
     const id = exec.agent?.session?.id;
@@ -493,9 +494,10 @@ export function createHandsWiring(dot) {
     const t = turns.get(id);
     // Looking and scrolling repeat by nature (the screen changes, the call does not): never a loop.
     if (t && cfg.loopRepeat > 0 && !LOOP_EXEMPT.test(exec.name)) {
-      const key = loopKey(exec.name, args), times = (t.calls ??= new Map()).get(key) ?? 0;
+      if (!calls.has(t)) calls.set(t, new Map());
+      const key = loopKey(exec.name, args), times = calls.get(t).get(key) ?? 0;
       if (times >= cfg.loopRepeat) { audit('loop-stopped', { session: id, tool: exec.name, times }); return deny(prompt('dot.loop-stopped', { times })); }
-      t.calls.set(key, times + 1);
+      calls.get(t).set(key, times + 1);
     }
     // hand_off is hers to use in her conversation only; and in a turn of his words she talks and hands off —
     // her phone and computer are operated by her errand, not here.

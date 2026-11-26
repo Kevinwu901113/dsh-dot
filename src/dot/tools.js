@@ -25,7 +25,7 @@ export function createTools(dot) {
         // Which of her things she means by stop and add. She does not say (there is one under way at a time): stop is
         // everything, add is the one under way. Once she can say which, it goes here as { thing } and nothing else changes.
         const which = undefined;
-        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...which }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
+        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...which }); if (stopped) turns.stopped(t, open); return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -48,7 +48,7 @@ export function createTools(dot) {
         const before = t?.by.thing ? dot.ledger.get(t.by.thing) : args?.after ? dot.ledger.recent(10).find((e) => e.device === device) : null;
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
         const started = await dot.hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : device === 'host' ? 'dot.hands.where.host' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
-        if (started?.id && t) t.opened = [...(t.opened ?? []), started.id];
+        turns.opened(t, started?.id);
         return started;
       },
     }), 'dsh-dot: hands tool');

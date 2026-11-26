@@ -89,7 +89,7 @@ export function createArrive(dot) {
         // input submitted after an active cancellation is held by the host for the next turn and runs when the
         // aborted one has settled, so nothing waits on a promise of ours and the order is the host's inbox order.
         agent.cancel({ kind: 'hook', reason: 'dot-owner-spoke' }, { keepInbox: true });
-        voice.preempted(); open.cancelled = true; // only once the cancel is in: a turn that was not cancelled keeps its answer
+        voice.preempted(); turns.startedOver(open); // only once the cancel is in: a turn that was not cancelled keeps its answer
         if (typeof agent.send === 'function') agent.send(message, 'next-turn', true); else agent.followup(message);
       } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
     } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }

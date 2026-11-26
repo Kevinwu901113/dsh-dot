@@ -2,8 +2,8 @@
 // Holds: the open turns (session id → turn), what waits in a session's inbox for its next turn (incoming reminders,
 // origins), his words not yet taken by a turn (owed), the last failed turn, whether the plugin's drift was told, and
 // the parts of the short message that goes with whatever has just reached her (turn notes).
-// The turn objects themselves are shared: the voice, the tools and the gates write on them (spoke, opened, stopped,
-// cancelled, calls, reached) — see the list in each of those.
+// A turn object is written here only. What happens in it elsewhere is said through the methods at the end (spoke,
+// opened, stopped, startedOver); the others read it.
 // Whose a turn is, is one field, `by`, written here from what enters the turn and read everywhere through the
 // predicates below:
 //   by.whose  'him' (his words opened it, or a thing of his woke it) · 'her' (a notification, her hands on her own
@@ -40,7 +40,7 @@ export const atHisWindow = (t) => t?.by.where === 'desk';
  */
 export function createTurns(dot) {
   const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
-  const turns = new Map(); // session id → { turn, by, startedAt, lastEventAt, doing, said, hisWords, tools, cost }
+  const turns = new Map(); // session id → { turn, by, startedAt, lastEventAt, doing, said, hisWords, tools, cost, spoke, opened, stopped, startedOver }
   const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
   const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
   // What became of his words. Each message of his ends one of three ways: she answered, she chose not to, or it
@@ -103,7 +103,7 @@ export function createTurns(dot) {
       return;
     }
     if (event.type === 'turn/start') {
-      turns.set(id, { turn: event.data?.turn, by: { whose: incoming.delete(id) ? 'schedule' : 'her', where: '', form: origins.get(id), thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now() });
+      turns.set(id, { turn: event.data?.turn, by: { whose: incoming.delete(id) ? 'schedule' : 'her', where: '', form: origins.get(id), thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now(), spoke: false, opened: [], stopped: [], startedOver: false });
       origins.delete(id);
       return;
     }
@@ -223,7 +223,7 @@ export function createTurns(dot) {
   };
 
   return {
-    /** The open turn of a session (the object itself: others write on it), or undefined. */
+    /** The open turn of a session (the object itself, to read), or undefined. */
     get: (id) => turns.get(id),
     has: (id) => turns.has(id),
     keys: () => turns.keys(),
@@ -231,5 +231,14 @@ export function createTurns(dot) {
     onSessionEvent, disposeOwed, turnFailed, taken, owe,
     lastFailure: () => lastFailure,
     driftLine, watchDrift, turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns,
+    // What happened in a turn, said by the part it happened in (a turn that is not there takes nothing).
+    /** Something of hers reached him in it. */
+    spoke: (t) => { if (t) t.spoke = true; },
+    /** She gave her hands a thing in it. */
+    opened: (t, id) => { if (t && id) t.opened.push(id); },
+    /** She stopped what was in her hands in it (these things). */
+    stopped: (t, ids) => { if (t) t.stopped.push(...ids); },
+    /** It was cancelled to be started over with his new words: it ends with nothing of its own said. */
+    startedOver: (t) => { if (t) t.startedOver = true; },
   };
 }

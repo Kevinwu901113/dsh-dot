@@ -39,6 +39,7 @@ export function createVoice(dot) {
   // The times she wrote to him unasked, of the last two days: [{ at, answeredAt?, noted? }] (see reachText).
   let reaches = (store.get('reaches') ?? []).filter((r) => r && Date.now() - r.at < 2 * 86400000);
   const saveReaches = () => { reaches = reaches.slice(-40); store.set('reaches', reaches); };
+  const reachedIn = new WeakSet(); // the turns in which she has written to him unasked (once a turn)
   const answerReaches = () => { let n = 0; for (const r of reaches) if (!r.answeredAt) { r.answeredAt = Date.now(); n++; } if (n) saveReaches(); };
   // One she wrote and he has left unanswered for reachUnansweredMs: said once, as a note in her conversation — her
   // record then holds what came of it, and what she makes of that is hers.
@@ -154,13 +155,13 @@ export function createVoice(dot) {
     if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
-    if (t) t.spoke = true;
+    turns.spoke(t);
     // The ends it was given are told: written on each thing now, when all of it went out (cut short by his words, the
     // turn those words open says it).
     if (plan?.things?.length && !r.unsent?.length) for (const id of plan.things) dot.ledger.note(id, { told: Date.now() });
     saidNote = saidText(r); // hers to know: shown with whatever reaches her next
     // She wrote to him in a turn that is not on his business: kept as a fact of the day (reachText), with what came of it.
-    if (t && !heSpoke(t) && !forHim(t) && !t.reached) { t.reached = true; reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.by.form ?? (t.by.whose === 'schedule' ? 'schedule' : '') }); }
+    if (t && !heSpoke(t) && !forHim(t) && !reachedIn.has(t)) { reachedIn.add(t); reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.by.form ?? (t.by.whose === 'schedule' ? 'schedule' : '') }); }
     return r;
   }
   // Nothing she writes leaves, and nothing she writes is read: a turn he is in that ends — his words, or a thing of
@@ -172,7 +173,7 @@ export function createVoice(dot) {
   // (At her window what she wrote is on his screen as it is; nothing more goes out from here.)
   // Called by turns.js for a turn on his business that ended (forHim).
   const turnEnded = (id, t, event, broke) => {
-    if (t.cancelled) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
+    if (t.startedOver) { audit('owner-turn-restarted', { session: id, aborted: event.data?.reason?.kind === 'aborted' }); return; }
     if (broke) return;
     // A turn his words did not open (a thing of his came back, an answer it waited for) has something for him when the
     // book has an end of his he has not heard (planFor's `things`): not when it was already said in an earlier turn,
