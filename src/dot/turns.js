@@ -104,8 +104,8 @@ export function createTurns(dot) {
     const t = turns.get(id);
     if (!t) return;
     if (event.type === 'user/message' && event.data?.source?.kind === 'schedule') { t.by.whose = 'schedule'; return; }
-    // His words: over his QQ, or anywhere else (her window, an IM bot) where her answer is on his screen — a window
-    // that is not her conversation yet counts already (setLast at this turn's end), one she has left does not.
+    // His words: over his QQ, or typed into her conversation's own window, where her answer is on his screen. Only her
+    // conversation (or the one being made for her) gets here; words typed into one she has left do not count.
     const at = event.type === 'user/message' ? addressed(event.data?.source) : '';
     if (at === 'qq' || (at === 'desk' && !sessions.retired(id))) {
       if (at === 'qq' || !t.by.where) t.by.where = at;
