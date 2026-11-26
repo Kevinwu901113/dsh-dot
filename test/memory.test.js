@@ -1230,3 +1230,21 @@ test('consolidation while the account is held: not a failure of its own — no w
   assert.equal((await h.services.dotMemory.consolidate()).ok, true);
   assert.equal(h.services.dotMemory.status().sinceCursor, 0);
 });
+
+test('her conversation no longer fits the model: handed over at once, whatever its size — and only once; a turn that broke otherwise is not', async () => {
+  const h = harness({ llmReply: '{}' });
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  const broke = (id, code) => { h.emit(id, 'turn/start', {}); h.emit(id, 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' }); h.emit(id, 'turn/end', { reason: { kind: 'error', error: { code, message: 'x' } } }); };
+  broke('s1', 'SERVER');
+  await wait(50);
+  assert.deepEqual(h.archived, [], 'a server error is not the conversation\'s size');
+  broke('s1', 'CONTEXT_WINDOW_EXCEEDED');
+  await wait(50);
+  assert.deepEqual(h.archived, ['s1']);
+  assert.equal(h.session, 's2');
+  assert.equal(h.audit.findLast((e) => e.event === 'handoff').why, 'overflow');
+  broke('s2', 'CONTEXT_WINDOW_EXCEEDED');
+  await wait(50);
+  assert.deepEqual(h.archived, ['s1'], 'the one it made is not handed over again');
+  assert.ok(h.audit.some((e) => e.event === 'handoff-skipped' && e.why === 'overflowed again'));
+});

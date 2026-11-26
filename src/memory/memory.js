@@ -32,7 +32,7 @@ import { annotate } from './when.js';
 import { dayMark, unstamp } from '../clock.js';
 import { lastEnd, lastStart } from '../hours.js';
 import { sectionOf, setValues } from '../settings.js';
-import { installLlmGate, outcomeText } from '../llm-gate.js';
+import { installLlmGate, outcomeOf, outcomeText } from '../llm-gate.js';
 import { WORK, callModel } from '../llm-call.js';
 import { configure as configurePrompts, prompt, table } from '../prompts.js';
 import { NO_BACKFILL, runPendingReset } from '../reset.js';
@@ -499,7 +499,7 @@ export function apply(ctx, config = {}) {
       case 'turn/end': {
         running.delete(id); recall.clear(id); facts.clear(id); recall.turnEnded();
         if (!dot()?.onSleep && dailyDue()) void dayEnd(); // no dot: no night to end the day on
-        void afterTurn(id);
+        void afterTurn(id, event.data?.reason);
         return;
       }
       default:
@@ -662,7 +662,7 @@ export function apply(ctx, config = {}) {
     if (!agent || typeof meter?.measure !== 'function') return 0;
     try { return Number(meter.measure(agent.session)?.totalTokens ?? 0); } catch (error) { void error; return 0; }
   }
-  async function handoff(fromId, tokens = 0) {
+  async function handoff(fromId, tokens = 0, why = '') {
     if (handingOff) return { skipped: 'already' };
     const d = dot();
     const controller = ctx.get('sessionController');
@@ -688,7 +688,7 @@ export function apply(ctx, config = {}) {
       const found = await controller.resolveAgent(sessionId);
       if (found && !('error' in found)) found.agent.inject?.(createUserMessage({ content: [{ type: 'text', text: note }], source: { ...HANDOFF_SOURCE, generation: memory.gen } }));
       appendFileSync(files.handoffs, `${JSON.stringify({ at: new Date().toISOString(), from: fromId, to: sessionId, gen: memory.gen, tokens, ms: Date.now() - t0, consolidated: Boolean(c?.ok), tail: tail.length })}\n`);
-      audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens });
+      audit('handoff', { from: fromId, to: sessionId, gen: memory.gen, tokens, ...(why ? { why } : {}) });
       logger.info(`handoff: ${fromId} → ${sessionId} (第 ${memory.gen} 段, ${tokens} tokens)`);
       return { ok: true, sessionId };
     } catch (err) {
@@ -697,9 +697,19 @@ export function apply(ctx, config = {}) {
     } finally { release(); handingOff = false; }
   }
   const handoffBase = new Map(); // session → tokens when it was created by a handoff (0) — cooldown baseline
-  async function afterTurn(id) {
+  const overflowed = new Set(); // conversations a context overflow handed over to
+  async function afterTurn(id, reason) {
     if (handingOff) return;
     const tokens = await measure(id);
+    // Her conversation no longer fits the model (dsh's own compaction, where there is one, could not make it fit):
+    // every turn of it would break the same way. Handed over now, whatever its size and whether a goal is on — once: a
+    // conversation made by such a handover that overflows again is not handed over again (what is too big came with it).
+    if (reason?.kind === 'error' && outcomeOf(reason).kind === 'context') {
+      if (overflowed.has(id)) { audit('handoff-skipped', { session: id, why: 'overflowed again' }); return; }
+      const r = await handoff(id, tokens, 'overflow');
+      if (r.sessionId) { handoffBase.set(r.sessionId, 0); overflowed.add(r.sessionId); }
+      return;
+    }
     const grown = tokens - (handoffBase.get(id) ?? 0);
     if (tokens >= cfg.handoffTokens && grown >= cfg.minTokensBetweenHandoffs) {
       const goal = (() => { try { return ctx.get('goals')?.get(ctx.get('agents')?.get?.(id))?.phase === 'active'; } catch { return false; } })();
