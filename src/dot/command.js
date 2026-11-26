@@ -26,7 +26,7 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status, nigh
   return {
     name: 'dot',
     description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it); "replay <file|latest> [n]" sends a kept request of her conversation again n times and only writes down what came back (dot.replayKeep)',
-    input: { hint: '[stop | doctor | test | check | howto [<app>] | nightcheck [apply] | replay <file|latest> [n] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+    input: { hint: '[stop | doctor | test | howto [<app>] | nightcheck [apply] | replay <file|latest> [n] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
     handler: async ({ rawInput }) => {
       const arg = String(rawInput ?? '').trim();
       if (arg === 'stop') return ok(stop());

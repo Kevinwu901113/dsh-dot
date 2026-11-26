@@ -79,7 +79,7 @@ export const SCHEMA = [
   e('dot', 'replayKeep', 'dot', 'int', 'restart-dsh', '留下她对话最近几次发给模型的完整请求，供 /dot replay 重放（存在 ~/.dsh/dot-replay/decide/；含对话全文；0 = 不留）', { min: 0, max: 500 }),
   e('dot', 'pushesKept', 'dot', 'int', 'restart-dsh', 'App 自己的推送（不是人发来的）不叫醒她：留最近几条，下次她醒着有事时一起给她看', { min: 0, max: 50 }),
   // llm (the model-request gate, src/llm-gate.js: one per dsh, whichever components are on)
-  e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（整理记忆、用法笔记、她的手）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
+  e('llm', 'workEffort', '模型请求', choice('', 'off', 'low', 'high', 'max'), 'restart-dsh', '她后台干活时的思考强度（整理记忆、用法笔记；她的手用 dot.handsEffort）。和对话分开：你在对话里把思考关掉，不影响这里。空 = 跟随 dsh 的模型选择；模型不支持所选强度时也跟随'),
   e('llm', 'backgroundRpm', '模型请求', 'int', 'restart-dsh', '她后台的请求每分钟最多几次（整理记忆、她的手、群聊评分；和你的对话不限；0 = 不限速）', { min: 0, max: 600 }),
   e('llm', 'foregroundQuietSeconds', '模型请求', 'int', 'restart-dsh', '你们的对话发完请求后，后台再等几秒（秒）', { min: 0, max: 600 }),
   e('llm', 'maxBackgroundWaitSeconds', '模型请求', 'int', 'restart-dsh', '一个后台请求最多被压后多久（秒；最多 270：再长她的手会被当成卡住，dot.turnStallMs 是 300 秒）', { min: 10, max: 270 }),

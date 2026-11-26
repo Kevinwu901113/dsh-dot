@@ -495,7 +495,7 @@ export function createHandsWiring(dot) {
     let held;
     if (hands.isHands(s.id, s.header?.cwd)) { const mine = hands.thingOf(s.id); held = hands.holder(device); if (!held || (mine && held.thing?.id === mine.id)) return next(); }
     else { held = hands.hold(device, s.id, shortTool(exec.name)); if (!held) return next(); }
-    return deny(`${device === 'phone' ? '手机' : '电脑'}正被另一件事占着（${held.thing ? `在做：${titleOf(held.thing.task)}` : `在用 ${held.tool}`}），稍后再试`);
+    return deny(prompt('dot.hands.held', { device: device === 'phone' ? '手机' : '电脑', by: held.thing ? `在做：${titleOf(held.thing.task)}` : `在用 ${held.tool}` }).trim());
   };
   // The computer's own gate (computer/gate.js) leaves her hands' calls to the gates here, whichever hook runs first.
   const calls = new WeakMap(); // turn → how often each call (loopKey) was made in it
