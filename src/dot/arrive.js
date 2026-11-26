@@ -8,7 +8,7 @@ import { prompt } from '../prompts.js';
 import { head } from '../cut.js';
 import { titleOf } from './things.js';
 import { forHim, overQq } from './turns.js';
-import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerWords, withImages, handsStatus, pushesText, conversationTitle, wakeText } from './text.js';
+import { PHONE_NOTIFICATION_SOURCE, ownerSource, ownerUnread, ownerWords, withImages, handsStatus, pushesText, conversationTitle, wakeText } from './text.js';
 
 export const SETUP_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'setup' });
 
@@ -57,8 +57,15 @@ export function createArrive(dot) {
       audit('notification-woke', { session: id, count: items.length, pkgs: [...new Set(items.map((n) => n.pkg))], whileBusy, sinceSeenMs: Date.now() - Date.parse(items[0].at), sincePostedMs: items[0].postedAt ? Date.now() - items[0].postedAt : undefined });
     }).catch((err) => { logger.warn(`wake for notification failed: ${err.message}`); audit('notification-dropped', { pkgs, why: err.message }); });
   };
-  /** Has he said something she has not read — still in the buffer, or held while her conversation is being handed over? */
-  const hisUnread = () => ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner);
+  /**
+   * Has he said something she has not read? Still in his buffer, held while her conversation is handed over, or handed
+   * to her agent for its next step and not read by the model yet (`agent`: the one asking, else her conversation's).
+   * The one reading of "unread" that read-before-you-speak goes by (voice.readFirst).
+   */
+  const hisUnread = (agent) => {
+    const id = sessions.last(), mine = !agent || agent.session?.id === id;
+    return (mine && (ownerBatch.length > 0 || frozenQueue.some((n) => n.fromOwner))) || ownerUnread(agent ?? ctx.get('agents')?.get?.(id));
+  };
 
   /**
    * His words into her session. Idle: a followup starts a turn, as always. In the middle of a turn:
@@ -72,7 +79,7 @@ export function createArrive(dot) {
     // Nothing of this turn has reached him and it has done nothing yet (a turn of his words, no tool call so far):
     // it is started over with what he just said, so the reply she writes is to all of it. A turn that has
     // used a tool is not undone; his words go into it at its next step.
-    const restart = busy && overQq(open) && forHim(open) && !open.tools && !open.spoke && typeof agent.cancel === 'function' && voice.preempts() < cfg.ownerPreemptMax;
+    const restart = busy && overQq(open) && forHim(open) && !open.tools && !open.spoke && typeof agent.cancel === 'function' && voice.readFirst(true) === 'gave-way';
     // The host's agent handle may not expose `steer`: `send(message, 'next-step', true)` is the same
     // boundary in dsh-agent's inbox API; failing both, the followup (after the turn, as before).
     const via = restart ? 'restart' : busy && typeof agent.steer === 'function' ? 'steer' : busy && typeof agent.send === 'function' ? 'send' : 'followup';
@@ -89,7 +96,7 @@ export function createArrive(dot) {
         // input submitted after an active cancellation is held by the host for the next turn and runs when the
         // aborted one has settled, so nothing waits on a promise of ours and the order is the host's inbox order.
         agent.cancel({ kind: 'hook', reason: 'dot-owner-spoke' }, { keepInbox: true });
-        voice.preempted(); turns.startedOver(open); // only once the cancel is in: a turn that was not cancelled keeps its answer
+        turns.startedOver(open); // only once the cancel is in: a turn that was not cancelled keeps its answer
         if (typeof agent.send === 'function') agent.send(message, 'next-turn', true); else agent.followup(message);
       } else if (via === 'steer') agent.steer(message); else if (via === 'send') agent.send(message, 'next-step', true); else agent.followup(message);
     } catch (err) { logger.warn(`${via} failed (${err.message}); followup instead`); agent.followup(message); }

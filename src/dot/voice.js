@@ -19,7 +19,7 @@ import { reachText, voiceHow } from './text.js';
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, store, im, sessions, things, turns;
  *             read when used: ledger, arrive (hisUnread)
- * → { handBack, reachLine, answerReaches, noteUnanswered, dropAck, preempts, preempted, herSaid, replyChecks, planFor,
+ * → { handBack, reachLine, answerReaches, noteUnanswered, dropAck, readFirst, preempts, herSaid, replyChecks, planFor,
  *     factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText, saidElsewhere }
  */
 export function createVoice(dot) {
@@ -59,6 +59,14 @@ export function createVoice(dot) {
   let ackHold = null;   // the answer to his turn that opened a thing, held for a moment (see the voice at a turn's end)
   const dropAck = (why) => { if (!ackHold) return; clearTimeout(ackHold.timer); ackHold = null; audit('ack-dropped', { why }); };
   let preempts = 0;     // her words in a row that gave way before anything of hers reached him (see defaults.ownerPreemptMax)
+  /**
+   * Read before you speak — one rule for every way her words go to him (the voice's answer, her say, a turn of his
+   * words started over): what of hers has not reached him gives way to what he said and she has not read
+   * (`unread`, arrive.hisUnread), at most ownerPreemptMax times in a row; past that hers go out first, so he cannot
+   * keep her silent by talking. Anything of hers reaching him starts the count again. → 'clear' (nothing unread) ·
+   * 'gave-way' (counted: the caller holds hers back) · 'past' (hers go out).
+   */
+  const readFirst = (unread) => { if (!unread) return 'clear'; if (preempts >= cfg.ownerPreemptMax) return 'past'; preempts++; return 'gave-way'; };
   /** Her transcript gets what reached him, not what she wrote (dsh-dot/memory). */
   const herSaid = (id, text) => { try { if (String(text ?? '').trim()) ctx.get('dotMemory')?.herSaid?.({ session: id, text }); } catch (err) { logger.warn(`transcript: ${err.message}`); } };
   const replyChecks = () => { try { return cfg.replyCheck ? ctx.get('dshInterlude')?.checks?.() ?? [] : []; } catch { return []; } };
@@ -131,7 +139,7 @@ export function createVoice(dot) {
     recent: (n) => { try { return ctx.get('dotMemory')?.recent?.(n) ?? []; } catch { return []; } },
     stickers: () => { try { return ctx.get('dshQq')?.stickerList?.() ?? []; } catch { return []; } },
     check: (text) => (cfg.replyCheck ? checkReply(text, replyChecks()) : { lines: String(text).split('\n').map((l) => l.trim()).filter(Boolean), hits: [] }),
-    unread: (to) => to === 'owner' && preempts < cfg.ownerPreemptMax && dot.arrive.hisUnread(),
+    unread: (to) => to === 'owner' && readFirst(dot.arrive.hisUnread()) === 'gave-way',
     lines: cfg.sayLines,
     audit: (event, data) => audit(event, { session: sessions.last(), ...data }),
     send: (m) => outlet.send(m),
@@ -152,7 +160,6 @@ export function createVoice(dot) {
     const ended = t?.by.thing ? dot.ledger.get(t.by.thing) : null;
     const shots = ended?.outcome === 'stuck' && ended.ask?.screen && (ended.device === 'phone' || ended.device === 'computer') ? [`${ended.device}:screen`] : [];
     const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !heSpoke(t) });
-    if (r.status === 'held') preempts++;
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
     turns.spoke(t);
@@ -216,9 +223,9 @@ export function createVoice(dot) {
     /** The day's times she wrote to him unasked, as a line for her turn (text.js reachText). */
     reachLine: () => reachText(reaches),
     answerReaches, noteUnanswered, dropAck,
-    /** Her words in a row that gave way to his; preempted() counts one more and returns the count before it. */
+    readFirst,
+    /** Her words in a row that gave way to his (readFirst). */
     preempts: () => preempts,
-    preempted: () => preempts++,
     herSaid, replyChecks, planFor, factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText, saidElsewhere,
   };
 }

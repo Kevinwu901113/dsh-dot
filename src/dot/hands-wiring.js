@@ -25,7 +25,7 @@ import { head } from '../cut.js';
 import { screenLines } from '../phone/typing.js';
 import { costOf, sameName } from './things.js';
 import { shortTool } from './turns.js';
-import { handsStatus, ownWords, replyCheckText, spokenOf, isOwnerTarget, ownerUnread, loopKey, conversationTitle, contentText, ownerInterruptText } from './text.js';
+import { handsStatus, ownWords, replyCheckText, spokenOf, isOwnerTarget, loopKey, conversationTitle, contentText, ownerInterruptText } from './text.js';
 
 /** Calls that look or scroll: the same call again is how one reads a changing screen, not a loop. */
 export const LOOP_EXEMPT = /(?:mobile_list_elements_on_screen|mobile_take_screenshot|mobile_get_screen_size|mobile_get_orientation|mobile_list_apps|mobile_list_available_devices|mobile_swipe_on_screen|mobile_press_button|browser_snapshot|browser_take_screenshot|browser_scroll|screenshot)$/;
@@ -575,11 +575,12 @@ export function createHandsWiring(dot) {
     if (round) return next();
     if (!toOwner) return next();
     const buffered = Boolean(id) && id === sessions.last() && arrive.ownerPending() > 0;
-    if (!buffered && !ownerUnread(exec.agent)) return next();
-    if (voice.preempts() >= cfg.ownerPreemptMax) { audit('owner-gate-passed', { session: id, preempts: voice.preempts() }); return next(); }
-    const n = voice.preempted();
+    const read = voice.readFirst(arrive.hisUnread(exec.agent));
+    if (read === 'clear') return next();
+    if (read === 'past') { audit('owner-gate-passed', { session: id, preempts: voice.preempts() }); return next(); }
+    // Gave way: what is in his buffer goes in now, so her next step has it.
     const flushed = buffered ? arrive.flushOwner(exec.agent) : 0;
-    audit('owner-gate-denied', { session: id, flushed, deny: n + 1 });
+    audit('owner-gate-denied', { session: id, flushed, deny: voice.preempts() });
     return deny(ownerInterruptText());
   };
 
