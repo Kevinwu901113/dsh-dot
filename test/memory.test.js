@@ -697,9 +697,9 @@ test('stamps: wake messages are stamped, the transcript is not stamped twice; la
   const h = harness();
   apply(h.ctx, { home: h.home, consolidateEveryLines: 1000 });
   h.emit('s1', 'turn/start', {});
-  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '[11-04 04:51] 在吗\n睡了没' }] }, { surfaceOp: 'append' });
-  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[2025-11-04 04:52 手机通知] 小黑盒 · 阿满：回复了你\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' });
-  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'errand-note' }, content: [{ type: 'text', text: '[11-04 04:53 刚才拿起手机看了一眼] 没什么\n（这是你自己刚做过的事…）' }] }, { surfaceOp: 'append' });
+  h.emit('s1', 'user/message', { source: { kind: 'user', rpcId: 'qq-dot-1' }, content: [{ type: 'text', text: '[11-04 04:51] 在吗\n睡了没' }] }, { surfaceOp: 'append' }); await wait(3); // apart in time: lastSaidAt is judged by the millisecond
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'phone-notification' }, content: [{ type: 'text', text: '[2025-11-04 04:52 手机通知] 小黑盒 · 阿满：回复了你\n（不想理就只回 DOT_SILENT。）' }] }, { surfaceOp: 'append' }); await wait(3); // apart in time: lastSaidAt is judged by the millisecond
+  h.emit('s1', 'user/message', { source: { kind: 'dsh-dot', form: 'errand-note' }, content: [{ type: 'text', text: '[11-04 04:53 刚才拿起手机看了一眼] 没什么\n（这是你自己刚做过的事…）' }] }, { surfaceOp: 'append' }); await wait(3); // apart in time: lastSaidAt is judged by the millisecond
   h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '[不是时间] 原样' }] }, { surfaceOp: 'append' });
   await wait(10);
   const lines = readFileSync(join(h.home, 'memory', 'transcript.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
