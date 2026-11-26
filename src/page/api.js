@@ -12,12 +12,13 @@ import { describe, validatePatch } from '../settings-schema.js';
 import { gateFor } from '../llm-gate.js';
 import { doctorFor, FIXES } from '../doctor.js';
 import { bundle, summary, versions } from './diag.js';
+import { buildText } from '../build.js';
 import { PAGE_PATH, pageHtml } from './page.js';
 import { RESET_LEVELS, cancelReset, lastReset, pendingReset, resetsDir, scheduleReset } from '../reset.js';
 
 export const API_PATH = '/dsh-dot/api';
 const require = createRequire(import.meta.url);
-const pluginVersion = (() => { try { return require('../../package.json').version; } catch { return '?'; } })();
+const pluginVersion = buildText();
 const dshVersion = (() => {
   for (const p of ['@deepseek-ai/dsh-core/package.json', '@deepseek-ai/cordis/package.json']) { try { return `${p.split('/')[1]} ${require(p).version}`; } catch { /* next */ } }
   return process.versions.electron ? `electron ${process.versions.electron}` : '?';

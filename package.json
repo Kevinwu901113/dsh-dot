@@ -1,6 +1,6 @@
 {
   "name": "dsh-dot-life",
-  "version": "0.25.2",
+  "version": "0.25.3-dev.1",
   "description": "dot — a character with a persona and a memory who lives her own days, for DeepSeek Harness (dsh): she decides, her hands do things on her own Android phone, an optional microVM computer, the web and this machine (one thing a place, several places at once), and what she says is written from her persona card alone. Her own QQ, a ledger of things kept by code, what needs your yes asked in her words. Lives next to qq-bridge.",
   "type": "module",
   "license": "MIT",
@@ -50,6 +50,7 @@
     "src",
     "lib",
     "scripts/prompts.mjs",
+    "dsh-dot-build.json",
     "examples",
     "cordis.patch.yml",
     "README.md",
@@ -73,7 +74,8 @@
   },
   "scripts": {
     "test": "node --test test/*.test.js",
-    "prompts": "node scripts/prompts.mjs"
+    "prompts": "node scripts/prompts.mjs",
+    "pack": "node scripts/pack.mjs"
   },
   "peerDependencies": {
     "@deepseek-ai/dsh-subprocess": ">=0.2.0-rc.2",

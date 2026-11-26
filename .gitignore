@@ -3,3 +3,4 @@ node_modules/
 .DS_Store
 ui/lib/
 package-lock.json
+dsh-dot-build.json

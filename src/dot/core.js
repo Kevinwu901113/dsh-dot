@@ -37,6 +37,7 @@ import { configure as configurePrompts, prompt } from '../prompts.js';
 import { runPendingReset } from '../reset.js';
 import { today } from '../clock.js';
 import { configure as configurePrice, noteRoute, routeFor } from '../price.js';
+import { buildText } from '../build.js';
 import { workingRules, stripSilent, SILENT } from './text.js';
 // What used to be defined here and now lives with the part that uses it: the same names, the same values.
 export { ERRAND_NOTE_SOURCE, IM_RPC, isImMessage } from './sessions.js';
@@ -481,5 +482,5 @@ export function apply(ctx, config = {}) {
   // The panel: `/dsh-dot/` on dsh's own web server (the "dot" sidebar tab is an iframe of it).
   ctx.inject(['webServer', 'connection'], (c) => c.effect(() => mountPanel(ctx, c.webServer, logger, c.connection), 'dsh-dot: panel'));
 
-  logger.info(`dot ready — home ${home}`);
+  logger.info(`dot ready — ${buildText()} — home ${home}`);
 }
