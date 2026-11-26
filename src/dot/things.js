@@ -20,6 +20,9 @@ export const nameOf = (task) => titleOf(String(task ?? '').replace(/^（[^）]*�
 export const sameName = (a, b) => { const x = String(a ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(), y = String(b ?? '').normalize('NFKC').replace(/\s+/g, '').toLowerCase(); return x.length >= 2 && y.length >= 2 && (x.includes(y) || y.includes(x)); };
 // How long an ended thing stays in front of her, and owed to him while he has not heard how it ended.
 const ENDED_SHOWN_MS = 3600000;
+// The most lines of the book in front of her at once: one under way in each of the four places, and as many again of
+// what ended, waits or is asked. The note is sent with every arrival; past this many she is told how many more there are.
+export const THINGS_LINES_MAX = 8;
 
 /**
  * @param dot  the plugin's parts (core.js apply): audit; ledger and consent are read from it when asked (they are made later)
@@ -68,6 +71,7 @@ export function createThings(dot) {
     }
     for (const e of awaited(now)) lines.push(prompt('dot.things.awaiting', { what: title(e.task), from: e.awaiting.from, since: ago(e.awaiting.since, now) || '刚' }).trim());
     for (const a of dot.consent.asking()) lines.push(prompt('dot.things.asking', { what: a.what }).trim());
+    if (lines.length > THINGS_LINES_MAX) return [...lines.slice(0, THINGS_LINES_MAX), prompt('dot.things.more', { n: lines.length - THINGS_LINES_MAX }).trim()].join('\n');
     return lines.join('\n');
   };
   /** Is something he asked for still in her hands? */

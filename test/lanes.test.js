@@ -270,3 +270,21 @@ test('wired: her own time waits for what she gave her hands in it — not for a 
   assert.deepEqual(done, [['done', '（在手机上）逛逛小红书：逛完了']], 'her own time is over: its own thing is');
   h.stop();
 });
+
+test('wired: the board of things has a limit; past it she is told how many more there are', async () => {
+  const h = coreHarness();
+  const her = h.agentOf('s1');
+  const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
+  // ten things of his that stopped on a question for her: each a line
+  for (let i = 0; i < 10; i++) {
+    h.his(2 + i, `第${i}件`);
+    await h.tools.hands.execute({ device: 'web', do: `查第${i}件` }); await tick();
+    await h.tools.ask_her.execute({ question: `第${i}件要查哪个？` }, as(h, `h${i + 1}`));
+    h.emit(`h${i + 1}`, 'turn/end', { reason: { kind: 'completed' } });
+    h.emit('s1', 'turn/end', { turn: 2 + i }); await tick(20);
+  }
+  const lines = (await note()).split('\n');
+  assert.equal(lines.filter((l) => /^卡住了：.*要定的是：第\d件要查哪个/.test(l)).length, 8);
+  assert.ok(lines.includes('还有 2 件没列在这里。'), lines.join('\n'));
+  h.stop();
+});
