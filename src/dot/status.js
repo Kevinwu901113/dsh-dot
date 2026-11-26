@@ -132,7 +132,7 @@ export function createStatus(dot) {
       ...(dot.checkup.last() && (dot.checkup.last().bad || dot.checkup.last().warn) ? [`doctor: ${dot.checkup.last().bad} problem(s), ${dot.checkup.last().warn} warning(s) — /dot doctor`] : []),
       `scope: ${cfg.scope} · home: ${home} · im sessions seen: ${imSessions.size}`,
       // Where his next message goes: when she "does not answer", look here first.
-      `her conversation: ${sessions.last() ? `${sessions.last()}${turns.has(sessions.last()) ? ' (in a turn)' : ''}` : '(none yet: say something to her in a session under home)'}`,
+      `her conversation: ${sessions.last() ? `${sessions.last()}${turns.has(sessions.last()) ? ' (in a turn)' : ''}` : '(none yet: his first words or her own time open one)'}`,
       `his messages: wait ${cfg.ownerQuietMs} ms of quiet, at most ${cfg.ownerMaxWaitMs} ms (${cfg.ownerTypingMaxMs} ms while typing) · mid-turn: steered · her words give way to his unread ones ≤${cfg.ownerPreemptMax}× in a row${arrive.ownerPending() ? ` · ${arrive.ownerPending()} waiting` : ''}`,
       ...statusLiveness(),
       `budget: ${ctx.get('budget') ? (dot.budget.blocked().length ? `BLOCKED (${dot.budget.blocked().join(', ')})` : 'ok') : 'not installed (optional)'}`,

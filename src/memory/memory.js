@@ -451,10 +451,13 @@ export function apply(ctx, config = {}) {
   const startOfToday = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d.getTime(); };
 
   // ── her conversation, as it happens ──
+  // Which session is hers is dot's to say (dshDot.hers: her conversation, made by the plugin): a session opened by hand
+  // in her home is not her conversation, and what is said there is not hers to remember. Without dot, her home.
   const isConversation = (id, cwd) => {
     const d = dot();
     if (d?.retired?.(id)) return false;
-    return (cwd && inside(home, cwd)) || id === d?.session?.();
+    if (typeof d?.hers === 'function') return Boolean(d.hers(id, cwd));
+    return Boolean(cwd && inside(home, cwd)) || (Boolean(id) && id === d?.session?.());
   };
   // What she says is on record where it goes out, never worked out from what kind of turn it was: QQ at the moment
   // it has been sent (dshQq.onSent — her qq_send and the relayed answer of a turn alike), every other way out by

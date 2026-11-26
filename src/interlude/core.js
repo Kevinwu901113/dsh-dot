@@ -237,6 +237,9 @@ export function apply(ctx, config = {}) {
   let lastActivity = 0;
   let running = 0;
   const dshDot = () => ctx.get('dshDot');
+  // Which sessions are hers is dot's to say when it is here (dshDot.hers: her conversation, made by the plugin, and the
+  // ones she has left) — a session opened by hand in her home is not hers. null: dot is not here, her home decides.
+  const hersBy = (id, cwd) => { const d = dshDot(); if (typeof d?.hers !== 'function') return null; try { return Boolean(d.hers(id, cwd)); } catch { return false; } };
   const at = (ms) => (ms ? describeNow(new Date(ms)) : null);
   /** A task of her own came back: settled in the ledger. */
   const remember = (kind, r, doing = '') => {
@@ -247,10 +250,14 @@ export function apply(ctx, config = {}) {
     const id = session?.id;
     const cwd = session?.header?.cwd;
     if (!id || !event) return;
-    if (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd))) homeSessions.add(id);
-    if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) homeSessions.add(id);
-    if (wantIm && event.type === 'user/message' && isImMessage(event.data)) homeSessions.add(id);
-    if (!homeSessions.has(id)) return;
+    const d = hersBy(id, cwd);
+    if (d === false) return;
+    if (d === null) {
+      if (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd))) homeSessions.add(id);
+      if (wantIm && event.type === 'agent/inbox/spliced' && (event.data?.inserted ?? []).some(isImMessage)) homeSessions.add(id);
+      if (wantIm && event.type === 'user/message' && isImMessage(event.data)) homeSessions.add(id);
+      if (!homeSessions.has(id)) return;
+    }
     // What the scheduler needs to know: a turn is running, and when she was last busy.
     if (event.type === 'turn/start') { running++; return; }
     if (event.type === 'turn/end') { running = Math.max(0, running - 1); lastActivity = Date.now(); }
@@ -398,7 +405,7 @@ export function apply(ctx, config = {}) {
 
   // 4. 幕前: the Canon is a system-prompt section (right after the deployment persona, static per
   // session so the cached prefix holds).
-  const inHome = (c) => { const s = c.agent?.session; return cfg.scope === 'all' || Boolean((wantHome && s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
+  const inHome = (c) => { const s = c.agent?.session; const d = hersBy(s?.id, s?.header?.cwd); if (d !== null) return d; return cfg.scope === 'all' || Boolean((wantHome && s?.header?.cwd && inside(home, s.header.cwd)) || homeSessions.has(s?.id)); };
   ctx.inject(['systemPrompt'], (scope) => {
     scope.effect(() => scope.systemPrompt.section({
       name: 'interlude:canon',

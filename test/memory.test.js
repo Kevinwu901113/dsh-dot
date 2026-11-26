@@ -434,6 +434,22 @@ test('consolidation and handoff: notes written first, old session archived befor
   assert.match(await h.services.dotMemory.command('memory'), /第 2 段/);
 });
 
+test('which session is her conversation is dot\'s to say: what is said in a session opened by hand in her home is not hers to remember, and it is never handed over', async () => {
+  const h = harness({ llmReply: '{}' });
+  h.services.dshDot.hers = (id) => id === 's1';
+  apply(h.ctx, { home: h.home, handoffTokens: 100000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  h.tokens = 150000;
+  h.emit('m1', 'turn/start', {});
+  h.emit('m1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗，测试一下' }] }, { surfaceOp: 'append' });
+  h.emit('m1', 'turn/end', {});
+  await wait(50);
+  assert.equal(h.services.dotMemory.status().sinceCursor, 0, 'nothing of it is on her record');
+  assert.deepEqual(h.archived, [], 'nor handed over');
+  assert.equal(h.contexts[0].text({ agent: { session: { id: 'm1', header: { cwd: h.home } } } }), '', 'nor given her notes');
+  h.emit('s1', 'user/message', { source: { kind: 'user' }, content: [{ type: 'text', text: '在吗' }] }, { surfaceOp: 'append' });
+  assert.equal(h.services.dotMemory.status().sinceCursor, 1);
+});
+
 test('consolidation waits for a batch: nothing at 119 new lines, one call at 120', async () => {
   const h = harness({ llmReply: '{}' });
   apply(h.ctx, { home: h.home });

@@ -24,31 +24,53 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
  */
 export function createSessions(dot) {
   const { ctx, cfg, store, audit, logger, phone, home } = dot;
-  // Which sessions are dot's. 'home': cwd inside <home>. 'im': any session a dsh-im bot opened,
-  // whatever its workspace (the bot's first message carries an IM rpcId, which arrives in the inbox
-  // before the turn starts). Treat them the same: an IM conversation is dot's wherever it lands.
+  // What her conversation is. It is one session, and the plugin is the only one that makes it: openConversation (the
+  // first thing that reaches her when she has none) and setSession (a handoff), both through createConversation — with
+  // her own preset (HER_PRESET) whenever lean is on and the host takes it. A session is hers when it is that one, or one
+  // she has left (retired). Nothing else makes a session hers: not its folder (a session opened by hand in her home),
+  // not who opened it (an IM bot), not a turn that ends in it. Until 11-26 a turn ending in any session under her home
+  // made that session her conversation: one opened by hand in the desktop's dot workspace became hers with the host's
+  // 52 tools (bash, the web, subagents), and her own time ran in it with no hands in between.
+  // The IM sessions seen are still kept (a handoff leaves an IM bot's session to its bot); they do not make a session hers.
   const imSessions = new Set();
-  let lastSession = store.get('lastSession') || ''; // her most recent session: where phone notifications wake her (remembered across restarts)
-  // Every change goes through here; the phone puts her conversation first (dshPhone.setPriority, when it has one).
-  const setLast = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
-  const wantHome = cfg.scope === 'all' || String(cfg.scope).includes('home');
+  let lastSession = store.get('lastSession') || ''; // her conversation: where phone notifications wake her (remembered across restarts)
+  // Every change goes through here, called only where the plugin made her conversation (and by the self-check, to
+  // clear it); the phone puts her conversation first (dshPhone.setPriority, when it has one).
+  const point = (id) => { if (id === lastSession) return; lastSession = id; store.set('lastSession', id); phone()?.setPriority?.(id); };
+  /** A turn of hers ended in `id` (turns.js): that is her conversation already — no other session becomes it this way. */
+  const setLast = (id) => { if (!id || id === lastSession) return; audit('not-her-conversation', { session: id, conversation: lastSession }); };
   const wantIm = cfg.scope === 'all' || String(cfg.scope).includes('im');
-  // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers, whatever the scope says.
-  const isDotSession = (id, cwd) => !BRIDGE_ID_RE.test(String(id ?? '')) && (cfg.scope === 'all' || (wantHome && cwd && inside(home, cwd)) || (wantIm && imSessions.has(id)));
 
   // Sessions that were hers and are not any more: conversations a reset or a handover retired (src/reset.js,
   // setSession), and — read from older state files, nothing adds to it — the second session she had before there was
   // one of her. A turn ending in one of them does not make it hers again.
   const pastConversations = new Set([...(store.get('pastConversations') ?? []), ...(store.get('pastErrands') ?? []), store.get('errandSession')].filter(Boolean));
   const retired = (id) => Boolean(id) && pastConversations.has(id);
+  // While the plugin is making her conversation (createConversation), the session coming up in her home is that one:
+  // dsh may announce it (agent/created, where compat fixes whose a session is for good) before it has an id we know.
+  let making = 0;
+  // qq-bridge's sessions (`qqb-…`, see src/compat/qq-bridge.js) are never hers. Where a session is does not make it hers.
+  const isDotSession = (id, cwd) => Boolean(id) && !BRIDGE_ID_RE.test(String(id))
+    && (id === lastSession || retired(id) || (making > 0 && Boolean(cwd) && inside(home, cwd)));
   // Her conversations that are lean (told by api.lean, which the compat layer and the prompt trim both ask). A lean
   // conversation is one made with her own agent preset (HER_PRESET): the host's tools come with a session's preset
   // and nothing a plugin can do afterwards takes them out of its requests — not tools.restrict() (it does not reach
   // what the agent's own layer registers), not llm/stream (next() takes no argument), not system-prompt/assemble
   // (0.2.2 re-attaches the tool list after the waterfall). The preset decides; the rest follows it.
-  const leanIds = new Set();
+  const leanIds = new Set(), notLeanTold = new Set();
   /** Does this conversation of hers start lean (see defaults.lean)? One begun at or after the moment lean was first on. */
-  const lean = (id, preset) => { const yes = Boolean(cfg.lean) && Boolean(id) && !retired(id) && preset === HER_PRESET; if (yes) leanIds.add(id); return yes; };
+  const lean = (id, preset) => {
+    const yes = Boolean(cfg.lean) && Boolean(id) && !retired(id) && preset === HER_PRESET;
+    if (yes) leanIds.add(id);
+    // Her conversation not made with her preset while lean is on: one remembered from before (a state file pointing at a
+    // session that became hers some other way), or one the host would not make with the preset. Said once a session.
+    else if (cfg.lean && id && id === lastSession && !notLeanTold.has(id)) {
+      notLeanTold.add(id);
+      audit('conversation-not-lean', { session: id, preset: preset ?? '' });
+      logger.warn(`her conversation ${id} was not made with her preset (${preset || 'none'}): it carries the host's tools — /dot memory handoff moves her to one that is`);
+    }
+    return yes;
+  };
   // Startup self-check: the remembered pointer must be a live conversation of hers. An old state file
   // can point at a retired session or at one archived since (11-03: his QQ messages went into an
   // archived session and nobody answered). What dsh cannot tell us (no registry yet, no title) is skipped.
@@ -63,7 +85,7 @@ export function createSessions(dot) {
     if (!why) return;
     audit('last-session-cleared', { session: lastSession, why });
     logger.warn(`her remembered conversation ${lastSession} is ${why}: cleared (the next message to her picks a new one)`);
-    setLast('');
+    point('');
   };
   /** Leave a note in her conversation, without waking it; true when it got there. */
   async function noteToConversation(origin, note) {
@@ -114,13 +136,16 @@ export function createSessions(dot) {
    */
   const createConversation = async (controller) => {
     let made;
-    if (cfg.lean) {
-      try { made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); }
-      catch (err) { audit('conversation-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
-    }
-    made ??= await controller.create({ cwd: home });
-    // Its effort is set now, whoever is first to send into it (his words typed in its window, her own time).
-    try { await resolveLive(made?.sessionId); } catch (err) { logger.debug?.(`new conversation not resolved: ${err.message}`); }
+    making++;
+    try {
+      if (cfg.lean) {
+        try { made = await controller.create({ cwd: home, agentPreset: HER_PRESET }); audit('conversation-preset', { session: made?.sessionId, preset: made?.agentPreset ?? HER_PRESET }); }
+        catch (err) { audit('conversation-preset-refused', { why: String(err?.message ?? err).slice(0, 200) }); }
+      }
+      made ??= await controller.create({ cwd: home });
+      // Its effort is set now, whoever is first to send into it (his words typed in its window, her own time).
+      try { await resolveLive(made?.sessionId); } catch (err) { logger.debug?.(`new conversation not resolved: ${err.message}`); }
+    } finally { making--; }
     return made;
   };
   /** A new conversation of hers in her home; '' when dsh cannot make one. */
@@ -128,7 +153,7 @@ export function createSessions(dot) {
     try {
       const { sessionId } = await createConversation(controller);
       try { await controller.rename?.({ sessionId, title: 'dot' }); } catch (error) { void error; }
-      setLast(sessionId); audit('conversation-opened', { session: sessionId });
+      point(sessionId); audit('conversation-opened', { session: sessionId });
       return sessionId;
     } catch (err) { logger.warn(`could not open a conversation for her: ${err.message}`); return ''; }
   };
@@ -143,7 +168,7 @@ export function createSessions(dot) {
       try { ctx.get('agents')?.get?.(lastSession)?.cancel?.({ kind: 'hook', reason: 'dot: her conversation moved on' }); audit('conversation-left', { session: lastSession }); } catch (err) { logger.debug?.(`leaving ${lastSession}: ${err.message}`); }
     }
     pastConversations.delete(id);
-    setLast(id);
+    point(id);
   };
   return {
     /** Her conversation's session id ('' when there is none yet). */

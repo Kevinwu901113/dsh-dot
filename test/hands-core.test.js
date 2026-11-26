@@ -6,15 +6,16 @@ import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { apply, ownerSource } from '../src/dot/core.js';
+import { apply as applyMemory } from '../src/memory/memory.js';
 import { hookTable } from './hooks.js';
 
 const tick = (ms = 10) => new Promise((r) => setTimeout(r, ms));
 const text = (m) => m.content.filter((c) => c.type === 'text').map((c) => c.text).join('\n');
 
-function harness(cfg = {}) {
+function harness(cfg = {}, state = { lastSession: 's1' }) {
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
-  writeFileSync(join(dsh, 'dsh-dot-state.json'), '{}');
+  writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify(state));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const { hooks, add: addHook } = hookTable();
   const listeners = [], effects = [], audit = [], tools = {}, archived = [], qqSent = [], agents = new Map(), llmCalls = [], replies = [], herSaid = [];
@@ -48,7 +49,7 @@ function harness(cfg = {}) {
   };
   apply(ctx, { home, budgetPollSeconds: 0, notifyBatchMs: 5, ownerQuietMs: 5, ownerMaxWaitMs: 30, awakeHours: '00:00-24:00', ackHoldMs: 0, ...cfg });
   const emit = (id, type, data) => { const a = agentOf(id); for (const fn of [...listeners]) fn(a.session, { type, data }); };
-  emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation
+  emit('s1', 'turn/start', { turn: 1 }); emit('s1', 'turn/end', { turn: 1 }); // her conversation (the one the state file remembers: a turn does not make a session hers)
   const pre = (id, name, input = {}) => hooks['tools/pre-execute']({ name, input, agent: agentOf(id) }, async () => 'ran');
   const shown = (name, v) => tools[name].output.render({}, v)[0].text;
   return { ctx, home, made, services, tools, hooks, emit, pre, shown, audit, archived, qqSent, agentOf, llmCalls, replies, herSaid, command: (arg) => command.handler({ rawInput: arg }), stop: () => { for (const d of effects) if (typeof d === 'function') d(); } };
@@ -846,5 +847,89 @@ test('the end of a thing of his is said in the turn it wakes, whatever else she 
   assert.match(facts().at(-1), /「看手机现在电量」做完了。结果：电量百分之百/);
   assert.deepEqual(h.qqSent.at(-1), ['owner', '一百', []]);
   assert.ok(h.ctx.get('dshDot').things(5).find((e) => e.id === 't1').told);
+  h.stop();
+});
+
+// ── her conversation is the one the plugin made for her (11-26) ──
+// "新会话" in the desktop's dot workspace made a standard session in her home; a turn ending there made it her
+// conversation, with the host's 52 tools, and her own time ran in it next day — web_fetch, write, edit, no hands.
+const byHand = (h, id) => { h.made.set(id, { cwd: h.home, agentPreset: 'standard' }); h.emit(id, 'turn/start', { turn: 1 }); h.emit(id, 'user/message', { source: { kind: 'user', rpcId: '11c1d70b-5d63-43b1-addb-e7ffd9969eee' }, content: [{ type: 'text', text: '在吗，测试一下' }] }); h.emit(id, 'turn/end', { turn: 1, reason: { kind: 'completed' } }); };
+const compatOf = async (h) => {
+  const { classify, hiddenFor } = await import('../src/compat/qq-bridge.js');
+  const dot = h.ctx.get('dshDot');
+  const hers = Object.assign((id, cwd) => dot.hers(id, cwd), { hands: (id, cwd) => dot.isHands(id, cwd), handsDevice: (id, cwd, preset) => dot.handsDevice(id, cwd, preset) });
+  // as compat's agent/created does it: whose the session is, and a conversation of hers made with her preset is lean
+  const owner = (id) => { const sh = h.agentOf(id).session.header; const o = classify({ id, cwd: sh.cwd, preset: sh.agentPreset }, null, hers); return o === 'dot' && dot.lean(id, sh.agentPreset) ? 'dot-lean' : o; };
+  return { owner, hiddenFor };
+};
+const HOST_TOOLS = ['bash', 'web_fetch', 'web_search', 'subagent', 'workflow', 'plugin_manager', 'todo_write'];
+
+test('a session opened by hand in her home is not hers: a turn ending there does not make it her conversation, her own tools are not its, and nothing of hers goes there', async () => {
+  const h = harness();
+  const dot = h.ctx.get('dshDot');
+  const { owner, hiddenFor } = await compatOf(h);
+  byHand(h, 'm1');
+  assert.equal(dot.session(), 's1', 'her conversation is still the one the plugin made');
+  assert.equal(dot.hers('m1', h.home), false);
+  assert.equal(owner('m1'), 'other', 'a plain session: the host\'s, not hers');
+  assert.deepEqual(hiddenFor(owner('m1'), ['hands', 'say', 'memory', 'recall', 'his_ok', 'qq_sticker_keep', ...HOST_TOOLS]), ['hands', 'say', 'memory', 'recall', 'his_ok', 'qq_sticker_keep'], 'nothing that acts or speaks as her');
+  assert.equal((await h.pre('m1', 'hands', { device: 'web', do: '查个东西' })).kind, 'deny');
+  // her own time goes to her conversation, not to the session opened last
+  assert.equal(dot.task({ kind: 'free', key: 'free|d|0', text: '这段时间是你自己的', source: { kind: 'dsh-interlude', form: 'free' } }), 'queued');
+  await tick();
+  assert.equal(h.agentOf('m1').got.length, 0);
+  assert.equal(h.agentOf('s1').got.length, 1);
+  assert.ok(h.audit.some((a) => a.event === 'task-started' && a.session === 's1'));
+  h.stop();
+});
+
+test('with no conversation of hers, a session opened by hand in her home does not become one: the first thing that reaches her opens one with her preset, and it is lean as before', async () => {
+  const h = harness({}, { lastSession: '' });
+  const dot = h.ctx.get('dshDot');
+  const { owner, hiddenFor } = await compatOf(h);
+  byHand(h, 'm1');
+  assert.equal(dot.session(), '', 'still none: a turn does not make a session hers');
+  // dsh may announce the new session (agent/created: compat fixes whose it is there) before create() has returned its id
+  const create = h.services.sessionController.create, announced = [];
+  h.services.sessionController.create = async (req) => { const r = await create(req); announced.push([dot.hers(r.sessionId, req.cwd), owner(r.sessionId)]); return r; };
+  dot.task({ kind: 'free', key: 'free|d|0', text: '这段时间是你自己的', source: { kind: 'dsh-interlude', form: 'free' } });
+  await tick(30);
+  const id = dot.session();
+  assert.ok(id && id !== 'm1');
+  assert.deepEqual(h.made.get(id), { cwd: h.home, agentPreset: 'dot' }, 'made by the plugin, with her own preset');
+  assert.equal(h.agentOf(id).got.length, 1); assert.equal(h.agentOf('m1').got.length, 0);
+  assert.deepEqual(announced, [[true, 'dot-lean']], 'hers, and lean, from the moment it is made');
+  // the lean conversation: her own tools only, a host tool it is still offered by name is refused
+  assert.equal(owner(id), 'dot-lean');
+  assert.deepEqual(hiddenFor('dot-lean', ['hands', 'say', 'memory', ...HOST_TOOLS]), HOST_TOOLS);
+  for (const tool of ['bash', 'web_fetch', 'subagent']) assert.equal((await h.pre(id, tool, {})).kind, 'deny', `${tool} is not hers`);
+  assert.ok(h.audit.some((a) => a.event === 'lean-refused' && a.tool === 'web_fetch'));
+  assert.equal(await h.pre(id, 'read', { file_path: join(h.home, 'her', 'x.md') }), 'ran', 'her own files are');
+  h.stop();
+});
+
+test('a handoff moves her to a new lean conversation; a session opened by hand in her home is never handed over, however long it gets', async () => {
+  const h = harness();
+  writeFileSync(join(process.env.DSH_HOME, 'dsh-memory.json'), JSON.stringify({ recall: { backend: 'off' } }));
+  h.services.tokenMeter = { measure: () => ({ totalTokens: 999999 }) };
+  const archived = [];
+  h.services.workspaceRegistry = { archiveSession: async (id) => { archived.push(id); } };
+  applyMemory(h.ctx, { home: h.home, handoffTokens: 60000, minTokensBetweenHandoffs: 1000, consolidateEveryLines: 1000 });
+  const dot = h.ctx.get('dshDot');
+  const { owner } = await compatOf(h);
+  // the before: her conversation is the lean one the plugin made
+  const first = (await dot.createConversation(h.services.sessionController)).sessionId; dot.setSession(first);
+  assert.equal(owner(first), 'dot-lean');
+  byHand(h, 'm1'); await tick(50);
+  assert.deepEqual(archived, [], 'not hers: nothing is handed over from it');
+  assert.equal(dot.session(), first);
+  h.emit(first, 'turn/start', { turn: 1 }); h.emit(first, 'turn/end', { turn: 1, reason: { kind: 'completed' } }); await tick(80);
+  const next = dot.session();
+  assert.deepEqual(archived, [first], 'her conversation, past handoffTokens, is handed over');
+  assert.notEqual(next, first);
+  assert.deepEqual(h.made.get(next), { cwd: h.home, agentPreset: 'dot' }, 'the new one is made with her preset');
+  assert.equal(owner(next), 'dot-lean', 'and is lean');
+  assert.equal(dot.retired(first), true);
+  assert.equal((await h.pre(next, 'bash', { command: 'ls' })).kind, 'deny');
   h.stop();
 });

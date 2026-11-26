@@ -171,6 +171,17 @@ test('prompt trim: a lean conversation of hers reads only what this plugin wrote
   h.stop();
 });
 
+test('which sessions are hers is dot\'s to say: a session opened by hand in her home gets neither her card nor the trim', async () => {
+  const all = ['harness:identity', 'deployment:persona-prefix', 'interlude:canon', 'dot:rules', 'tool:bash', 'mcp:vm'];
+  const h = harness({ reply: GOOD });
+  h.ctx.get = ((get) => (n) => (n === 'dshDot' ? { ...(get(n) ?? {}), hers: (id) => id === 's1' } : get(n)))(h.ctx.get);
+  assert.deepEqual(await h.assemble('s1', h.home, all), ['interlude:canon', 'dot:rules', 'tool:bash', 'mcp:vm']);
+  assert.deepEqual(await h.assemble('m1', h.home, all), all, 'in her home, not hers: untouched');
+  assert.equal(h.canonText('m1', h.home), '');
+  assert.notEqual(h.canonText('s1', h.home), '');
+  h.stop();
+});
+
 test('doings: grouped by what she did, costed, with his reactions; feedback finds the latest, an id or a bit of text', async () => {
   const { createDoings, tokensOf, yuanOf, labelOf } = await import('../src/interlude/doings.js');
   const dir = mkdtempSync(join(tmpdir(), 'doings-'));

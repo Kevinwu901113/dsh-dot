@@ -14,7 +14,8 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 function harness({ blocked = [], state = {}, targets = [{ targetId: 'me', name: 'Kevin' }] } = {}) {
   const dsh = mkdtempSync(join(tmpdir(), 'dsh-'));
   process.env.DSH_HOME = dsh;
-  writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify(state));
+  // Her conversation is 's1' unless a test says otherwise: only the plugin makes a session her conversation, never a turn in it.
+  writeFileSync(join(dsh, 'dsh-dot-state.json'), JSON.stringify({ lastSession: 's1', ...state }));
   const home = join(mkdtempSync(join(tmpdir(), 'home-')), 'dot');
   const effects = [], audit = [], sent = [], listeners = [];
   const { hooks, add: addHook } = hookTable();
@@ -48,12 +49,13 @@ test('silence marker detection', () => {
   assert.equal(contentText([{ type: 'text', text: 'a' }, { type: 'tool_use' }, { type: 'text', text: 'b' }]), 'ab');
 });
 
-test('working rules are a prompt section for sessions in home; no AGENTS.md is written', () => {
+test('working rules are a prompt section for her conversation; no AGENTS.md is written', () => {
   const h = harness();
   apply(h.ctx, h.config);
   assert.ok(!existsSync(join(h.home, 'AGENTS.md')));
   const sec = h.ctx.sections.find((s) => s.name === 'dot:rules');
-  assert.match(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), /schedule_create[\s\S]*就不用说/);
+  assert.match(sec.text({ agent: { session: { id: 's1', header: { cwd: h.home } } } }), /schedule_create[\s\S]*就不用说/);
+  assert.equal(sec.text({ agent: { session: { id: 'a', header: { cwd: h.home } } } }), '', 'a session opened by hand in her home is not hers');
   assert.equal(sec.text({ agent: { session: { id: 'b', header: { cwd: '/elsewhere' } } } }), '');
   stop(h);
 });
@@ -103,24 +105,31 @@ test('scheduled turns get the silence rule with what woke her; others do not', a
   stop(h);
 });
 
-test('scope: a session an IM bot opened elsewhere is dot\'s too; the desktop UI elsewhere is not', async () => {
+test('only the plugin makes a session hers: a session opened by hand in her home, one an IM bot opened, the desktop elsewhere are not; a turn ending in one does not make it her conversation', async () => {
   const h = harness();
+  h.ctx.provide = (n, v) => { h.ctx[n] = v; };
   apply(h.ctx, h.config);
   const rules = h.ctx.sections.find((s) => s.name === 'dot:rules');
   const at = (id, cwd) => rules.text({ agent: { session: { id, header: { cwd } } } });
   // dsh-im relays the first message with rpcId "<channel>-<uuid>" into the inbox before the turn starts.
   h.emitAs('wx', '/Users/x/.dsh/im', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'weixin-c6d37277-7e04-421c-b080-dbc1c5f57eb6' } }] });
-  assert.match(at('wx', '/Users/x/.dsh/im'), /你和他之间的几件事/);
+  assert.equal(at('wx', '/Users/x/.dsh/im'), '', 'an IM bot\'s session is not hers');
   h.emitAs('ui', '/Users/x/code', 'agent/inbox/spliced', { inserted: [{ role: 'user', source: { kind: 'user', rpcId: 'rpc-1234' } }] });
   assert.equal(at('ui', '/Users/x/code'), '');
-  // a scheduled turn in that IM session is delivered like one in home
-  h.emitAs('wx', '/Users/x/.dsh/im', 'agent/inbox/spliced', { inserted: [{ source: { kind: 'schedule' } }] });
-  h.emitAs('wx', '/Users/x/.dsh/im', 'turn/start', { turn: 2 });
-  h.emitAs('wx', '/Users/x/.dsh/im', 'user/message', { source: { kind: 'schedule' } });
-  h.emitAs('wx', '/Users/x/.dsh/im', 'assistant/message', msg('X 更新了'));
-  h.emitAs('wx', '/Users/x/.dsh/im', 'turn/end', { turn: 2, reason: 'completed' });
+  // "新会话" in the desktop's dot workspace: a session in her home, opened by hand; his words, an answer, the turn ends
+  for (const [id, cwd] of [['manual', h.home], ['wx', '/Users/x/.dsh/im']]) {
+    h.emitAs(id, cwd, 'turn/start', { turn: 1 });
+    h.emitAs(id, cwd, 'user/message', { source: { kind: 'user', rpcId: '11c1d70b-5d63-43b1-addb-e7ffd9969eee' }, content: [{ type: 'text', text: '在吗，测试一下' }] });
+    h.emitAs(id, cwd, 'assistant/message', msg('在'));
+    h.emitAs(id, cwd, 'turn/end', { turn: 1, reason: 'completed' });
+  }
   await wait(20);
-  assert.deepEqual(h.sent.map((s) => s.text), [], 'what she writes in a turn goes nowhere: she speaks with say');
+  assert.equal(h.ctx.dshDot.session(), 's1', 'her conversation is still the one the plugin made');
+  assert.equal(JSON.parse(readFileSync(join(process.env.DSH_HOME, 'dsh-dot-state.json'), 'utf8')).lastSession, 's1', 'and that is what is remembered');
+  assert.equal(at('manual', h.home), '');
+  assert.equal(h.ctx.dshDot.hers('manual', h.home), false);
+  assert.equal(h.ctx.dshDot.turns().length, 0, 'its turns are not hers either');
+  assert.deepEqual(h.sent.map((s) => s.text), [], 'nothing goes anywhere from them');
   stop(h);
 });
 
@@ -132,16 +141,11 @@ test('someone writing to her wakes her latest session with the notification text
   h.ctx.get = ((orig) => (name) => name === 'dshPhone' ? { onNotification: (fn) => { onNotification = fn; return () => {}; }, onStatus: () => () => {}, status: () => ({ state: 'ready' }) } : name === 'sessionController' ? { resolveAgent: async (id) => ({ agent: { session: { id }, followup: (m) => followups.push({ id, m }) } }) } : orig(name))(h.ctx.get);
   apply(h.ctx, h.config);
   assert.ok(onNotification, 'subscribed');
-  // no session yet → dropped
-  onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: 'hi' });
-  await wait(10);
-  assert.equal(followups.length, 0);
-  assert.ok(h.audit.some((e) => e.event === 'notification-dropped'));
-  // a turn in home → that session is hers
-  h.emit(h.home, 'turn/start', { turn: 1 });
-  h.emit(h.home, 'user/message', { source: { kind: 'user' } });
-  h.emit(h.home, 'assistant/message', msg('在'));
-  h.emit(h.home, 'turn/end', { turn: 1, reason: 'completed' });
+  // a turn in a session opened by hand in her home does not move her: what wakes her goes to her conversation (s1)
+  h.emitAs('manual', h.home, 'turn/start', { turn: 1 });
+  h.emitAs('manual', h.home, 'user/message', { source: { kind: 'user' } });
+  h.emitAs('manual', h.home, 'assistant/message', msg('在'));
+  h.emitAs('manual', h.home, 'turn/end', { turn: 1, reason: 'completed' });
   onNotification({ pkg: 'com.tencent.mobileqq', title: '宽', text: '你会主动给我发消息吗' });
   onNotification({ pkg: 'com.max.xiaoheihe', title: '小黑盒', text: '你关注的游戏更新了' });
   await wait(40);
@@ -438,7 +442,8 @@ test('dot:now: one line with what has just reached her; "since" counts from befo
   h.ctx.get = ((orig) => (name) => (name === 'dotMemory' ? { lastSaidAt: (before) => { asked.push(before); return before - 2 * 3600000; } } : orig(name)))(h.ctx.get);
   apply(h.ctx, h.config);
   assert.equal(h.ctx.prompts.find((c) => c.name === 'dot:now'), undefined, 'not in the snapshot dsh keeps: it changes every turn, and the whole snapshot would be appended again with it');
-  assert.match(await turnNoteOf(h, { id: 'e1' }), /^<system-reminder>\n现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+（这周一是 \d{2}-\d{2}） · 距上一条消息 2 小时\n/);
+  assert.equal(await turnNoteOf(h, { id: 'e1' }), '', 'a session opened by hand in her home is not hers');
+  assert.match(await turnNoteOf(h), /^<system-reminder>\n现在 \d{4}-\d{2}-\d{2} \d{2}:\d{2} 星期. \S+（这周一是 \d{2}-\d{2}） · 距上一条消息 2 小时\n/);
   assert.equal(await turnNoteOf(h, { id: 'x', cwd: '/elsewhere' }), '');
   h.emit(h.home, 'turn/start', { turn: 1 });
   const before = Date.now();
@@ -459,8 +464,8 @@ async function turnNoteOf(h, { id = 's1', cwd = h.home, messages = [{ role: 'use
 // ── his messages: wait for him to finish, steer mid-turn, read before sending (0.17.0) ──
 // A fake clock (setTimeout + Date mocked; setImmediate is real, so promise chains can settle).
 const settle = async () => { for (let i = 0; i < 5; i++) await new Promise((r) => setImmediate(r)); };
-function ownerHarness(cfg = {}) {
-  const h = harness();
+function ownerHarness(cfg = {}, state = {}) {
+  const h = harness({ state });
   const hooks = h.hooks;
   const calls = [];
   const agent = {
@@ -669,7 +674,8 @@ test('dot: a qq-bridge session (qqb-…) is never hers, whatever the scope; dshD
   h.ctx.provide = (n, v) => { h.ctx[n] = v; };
   apply(h.ctx, h.config);
   assert.equal(h.ctx.dshDot.hers('s1', join(h.home, 'x')), true);
-  assert.equal(h.ctx.dshDot.hers('s1', '/anywhere'), false);
+  assert.equal(h.ctx.dshDot.hers('s1', '/anywhere'), true, 'her conversation is hers wherever it says it is');
+  assert.equal(h.ctx.dshDot.hers('s2', h.home), false, 'a session in her home is not hers for being there');
   assert.equal(h.ctx.dshDot.hers('qqb-g-1-' + 'a'.repeat(32), h.home), false);
   assert.equal(h.ctx.dshDot.hers('qqb-p-20002', h.home), false);
   stop(h);
@@ -751,11 +757,14 @@ test('lean: her conversation is made with her own preset; a host that refuses th
   assert.equal(o.services.dshDot.lean('s9', 'dot'), true);
   assert.equal(o.services.dshDot.lean('s9', 'standard'), false, 'a window opened with another preset is as it was');
   assert.equal(o.services.dshDot.lean('s9', undefined), false);
+  // her conversation itself not made with her preset (remembered from before, or the host refused it): said once
+  assert.equal(o.services.dshDot.lean('s1', 'standard'), false); o.services.dshDot.lean('s1', 'standard');
+  assert.deepEqual(o.h.audit.filter((e) => e.event === 'conversation-not-lean').map((e) => [e.session, e.preset]), [['s1', 'standard']]);
   stop(o.h);
 });
 
 test('her own time with no conversation of hers opens one, as his first words would — it is not dropped', async () => {
-  const o = ownerHarness();
+  const o = ownerHarness({}, { lastSession: '' });
   const created = [], done = [];
   o.services.sessionController.create = async (opts) => { created.push(opts); return { sessionId: 's1' }; };
   o.services.sessionController.rename = async () => ({});
@@ -771,7 +780,7 @@ test('her own time with no conversation of hers opens one, as his first words wo
 test('no conversation yet (first run, or after a reset): his words open one in her home; anything else is still dropped', async () => {
   mock.timers.enable({ apis: ['setTimeout', 'Date'], now: Date.now() });
   try {
-    const o = ownerHarness();
+    const o = ownerHarness({}, { lastSession: '' });
     const created = [];
     o.services.sessionController.create = async (opts) => { created.push(opts); return { sessionId: 's1' }; };
     o.services.sessionController.rename = async () => ({});

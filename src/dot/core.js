@@ -411,7 +411,7 @@ export function apply(ctx, config = {}) {
     onSleep: sleep.onSleep,
     stats,
     retired,
-    /** Is this session hers (her conversation, an IM-opened one, one that was hers): what compat asks before letting it see her tools. */
+    /** Is this session hers (her conversation, the one the plugin made for her, or one that was hers): what compat, the interlude and memory ask. */
     hers: (id, cwd) => isDotSession(id, cwd) || retired(id),
     /** Her hands' session (hands.js): the device tools, nothing else of hers. */
     isHands: (id, cwd) => Boolean(dot.hands?.isHands(id, cwd)),
