@@ -518,7 +518,10 @@ export function createHandsWiring(dot) {
   const preExecute = async (exec, next) => {
     const id = exec.agent?.session?.id;
     const args = exec.input ?? exec.args ?? exec.arguments ?? {};
-    const t = turns.get(id);
+    // What a loop is counted in: a turn of hers, or a thing in her hands (all its rounds) — her hands' sessions are not
+    // turns of hers, and counting only those (11-26) left the rule, and its exemptions for looking at a screen, to her
+    // own few tools.
+    const t = turns.get(id) ?? (handsOf(exec) ? hands.keptOf(hands.thingOf(id)?.id) : null);
     // Looking and scrolling repeat by nature (the screen changes, the call does not): never a loop.
     if (t && cfg.loopRepeat > 0 && !LOOP_EXEMPT.test(exec.name)) {
       const made = calls.get(t) ?? calls.set(t, new Map()).get(t), key = loopKey(exec.name, args), times = made.get(key) ?? 0;

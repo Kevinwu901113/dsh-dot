@@ -1163,3 +1163,17 @@ test('a result that comes back while her conversation is being handed over goes 
   assert.equal(h.audit.findLast((a) => a.event === 'hands-result').session, 's2');
   h.stop();
 });
+
+test('the same call over and over is stopped in her hands too: counted over the thing, looking at a screen exempt', async () => {
+  const h = harness();
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查下天气' }] });
+  await h.tools.hands.execute({ device: 'web', do: '查下明天广州的天气' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  const n = 5; // dot.loopRepeat's default
+  const r = [];
+  for (let i = 0; i <= n; i++) r.push(await h.pre('h1', 'web_search', { query: '广州 明天 天气' }));
+  assert.deepEqual(r.slice(0, n), Array(n).fill('ran'));
+  assert.equal(r[n].kind, 'deny');
+  assert.ok(h.audit.some((a) => a.event === 'loop-stopped' && a.session === 'h1'));
+  h.stop();
+});
