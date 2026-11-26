@@ -25,6 +25,13 @@
 // Nothing here writes a sentence for anyone: each reader words them for itself.
 // Every thing is an entry in the ledger (ledger.js): opened when she gives it, ended when it is over. One is done at
 // a time; one given meanwhile waits its turn.
+// What is under way is kept by the hands' session it is done in, not as "the" thing: whoever asks says which —
+// a hook of a hands session asks for that session's (thingOf), the ledger's id finds one (thingById), and what is
+// under way can be listed (things). There is at most one under way now (start decides that, and only start);
+// doing()/busy() are "any of them" for whoever means any. What the wiring counts per thing (the same error, the same
+// screen, when they last did something) is kept on the thing itself (keptOf) and goes with it.
+// The calls that act on a thing (ask, note, has, finish, fail, add, asked; stop with `thing`) take `which` last:
+// { session } or { thing }; left out, the one under way — which is only one while one is done at a time.
 // The hands' sessions live outside her home (so nothing that goes by "a session in her home" takes them for her).
 import { mkdirSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
@@ -57,11 +64,21 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const past = new Set(store.get('handsPast') ?? []);
   { const old = store.get('handsSession'); if (old) { past.add(String(old)); store.set('handsSession', ''); } } // one session for all rounds, before 0.25
   { const old = store.get('handsThing'); if (old) { ledger.end(ledger.open({ asker: old.forHim ? 'him' : 'her', device: old.device, task: old.task }), { outcome: 'failed', cause: 'restart' }); store.set('handsThing', null); } } // the one thing on record, before the ledger
-  let thing = null; // the one thing under way: { entry, device, task, extra, … }
+  // What is under way: by its entry, in the order begun; and by the hands' session it is done in, once that session
+  // is made (a thing is under way from begin, its session comes a moment later). At most one now (start).
+  const under = new Map();     // entry id → thing under way: { entry, id (its session), device, task, extra, kept, … }
+  const bySession = new Map(); // hands session id → that thing
   const queue = []; // things given while one is under way, in order
+  /** The one under way, when only one can be (or the first begun): what a call that does not say which acts on. */
+  const first = () => under.values().next().value ?? null;
+  /** The thing `which` names, under way: { session } its hands' session, { thing } its entry; left out, first(). */
+  const pick = (which) => (which == null ? first() : 'thing' in which ? under.get(which.thing) ?? null : 'session' in which ? bySession.get(which.session) ?? null : first());
+  const free = (t) => { if (under.get(t.entry) !== t) return false; under.delete(t.entry); if (t.id && bySession.get(t.id) === t) bySession.delete(t.id); return true; };
   const remember = (id) => { past.add(id); store.set('handsPast', [...past].slice(-30)); };
   const call = (fn, ...a) => { try { Promise.resolve(fn(...a)).catch(() => {}); } catch (error) { void error; } };
   const view = (t) => ({ id: t.entry, session: t.id, device: t.device, task: t.task, ...t.extra });
+  /** A thing under way as it is right now, for whoever asks (doing, thingOf, thingById, things); null for none. */
+  const now_ = (t) => (t ? { id: t.entry, session: t.id, device: t.device, task: t.task, state: 'running', question: t.question, startedAt: t.startedAt, said: clip(t.said || t.last, 120), steps: t.steps, forHim: Boolean(t.extra?.forHim), waiting: queue.length } : null);
   const snapshot = (t, more) => ({ steps: t.steps, rounds: t.rounds, ms: now() - t.startedAt, notes: t.notes, ...more });
   const withAgent = async (t, fn) => { const agent = t.id ? await agentFor(t.id) : null; if (!agent) throw new Error('no hands session'); return fn(agent); };
   /**
@@ -71,8 +88,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const settle = (t, outcome, { by = 'code', cause = '', error = '' } = {}) => {
     if (t.over) return; t.over = true;
     clearTimeout(t.timer); try { t.off?.(); } catch (e) { void e; }
-    const running = thing === t && t.state === 'running';
-    if (thing === t) thing = null; else { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
+    const running = under.get(t.entry) === t && t.state === 'running';
+    if (!free(t)) { const i = queue.indexOf(t); if (i >= 0) queue.splice(i, 1); }
     // A run still going is ended here: stopped or too long, or done by their own word (their tool, nothing more to say).
     if (running && (outcome === 'stopped' || outcome === 'timeout' || t.result || cause === 'same-error')) call(withAgent, t, (agent) => agent.cancel?.({ kind: 'hook', reason: `dot-hands: ${outcome}` }));
     // What came of it: their own summary and details when they gave them (finish), else what they last said, as details.
@@ -83,7 +100,7 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     audit('hands-thing', { thing: t.entry, session: t.id, device: t.device, outcome, by, steps: t.steps, rounds: t.rounds, ms: out.ms, ...(cause ? { cause } : {}) });
     if (t.id) call(retire, t.id);
     call(onDone, out, view(t));
-    if (!thing && queue.length) begin(queue.shift());
+    if (!under.size && queue.length) begin(queue.shift());
   };
   /** Their run begins: what they are given, and how long they have. */
   const round = async (t, text) => {
@@ -94,11 +111,12 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   };
   /** Its turn has come: hands that have seen nothing else are made for it, and given the whole of it. */
   const begin = (mine) => {
-    thing = mine; mine.startedAt = now();
+    under.set(mine.entry, mine); mine.startedAt = now();
     void (async () => {
       try {
         try { mkdirSync(dir, { recursive: true }); } catch (error) { void error; }
         const id = mine.id = await create(dir, mine.device);
+        if (id && !mine.over) bySession.set(id, mine);
         if (id) { remember(id); audit('hands-opened', { session: id, thing: mine.entry }); }
         ledger.begin(mine.entry, { session: id });
         if (mine.over) return;
@@ -141,33 +159,44 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
   const api = {
     dir,
     /** Is this session her hands (by id, or by where it lives — known before the id is)? */
-    isHands: (id, cwd) => Boolean((id && (id === thing?.id || past.has(id))) || (cwd && inside(dir, cwd))),
-    /** Is a thing of hers in her hands? */
-    busy: () => Boolean(thing),
-    /** Have her hands asked her something in the round under way (it ends as that question)? */
-    asked: () => Boolean(thing?.state === 'running' && thing.question),
-    /** What is in her hands right now: { id, device, task, state, question, startedAt, said, steps, … } or null. */
-    doing: () => (thing ? { id: thing.entry, session: thing.id, device: thing.device, task: thing.task, state: 'running', question: thing.question, startedAt: thing.startedAt, said: clip(thing.said || thing.last, 120), steps: thing.steps, forHim: Boolean(thing.extra?.forHim), waiting: queue.length } : null),
+    isHands: (id, cwd) => Boolean((id && (bySession.has(id) || past.has(id))) || (cwd && inside(dir, cwd))),
+    /** Is any thing of hers in her hands? */
+    busy: () => under.size > 0,
+    /** Have her hands asked her something in the round under way of this thing (`which`; it ends as that question)? */
+    asked: (which) => { const t = pick(which); return Boolean(t?.state === 'running' && t.question); },
+    /** What is in her hands right now (any one: the first begun): { id, device, task, state, question, startedAt, said, steps, … } or null. */
+    doing: () => now_(first()),
+    /** The thing done in this hands session, while it is under way (the same view as doing()), or null. */
+    thingOf: (session) => now_(bySession.get(session)),
+    /** The thing with this ledger id, while it is under way (the same view as doing()), or null. */
+    thingById: (id) => now_(under.get(id)),
+    /** Everything under way, in the order begun (the same views as doing()). */
+    things: () => [...under.values()].map(now_),
+    /**
+     * What the code keeps on a thing while it is under way (by its ledger id): an object of the caller's, made with
+     * the thing and gone with it — nothing in it reaches the next thing. null when that thing is not under way.
+     */
+    keptOf: (id) => under.get(id)?.kept ?? null,
     /**
      * Is this text something her hands were given for this thing — in what she said (the task, what she added), or shown
      * to them by a tool (the screen, an account)? Her hands do not write: what they type is hers or is already
      * there. Whitespace does not count.
      */
-    has(text) { const n = squash(text); return !n || (Boolean(thing) && (squash(thing.words).includes(n) || squash(thing.shown).includes(n))); },
+    has(text, which) { const n = squash(text); const t = pick(which); return !n || (Boolean(t) && (squash(t.words).includes(n) || squash(t.shown).includes(n))); },
     /** Something the code saw happen (a refusal): it comes back with the result, as `notes`. */
-    note(what) { if (thing) thing.notes.push(String(what)); },
+    note(what, which) { const t = pick(which); if (t) t.notes.push(String(what)); },
     /**
      * From the hands' own tool, or from a gate: they need her — or him (`ask.for: 'him'`: his yes, or something only he
      * can do; `ask.screen`: the screen goes with the question). The run under way ends as this question; the first
      * question stands. False when nothing is under way.
      */
-    ask(question, ask = {}) { const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.tier ? { tier: ask.tier } : {}), ...(ask.what ? { what: String(ask.what) } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
+    ask(question, ask = {}, which) { const thing = pick(which); const q = String(question ?? '').trim(); if (!q || thing?.state !== 'running' || thing.question) return Boolean(q && thing?.question); thing.question = q; thing.ask = { for: ask.for === 'him' ? 'him' : 'her', ...(ask.kind ? { kind: ask.kind } : {}), ...(ask.subject ? { subject: ask.subject } : {}), ...(ask.tier ? { tier: ask.tier } : {}), ...(ask.what ? { what: String(ask.what) } : {}), ...(ask.screen ? { screen: true } : {}) }; return true; },
     /**
      * From the hands' own tool: the thing is done, and this is what came of it — `summary` in a line, `detail` for her.
      * It ends here (nothing more is said). False when nothing is under way, or it has already asked.
      */
-    finish({ summary = '', detail = '', task = '', reached = true } = {}) {
-      const t = thing;
+    finish({ summary = '', detail = '', task = '', reached = true } = {}, which) {
+      const t = pick(which);
       if (!t || t.state !== 'running' || t.question || t.over) return false;
       t.result = { summary: String(summary ?? '').trim(), detail: String(detail ?? '').trim(), ...(String(task ?? '').trim() ? { name: String(task).trim().slice(0, 12) } : {}) };
       // Ending is not succeeding: what was wanted not reached is a thing that failed, in their own words.
@@ -178,8 +207,8 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * The code ends the thing under way as failed (the same error over and over: `cause` 'same-error', `error` its
      * type). What the hands said last is kept as details. False when nothing is under way.
      */
-    fail({ cause = 'same-error', error = '' } = {}) {
-      const t = thing;
+    fail({ cause = 'same-error', error = '' } = {}, which) {
+      const t = pick(which);
       if (!t || t.state !== 'running' || t.over) return false;
       settle(t, 'failed', { cause, error });
       return true;
@@ -187,11 +216,18 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
     /**
      * Everything stops now (she or he said stop): the thing under way, and what waited behind it. `by`: whose word it
      * was; `cause`: 'stopped', or 'command' when it came from outside her conversation (his /dot stop). False when there is none.
+     * With `thing` (a ledger id): that one only, under way or waiting — what waited behind it goes on.
      */
-    stop({ by = 'her', cause = 'stopped' } = {}) {
-      if (!thing && !queue.length) return false;
+    stop({ by = 'her', cause = 'stopped', thing } = {}) {
+      if (thing !== undefined) {
+        const t = under.get(thing) ?? queue.find((x) => x.entry === thing);
+        if (!t) return false;
+        settle(t, 'stopped', { by, cause });
+        return true;
+      }
+      if (!under.size && !queue.length) return false;
       for (const t of queue.splice(0)) settle(t, 'stopped', { by, cause });
-      if (thing) settle(thing, 'stopped', { by, cause });
+      for (const t of [...under.values()]) settle(t, 'stopped', { by, cause });
       return true;
     },
     /** What a restart cut off ([{ id, device, task, asker, … }]); told once. */
@@ -205,8 +241,9 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
       const what = String(task).trim();
       if (!what) return { status: 'failed', why: 'no task' };
       const entry = ledger.open({ asker: extra.forHim ? 'him' : 'her', device, task: what, ...(extra.after ? { after: extra.after } : {}) });
-      const mine = { entry, device, task: what, extra, state: 'running', question: '', words: what, startedAt: now(), said: '', last: '', shown: '', steps: 0, rounds: 0, notes: [], over: false };
-      if (thing) { queue.push(mine); return { status: 'queued', id: entry, doing: api.doing() }; }
+      const mine = { entry, device, task: what, extra, state: 'running', question: '', words: what, startedAt: now(), said: '', last: '', shown: '', steps: 0, rounds: 0, notes: [], kept: {}, over: false };
+      // One at a time: anything under way, and this one waits behind it. (The one place that decides what may run together.)
+      if (under.size) { queue.push(mine); return { status: 'queued', id: entry, doing: api.doing() }; }
       begin(mine);
       return { status: 'started', id: entry };
     },
@@ -214,10 +251,10 @@ export function createHands({ dir, create, agentFor, onEvent, message, textOf, s
      * One more thing said to the hands at work (he added something, she thought of something): read between two of
      * their steps, the thing goes on. → 'added' | 'idle' (nothing under way) | 'failed'.
      */
-    add(text) {
+    add(text, which) {
       const said = String(text ?? '').trim();
       if (!said) return { status: 'failed', why: 'nothing to add' };
-      const t = thing;
+      const t = pick(which);
       if (!t || t.over) return { status: 'idle' };
       t.words = `${t.words}\n${said}`;
       ledger.note(t.entry, { added: [...(ledger.get(t.entry)?.added ?? []), said] });
