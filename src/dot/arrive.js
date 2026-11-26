@@ -140,7 +140,7 @@ export function createArrive(dot) {
   const herState = () => ({
     writing: Boolean(sessions.last()) && turns.has(sessions.last()),       // a turn of her conversation is running
     sending: voice.outlet.busy(),                                  // her bubbles are going out
-    hands: Boolean(dot.hands?.busy()),                             // her hands are on a round
+    hands: Boolean(dot.hands?.busy()),                             // her hands are on a round (any thing under way)
     his: ownerBatch.length > 0 || ownerTyping,                     // he said something she has not got yet, or is typing
     moving: frozen > 0,                                            // her conversation is being handed over
     waiting: Boolean(taskRunning) || batch.length > 0 || [...held.values()].some((ns) => ns.length), // something is already on its way to her
@@ -194,6 +194,7 @@ export function createArrive(dot) {
       const c = taskRunning.cost ??= { in: 0, cached: 0, out: 0 };
       if (t.cost) { c.in += t.cost.in; c.cached += t.cost.cached; c.out += t.cost.out; }
       // What came of her own time is what the book has of the things she did in it — not what she wrote about it.
+      // Her hands free: nothing of anyone's under way (one at a time, so a thing of this stretch of hers is the one there would be).
       if (!dot.hands?.busy()) finishTask(taskRunning, 'done', dot.ledger.recent(20).filter((e) => e.asker === 'her' && e.state === 'ended' && (e.endedAt ?? 0) >= (taskRunning.startedAt ?? 0)).reverse().map((e) => `${titleOf(e.task)}：${[e.outcome === 'done' ? '' : handsStatus(e, e.device), e.summary].filter(Boolean).join('。') || '没有留下结果'}`).join('\n'), c);
     }
   };

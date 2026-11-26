@@ -257,7 +257,7 @@ export function apply(ctx, config = {}) {
   const { howto, nightcheck, handsPlace } = hw;
   // Her model requests share his provider key: her hands' steps on her own business are background and wait behind
   // his (src/llm-gate.js). A round they do for him is his business — he is waiting on it — and goes like her replies.
-  const llmGate = dot.llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(dot.hands?.isHands(id)) && !dot.hands.doing()?.forHim });
+  const llmGate = dot.llmGate = installLlmGate(ctx, { name: 'dsh-dot', backgroundSessions: (id) => Boolean(dot.hands?.isHands(id)) && !dot.hands.thingOf(id)?.forHim });
   selfCheck();
   // The registry can come up after dot: look again once it is there.
   ctx.inject?.(['workspaceRegistry'], (c) => c.effect(() => { selfCheck(); return () => {}; }, 'dsh-dot: startup self-check'));
@@ -378,7 +378,8 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
-      stop: () => { const d = dot.hands?.doing?.(); return dot.hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d?.task ?? ''}` : '她手上现在没有事'; },
+      // Everything in her hands stops: what is under way is named (one now, so one name).
+      stop: () => { const d = dot.hands?.things?.() ?? []; return dot.hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d.map((t) => t.task ?? '').join('、')}` : '她手上现在没有事'; },
       memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: status.statusText, nightcheck, voicetest: status.voicetest, replay: status.replay,
     })), 'dsh-dot: /dot command');
   });

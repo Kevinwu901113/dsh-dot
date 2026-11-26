@@ -21,7 +21,10 @@ export function createTools(dot) {
       parameters: { type: 'object', properties: { device: { type: 'string', enum: ['phone', 'computer', 'web', 'host'], description: 'phone / computer：在你的那台设备上做；web：查资料，不碰设备；host：在他这台电脑本机上用命令行做（他开口要的才交）' }, do: { type: 'string', description: '要做成的事，说完整；要打的字原样写上。手上的事停在要你拿主意的地方时，这里写你的回答' }, say: { type: 'string', description: '这件事里要打给别人看的话（评论、回帖、在 App 里回人）：写你想说的意思，原话会替你写好、照着打上去' }, add: { type: 'string', description: '给正在做的那件事补一句（他又加了要求、你想起一点）：它下一步之前就看到，接着做' }, stop: { type: 'boolean', description: '手上的事不做了' }, after: { type: 'boolean', description: '接着这台设备上一件停下的事做（它停在要他来、要你定的地方，现在可以接着了）：屏幕还停在那里' } }, additionalProperties: false },
       output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'started' ? prompt('dot.hands.started') : v?.status === 'added' ? prompt('dot.hands.added') : v?.status === 'queued' ? prompt('dot.hands.queued', { task: v.doing?.task ?? '' }) : v?.status === 'stopped' ? prompt('dot.hands.stopped') : v?.status === 'idle' ? prompt(_a?.add ? 'dot.hands.add.idle' : 'dot.hands.idle') : `没开始：${v?.why ?? ''}` }] },
       async execute(args) {
-        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her' }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
+        // Which of her things she means by stop and add. She does not say (there is one under way at a time): stop is
+        // everything, add is the one under way. Once she can say which, it goes here as { thing } and nothing else changes.
+        const which = undefined;
+        if (args?.stop) { const open = dot.ledger.unfinished().map((e) => e.id); const t = turns.get(sessions.last()); const stopped = dot.hands.stop({ by: t?.fromQq || t?.elsewhere ? 'him' : 'her', ...which }); if (stopped && t) t.stopped = [...(t.stopped ?? []), ...open]; return { status: stopped ? 'stopped' : 'idle' }; }
         // Words her hands are to type for someone to read are hers to mean and the card's to write (say.js): they go
         // into what her hands are given, as the words to type.
         let words = '';
@@ -31,7 +34,7 @@ export function createTools(dot) {
         }
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // One more thing for the hands at work: read between two of their steps.
-        if (String(args?.add ?? '').trim()) { return dot.hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n')); }
+        if (String(args?.add ?? '').trim()) { return dot.hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n'), which); }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
         const t = turns.get(sessions.last());
