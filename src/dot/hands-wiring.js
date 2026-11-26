@@ -379,7 +379,7 @@ export function createHandsWiring(dot) {
   };
 
   // Her hands' own tools act on the thing of the session that calls them (exec, the host's second argument). Called
-  // with no session (directly, not by the host): on the one under way — there is only one while one is done at a time.
+  // with no session (directly, not by the host): on the first one under way.
   const callerOf = (exec) => { const sid = exec?.agent?.session?.id; return sid ? { session: sid } : undefined; };
   const thingFor = (which) => (which ? hands.thingOf(which.session) : hands.doing());
   // Her hands' one way of coming back with a question (hands.js): a choice that is hers, words that have to be hers.

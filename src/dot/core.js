@@ -391,7 +391,7 @@ export function apply(ctx, config = {}) {
   ctx.inject(['commands'], (commandCtx) => {
     commandCtx.effect(() => commandCtx.commands.register(dotCommand({
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
-      // Everything in her hands stops: what is under way is named (one now, so one name).
+      // Everything in her hands stops, in every place: what was under way is named.
       stop: () => { const d = dot.hands?.things?.() ?? []; return dot.hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d.map((t) => t.task ?? '').join('、')}` : '她手上现在没有事'; },
       memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: status.statusText, nightcheck, voicetest: status.voicetest, replay: status.replay,
     })), 'dsh-dot: /dot command');
