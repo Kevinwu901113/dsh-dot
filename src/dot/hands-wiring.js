@@ -39,7 +39,7 @@ const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
  */
 export function createHandsWiring(dot) {
   const { ctx, cfg, audit, logger, store, phone, computer, home, sessions, turns, voice, arrive } = dot;
-  const { isDotSession, retired, thinkAt, resolveLive, noteToConversation } = sessions;
+  const { isDotSession, retired, thinkAt } = sessions;
   let hands = null; // her hands (hands.js), set once sessions can be made
   const askedCalls = new Map(); // callId → what of it needs his yes: its tool result says so (tools/post-execute)
 
@@ -335,7 +335,7 @@ export function createHandsWiring(dot) {
         if (r.outcome !== 'stopped') return handsBack(r, job);
         audit('hands-result', { thing: job.id, status: 'stopped', forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds, woke: false });
         // He stopped it from outside her conversation (/dot stop): she finds a line about it the next time she is up, no more.
-        if (r.cause === 'command') void noteToConversation('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) }).trim()}`);
+        if (r.cause === 'command') arrive.note('hands-stopped', `${prompt('dot.hands.result', { stamp: stamp(Date.now(), Date.now()), task: job.task, status: handsStatus(r, job.device), text: resultText(r) }).trim()}`);
         return undefined;
       },
     });
@@ -343,12 +343,13 @@ export function createHandsWiring(dot) {
   };
   /** What came of a thing, for her: the hands' summary, then their details. */
   const resultText = (r) => [r.summary, r.detail].map((x) => String(x ?? '').trim()).filter(Boolean).join('\n') || '（没说什么）';
-  async function handsBack(r, job) {
+  // It goes in by the one way in (arrive.js): while her conversation is being handed over, to the new one.
+  function handsBack(r, job) {
     dot.sleep.stir();
+    arrive.arrive({ kind: 'hands', for: job.forHim ? 'him' : 'her', thing: job.id, external: true, into: (agent) => (agent ? handsInto(agent, r, job) : audit('hands-result-dropped', { why: 'no conversation' })) });
+  }
+  async function handsInto(agent, r, job) {
     try {
-      await arrive.moved(); // her conversation is being handed over: it goes to the new one
-      const found = sessions.last() && await resolveLive(sessions.last());
-      if (!found || 'error' in found) { audit('hands-result-dropped', { why: 'no conversation' }); return; }
       const lead = r.question && r.ask?.for === 'him'
         ? prompt('dot.hands.ask.him', { stamp: stamp(Date.now(), Date.now()), task: job.task, question: r.question, text: r.detail && r.detail !== r.question ? r.detail : '' })
         : r.question
@@ -365,13 +366,13 @@ export function createHandsWiring(dot) {
           if (png?.length) { const [image] = await images.saveImages([{ data: new Uint8Array(png), mediaType: 'image/png', name: `${job.device}-screen` }]); if (image) content.push({ type: 'text', text: prompt(job.device === 'computer' ? 'dot.hands.screen.computer' : 'dot.hands.screen').trim() }, { type: 'image', attachment: image }); }
         } catch (err) { logger.debug?.(`hands: no screenshot: ${err.message}`); }
       }
-      found.agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
+      agent.followup(createUserMessage({ content, source: { kind: 'dsh-dot', form: 'hands-result', ...(job.forHim ? { for: 'him' } : {}), ...(job.id ? { thing: job.id } : {}) } }));
       if (job.id) dot.ledger.note(job.id, { back: Date.now() }); // in front of her; `told` is when he heard it (tellHim)
       audit('hands-result', { thing: job.id, session: sessions.last(), outcome: r.outcome, forHim: Boolean(job.forHim), steps: r.steps, rounds: r.rounds });
     } catch (err) { logger.warn(`hands result not delivered: ${err.message}`); }
   }
   // A thing a restart cut off is told to her once, when her conversation can be reached (an effect: → its disposer).
-  const restartCut = () => { const t = setTimeout(() => { for (const cut of hands.interrupted()) void handsBack({ outcome: 'failed', by: 'code', cause: 'restart', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); };
+  const restartCut = () => { const t = setTimeout(() => { for (const cut of hands.interrupted()) handsBack({ outcome: 'failed', by: 'code', cause: 'restart', steps: 0, rounds: 0 }, { id: cut.id, device: cut.device, task: cut.task, forHim: cut.asker === 'him' }); }, 20000); t.unref?.(); return () => clearTimeout(t); };
   /** A picture of her computer's desktop right now (PNG), or null when the computer has no way to take one. */
   const computerScreen = async () => {
     const sh = computer()?.backend?.rootShell;

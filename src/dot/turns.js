@@ -1,16 +1,12 @@
 // dsh-dot/turns: her turns as the session events tell them (taken out of core.js as it was).
-// Holds: the open turns (session id → turn), what waits in a session's inbox for its next turn (incoming reminders,
-// origins), his words not yet taken by a turn (owed), the last failed turn, whether the plugin's drift was told, and
-// the parts of the short message that goes with whatever has just reached her (turn notes).
-// A turn object is written here only. What happens in it elsewhere is said through the methods at the end (spoke,
-// opened, stopped, startedOver); the others read it.
-// Whose a turn is, is one field, `by`, written here from what enters the turn and read everywhere through the
-// predicates below:
-//   by.whose  'him' (his words opened it, or a thing of his woke it) · 'her' (a notification, her hands on her own
-//             things, her own time) · 'schedule' (a reminder of the host's schedule: it stays the schedule's)
-//   by.where  where his words in it came from: 'qq' · 'desk' (her own window, an IM bot) · '' (none); QQ wins
-//   by.form   the kind of message of ours that woke it (hands-result, phone-notification, free, …)
-//   by.thing  the thing of his it is about (his hands came back, an answer it waited for)
+// Holds: the open turns (session id → turn), what waits in a session's inbox for its next turn (upcoming), his words
+// not yet taken by a turn (owed), the last failed turn, whether the plugin's drift was told, and the parts of the short
+// message that goes with whatever has just reached her (turn notes).
+// A turn is written here only; what happens in it elsewhere is said through spoke, opened, stopped and startedOver.
+// Whose it is, is one field, written here from what enters it and read through the predicates below: by.whose 'him'
+// (his words opened it, or a thing of his woke it) · 'her' · 'schedule' (a reminder of the host's: it stays the
+// schedule's); by.where — where his words in it came from, 'qq' · 'desk' (her window, an IM bot) · '' (QQ wins);
+// by.form — the kind of message of ours that woke it; by.thing — the thing of his it is about.
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { drift } from '../integrity.js';
 import { prompt } from '../prompts.js';
@@ -34,15 +30,14 @@ export const atHisWindow = (t) => t?.by.where === 'desk';
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, audit, logger, im, sessions, turnState; read when used:
- *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, releaseHeld, nextTask), voice (turnEnded)
+ *             sleep (wakeUp), ledger, consent, hands, things (thingsLines), voice (reachLine), arrive (taskTurnEnded, turnEnded), voice (turnEnded)
  * → { get, has, keys, size, onSessionEvent, disposeOwed, turnFailed, taken, owe, lastFailure, driftLine, watchDrift,
  *     turnNote, preStep, nowNote, scheduledNote, busyWith, inHome, doingOf, turnInfo, watchTurns }
  */
 export function createTurns(dot) {
   const { ctx, cfg, audit, logger, im, sessions, turnState } = dot;
   const turns = new Map(); // session id → { turn, by, startedAt, lastEventAt, doing, said, hisWords, tools, cost, spoke, opened, stopped, startedOver }
-  const incoming = new Set(); // sessions whose inbox holds a reminder for the next turn
-  const origins = new Map(); // session id → form of the dsh-dot / dsh-interlude message waiting in its inbox (its next turn's origin)
+  const upcoming = new Map(); // session id → what its inbox holds for its next turn: { schedule (a reminder), form (of a dsh-dot / dsh-interlude message) }
   // What became of his words. Each message of his ends one of three ways: she answered, she chose not to, or it
   // failed — the turn broke, the call that writes her words failed, or no turn ever took his words. The third is told
   // to him by the plugin in its own name (never written as her), shown as failed, and said in /dot; until 11-22 it
@@ -97,14 +92,14 @@ export function createTurns(dot) {
     // start, before the user/message event: note it here so the turn knows from its first step.
     if (event.type === 'agent/inbox/spliced') {
       if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'user' && addressed(m.source) === 'qq')) taken(id); // his words are in her inbox's turn
-      if ((event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule')) incoming.add(id);
-      const from = (event.data?.inserted ?? []).find((m) => ['dsh-dot', 'dsh-interlude'].includes(m?.source?.kind));
-      if (from) origins.set(id, from.source.form);
+      const next = upcoming.get(id) ?? {}, from = (event.data?.inserted ?? []).find((m) => ['dsh-dot', 'dsh-interlude'].includes(m?.source?.kind));
+      upcoming.set(id, { schedule: next.schedule || (event.data?.inserted ?? []).some((m) => m?.source?.kind === 'schedule'), form: from ? from.source.form : next.form });
       return;
     }
     if (event.type === 'turn/start') {
-      turns.set(id, { turn: event.data?.turn, by: { whose: incoming.delete(id) ? 'schedule' : 'her', where: '', form: origins.get(id), thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now(), spoke: false, opened: [], stopped: [], startedOver: false });
-      origins.delete(id);
+      const next = upcoming.get(id) ?? {};
+      upcoming.delete(id);
+      turns.set(id, { turn: event.data?.turn, by: { whose: next.schedule ? 'schedule' : 'her', where: '', form: next.form, thing: undefined }, startedAt: Date.now(), lastEventAt: Date.now(), spoke: false, opened: [], stopped: [], startedOver: false });
       return;
     }
     const t = turns.get(id);
@@ -157,8 +152,8 @@ export function createTurns(dot) {
       turns.delete(id); // every turn, scheduled or not: `turns` is also "is she busy right now"
       // A thing of her own (her own time) lasts as long as her hands are still on it (arrive.js taskTurnEnded).
       dot.arrive.taskTurnEnded(id, t);
-      // After this event settles, so the followup starts a fresh turn; held work first, then a task of her own.
-      if (id === sessions.last()) setTimeout(() => { void dot.arrive.releaseHeld(id).then(dot.arrive.nextTask); }, 50);
+      // What waited for this turn goes in once it has settled, so the followup starts a fresh turn (arrive.js).
+      dot.arrive.turnEnded(id);
     }
     // A turn on his business that ends is answered by the voice (voice.js turnEnded).
     if (ended && forHim(t)) dot.voice.turnEnded(id, t, event, broke);

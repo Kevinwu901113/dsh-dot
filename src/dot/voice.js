@@ -49,7 +49,7 @@ export function createVoice(dot) {
       r.noted = true; saveReaches();
       const time = new Date(r.at).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', hour12: false });
       audit('reach-unanswered', { at: r.at });
-      void sessions.noteToConversation('other', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
+      dot.arrive.note('other', prompt('dot.reach.unanswered', { time, hours: Math.round((now - r.at) / 3600000) }).trim());
     }
   };
 

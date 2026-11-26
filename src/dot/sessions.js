@@ -7,7 +7,7 @@ import { BRIDGE_ID_RE } from '../compat/qq-bridge.js';
 import { HER_PRESET } from '../tool-prefixes.js';
 import { effortFor } from '../llm-gate.js';
 
-/** Source of a note left in her conversation (injected; it does not wake her). The form and the prompt ids keep the name they had when errands left them: installed overrides go by it. */
+/** Source of a note left in her conversation (injected; it does not wake her: arrive.js note). The form and the prompt ids keep the name they had when errands left them: installed overrides go by it. */
 export const ERRAND_NOTE_SOURCE = Object.freeze({ kind: 'dsh-dot', form: 'errand-note' });
 /** dsh-im tags messages it relays with an rpcId of `<channel>-<uuid>`; the desktop UI does not. */
 export const IM_RPC = /^(weixin|wechat|qq|feishu|lark|dingtalk|wecom|wework|telegram|discord|slack|whatsapp|email|office)-/i;
@@ -19,7 +19,7 @@ const inside = (root, p) => { const r = relative(root, p); return r === '' || (!
 
 /**
  * @param dot  the plugin's parts (core.js apply): ctx, cfg, store, audit, logger, phone, home
- * → { last, setLast, wantIm, imSessions, isDotSession, retired, lean, isLean, selfCheck, noteToConversation, thinkAt, resolveLive,
+ * → { last, setLast, wantIm, imSessions, isDotSession, retired, lean, isLean, selfCheck, thinkAt, resolveLive,
  *     createConversation, openConversation, setSession }
  */
 export function createSessions(dot) {
@@ -87,19 +87,6 @@ export function createSessions(dot) {
     logger.warn(`her remembered conversation ${lastSession} is ${why}: cleared (the next message to her picks a new one)`);
     point('');
   };
-  /** Leave a note in her conversation, without waking it; true when it got there. */
-  async function noteToConversation(origin, note) {
-    const id = lastSession;
-    const controller = ctx.get('sessionController');
-    if (!id || !controller) return false;
-    try {
-      const found = await resolveLive(id);
-      if (!found || 'error' in found || typeof found.agent.inject !== 'function') return false;
-      found.agent.inject(createUserMessage({ content: [{ type: 'text', text: note }], source: ERRAND_NOTE_SOURCE }));
-      audit('errand-noted', { session: id, origin });
-      return true;
-    } catch (err) { logger.warn(`errand note failed: ${err.message}`); return false; }
-  }
   // Her conversation and her hands think at their own effort (defaults.herEffort, handsEffort), whatever the model
   // selector was last set to. It is the session's own selection, set through the agent before anything is sent into
   // it: recorded for that session only, kept, and nothing is done when it already says so. The host fixes a step's
@@ -176,7 +163,7 @@ export function createSessions(dot) {
     setLast, wantIm, imSessions, isDotSession, retired, lean,
     /** Was this conversation told it is lean (lean above)? */
     isLean: (id) => leanIds.has(id),
-    selfCheck, noteToConversation, thinkAt, resolveLive,
+    selfCheck, thinkAt, resolveLive,
     createConversation, openConversation, setSession,
   };
 }
