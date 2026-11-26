@@ -12,16 +12,17 @@ import { unfold } from './say.js';
 
 export function createOutlet({ qq, im, here, herSaid }) {
   let chain = Promise.resolve(), out = 0;
-  // A message of several lines (say.js WITHIN) is one entry of `said`, with its line breaks back in place.
-  const whole = (text) => ({ said: String(text).split('\n').filter(Boolean).map(unfold), images: [] });
+  // A message of several lines (say.js WITHIN) is one entry of `said`, with its line breaks back in place. Her window
+  // and the IM channel carry words only: a picture meant to go with them is said not to have gone (failed), not dropped.
+  const whole = (text, images = []) => ({ said: String(text).split('\n').filter(Boolean).map(unfold), images: [], ...(images.length ? { failed: images.map((i) => ({ image: String(i).slice(0, 80), error: '这条路只能发字' })) } : {}) });
   return {
     /** Her bubbles are going out right now. */
     busy: () => out > 0,
     /** Resolves once what is going out now is out. */
     settled: () => chain,
-    /** → { said: [lines], images: [names], interrupted?, unsent? }; throws when there is no way to reach them. */
+    /** → { said: [lines], images: [names], interrupted?, unsent?, failed?: [{ image, error }] }; throws when there is no way to reach them. */
     async send({ to, text, images = [] }) {
-      if (to === 'owner' && here()) { herSaid(unfold(text)); return whole(text); }
+      if (to === 'owner' && here()) { herSaid(unfold(text)); return whole(text, images); }
       const q = qq();
       if (q?.connected) {
         out++;
@@ -32,7 +33,7 @@ export function createOutlet({ qq, im, here, herSaid }) {
       if (to !== 'owner') throw new Error('her QQ is not connected');
       if (!(await im.send(unfold(text)))) throw new Error('no way to reach him: her QQ is not connected and there is no IM target');
       herSaid(unfold(text));
-      return whole(text);
+      return whole(text, images);
     },
   };
 }

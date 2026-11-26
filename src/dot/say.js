@@ -246,8 +246,9 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
         if (out.silent && !pictures.length) { audit('say-silent', { to }); return { status: 'silent' }; }
         if (unread(to)) { audit('say-held', { to, lines: out.lines.length }); return { status: 'held' }; }
         const r = await send({ to, text: out.lines.join('\n'), images: pictures });
-        audit('said', { to, lines: (r?.said ?? out.lines).length, images: (r?.images ?? pictures).length, ...(r?.interrupted ? { interrupted: true } : {}) });
-        return { status: 'said', said: r?.said ?? out.lines, images: r?.images ?? pictures, ...(r?.interrupted ? { interrupted: true, unsent: r.unsent ?? [] } : {}) };
+        // What went out is told piece by piece: a picture that did not go (r.failed) is kept apart from the words that did.
+        audit('said', { to, lines: (r?.said ?? out.lines).length, images: (r?.images ?? pictures).length, ...(r?.interrupted ? { interrupted: true } : {}), ...(r?.failed?.length ? { failedImages: r.failed.length } : {}) });
+        return { status: 'said', said: r?.said ?? out.lines, images: r?.images ?? pictures, ...(r?.interrupted ? { interrupted: true, unsent: r.unsent ?? [] } : {}), ...(r?.failed?.length ? { failed: r.failed } : {}) };
       } catch (err) { audit('say-failed', { to, error: String(err?.message ?? err).slice(0, 200), ...(err?.outcome ? { outcome: err.outcome.kind } : {}) }); return { status: 'failed', why: String(err?.message ?? err), ...(err?.outcome ? { outcome: err.outcome } : {}) }; }
     },
     /** Words for her hands to type somewhere (a comment, a post, a reply in an app): the text only, '' when she would rather not. */

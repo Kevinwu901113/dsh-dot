@@ -136,7 +136,7 @@ export function createVoice(dot) {
   });
   /** What went out, told back to her: the lines and pictures as they were sent. */
   let saidNote = '';
-  const saidText = (r) => prompt(r.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(r.said ?? []), ...(r.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (r.unsent ?? []).join('\n') });
+  const saidText = (r) => `${prompt(r.interrupted ? 'dot.say.interrupted' : 'dot.say.said', { said: [...(r.said ?? []), ...(r.images ?? []).map((i) => `[${i}]`)].join('\n') || '（只发了图）', unsent: (r.unsent ?? []).join('\n') })}${r.failed?.length ? `\n${prompt('dot.say.failed-images', { failed: r.failed.map((f) => `[${f.image}]${f.error ? `（${String(f.error).slice(0, 60)}）` : ''}`).join('\n') })}` : ''}`;
   /**
    * Something of hers for him, in turn `t` (the open one, or the one that just ended): what she knows that bears on it
    * (`about`, from the say tool) or what she wrote she means to tell him (`meant`, a turn's closing words). The same
@@ -154,8 +154,11 @@ export function createVoice(dot) {
     preempts = 0; // something of hers reached him
     turns.spoke(t);
     // The ends it was given are told: written on each thing now, when all of it went out (cut short by his words, the
-    // turn those words open says it).
-    if (plan?.things?.length && !r.unsent?.length) for (const id of plan.things) dot.ledger.note(id, { told: Date.now() });
+    // turn those words open says it). A screen he was to see (a QR code to scan) that did not go is not told: the words
+    // went, the picture is still owed, and the thing stays among what he has not heard (11-26: say.js dropped `failed`).
+    const pictureOwed = shots.some((s) => (r.failed ?? []).some((f) => f.image === s));
+    if (pictureOwed) audit('told-without-picture', { session: sessions.last(), thing: ended?.id, failed: r.failed.map((f) => f.image) });
+    if (plan?.things?.length && !r.unsent?.length && !pictureOwed) for (const id of plan.things) dot.ledger.note(id, { told: Date.now() });
     saidNote = saidText(r); // hers to know: shown with whatever reaches her next
     // She wrote to him in a turn that is not on his business: kept as a fact of the day (reachText), with what came of it.
     if (t && !heSpoke(t) && !forHim(t) && !reachedIn.has(t)) { reachedIn.add(t); reaches.push({ at: Date.now() }); saveReaches(); audit('reached-out', { session: sessions.last(), origin: t.by.form ?? (t.by.whose === 'schedule' ? 'schedule' : '') }); }

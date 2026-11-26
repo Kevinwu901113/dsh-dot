@@ -1095,3 +1095,28 @@ test('what she writes herself goes under her/ only: her persona card, the canon 
     assert.ok(h.audit.some((a) => a.event === 'her-write-refused'));
   } finally { h.stop(); }
 });
+
+test('what went out is told piece by piece: the words went and the screen he was to see did not — the thing is not told, and she sees which picture did not go', async () => {
+  const h = harness();
+  const her = h.agentOf('s1');
+  const page = { url: 'https://cashier.example.com/pay', title: '收银台' };
+  Object.assign(h.services.dshComputer, { page: async () => page, gate: { riskOf: () => null, acts: (t) => /browser_(click|form)/.test(t) } });
+  const sent = [];
+  h.services.dshQq.send = async (to, t, images) => { sent.push([to, t, images]); return { sent: 1, said: String(t).split('\n').filter(Boolean), images: [], ...(images?.length ? { failed: images.map((i) => ({ image: i, error: 'upload failed' })), textSent: 1 } : {}) }; };
+  h.emit('s1', 'turn/start', { turn: 2 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '买个域名' }] });
+  await h.tools.hands.execute({ device: 'computer', do: '买个域名' }); await tick();
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
+  assert.match((await h.pre('h1', 'mcp__dot-vm__browser_click', { index: 5 })).reason, /^这一步要他本人来/);
+  h.emit('h1', 'turn/end', { reason: { kind: 'completed' } }); await tick();
+  h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: her.got.at(-1).source, content: her.got.at(-1).content });
+  h.replies.push('到付款这步了，你来');
+  h.emit('s1', 'turn/end', { turn: 3, reason: { kind: 'completed' } }); await tick(30);
+  assert.deepEqual(sent.at(-1)[2], ['computer:screen'], 'the screen was meant to go with it');
+  const thing = h.ctx.get('dshDot').things(5).find((e) => e.id === 't1');
+  assert.equal(thing.told, undefined, 'the picture is still owed: not told');
+  assert.ok(h.audit.some((a) => a.event === 'told-without-picture'));
+  // what she sees the next time she is up: the words went, the picture did not
+  const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] }));
+  assert.match(d.messages.filter((m) => m.content).map((m) => text(m)).join("\n"), /这几张图没发出去（字发出去了）：\n\[computer:screen\]（upload failed）/);
+  h.stop();
+});
