@@ -2,7 +2,8 @@
 // login and Host/Origin fence (src/web-auth.js) like the panel and the phone's live view. Mounted by
 // the plugin's root component (dot-ui), so it works with any subset of components on: every service
 // is looked up when a request comes in and is simply absent when its component is off.
-import { existsSync, readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readJson as readJsonFile, writeJson } from '../fsstore.js';
+import { writeFileSync, mkdirSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { join, dirname } from 'node:path';
 import { homedir } from 'node:os';
@@ -25,11 +26,11 @@ const dshVersion = (() => {
 })();
 
 const setupFile = () => join(dshHome(), 'dsh-dot-setup.json');
-export function readSetup() { try { return existsSync(setupFile()) ? JSON.parse(readFileSync(setupFile(), 'utf8')) : {}; } catch { return {}; } }
+export function readSetup() { return readJsonFile(setupFile(), {}).value; }
 function writeSetup(patch) {
   const next = { ...readSetup(), ...patch, updatedAt: new Date().toISOString() };
   mkdirSync(dirname(setupFile()), { recursive: true });
-  writeFileSync(setupFile(), JSON.stringify(next, null, 2));
+  writeJson(setupFile(), next);
   return next;
 }
 

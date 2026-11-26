@@ -12,10 +12,11 @@
 //   2. what of hers needs him (gates.js) is asked of him in her words, never with a button; his yes is kept (consent.js);
 //   3. dsh-budget blocks are announced on IM, and the `daily` block is lifted at local midnight;
 //   4. VM failures are announced on IM; /dot shows the status.
+import { createJsonStore } from '../fsstore.js';
 import { DEFAULT_AWAKE, sleepsAtAll, validHours } from '../hours.js';
 import { createLedger } from './ledger.js';
 import { createConsent } from './consent.js';
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { createSessions } from './sessions.js';
@@ -166,14 +167,6 @@ export function setupText(phoneStatus, computerStatus) {
 const dshHome = () => process.env.DSH_HOME || join(homedir(), '.dsh');
 
 
-function createStore(file) {
-  let data = {};
-  try { data = JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; /* first run */ }
-  return {
-    get: (k) => data[k],
-    set: (k, v) => { data[k] = v; try { writeFileSync(file, JSON.stringify(data, null, 2)); } catch (error) { void error; /* state is best-effort */ } },
-  };
-}
 
 /**
  * Reach the user through dsh-im's public delivery service.
@@ -233,7 +226,13 @@ export function apply(ctx, config = {}) {
   // What a call costs (src/price.js): his own price, when he gave one (interlude.price, the same for every component), and
   // a model without a price said once in the log.
   configurePrice({ price: sectionOf('interlude').price ?? null, warn: (m) => logger.warn(m) });
-  const store = createStore(join(dshHome(), 'dsh-dot-state.json'));
+  // Her state (her conversation, the book of things, his yeses): kept whole on every change, and a file that cannot be
+  // read is copied aside before a fresh one is started (fsstore.js) — never silently written over.
+  const stateFile = join(dshHome(), 'dsh-dot-state.json');
+  const store = createJsonStore(stateFile, {
+    onBroken: (g) => { logger.warn(`dsh-dot-state.json could not be read (${g.error}): ${g.state === 'broken' ? `kept as ${g.keptAs}; starting fresh` : 'and could not be copied aside: nothing is written to it until this is fixed'}`); audit('state-broken', { state: g.state, ...(g.keptAs ? { keptAs: g.keptAs } : {}), error: String(g.error).slice(0, 160) }); },
+    onWriteError: (err) => logger.warn(`dsh-dot-state.json not written: ${err.message}`),
+  });
   const im = createNotifier(() => ctx.get('dshIm'), cfg, logger, () => ctx.get('dshQq'));
 
   mkdirSync(home, { recursive: true });

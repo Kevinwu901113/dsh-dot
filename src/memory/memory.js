@@ -17,6 +17,7 @@
 //               archive it, open a new one in <home>, and start it with the last lines verbatim
 //               (her notes are in <memory>; older words come back through recall).
 // She edits her notes herself too (`memory`), and looks things up (`recall`).
+import { readJsonl } from '../fsstore.js';
 import { appendFileSync, copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, relative, isAbsolute } from 'node:path';
@@ -386,8 +387,9 @@ export function apply(ctx, config = {}) {
   if (expireOpen(memory, keep)) save();
 
   // ── transcript ──
+  // Line by line: one bad line is skipped and counted, not the whole of what was said (fsstore.readJsonl).
   let lines = [];
-  try { lines = readFileSync(files.transcript, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).sort(byTime); } catch (error) { void error; }
+  { const got = readJsonl(files.transcript); lines = got.rows.sort(byTime); if (got.bad) { logger.warn(`transcript: ${got.bad} unreadable line(s) skipped`); audit('transcript-bad-lines', { bad: got.bad }); } }
   let lastLineAt = lines.at(-1)?.at ?? 0;
   // Her sessions with a turn running now: what she says outside one (a turn's answer going out after it ended) is complete at once.
   const running = new Set();

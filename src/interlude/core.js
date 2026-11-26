@@ -15,6 +15,7 @@
 //
 // The Canon file keeps HDS-Interlude's `storyDefaults` field names
 // (https://github.com/REcklessNOLOve117/HDS-Interlude) so that personas shared on its preset hub can be imported.
+import { readJson as readJsonKept, writeJson } from '../fsstore.js';
 import { deny } from '../refusals.js';
 import { PHONE_TOOL_PREFIX, PHONE_TYPE_TOOL } from '../tool-prefixes.js';
 import { typesText } from '../phone/phone.js';
@@ -123,9 +124,8 @@ export function contentText(content) {
 export { describeNow };
 
 
-function readJson(file, fallback) {
-  try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; return fallback; }
-}
+// A file that cannot be read is copied aside before anything is written over it (fsstore.js).
+function readJson(file, fallback) { return readJsonKept(file, fallback).value; }
 
 // Moved to llm-call.js (it reads any model call's reply, not the interlude's); the name stays here for its importers.
 export { collectReply } from '../llm-call.js';
@@ -204,7 +204,7 @@ export function apply(ctx, config = {}) {
 
   const meta = { day: dayOf(), ...readJson(files.meta, {}) };
   const rollDay = () => { if (meta.day !== dayOf()) { meta.day = dayOf(); meta.dayTokensIn = 0; meta.dayTokensCached = 0; meta.dayTokensOut = 0; meta.dayFreeTokens = 0; meta.dayFreeYuan = 0; meta.dayFrees = 0; } };
-  const saveMeta = () => { try { writeFileSync(files.meta, JSON.stringify(meta, null, 2)); } catch (error) { void error; } };
+  const saveMeta = () => { try { writeJson(files.meta, meta); } catch (error) { void error; } };
   // Her card and checks file follow the canon (src/persona/card.js): written when there are none, written again when
   // another canon.json took its place — never over a file the user edited.
   if (canon) {

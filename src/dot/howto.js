@@ -20,7 +20,8 @@
 //   recall   the first time her hands are in a place in a thing, its notes come along with the call's result,
 //            with how the tasks there went and their shortcuts — as reference, not instructions
 // The notes are plain files (<home>/her/howto/<place>.md): she, or he, can edit them.
-import { mkdirSync, readFileSync, readdirSync, renameSync, writeFileSync, appendFileSync } from 'node:fs';
+import { readJson, writeText } from '../fsstore.js';
+import { mkdirSync, readFileSync, readdirSync, appendFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { wasRefused } from '../refusals.js';
 import { head } from '../cut.js';
@@ -28,7 +29,7 @@ import { head } from '../cut.js';
 const clip = (s, n) => { const t = String(s ?? '').replace(/\s+/g, ' ').trim(); return t.length > n ? `${head(t, n)}…` : t; };
 const read = (f) => { try { return readFileSync(f, 'utf8'); } catch (error) { void error; return ''; } };
 /** Write whole, or not at all (tmp + rename). */
-const writeAtomic = (f, text) => { const tmp = `${f}.tmp`; writeFileSync(tmp, text); renameSync(tmp, f); };
+const writeAtomic = (f, text) => writeText(f, text);
 /** A file name for a place: no path separators or oddities. */
 export const fileOf = (app) => `${String(app || 'phone').replace(/[\\/:*?"<>|\s]+/g, '_').slice(0, 60)}.md`;
 /** Web addresses never go into the notes. */
@@ -105,7 +106,7 @@ export function createHowto({ dir, minSteps = 12, maxChars = 800, keepRuns = 400
   // of ours: each is read over once before it is given again. A new folder has nothing to read over.
   const metaFile = join(dir, '_meta.json');
   let meta = null;
-  try { meta = JSON.parse(readFileSync(metaFile, 'utf8')); } catch (error) { void error; }
+  meta = readJson(metaFile, null).value;
   if (!meta || !Array.isArray(meta.review)) {
     let old = [];
     try { old = readdirSync(dir).filter((f) => f.endsWith('.md') && read(join(dir, f)).trim()).map((f) => f.slice(0, -3)); } catch (error) { void error; }

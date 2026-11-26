@@ -5,7 +5,7 @@
 // The round sees a view of it (`yourDoings`): what she has kept doing these seven days and what it
 // cost, the last few with their results and his reactions, and today's total. Whether something was
 // worth it is hers to judge — nothing here scores it.
-import { readFileSync, writeFileSync } from 'node:fs';
+import { readJson, writeJson } from '../fsstore.js';
 import { head } from '../cut.js';
 import { addYuan } from '../price.js';
 
@@ -55,9 +55,9 @@ const LOST_AFTER = 2 * 3600000;
 
 export function createDoings(file, { now = () => Date.now() } = {}) {
   let list = [];
-  try { const j = JSON.parse(readFileSync(file, 'utf8')); if (Array.isArray(j)) list = j; } catch (error) { void error; }
+  list = readJson(file, [], { valid: Array.isArray }).value;
   for (const d of list) if (d.status === 'queued' && now() - d.at > LOST_AFTER) { d.status = 'lost'; d.doneAt = now(); }
-  const save = () => { try { writeFileSync(file, JSON.stringify(list.slice(-KEEP), null, 1)); } catch (error) { void error; } };
+  const save = () => { try { writeJson(file, list.slice(-KEEP), { indent: 1 }); } catch (error) { void error; } };
   let seq = 0;
   const find = (ref) => {
     const r = String(ref ?? '').trim().replace(/^#/, '');

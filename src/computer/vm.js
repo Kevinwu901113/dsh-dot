@@ -2,6 +2,7 @@
 // Backend: a microsandbox microVM by default (bundled, no Docker needed), Docker as fallback.
 // The service is provided immediately so tools register at boot; `ready` settles once the VM
 // answers. Disposal never stops the machine: files, logins and running apps outlive dsh restarts.
+import { readJson, writeJson } from '../fsstore.js';
 import { VM_SERVER, VM_TOOL_PREFIX } from '../tool-prefixes.js';
 import http from 'node:http';
 import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
@@ -89,10 +90,10 @@ export const lockFile = () => join(dshHome(), 'dsh-computer.remount.lock');
 export const auditFile = () => join(dshHome(), 'dsh-computer-audit.jsonl');
 
 function readState() {
-  try { return JSON.parse(readFileSync(stateFile(), 'utf8')); } catch { return {}; }
+  return readJson(stateFile(), {}).value; // a broken one is copied aside first (fsstore.js): its mounts are what a rebind reconciles against
 }
 function writeState(state) {
-  try { mkdirSync(dshHome(), { recursive: true }); writeFileSync(stateFile(), JSON.stringify(state, null, 2)); } catch {}
+  try { writeJson(stateFile(), state); } catch {}
 }
 
 const inside = (root, p) => { const r = relative(root, p); return r === '' || (!r.startsWith('..') && !isAbsolute(r)); };

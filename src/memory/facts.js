@@ -13,7 +13,8 @@
 //             bear on what he said; up to `factsPicked` of them are put in her prompt as lines.
 //
 // Measured on chat-memory-benchmark 2.2 (docs/MEMORY-ROOT-CAUSES.md, 2026-11-16 / 17).
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+import { readJsonl } from '../fsstore.js';
+import { appendFileSync, mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { createBm25, openIndex } from './recall.js';
 import { annotate } from './when.js';
@@ -80,7 +81,7 @@ export function parsePick(raw, n) {
 export function createFacts({ cfg, dir, recall, complete, lines, logger, audit = () => {} }) {
   const file = join(dir, 'facts.jsonl');
   let facts = [];
-  try { facts = readFileSync(file, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)); } catch { /* none yet */ }
+  { const got = readJsonl(file); facts = got.rows; if (got.bad) logger?.warn?.(`facts: ${got.bad} unreadable line(s) skipped`); }
   const on = () => cfg.facts !== false;
 
   // ── the index: rows { at: fact index, end: 0 for the sentence / 1… for a situation, text } ──
