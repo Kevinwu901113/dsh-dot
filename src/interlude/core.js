@@ -122,33 +122,8 @@ function readJson(file, fallback) {
   try { return JSON.parse(readFileSync(file, 'utf8')); } catch (error) { void error; return fallback; }
 }
 
-/**
- * Collect a model reply from an llm stream: its text, the arguments of the first tool call (the
- * `interval` tool carries the round's fields as provider-validated JSON), the token usage, and every tool call in
- * order (`calls`: [{ name, args }]).
- */
-export async function collectReply(stream) {
-  let text = '';
-  const calls = new Map(); // tool-call index → arguments so far
-  const names = new Map(); // tool-call index → tool name
-  let usage = null;
-  let finish = null;
-  for await (const chunk of stream) {
-    if (chunk.type === 'text-delta') text += chunk.text;
-    else if (chunk.type === 'tool-call-delta') { calls.set(chunk.index, (calls.get(chunk.index) ?? '') + (chunk.argumentsDelta ?? '')); if (chunk.name) names.set(chunk.index, chunk.name); }
-    else if (chunk.type === 'block-end' && chunk.block?.type === 'tool-call') { if (chunk.block.arguments) calls.set(chunk.index, chunk.block.arguments); if (chunk.block.name) names.set(chunk.index, chunk.block.name); }
-    else if (chunk.type === 'usage') usage = chunk.usage ?? null;
-    else if (chunk.type === 'finish') finish = chunk.reason;
-  }
-  // FinishReason kinds: stop | tool-calls | max-tokens | aborted | error.
-  if (finish && (finish.kind === 'aborted' || finish.kind === 'error')) {
-    throw new Error(`interlude model call ended with ${finish.kind}: ${finish.failure?.message ?? finish.failure?.code ?? ''}`);
-  }
-  const args = [...calls.entries()].sort((a, b) => a[0] - b[0]).map(([, v]) => v).find(Boolean) ?? '';
-  // Every call, in order, by name (a replay of her conversation compares which tools each run chose).
-  const all = [...new Set([...calls.keys(), ...names.keys()])].sort((a, b) => a - b).map((i) => ({ name: names.get(i) ?? '', args: calls.get(i) ?? '' }));
-  return { text, args, usage, finish, calls: all };
-}
+// Moved to llm-call.js (it reads any model call's reply, not the interlude's); the name stays here for its importers.
+export { collectReply } from '../llm-call.js';
 
 
 /** storyDefaults → the Canon text the model sees (prompt section and interlude rounds). */

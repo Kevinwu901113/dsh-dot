@@ -133,6 +133,64 @@ export async function effortFor(ctx, route, want) {
   } catch (err) { return { effort: follow, why: `error: ${err?.message ?? err}` }; }
 }
 
+// ── how a call ended ──
+// Every model call ends in one of a few ways. dsh says which in the finish chunk: its kind (stop · tool-calls ·
+// max-tokens · aborted · error) and, for aborted and error, an LlmFailure whose `code` is the provider-neutral class
+// the adapter routed it to (dsh-llm-deepseek providerError, dsh-llm-deepseek-account, dsh-llm's own). A turn that
+// ended with an error carries the same LlmFailure (turn/end reason.error). outcomeOf() turns either into one of:
+//
+//   kind         from                                                      retry   what we do
+//   ───────────  ────────────────────────────────────────────────────────  ──────  ─────────────────────────────────────
+//   ok           stop / tool-calls with words or a tool call                 —      —
+//   rate-limit   RATE_LIMIT                                                  wait    the gate cools the background down
+//   quota        QUOTA, ACCOUNT_QUOTA                                        no      background held, he is told once
+//   auth         AUTH, INVALID_CREDENTIAL, MISSING_CREDENTIAL,               no      background held, he is told once
+//                ACCOUNT_SIGN_IN_REQUIRED, ACCOUNT_TOKEN_INVALID
+//   context      CONTEXT_WINDOW_EXCEEDED                                     no      her conversation is handed over
+//   truncated    finish max-tokens                                           no      a JSON call says so; the voice asks once more when no words came
+//   empty        EMPTY_RESPONSE, or stop with no words and no tool call      once    the voice asks once more; not her silence
+//   aborted      finish aborted, ABORTED                                     no      —
+//   transient    SERVER, TIMEOUT, TRANSPORT, STREAM_CLOSED,                  yes     (dsh retries her turns' steps itself)
+//                MALFORMED_RESPONSE, HTTP_5xx
+//   other        anything else (INVALID_REQUEST, NO_ADAPTER, UNKNOWN …)      no      said as it is
+//
+// dsh retries a failed step of an agent loop (dsh-llm-retry: EMPTY_RESPONSE, RATE_LIMIT, SERVER, TIMEOUT, TRANSPORT,
+// 5 times, 0.5–10 s); a direct ctx.llm.stream() call — every call made here — is tried once.
+const BY_CODE = {
+  RATE_LIMIT: 'rate-limit',
+  QUOTA: 'quota', ACCOUNT_QUOTA: 'quota',
+  AUTH: 'auth', INVALID_CREDENTIAL: 'auth', MISSING_CREDENTIAL: 'auth', ACCOUNT_SIGN_IN_REQUIRED: 'auth', ACCOUNT_TOKEN_INVALID: 'auth',
+  CONTEXT_WINDOW_EXCEEDED: 'context',
+  EMPTY_RESPONSE: 'empty',
+  ABORTED: 'aborted',
+  SERVER: 'transient', TIMEOUT: 'transient', TRANSPORT: 'transient', STREAM_CLOSED: 'transient', MALFORMED_RESPONSE: 'transient',
+};
+const RETRYABLE = new Set(['rate-limit', 'empty', 'transient']);
+/** The kinds that are the account's, not the call's: every call fails the same way until he does something. */
+export const ACCOUNT_KINDS = new Set(['quota', 'auth']);
+
+/**
+ * How a model call ended. `reason`: a finish chunk's reason, or a turn/end reason; `reply`: what came back
+ * ({ text, calls }), to tell an empty stop from one with something in it.
+ * → { kind, code, message, retryable, retryAfterMs?, held? } (held: refused by the gate, never sent)
+ */
+export function outcomeOf(reason, { text = '', calls = [] } = {}) {
+  const failure = reason?.failure ?? reason?.error;
+  const k = reason?.kind;
+  if (k === 'error' || k === 'aborted') {
+    const code = String(failure?.code ?? (k === 'aborted' ? 'ABORTED' : 'UNKNOWN'));
+    const kind = k === 'aborted' ? 'aborted' : BY_CODE[code] ?? (/^HTTP_5\d\d$/.test(code) ? 'transient' : 'other');
+    const after = Number(failure?.providerRetryAfterMs);
+    return { kind, code, message: String(failure?.message ?? reason?.message ?? code), retryable: RETRYABLE.has(kind), ...(after > 0 ? { retryAfterMs: after } : {}), ...(failure?.held ? { held: true } : {}) };
+  }
+  if (k === 'max-tokens') return { kind: 'truncated', code: 'max-tokens', message: 'output cut at maxTokens', retryable: false };
+  if (!String(text ?? '').trim() && !(calls ?? []).some((c) => c?.name || c?.args)) return { kind: 'empty', code: 'empty', message: 'no words and no tool call came back', retryable: true };
+  return { kind: 'ok', code: '', message: '', retryable: false };
+}
+
+/** A failed outcome as one short line (an audit field, a line for him): "quota (QUOTA): Insufficient Balance". */
+export const outcomeText = (o) => (o ? `${o.kind}${o.code && o.code !== o.kind ? ` (${o.code})` : ''}${o.message ? `: ${o.message}` : ''}` : '');
+
 /**
  * The gate's logic, clock-injectable. `config`: the `llm` settings section; `now`/`setTimer`/
  * `clearTimer`/`random` for tests; `logger` ({ info, debug }); `audit(event, data)`.

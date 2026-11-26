@@ -18,7 +18,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
 import { mkdir, readdir, rm, writeFile } from 'node:fs/promises';
 import { isAbsolute, join } from 'node:path';
-import { collectReply } from '../interlude/core.js';
+import { collectReply } from '../llm-call.js';
 import { background } from '../llm-gate.js';
 import { SAY_TOOL } from '../tool-prefixes.js';
 import { contentText, spokenOf } from './text.js';
