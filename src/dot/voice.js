@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import { createUserMessage } from '@deepseek-ai/dsh-llm';
 import { checkReply } from '../persona/card.js';
 import { saysHowToTalk } from '../persona/parts.js';
+import { sayingsPlace } from './sayings.js';
 import { callModel } from '../llm-call.js';
 import { prompt } from '../prompts.js';
 import { ago } from '../clock.js';
@@ -23,7 +24,9 @@ import { reachText, voiceHow } from './text.js';
  *     factsFor, outlet, say, saidText, tellHim, turnEnded, saidNoteText, saidElsewhere }
  */
 export function createVoice(dot) {
-  const { ctx, cfg, audit, logger, store, im, sessions, things, turns } = dot;
+  const { ctx, cfg, audit, logger, store, im, sessions, things, turns, home } = dot;
+  const sayingsHere = sayingsPlace(home);
+  let noVoiceTold = false; // he was told her card has no part on how she talks
   // The one check of what she says, whichever way it goes out (her answer, qq_send, a line her hands type). A line
   // that is handed back is followed by one that goes out as written — so a phrase list that is wrong costs one call,
   // and nothing she says can be held for good. `strict` also hands back a line that only had stage directions in it
@@ -133,9 +136,21 @@ export function createVoice(dot) {
     unread: (to) => to === 'owner' && readFirst(dot.arrive.hisUnread()) === 'gave-way',
     lines: cfg.sayLines,
     // How she talks comes from her card alone; only a card that does not say gets the plugin's few lines after it.
-    style: () => { try { return saysHowToTalk(ctx.get('dshInterlude')?.cardText?.() ?? '') ? '' : prompt('dot.say.style'); } catch { return ''; } },
+    // A card that has said it and no longer does (a heading renamed): he is told once — which part goes where is by
+    // the headings, and a renamed one moves to both steps without a word (11-27).
+    style: () => {
+      try {
+        const card = ctx.get('dshInterlude')?.cardText?.() ?? '';
+        const talks = saysHowToTalk(card);
+        if (card && !talks && !noVoiceTold) { noVoiceTold = true; audit('card-no-voice'); void im.send(prompt('dot.card.no-voice').trim(), 'plain'); }
+        if (talks) noVoiceTold = false;
+        return talks ? '' : prompt('dot.say.style');
+      } catch { return ''; }
+    },
     // How she answered him before on the same kind of thing (memory.js sayings): dot.sayPast of them, 0 = none.
-    past: async (q, o) => { const n = Number(cfg.sayPast) || 0; if (!n) return []; return (await ctx.get('dotMemory')?.sayings?.(q, { ...o, n })) ?? []; },
+    past: async (q, o) => { const n = Number(cfg.sayPast) || 0; if (!n) return []; return (await ctx.get('dotMemory')?.sayings?.(q, { ...o, n, choices: sayingsHere.choices() })) ?? []; },
+    // Which ones went with which reply: written down in her place, for her to look back at (sayings.js).
+    used: (o) => sayingsHere.record(o),
     pastWaitMs: cfg.sayPastWaitMs,
     audit: (event, data) => audit(event, { session: sessions.last(), ...data }),
     send: (m) => outlet.send(m),
@@ -148,14 +163,14 @@ export function createVoice(dot) {
    * (`about`, from the say tool) or what she wrote she means to tell him (`meant`, a turn's closing words). The same
    * call writes it either way; here is what the turn and the day keep of it.
    */
-  async function tellHim(t, { about = '', images = [] } = {}) {
+  async function tellHim(t, { about = '', images = [], again = false } = {}) {
     // Nothing of his is waiting for an answer when the turn was not opened by his words (her hands came back, a notification, her own time).
     const plan = planFor(t), facts = plan ? [] : factsFor(t);
     audit('say-facts', { facts: (plan ? plan.must : facts).map((f) => f.slice(0, 160)), about: String(about ?? '').slice(0, 160), ...(plan ? { report: true, may: plan.may.length } : {}) });
     // A question for him that needs the screen (a QR code to scan): it goes with what she says.
     const ended = t?.by.thing ? dot.ledger.get(t.by.thing) : null;
     const shots = ended?.outcome === 'stuck' && ended.ask?.screen && (ended.device === 'phone' || ended.device === 'computer') ? [`${ended.device}:screen`] : [];
-    const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !heSpoke(t) });
+    const r = await say.speak({ to: 'owner', about, facts, plan, images: [...[].concat(images ?? []), ...shots], unprompted: !heSpoke(t), again });
     if (r.status !== 'said') return r;
     preempts = 0; // something of hers reached him
     turns.spoke(t);

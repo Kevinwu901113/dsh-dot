@@ -45,7 +45,10 @@ export function createTools(dot) {
           if (named && !which) return under.length ? where() : { status: 'idle' };
           const open = named ? [which.thing] : dot.ledger.unfinished().map((e) => e.id);
           const t = turns.get(sessions.last());
-          const stopped = dot.hands.stop({ by: heSpoke(t) ? 'him' : 'her', ...(named ? which : {}) });
+          // She stopped it (her tool): it is hers, whatever turn it was in. That he had spoken in that turn is kept beside
+          // it as what it is — not turned into "he called it off" (11-27: a thing she gave by mistake and stopped herself
+          // came back to her as stopped by him, "don't do it again").
+          const stopped = dot.hands.stop({ by: 'her', cause: heSpoke(t) ? 'he-spoke' : 'stopped', ...(named ? which : {}) });
           if (stopped) turns.stopped(t, open);
           return { status: stopped ? 'stopped' : 'idle' };
         }
@@ -58,6 +61,8 @@ export function createTools(dot) {
         }
         const given = [String(args?.do ?? '').trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n');
         // One more thing for the hands at work: read between two of their steps.
+        // add given but blank is not a new thing to do (11-27: an empty call went through as a thing with no task).
+        if (args?.add !== undefined && !String(args.add).trim() && !String(args?.do ?? '').trim()) return { status: 'failed', why: prompt('dot.hands.nothing').trim() };
         if (String(args?.add ?? '').trim()) { if (!which && under.length) return where(); return dot.hands.add([String(args.add).trim(), words ? prompt('dot.hands.words', { words }).trim() : ''].filter(Boolean).join('\n'), which ?? undefined); }
         const device = args?.device === 'computer' ? 'computer' : args?.device === 'web' ? 'web' : args?.device === 'host' ? 'host' : 'phone';
         // Whose business this is: his (a turn his words opened, or one her hands came back to on his business) or her own.
@@ -68,8 +73,11 @@ export function createTools(dot) {
         if (device === 'phone') hw.cancelPhoneHome();
         // Given in the turn a thing came back to: it carries on from where that one stopped — the device is as it was left.
         // Or, asked for, the last thing on that device that stopped short (his yes came in a later turn of his).
-        const before = t?.by.thing ? dot.ledger.get(t.by.thing) : args?.after ? dot.ledger.recent(10).find((e) => e.device === device) : null;
+        const before = t?.by.thing ? dot.ledger.get(t.by.thing) : args?.after ? dot.ledger.recent(10).find((e) => e.device === device && e.state === 'ended' && e.outcome !== 'done') : null;
         const after = before?.state === 'ended' && before.outcome !== 'done' ? `\n${prompt('dot.hands.after', { task: before.task, where: before.question ? `问过：${before.question}` : before.summary || before.detail ? `停下时说的是：${head(before.summary || before.detail, 300)}` : '没有留下话' }).trim()}` : '';
+        // A place is not a thing to do: with nothing given and nothing to carry on from, nothing is begun (11-27: hands
+        // with only device: web opened a thing whose whole task was the place's note).
+        if (!given && !after) return { status: 'failed', why: prompt('dot.hands.nothing').trim() };
         const started = await dot.hands.start({ device, task: `${prompt(device === 'computer' ? 'dot.hands.where.computer' : device === 'web' ? 'dot.hands.where.web' : device === 'host' ? 'dot.hands.where.host' : 'dot.hands.where.phone').trim()}${given}${after}`, forHim, ...(before && after ? { after: before.id } : {}) });
         turns.opened(t, started?.id);
         // A place that is held, said again and again in one turn: the code counts it (a cheap model may give the same
@@ -83,11 +91,11 @@ export function createTools(dot) {
     scope.effect(() => scope.tools.register({
       name: SAY_TOOL,
       description: prompt('dot.say-tool'),
-      parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；手上那件事的结果不用复述（会照记录给到），写你的看法、打算或要他做的；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' } }, additionalProperties: false },
-      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'needs-ok' ? prompt('dot.gates.asked.her', { what: v.what ?? '' }) : v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : `没说成：${v?.why ?? ''}` }] },
+      parameters: { type: 'object', properties: { to: { type: 'string', description: '说给谁：不填就是他；别人填 user:<QQ号>，群里填 group:<群号>' }, about: { type: 'string', description: '这次要让对方知道的事，一句话；手上那件事的结果不用复述（会照记录给到），写你的看法、打算或要他做的；只是接他的话、没有要告诉他的事，就不填' }, context: { type: 'string', description: '说给别人时：对方刚说了什么、在哪说的' }, images: { type: 'array', items: { type: 'string' }, description: '要一起发的图："phone:screen"、"computer:screen"、"phone:latest"、图片网址。表情包不用填，会自己挑' }, again: { type: 'boolean', description: '上一条没发出去时填 true：把写好的那几行原样再发一次，不重写' } }, additionalProperties: false },
+      output: { schema: { type: 'object', properties: { status: { type: 'string' } }, required: ['status'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: v?.status === 'needs-ok' ? prompt('dot.gates.asked.her', { what: v.what ?? '' }) : v?.status === 'said' ? saidText(v) : v?.status === 'silent' ? prompt('dot.say.silent') : v?.status === 'held' ? prompt('dot.owner-interrupt') : v?.unsent?.length ? prompt('dot.say.unsent', { why: v.why ?? '', lines: v.unsent.join('\n') }) : `没说成：${v?.why ?? ''}` }] },
       async execute(args) {
         const to = String(args?.to ?? '').trim() || 'owner';
-        if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(sessions.last()), { about: args?.about, images: args?.images });
+        if (isOwnerTarget(to, ctx.get('dshQq')?.owner)) return tellHim(turns.get(sessions.last()), { about: args?.about, images: args?.images, again: args?.again === true });
         // Someone she does not talk with, a group gone quiet, a file off her devices: his yes first (gates.js).
         const why = ctx.get('dshQq')?.gateFor?.({ to, images: args?.images ?? [] });
         if (why) {

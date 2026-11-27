@@ -448,7 +448,7 @@ export function dueSaid(due, segment) {
   if (!m) return false;
   const mo = Number(m[2]), d = Number(m[3]);
   const text = String(segment ?? '').replace(/^\[[^\]\n]*\]/gm, '');
-  if (new RegExp(`[（(]=(?:\\d{4}-)?${m[2]}-${m[3]}[）)]`).test(text)) return true;
+  if (new RegExp(`[（(]=(?:\\d{4}-)?${m[2]}-${m[3]}[）)；]|按睡醒算是 (?:\\d{4}-)?${m[2]}-${m[3]}[）)]`).test(text)) return true;
   const cn = CN_NUM(d), cnd = d > 20 && d < 30 ? `(?:${cn}|廿${CN_NUM(d % 10)})` : cn;
   return new RegExp(`(?<![\\d.])0?${mo}\\s*(?:月\\s*0?${d}\\s*[号日]?|[-/.]0?${d})(?![\\d])|(?<![一二三四五六七八九十])${CN_NUM(mo)}月${cnd}(?![一二三四五六七八九十])`).test(text);
 }

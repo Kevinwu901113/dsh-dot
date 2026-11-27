@@ -58,7 +58,7 @@ export function headTail(text, max = 900) {
 export function openOf(e, { takenUp = new Set(), at = Date.now() } = {}) {
   if (!e || e.closed) return false;
   if (e.state !== 'ended') return true;
-  if (e.asker === 'him' && !(e.outcome === 'stopped' && e.by === 'him') && !takenUp.has(e.id) && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)) return true;
+  if (e.asker === 'him' && !(e.outcome === 'stopped' && (e.by === 'him' || e.cause === 'he-spoke')) && !takenUp.has(e.id) && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told)) return true;
   if (e.outcome === 'stuck' && e.ask?.for === 'him' && !e.askSettled) return true;
   if (e.awaiting?.from && !e.awaiting.answeredAt && at < (e.awaiting.until ?? 0)) return true;
   return false;

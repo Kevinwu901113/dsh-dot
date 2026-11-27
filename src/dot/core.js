@@ -405,6 +405,8 @@ export function apply(ctx, config = {}) {
       // His stop is a command, not a message she gets round to: what is in her hands ends now, and she is told it was him.
       // Everything in her hands stops, in every place: what was under way is named.
       stop: () => { const d = dot.hands?.things?.() ?? []; return dot.hands?.stop({ by: 'him', cause: 'command' }) ? `停下了：${d.map((t) => t.task ?? '').join('、')}` : '她手上现在没有事'; },
+      owed: () => { const l = dot.ledger.owed(); return l.length ? l.map((e) => `${e.id} ${e.asker === 'him' ? '他要的' : '她自己的'} · ${e.state === 'ended' ? e.outcome : '在做'} · ${String(e.task ?? '').replace(/^（[^）]*）/, '').split(/[。\n]/)[0].slice(0, 50)}`).join('\n') + '\n（/dot close <id> [原因]：不再算欠他的）' : '没有欠他的事'; },
+      close: (id, why) => { const e = dot.ledger.get(id); if (!e) return `没有 ${id}`; if (e.state !== 'ended') return `${id} 还在做：先 /dot stop`; dot.ledger.close(id, why || '他说不用了'); audit('owed-closed', { thing: id, by: 'him' }); return `${id} 不再算欠他的`; },
       memory: () => ctx.get('dotMemory'), howto, checkup, prompts, status: status.statusText, nightcheck, voicetest: status.voicetest, replay: status.replay,
     })), 'dsh-dot: /dot command');
   });

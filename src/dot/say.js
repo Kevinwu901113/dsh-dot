@@ -166,6 +166,7 @@ export function parseLead(text, n) {
  * @param {(n: number) => { who: string, text: string }[]} deps.recent - the last lines between her and him
  * @param {(q: string, o: { before: number }) => Promise<{ his: string, her: string }[]>} [deps.past] - exchanges of long ago that bear on q, from before `before` (memory.js sayings)
  * @param {number} [deps.pastWaitMs] - how long the call waits for them
+ * @param {(o: { said: string[], past: object[] }) => void} [deps.used] - a reply that went out and the exchanges it was written with (sayings.js record)
  * @param {string | (() => string)} [deps.style] - put after her card: how to talk, for a card that does not say
  * @param {() => string} deps.state - what is in her hands right now, as a line
  * @param {() => { id: string, note: string }[]} deps.stickers - the stickers she has
@@ -173,7 +174,10 @@ export function parseLead(text, n) {
  * @param {(to: string) => boolean} deps.unread - has the one this goes to said something she has not read?
  * @param {(o: { to: string, text: string, images: string[] }) => Promise<{ said?: string[], images?: string[], interrupted?: boolean, unsent?: string[] }>} deps.send
  */
-export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12, past = async () => [], pastWaitMs = 1500, style = '' }) {
+const UNSENT_KEPT_MS = 15 * 60000; // how long words that did not go out are kept to be sent again as they were
+
+export function createSay({ card, call, recent, stickers, check, unread = () => false, send, audit = () => {}, lines: historyLines = 12, past = async () => [], pastWaitMs = 1500, style = '', used = () => {} }) {
+  let unsent = null; // { to, out, at }: what was written last and did not go out (speak's again)
   // What one call wrote. A call that brought back no words (the model returned nothing, or spent all of its output on
   // thinking) is not her choosing to say nothing — that is "[不回]", written: it is asked once more, and the second
   // time it is a failure (said to him as one, never recorded as her silence). Cut short with words in it: those words.
@@ -217,15 +221,20 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
      * @param {{ his: string, must: string[], may?: string[], underway?: boolean, sayings?: string[] }} [o.plan] - a report from the book: said from these sentences (reportInput), or, of things just begun, her line and then a saying of hers (leadInput)
      * @param {string} [o.context] - for someone else than him: what they said, where
+     * @param {boolean} [o.again] - send again, as it was written, what did not go out last time (within 15 minutes)
      */
-    async speak({ to = 'owner', about = '', facts = [], plan = null, images = [], unprompted = false, context = '' } = {}) {
+    async speak({ to = 'owner', about = '', facts = [], plan = null, images = [], unprompted = false, context = '', again = false } = {}) {
       const his = to === 'owner';
       if (unread(to)) return { status: 'held' };
+      let out = null, looked = [];
       try {
         const mine = stickers();
         const has = (id) => mine.some((s) => s.id === id);
-        let out;
-        if (his && plan?.underway && plan.must?.length) {
+        // What did not go out last time, sent again as it was written (her choice, from the failed result): no new call.
+        const kept = again && unsent?.to === to && Date.now() - unsent.at <= UNSENT_KEPT_MS ? unsent : null;
+        if (again && !kept) return { status: 'failed', why: '没有刚才没发出去的话可以再发' };
+        if (kept) out = kept.out;
+        else if (his && plan?.underway && plan.must?.length) {
           // Things just begun: her line to what he said, then the progress in a saying of hers or the book's sentence.
           const sayings = plan.sayings ?? [];
           let pick = -1;
@@ -260,8 +269,9 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
             clearTimeout(timer);
             if (before !== null && !Array.isArray(before)) before = [];
             if (before === null) { audit('say-past-late', { ms: pastWaitMs }); before = []; }
-            if (before.length) audit('say-past', { n: before.length });
+            if (before.length) audit('say-past', { n: before.length, ats: before.map((x) => x.at) });
           }
+          looked = before;
           const input = sayInput({ dialogue, stickers: mine, facts: his ? facts : [], about: [context, about].filter(Boolean).join('\n'), unprompted, past: before });
           out = await write(input, { has, pictures: true });
         }
@@ -269,10 +279,19 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
         if (out.silent && !pictures.length) { audit('say-silent', { to }); return { status: 'silent' }; }
         if (unread(to)) { audit('say-held', { to, lines: out.lines.length }); return { status: 'held' }; }
         const r = await send({ to, text: out.lines.join('\n'), images: pictures });
+        unsent = null;
+        if (looked.length) used({ said: r?.said ?? out.lines, past: looked });
         // What went out is told piece by piece: a picture that did not go (r.failed) is kept apart from the words that did.
         audit('said', { to, lines: (r?.said ?? out.lines).length, images: (r?.images ?? pictures).length, ...(r?.interrupted ? { interrupted: true } : {}), ...(r?.failed?.length ? { failedImages: r.failed.length } : {}) });
         return { status: 'said', said: r?.said ?? out.lines, images: r?.images ?? pictures, ...(r?.interrupted ? { interrupted: true, unsent: r.unsent ?? [] } : {}), ...(r?.failed?.length ? { failed: r.failed } : {}) };
-      } catch (err) { audit('say-failed', { to, error: String(err?.message ?? err).slice(0, 200), ...(err?.outcome ? { outcome: err.outcome.kind } : {}) }); return { status: 'failed', why: String(err?.message ?? err), ...(err?.outcome ? { outcome: err.outcome } : {}) }; }
+      } catch (err) {
+        // Written, and nothing of it went out: what was written is kept, and she is told it as it is — whether to send
+        // it again as it was, say it otherwise or leave it is hers (11-27: a send failed on waking and was written anew).
+        const lines = out && !out.silent ? out.lines : [];
+        if (lines.length) unsent = { to, out, at: Date.now() };
+        audit('say-failed', { to, error: String(err?.message ?? err).slice(0, 200), ...(err?.outcome ? { outcome: err.outcome.kind } : {}), ...(lines.length ? { unsent: lines.length } : {}), ...(again ? { again: true } : {}) });
+        return { status: 'failed', why: String(err?.message ?? err), ...(lines.length ? { unsent: lines } : {}), ...(err?.outcome ? { outcome: err.outcome } : {}) };
+      }
     },
     /** Words for her hands to type somewhere (a comment, a post, a reply in an app): the text only, '' when she would rather not. */
     async compose({ about = '', where = '' } = {}) {

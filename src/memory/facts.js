@@ -29,12 +29,15 @@ const dotp = (a, b) => { let s = 0; for (let i = 0; i < a.length; i++) s += a[i]
 /** The days (local midnight, ms) a sentence said at `at` speaks of, by when.js's own reading. */
 export function daysOf(text, at) {
   const said = new Date(at);
-  return [...annotate(String(text), at).matchAll(/（=(?:(\d{4})-)?(\d{2})-(\d{2})）/g)].map((m) => {
-    if (m[1]) return new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
-    let d = new Date(said.getFullYear(), Number(m[2]) - 1, Number(m[3])).getTime();
-    if (d < at - 200 * DAY) d = new Date(said.getFullYear() + 1, Number(m[2]) - 1, Number(m[3])).getTime();
-    return d;
-  });
+  const dayOf = (y, mo, d) => {
+    if (y) return new Date(Number(y), Number(mo) - 1, Number(d)).getTime();
+    let t = new Date(said.getFullYear(), Number(mo) - 1, Number(d)).getTime();
+    if (t < at - 200 * DAY) t = new Date(said.getFullYear() + 1, Number(mo) - 1, Number(d)).getTime();
+    return t;
+  };
+  // A small-hours 明天 carries both days (when.js): the fact bears on either.
+  return [...annotate(String(text), at).matchAll(/（=(?:(\d{4})-)?(\d{2})-(\d{2})(?:；凌晨说的，按睡醒算是 (?:(\d{4})-)?(\d{2})-(\d{2}))?）/g)]
+    .flatMap((m) => [dayOf(m[1], m[2], m[3]), ...(m[5] ? [dayOf(m[4], m[5], m[6])] : [])]);
 }
 
 /** The write call's reply → [{ at, text, when }]: lines `MM-DD HH:MM｜fact｜situation；situation`. */

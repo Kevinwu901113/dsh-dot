@@ -594,7 +594,8 @@ export function createRecall({ cfg, dir, lines, transcriptFile, logger, audit = 
     for (const x of picked) take(x.j, x.s);
     const near = whole ? 0 : Number(cfg.recallNeighbors) || 0;
     for (const j of [...taken]) for (let d = 1; d <= near; d++) { take(j - d, 0); take(j + d, 0); }
-    res.hits = shown.map((x) => ({ at: x.at, score: Number(x.s.toFixed?.(3) ?? x.s), text: x.text })).sort((x, y) => x.at - y.at);
+    // `rank`: its place in the fused order, best first (score is its own list's and is not comparable across lists).
+    res.hits = shown.map((x, rank) => ({ at: x.at, score: Number(x.s.toFixed?.(3) ?? x.s), rank, text: x.text })).sort((x, y) => x.at - y.at);
     res.text = shown.length ? `${prompt('memory.recall.header', { today: todayText() })}\n\n${renderTurns(shown)}` : '';
     res.ms = Math.round(performance.now() - t0);
     if (record) last = { at: Date.now(), ms: res.ms, mode: res.mode, hits: res.hits.length, query: clip(q, 40) };

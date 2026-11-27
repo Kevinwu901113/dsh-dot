@@ -155,6 +155,9 @@ function festival(at, name, off) {
   return sf == null ? null : addDays(sf, o);
 }
 
+/** Before this hour a line is said in the small hours: his day has not turned over yet if he has not slept. */
+export const SMALL_HOURS_END = 5;
+
 const QUOTES = { '“': '”', '「': '」', '『': '』', '"': '"', '‘': '’' };
 // A clause that imagines or hears: its dates are not the speaker's.
 const NOT_MINE = /(听说|据说|写着|以为|如果|假如|要是|万一|假设|梦到|梦见|的话)/;
@@ -164,7 +167,8 @@ const SAID_BEFORE = /(昨|前天|第二天|隔天|次日|上周|上个?星期|�
 const CLAUSE_END = /[，。！？；,.!?;\n]/;
 
 /**
- * The line with an exact date after each unambiguous day in it: "明天（=06-23）".
+ * The line with an exact date after each unambiguous day in it: "明天（=06-23）" — said before 5 in the morning,
+ * both days: "明天（=06-23；凌晨说的，按睡醒算是 06-22）".
  * `at` is when the line was said; `now` decides whether a year is written (dayMark).
  */
 export function annotate(text, at, now = at) {
@@ -196,7 +200,11 @@ export function annotate(text, at, now = at) {
     if (rule.before?.test(before) || rule.after?.test(after)) continue;
     const day = rule.day(m, at);
     if (day == null) continue;
-    out += s.slice(last, end) + `（=${dayMark(day, now)}）`;
+    // 明天 / 昨天 said in the small hours (before 5): by the calendar one day, by his day — not yet slept — the one
+    // before. Both are written; which he meant is not the code's to say (11-27: "明天中午" at 01:40 meant the 27th, and
+    // was written down as the 28th).
+    const smallHours = rule === RULES[0] && new Date(at).getHours() < SMALL_HOURS_END;
+    out += s.slice(last, end) + (smallHours ? `（=${dayMark(day, now)}；凌晨说的，按睡醒算是 ${dayMark(addDays(day, -1), now)}）` : `（=${dayMark(day, now)}）`);
     last = end;
   }
   return out + s.slice(last);

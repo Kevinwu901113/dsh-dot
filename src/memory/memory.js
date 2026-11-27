@@ -40,6 +40,7 @@ import { NO_BACKFILL, runPendingReset } from '../reset.js';
 import { head } from '../cut.js';
 import { ownerSaid } from '../said.js';
 import { addYuan, charge, yuanText } from '../price.js';
+import { choose, stampNames } from '../dot/sayings.js';
 
 export const name = 'dot-memory';
 export const inject = ['llm', 'agentDefaultModel'];
@@ -861,6 +862,20 @@ export function apply(ctx, config = {}) {
     const cut = (x) => (x.length > maxChars ? `${x.slice(0, maxChars)}…` : x);
     return his && her ? { his: cut(his), her: cut(her) } : null;
   };
+  // An exchange she named in her file (sayings.js): by its stamp (the minute his words began), or by a line of hers.
+  const exchangeNamed = (c, maxChars) => {
+    const toHim = (l) => l.who === 'her' && (!l.to || l.to === 'owner');
+    let i = -1;
+    if (c.stamp) i = lines.findIndex((l) => l.who === 'owner' && stampNames(c.stamp, l.at));
+    else if (c.quote) { const k = lines.findIndex((l) => toHim(l) && String(l.text).includes(c.quote)); if (k >= 0) { i = k; while (i > 0 && lines[i - 1].who === 'owner') i--; if (lines[i].who !== 'owner') i = -1; } }
+    if (i < 0) return null;
+    const his = [], her = [];
+    let k = i;
+    for (; k < lines.length && lines[k].who === 'owner'; k++) his.push(String(lines[k].text).trim());
+    for (; k < lines.length && (toHim(lines[k]) || lines[k].who === 'note'); k++) if (toHim(lines[k])) her.push(String(lines[k].text).trim());
+    const cut = (x) => (x.length > maxChars ? `${x.slice(0, maxChars)}…` : x);
+    return his.length && her.length ? { his: cut(his.join(' / ')), her: cut(her.join(' / ')), at: lines[i].at } : null;
+  };
   // Did he go on after her answer in the exchange that begins at `at`: his next words within half an hour of her last.
   const wentOn = (at) => {
     let i = 0, hi = lines.length;
@@ -888,19 +903,24 @@ export function apply(ctx, config = {}) {
      * — he wrote again within half an hour of her answer — is one she said well enough to look at again; best
      * match first, at most `n`, each side clipped to `maxChars`. Recall off, nothing found, or a failure: [].
      */
-    async sayings(q, { n = 4, before = Infinity, maxChars = 200 } = {}) {
-      if (!(n > 0) || !String(q ?? '').trim()) return [];
-      let r;
-      try { r = await recall.query(q, { session: '\u0000say', record: false, whole: true }); } catch { return []; }
-      const out = [];
-      for (const h of [...(r?.hits ?? [])].sort((a, b) => b.score - a.score)) {
-        if (!(h.at < before)) continue;
-        const ex = exchangeOf(h.text, maxChars);
-        if (!ex || !wentOn(h.at)) continue;
-        out.push({ ...ex, at: h.at });
-        if (out.length >= n) break;
+    async sayings(q, { n = 4, before = Infinity, maxChars = 200, choices = null } = {}) {
+      if (!(n > 0)) return [];
+      // Hers (sayings.js): the ones she keeps in front come first whatever the words; the ones she dropped never come.
+      const ch = choices ?? { drop: [], keep: [] };
+      const kept = ch.keep.map((c) => exchangeNamed(c, maxChars)).filter((ex) => ex && ex.at < before);
+      const found = [];
+      if (String(q ?? '').trim()) {
+        let r = null;
+        try { r = await recall.query(q, { session: '\u0000say', record: false, whole: true }); } catch { r = null; }
+        for (const h of [...(r?.hits ?? [])].sort((a, b) => (a.rank ?? 0) - (b.rank ?? 0))) {
+          if (!(h.at < before)) continue;
+          const ex = exchangeOf(h.text, maxChars);
+          if (!ex || !wentOn(h.at)) continue;
+          found.push({ ...ex, at: h.at });
+          if (found.length >= n + ch.drop.length) break;
+        }
       }
-      return out;
+      return choose(found, kept, ch, n);
     },
     herSaid({ session, text, at, to }) {
       if (!String(text ?? '').trim()) return;

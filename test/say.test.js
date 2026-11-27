@@ -167,3 +167,35 @@ test('say: how she answered him before goes in as a look, found by his last word
   await styled.say.speak({ facts: ['x'] });
   assert.equal(styled.calls[0].system, '# 你是 小点\n\n## 怎么说话\n一两句');
 });
+
+test('say: what did not go out is kept and told to her as it was written; sent again as it was on her word, with no new call', async () => {
+  const calls = [];
+  let down = true;
+  const sent = [];
+  const say = createSay({
+    card: () => '# 你是 小点', call: async (o) => { calls.push(o); return '10 点了\n该准备简历了'; },
+    recent: () => [], stickers: () => [], check: (t) => ({ lines: [t], hits: [] }),
+    send: async (m) => { if (down) throw new Error('send private message failed: 网络连接异常!'); sent.push(m.text); return { said: m.text.split('\n') }; },
+  });
+  const r = await say.speak({ facts: ['x'], unprompted: true });
+  assert.equal(r.status, 'failed');
+  assert.deepEqual(r.unsent, ['10 点了', '该准备简历了']);
+  assert.equal(calls.length, 1);
+  down = false;
+  const again = await say.speak({ again: true });
+  assert.equal(again.status, 'said');
+  assert.deepEqual(sent, ['10 点了\n该准备简历了']);
+  assert.equal(calls.length, 1, 'no new call: the words as they were');
+  assert.equal((await say.speak({ again: true })).status, 'failed', 'once sent, nothing is kept to send again');
+});
+
+test('say: the exchanges she looked at go down with the reply that went out', async () => {
+  const used = [];
+  const say = createSay({
+    card: () => '# 你是 小点', call: async () => '嗯', recent: () => [{ who: 'owner', text: '好累啊今天', at: 100 }],
+    stickers: () => [], check: (t) => ({ lines: [t], hits: [] }), send: async (m) => ({ said: [m.text] }),
+    past: async () => [{ his: '累', her: '那歇会儿', at: 50 }], used: (o) => used.push(o),
+  });
+  await say.speak({ facts: ['x'] });
+  assert.deepEqual(used, [{ said: ['嗯'], past: [{ his: '累', her: '那歇会儿', at: 50 }] }]);
+});

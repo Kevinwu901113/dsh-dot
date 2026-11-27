@@ -74,7 +74,7 @@ const CAUSE_WORDS = { restart: 'dot.hands.cause.restart', 'no-session': 'dot.han
 export function voiceHow(e = {}) {
   const o = e.outcome;
   if (o === 'done') return ''; // how it went is in their summary (done is their word that it is over, not that it worked)
-  const id = o === 'timeout' ? 'dot.plain.how.timeout' : o === 'stopped' ? (e.by === 'him' ? 'dot.plain.how.stopped.him' : 'dot.plain.how.stopped.her') : e.cause === 'restart' ? 'dot.plain.how.failed.restart' : 'dot.plain.how.failed';
+  const id = o === 'timeout' ? 'dot.plain.how.timeout' : o === 'stopped' ? (e.by === 'him' ? 'dot.plain.how.stopped.him' : e.cause === 'he-spoke' ? 'dot.plain.how.stopped.talking' : 'dot.plain.how.stopped.her') : e.cause === 'restart' ? 'dot.plain.how.failed.restart' : 'dot.plain.how.failed';
   return prompt(id).trim();
 }
 /** A web address or a domain typed into a bar: where to go, not something said. */

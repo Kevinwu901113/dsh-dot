@@ -4,6 +4,8 @@ import { overrideNotes, rebase } from '../prompts.js';
 
 /**
  * @param deps.stop     () => text — stop what is in her hands, on his word
+ * @param deps.owed     () => text — what she still owes him (ledger.owed), one line a thing with its id
+ * @param deps.close    (id, why) => text — on his word, a thing is no longer owed (ledger.close)
  * @param deps.memory   () => dsh-dot/memory's service (its /dot memory and /dot people) or null
  * @param deps.howto    the know-how book (howto.js)
  * @param deps.nightcheck async ({ apply }) => text — her notes held against the records (nightcheck.js)
@@ -12,7 +14,7 @@ import { overrideNotes, rebase } from '../prompts.js';
  * @param deps.status   async (arg) => text — her status ('test' also sends a test message to his IM)
  * @param deps.replay   async (file, times) => text — a kept request of her conversation sent again, only written down (replay.js)
  */
-export function dotCommand({ stop, memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available', voicetest = async () => 'voicetest is not available', replay = async () => 'replay is not available' }) {
+export function dotCommand({ stop, owed = () => 'owed is not available', close = () => 'close is not available', memory, howto, checkup, prompts, status, nightcheck = async () => 'nightcheck is not available', voicetest = async () => 'voicetest is not available', replay = async () => 'replay is not available' }) {
   const ok = (text) => ({ kind: 'success', text });
   const book = (app) => {
     if (app) {
@@ -26,10 +28,14 @@ export function dotCommand({ stop, memory, howto, checkup, prompts, status, nigh
   return {
     name: 'dot',
     description: 'dot status; "doctor" checks this machine for her phone and computer (virtualization, disk, memory, ports, downloads); "test" sends a test message to your IM; "memory" / "people" show what she remembers; "prompts" opens the prompt and persona editor page; "howto" shows what she has learned in each app and how many steps it takes her ("howto <app>" her notes for it); "replay <file|latest> [n]" sends a kept request of her conversation again n times and only writes down what came back (dot.replayKeep)',
-    input: { hint: '[stop | doctor | test | howto [<app>] | nightcheck [apply] | replay <file|latest> [n] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
+    input: { hint: '[stop | owed | close <id> [why] | doctor | test | howto [<app>] | nightcheck [apply] | replay <file|latest> [n] | prompts [stop | rebase <id> [--reset]] | memory [now|diary|handoff|recall [backend|key|model|rerank|mirror|rebuild|test]] | people [approve|drop <id> | forget <name>]]' },
     handler: async ({ rawInput }) => {
       const arg = String(rawInput ?? '').trim();
       if (arg === 'stop') return ok(stop());
+      // What she still owes him (the book's owed list), and his word that one is no longer owed.
+      if (arg === 'owed') return ok(owed());
+      const cl = /^close (\S+)(?: (.+))?$/.exec(arg);
+      if (cl) return ok(close(cl[1], cl[2] ?? ''));
       // /dot memory … and /dot people … belong to dsh-dot/memory.
       if (/^(memory|people)\b/.test(arg)) { const mem = memory(); return ok(mem ? await mem.command(arg) : 'dsh-dot/memory is not loaded'); }
       if (/^howto\b/.test(arg)) return ok(book(arg.slice(5).trim()));

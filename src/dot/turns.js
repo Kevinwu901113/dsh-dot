@@ -21,6 +21,9 @@ import { TURN_NOTE_SOURCE, addressed, contentText, nowText, scheduledRule } from
 export const shortTool = (name) => String(name ?? '').replace(/^mcp__.+?__/, '');
 
 /** His words are in this turn (over QQ or at her window): a yes of his can be kept, a stop is his, the voice has words of his to answer. */
+/** Between two ticks of her clock (30 s) longer than this, the machine was asleep (or the process held up). */
+export const HOST_ASLEEP_MS = 120000;
+
 export const heSpoke = (t) => Boolean(t?.by.where);
 /** The turn is on his business — his words are in it, or a thing of his woke it — and is not the schedule's: what comes of it is told to him, what she starts in it is his. */
 export const forHim = (t) => Boolean(t) && t.by.whose !== 'schedule' && (t.by.whose === 'him' || heSpoke(t));
@@ -100,6 +103,9 @@ export function createTurns(dot) {
     if (open) {
       open.lastEventAt = Date.now();
       if (event.type === 'tool/call') { open.doing = shortTool(event.data?.name); open.tools = (open.tools ?? 0) + 1; }
+      // A tool's result is in: what she waits on now is the model's next step (11-27: a stall named "read" was the
+      // machine asleep after a read had long finished).
+      if (event.type === 'tool/result') open.doing = `等模型的下一步（上一步：${shortTool(event.data?.name) || open.doing || '工具'}）`;
       if (event.type === 'assistant/message' && !event.data?.interrupted) { const said = contentText(event.data?.message?.content).trim(); if (said) open.said = said; }
     }
     if (event.type === 'turn/end' && !sessions.retired(id)) sessions.setLast(id);
@@ -226,7 +232,17 @@ export function createTurns(dot) {
     if (!t) return null;
     return { session: id, retired: sessions.retired(id), conversation: id === sessions.last(), startedAt: t.startedAt, lastEventAt: t.lastEventAt, doing: doingOf(t), ...turnState(t, { now, turnStallMs: cfg.turnStallMs }) };
   };
+  // The machine asleep is not a turn stalled (11-27: five of seven "stalls" were the Mac asleep, to the second; on
+  // waking the turn was done in seconds). The clock ticks every 30 s: a gap far longer than that between two ticks is
+  // time the process did not run, and it is taken off every open turn's quiet — kept as one line of record.
+  let lastWatch = 0;
   const watchTurns = (now = Date.now()) => {
+    const gap = lastWatch ? now - lastWatch : 0;
+    lastWatch = now;
+    if (gap > HOST_ASLEEP_MS) {
+      audit('host-slept', { ms: gap, turns: turns.size });
+      for (const t of turns.values()) t.lastEventAt = Math.min(now, (t.lastEventAt ?? t.startedAt) + gap);
+    }
     if (!(cfg.turnStallMs > 0)) return;
     for (const [id, t] of [...turns]) {
       const idle = now - (t.lastEventAt ?? t.startedAt);
@@ -250,7 +266,7 @@ export function createTurns(dot) {
     // What happened in a turn, said by the part it happened in (a turn that is not there takes nothing):
     spoke: (t) => { if (t) t.spoke = true; },                   // something of hers reached him in it
     opened: (t, id) => { if (t && id) t.opened.push(id); },     // she gave her hands a thing in it
-    stopped: (t, ids) => { if (t) t.stopped.push(...ids); },    // she stopped what was in her hands in it
+    stopped: (t, ids) => { if (t) { t.stopped.push(...ids); t.opened = t.opened.filter((id) => !ids.includes(id)); } }, // and no longer one it opened    // she stopped what was in her hands in it
     startedOver: (t) => { if (t) t.startedOver = true; },       // cancelled to start over with his new words: nothing of its own is said
     busyAt: (t, device) => { if (!t) return 0; t.busy ??= {}; return (t.busy[device] = (t.busy[device] ?? 0) + 1); }, // she gave a thing to a place that is held: how often in it, for that place
   };

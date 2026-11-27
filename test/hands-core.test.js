@@ -260,7 +260,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('收到！');
   h.emit('s1', 'turn/end', { turn: 7, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(5), /【「打开小黑盒找表情包」停下了：你叫停了。】$/);
+  assert.match(fed(5), /【「打开小黑盒找表情包」停下了：停在这儿了。】$/);
   assert.equal(her.got.length, 0, 'the stopped thing wakes nobody');
   // a thing of his comes to its end: the voice is given the book's result for it
   h.emit('s1', 'turn/start', { turn: 8 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查下明天天气' }] });
@@ -313,7 +313,7 @@ test('where he is talking to her is where her words show; words her hands type f
   h.stop();
 });
 
-test('what she decides by: the book, a line a thing — what is under way, what he stopped (not to be taken up again), what is stuck', async () => {
+test('what she decides by: the book, a line a thing — what is under way, what was stopped and by whom, what is stuck', async () => {
   const h = harness();
   const her = h.agentOf('s1');
   const note = async () => { const d = await h.hooks['agent/pre-step']({ agent: her, messages: [{ role: 'user' }], signal: {} }, async () => ({ kind: 'enter', messages: [{ role: 'user' }] })); return text(d.messages.at(-1)); };
@@ -325,13 +325,15 @@ test('what she decides by: the book, a line a thing — what is under way, what 
   assert.match(n1, /在做：（在手机上）打开贴吧看首页（[^）]*开始的）。还没完，别再开一件一样的/);
   assert.match(n1, /在做：（查资料[^）]*）查明天天气（[^）]*开始的）/, 'two places, two under way');
   h.emit('s1', 'turn/end', { turn: 2 }); await tick(30);
-  // his "stop": she stops it in his turn — the book has it as his stop, and says not to take it up again
+  // his "stop": she stops it in his turn — the book has it as hers, stopped while he was talking with her (11-27: the
+  // code does not turn her stop into his word; what he said is in front of her)
   h.emit('s1', 'turn/start', { turn: 3 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '停' }] });
   await h.tools.hands.execute({ stop: true }); await tick();
   h.emit('s1', 'turn/end', { turn: 3 }); await tick(30);
   const n2 = await note();
-  assert.match(n2, /他叫停的：（在手机上）打开贴吧看首页。他没再提，就别再做，也别换个法子接着做。/);
-  assert.match(n2, /他叫停的：（查资料[^）]*）查明天天气。/);
+  assert.match(n2, /你停下的：（在手机上）打开贴吧看首页（停的时候他正在跟你说话）。/);
+  assert.match(n2, /你停下的：（查资料[^）]*）查明天天气（停的时候他正在跟你说话）。/);
+  assert.doesNotMatch(n2, /他叫停的/);
   assert.doesNotMatch(n2, /在做：/);
   h.stop();
 });
@@ -1175,5 +1177,35 @@ test('the same call over and over is stopped in her hands too: counted over the 
   assert.deepEqual(r.slice(0, n), Array(n).fill('ran'));
   assert.equal(r[n].kind, 'deny');
   assert.ok(h.audit.some((a) => a.event === 'loop-stopped' && a.session === 'h1'));
+  h.stop();
+});
+
+test('a place is not a thing to do; her own stop is hers, in his turn too (and kept as such); what she owes him he can close', async () => {
+  setSandboxAvailable(true);
+  const h = harness();
+  const her = h.agentOf('s1');
+  const nothing = await h.tools.hands.execute({ device: 'web' });
+  assert.equal(nothing.status, 'failed');
+  assert.match(h.shown('hands', nothing), /要做什么没写/);
+  assert.equal((await h.tools.hands.execute({ device: 'web', add: '  ' })).status, 'failed', 'a blank add is not a new thing');
+  assert.equal((await h.tools.hands.execute({ device: 'phone', after: true })).status, 'failed', 'nothing to carry on from and nothing given');
+  assert.ok(!h.audit.some((e) => e.event === 'hands-opened'), 'no hands were opened');
+  // his words open a turn; she gives a thing and stops it herself in that turn
+  h.emit('s1', 'turn/start', { turn: 2 });
+  h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '查一下天气' }] });
+  await h.tools.hands.execute({ device: 'web', do: '查明天广州天气' }); await tick();
+  assert.deepEqual(await h.tools.hands.execute({ stop: true }), { status: 'stopped' });
+  await tick(30);
+  const e = h.services.dshDot.things().find((x) => x.task.includes('广州'));
+  assert.deepEqual([e.outcome, e.by, e.cause], ['stopped', 'her', 'he-spoke']);
+  h.emit('s1', 'turn/end', { turn: 2 }); await tick();
+  // /dot owed and /dot close
+  assert.equal((await h.command('owed')).text, '没有欠他的事', 'stopped while he was talking with her: not news for him');
+  await h.tools.hands.execute({ device: 'web', do: '查一条冷知识' }); await tick();
+  await h.tools.done.execute({ summary: '查到了', reached: true }); await tick(30);
+  const id = h.services.dshDot.things().find((x) => x.task.includes('冷知识')).id;
+  assert.match((await h.command('close ' + id + ' 不用了')).text, /不再算欠他的/);
+  assert.ok(h.audit.some((x) => x.event === 'owed-closed' && x.thing === id));
+  void her;
   h.stop();
 });

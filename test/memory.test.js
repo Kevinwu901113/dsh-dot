@@ -1279,7 +1279,7 @@ test('sayings: how she answered him before on the same kind of thing — only ex
   const his = (text) => h.emit('s0', 'user/message', { source: { kind: 'user', rpcId: 'qq-1' }, content: [{ type: 'text', text }] }, { surfaceOp: 'append' });
   const ats = [];
   for (const [a, b] of [['下周六我搬家', '搬去哪'], ['搬到天河那边', '那挺近的 / 要帮忙吗'], ['搬家好累', '辛苦啦']]) {
-    ats.push(Date.now()); his(a); await wait(3); mem.herSaid({ session: 's0', text: b }); await wait(3);
+    ats.push(Date.now()); his(a); await wait(3); mem.herSaid({ session: 's0', text: b }); await wait(1001);
   }
   await wait(10);
   const got = await mem.sayings('搬家', { n: 4 });
@@ -1288,5 +1288,13 @@ test('sayings: how she answered him before on the same kind of thing — only ex
   assert.deepEqual(older.map((x) => x.her), ['搬去哪'], 'what she is shown already is left out');
   assert.deepEqual(await mem.sayings('搬家', { n: 0 }), []);
   assert.deepEqual(await mem.sayings('', { n: 4 }), []);
+  // hers: one she dropped never comes; one she keeps comes first, whatever the words (and even with none)
+  const { stampOf } = await import('../src/dot/sayings.js');
+  const dropped = await mem.sayings('搬家', { n: 4, choices: { drop: [{ quote: '搬去哪' }], keep: [] } });
+  assert.deepEqual(dropped.map((x) => x.her), ['那挺近的 / 要帮忙吗']);
+  const kept = await mem.sayings('完全无关的话', { n: 4, choices: { drop: [], keep: [{ stamp: stampOf(ats[2]) }] } });
+  assert.deepEqual([kept[0].his, kept[0].her], ['搬家好累', '辛苦啦'], 'kept first');
+  assert.equal(new Set(kept.map((x) => x.at)).size, kept.length, 'each once');
+  assert.deepEqual((await mem.sayings('', { n: 4, choices: { drop: [], keep: [{ quote: '辛苦啦' }] } })).map((x) => x.her), ['辛苦啦']);
   for (const d of h.effects) if (typeof d === 'function') d();
 });

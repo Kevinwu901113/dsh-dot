@@ -186,7 +186,7 @@ test('wired: add and stop name the thing by its place; without one, stop is ever
   assert.equal((await h.tools.hands.execute({ device: 'phone', stop: true })).status, 'which');
   // stop one place: that one only
   assert.deepEqual(await h.tools.hands.execute({ device: 'computer', stop: true }), { status: 'stopped' });
-  assert.deepEqual(h.dot().things(5).map((e) => [e.id, e.state, e.outcome ?? '', e.by ?? '']), [['t2', 'ended', 'stopped', 'him'], ['t1', 'running', '', '']]);
+  assert.deepEqual(h.dot().things(5).map((e) => [e.id, e.state, e.outcome ?? '', e.by ?? '']), [['t2', 'ended', 'stopped', 'her'], ['t1', 'running', '', '']]);
   // one under way: add needs no place
   assert.deepEqual(await h.tools.hands.execute({ add: '再看看大后天' }), { status: 'added', id: 't1' });
   // stop without a place: everything

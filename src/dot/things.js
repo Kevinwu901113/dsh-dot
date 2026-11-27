@@ -62,7 +62,9 @@ export function createThings(dot) {
    * result has not reached yet (11-24: a handoff held it 85 s) — has it in front of her, and its end tells him once.
    */
   // However long ago, and however many things came since: what is owed stays owed until he hears it (ledger.owed).
-  const owedToHim = () => dot.ledger.owed().filter((e) => e.asker === 'him' && e.state === 'ended' && !(e.outcome === 'stopped' && e.by === 'him')
+  // Stopped by him, or by her while he was talking to her (cause he-spoke): he is in it, it is not news for him.
+  const knownToHim = (e) => e.outcome === 'stopped' && (e.by === 'him' || e.cause === 'he-spoke');
+  const owedToHim = () => dot.ledger.owed().filter((e) => e.asker === 'him' && e.state === 'ended' && !knownToHim(e)
     && (!e.told || (e.awaiting?.answeredAt ?? 0) > e.told));
   /** What her hands are on right now, as a line for her conversation ('' when they are free). */
   // What the book holds that bears on what she decides now, one line a thing with what to do about it (cf. DeerFlow's
@@ -74,13 +76,13 @@ export function createThings(dot) {
     const recent = dot.ledger.recent(10), takenUp = new Set(recent.map((e) => e.after).filter(Boolean)); // a later thing carries on from it
     const untold = new Set(owedToHim(now).map((e) => e.id));
     // What he stopped himself, in the last hour (he knows: a reminder, not owed); then what is owed, however old.
-    for (const e of recent) if (e.state === 'ended' && e.outcome === 'stopped' && e.by === 'him' && now - (e.endedAt ?? 0) <= ENDED_SHOWN_MS && !takenUp.has(e.id)) lines.push(prompt('dot.things.stopped.his', { what: title(e.task) }).trim());
+    for (const e of recent) if (e.state === 'ended' && knownToHim(e) && now - (e.endedAt ?? 0) <= ENDED_SHOWN_MS && !takenUp.has(e.id)) lines.push(prompt(e.by === 'him' ? 'dot.things.stopped.his' : 'dot.things.stopped.her', { what: title(e.task) }).trim());
     // Ended things in front of her: what is still owed, however old, and what came back stuck in the last hour.
     const ended = new Map();
     for (const e of dot.ledger.owed()) if (e.state === 'ended') ended.set(e.id, e);
     for (const e of [...recent].reverse()) if (e.state === 'ended' && e.outcome === 'stuck' && now - (e.endedAt ?? 0) <= ENDED_SHOWN_MS && !ended.has(e.id)) ended.set(e.id, e);
     for (const e of ended.values()) {
-      if (takenUp.has(e.id) || (e.outcome === 'stopped' && e.by === 'him')) continue;
+      if (takenUp.has(e.id) || knownToHim(e)) continue;
       // A question put to him that his next words have been read since is not waiting any more (askSettled, below):
       // he said yes and the thing was taken up, or he said no or something else — either way it is not "stuck" now.
       else if (e.outcome === 'stuck' && e.ask?.for === 'him' && e.askSettled) continue;
