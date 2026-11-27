@@ -26,6 +26,9 @@ export function createStickers(file, { fetch = globalThis.fetch, onChange = () =
   try { list = JSON.parse(readFileSync(file, 'utf8')); } catch {}
   const save = () => { try { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify(list)); } catch {} };
   const path = (id) => join(dir, `${id}.img`);
+  const digest = (buf) => createHash('sha1').update(buf).digest('hex');
+  const sumOf = (id) => { try { return digest(readFileSync(path(id))); } catch { return ''; } };
+  const own = (id) => { let s = list.find((x) => x.id === id); for (let k = 0; s?.same && k < 4; k++) s = list.find((x) => x.id === s.same) ?? s; return s; };
   const add = (entry) => {
     list.push(entry);
     let gone = false;
@@ -38,8 +41,10 @@ export function createStickers(file, { fetch = globalThis.fetch, onChange = () =
     count: () => list.filter((s) => s.saved).length,
     get: (id) => list.find((s) => s.id === id),
     path,
-    /** Bytes of a kept sticker, or null. */
-    read: (id) => { const s = stickers.get(id); if (!s?.saved) return null; try { return readFileSync(path(id)); } catch { return null; } },
+    /** Bytes of a kept sticker, or null (one that turned out to be the same picture as another: that one's). */
+    read: (id) => { const s = own(id); if (!s?.saved) return null; try { return readFileSync(path(s.id)); } catch { return null; } },
+    /** The entry an id stands for: itself, or the one it is the same picture as. */
+    own,
     /**
      * A sticker seen in a message: noted by its QQ file name (one entry per picture), downloaded
      * once in the background. Returns { id, isNew }.
@@ -64,8 +69,12 @@ export function createStickers(file, { fetch = globalThis.fetch, onChange = () =
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       const buf = Buffer.from(await res.arrayBuffer());
       if (!buf.length || buf.length > STICKER_MAX_BYTES) throw new Error(`${buf.length} bytes`);
+      // The same picture sent again under another QQ file name is the one she has (11-27: two of nine were twice).
+      const sum = digest(buf);
+      const twin = list.find((x) => x.saved && x.id !== id && !x.same && (x.sum ?? sumOf(x.id)) === sum);
+      if (twin) { twin.seen = (twin.seen ?? 1) + 1; twin.sum = sum; s.same = twin.id; delete s.url; save(); return true; }
       mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
-      s.saved = true; delete s.url; save();
+      s.saved = true; s.sum = sum; delete s.url; save();
       onChange();
       return true;
     },
@@ -73,19 +82,41 @@ export function createStickers(file, { fetch = globalThis.fetch, onChange = () =
     keep(buf, { from = '自己存的', note = '' } = {}) {
       if (!buf?.length || buf.length > STICKER_MAX_BYTES) throw new Error(`sticker must be 1 byte – ${STICKER_MAX_BYTES / 1048576} MB`);
       const id = createHash('sha1').update(buf).digest('hex').slice(0, 10);
-      const s = stickers.get(id);
-      if (s) { if (note) s.note = String(note).slice(0, 40); save(); return { id, isNew: false }; }
+      const s = stickers.get(id) ?? list.find((x) => x.saved && !x.same && (x.sum ?? sumOf(x.id)) === digest(buf));
+      if (s) { if (note) s.note = String(note).slice(0, 40); s.picked = true; s.pickedAt = Date.now(); save(); return { id: s.id, isNew: false }; }
       mkdirSync(dir, { recursive: true }); writeFileSync(path(id), buf);
-      add({ id, from: String(from), note: String(note).slice(0, 40), at: new Date().toISOString().slice(0, 10), seen: 1, saved: true });
+      add({ id, from: String(from), note: String(note).slice(0, 40), at: new Date().toISOString().slice(0, 10), seen: 1, saved: true, picked: true, pickedAt: Date.now(), sum: digest(buf) });
       onChange();
       return { id, isNew: true };
     },
-    /** The ones she has, newest last: [{ id, note }] (what the call that writes her words is shown — src/dot/say.js). */
-    saved(n = 12) { return list.filter((s) => s.saved).slice(-n).map((s) => ({ id: s.id, note: s.note || '' })); },
-    /** One line for her prompt: the newest ones, newest last. */
+    /**
+     * One she has already (sent to her, kept on its own) that she picks as hers: her name for it, if she gives one,
+     * and that she picked it — the ones she picked are shown first when her words are written. Returns { id, isNew }.
+     */
+    async pick(ref, note = '') {
+      const s = own(String(ref ?? '').toLowerCase());
+      if (!s) throw new Error(`no sticker ${ref} in her collection (ids come from [表情包 sticker:…] in messages)`);
+      if (!s.saved && !(await stickers.fetch(s.id).catch(() => false))) throw new Error(`sticker ${ref} could not be downloaded`);
+      const kept = own(s.id);
+      if (note) kept.note = String(note).slice(0, 40);
+      kept.picked = true; kept.pickedAt = Date.now(); save();
+      return { id: kept.id, isNew: false };
+    },
+    /**
+     * The ones she has (what the call that writes her words is shown — src/dot/say.js), at most `n`: the ones she
+     * picked (the last picked first), then the ones with a name, then the rest (newest first). Not only the newest `n` (11-27: past
+     * twelve, the old favourites fell off the list). [{ id, note, looks, from, seen, picked }]
+     */
+    saved(n = 12) {
+      const have = list.filter((s) => s.saved && !s.same);
+      const rank = (s) => (s.picked ? 0 : s.note ? 1 : 2);
+      return have.map((s, i) => ({ s, i })).sort((a, b) => rank(a.s) - rank(b.s) || (b.s.pickedAt ?? 0) - (a.s.pickedAt ?? 0) || b.i - a.i).slice(0, n)
+        .map(({ s }) => ({ id: s.id, note: s.note || '', looks: s.looks || '', from: s.from || '', seen: s.seen ?? 1, picked: Boolean(s.picked) }));
+    },
+    /** One line for her prompt: the same ones. */
     prompt(n = 12) {
-      const got = list.filter((s) => s.saved).slice(-n);
-      return got.length ? prompt('qq.stickers', { list: got.map((s) => `${s.id}（${s.note || `${s.from} 发的`}${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、') }) : '';
+      const got = stickers.saved(n);
+      return got.length ? prompt('qq.stickers', { list: got.map((s) => `${s.id}（${s.note || `${s.from} 发的`}${s.looks ? `，画面：${s.looks}` : ''}${s.seen > 1 ? ` ×${s.seen}` : ''}）`).join('、') }) : '';
     },
   };
   return stickers;

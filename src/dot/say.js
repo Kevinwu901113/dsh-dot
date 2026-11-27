@@ -25,6 +25,12 @@ const FENCE = /^```[\w-]*$/;
 export const WITHIN = '\u2028';
 /** One message as it is read: its line breaks back in place. */
 export const unfold = (text) => String(text ?? '').replaceAll(WITHIN, '\n');
+/**
+ * One of her stickers as the call that writes her words sees it: her name for it (or that it has none), what it shows
+ * when that is known, who sent it and how often, whether she picked it (11-27: seven of nine were only an id).
+ */
+export const stickerLine = (s) => [`sticker:${s.id} ${s.note || '没起名'}`, s.looks ? `画面：${s.looks}` : '', s.picked ? '你挑的' : s.from && s.from !== '自己存的' ? `${s.from} 发的${s.seen > 1 ? ` ×${s.seen}` : ''}` : ''].filter(Boolean).join(' · ');
+
 /** A line that is only a marker gone wrong ("[表情包 [sticker:…"): nothing to say and nothing to send. */
 const BROKEN = /^\[[^\]]*(sticker|face|表情)[\s\S]*$/i;
 
@@ -35,7 +41,7 @@ const BROKEN = /^\[[^\]]*(sticker|face|表情)[\s\S]*$/i;
  * @param {{ has?: (id: string) => boolean, pictures?: boolean }} o - which stickers are hers; false: this place takes words only
  */
 export function parseSaid(text, { has = () => true, pictures = true } = {}) {
-  const lines = [], images = [];
+  const lines = [], images = [], unknown = [];
   let silent = false, block = null;
   for (const raw of String(text ?? '').split('\n')) {
     // Several lines that are one message (a report, a list, a table) stand between two fence lines: they go out as
@@ -45,13 +51,13 @@ export function parseSaid(text, { has = () => true, pictures = true } = {}) {
     let line = raw.trim();
     if (!line) continue;
     if (SILENT.test(line)) { silent = true; continue; }
-    line = line.replace(STICKER, (_m, id) => { if (pictures && has(id)) images.push(`sticker:${id}`); return ''; });
+    line = line.replace(STICKER, (_m, id) => { if (pictures && has(id)) images.push(`sticker:${id}`); else if (pictures) unknown.push(id); return ''; });
     line = line.replace(FACE, (_m, n) => { if (pictures) images.push(`face:${Number(n)}`); return ''; }).trim();
     if (!line || BROKEN.test(line)) continue;
     lines.push(line);
   }
   if (block) { const body = block.join('\n').replace(/^\n+|\n+$/g, ''); if (body.trim()) lines.push(body.replace(/\n/g, WITHIN)); } // a fence never closed: what follows it is the block
-  return { lines, images, silent: silent && !lines.length && !images.length };
+  return { lines, images, silent: silent && !lines.length && !images.length, ...(unknown.length ? { unknown } : {}) };
 }
 
 /**
@@ -74,12 +80,12 @@ export function tidy(parsed) {
   const lines = parsed.lines.map((l) => (l.includes(WITHIN) ? l : l.replace(/[（(][^（()）]*[)）]/g, '').trim())).filter(Boolean);
   let sticker = false;
   const images = parsed.images.filter((i) => (!String(i).startsWith('sticker:') ? true : sticker ? false : (sticker = true)));
-  return { lines, images, silent: parsed.silent || (!lines.length && !images.length) };
+  return { lines, images, silent: parsed.silent || (!lines.length && !images.length), ...(parsed.unknown ? { unknown: parsed.unknown } : {}) };
 }
 
 export function sayInput({ dialogue = [], stickers = null, facts = [], about = '', where = '', unprompted = false, past = [] } = {}) {
   const parts = [];
-  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((s) => `sticker:${s.id} ${s.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map(stickerLine).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   // How she answered him before on the same kind of thing: hers to look at, not to copy (memory.js sayings).
   const before = [].concat(past ?? []).filter((x) => x?.his && x?.her).map((x) => `他：${x.his}\n你：${x.her}`);
   if (before.length && !where) parts.push(prompt('dot.say.past', { past: before.join('\n\n') }).trim());
@@ -103,7 +109,7 @@ export function sayInput({ dialogue = [], stickers = null, facts = [], about = '
  */
 export function reportInput({ his = '', must = [], may = [], about = '', stickers = null, unprompted = false } = {}) {
   const parts = [];
-  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((x) => `sticker:${x.id} ${x.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map(stickerLine).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   const notes = [String(his).trim() && !unprompted ? prompt('dot.say.report.his', { his: String(his).trim().replace(/\s*\n+\s*/g, ' / ') }).trim() : prompt('dot.say.report.unprompted').trim()];
   if (String(about).trim()) notes.push(prompt('dot.say.report.about', { about: String(about).trim() }).trim());
   notes.push(prompt('dot.say.report').trim());
@@ -144,7 +150,7 @@ export function unfounded(lines, given) {
  */
 export function leadInput({ his = '', sayings = [], status = [], about = '', stickers = null } = {}) {
   const parts = [];
-  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map((x) => `sticker:${x.id} ${x.note || '没起名'}`).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
+  if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map(stickerLine).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   const notes = [prompt('dot.say.report.his', { his: String(his).trim().replace(/\s*\n+\s*/g, ' / ') }).trim()];
   if (String(about).trim()) notes.push(prompt('dot.say.report.about', { about: String(about).trim() }).trim());
   notes.push(sayings.length ? prompt('dot.say.lead.pick', { list: sayings.map((x, i) => `${i + 1}. ${x}`).join('\n') }).trim() : prompt('dot.say.lead', { status: status.join(' ') }).trim());
@@ -201,6 +207,9 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
     let out = null;
     for (let attempt = 0; attempt < 2; attempt++) {
       const parsed = tidy(parseSaid(pre(await wrote(system, input)), { has, pictures }));
+      // A sticker she chose that is not among hers is dropped — and kept on record, so "did not want one" and "wanted one
+      // that was not there" can be told apart afterwards.
+      if (parsed.unknown?.length) audit('sticker-unknown', { ids: parsed.unknown });
       // Her card's check reads chat a line at a time; a block she fenced goes as she wrote it.
       const lines = [], hits = [];
       for (const l of parsed.lines) { if (l.includes(WITHIN)) { lines.push(l); continue; } const c = check(l); lines.push(...c.lines); hits.push(...c.hits); }

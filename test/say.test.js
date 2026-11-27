@@ -9,7 +9,7 @@ test('say: what the call wrote is what goes out — lines, stickers she has, fac
   assert.deepEqual(parseSaid('[不回]'), { lines: [], images: [], silent: true });
   assert.deepEqual(parseSaid('好\n[不回]').lines, ['好'], 'beside a line it is nothing');
   assert.deepEqual(parseSaid('你看看这个\n[表情包 sticker:31d44003ce 开心猫]', { has }), { lines: ['你看看这个'], images: ['sticker:31d44003ce'], silent: false });
-  assert.deepEqual(parseSaid('[表情包 sticker:deadbeef00]', { has }), { lines: [], images: [], silent: false }, 'a sticker she does not have is not sent');
+  assert.deepEqual(parseSaid('[表情包 sticker:deadbeef00]', { has }), { lines: [], images: [], silent: false, unknown: ['deadbeef00'] }, 'a sticker she does not have is not sent (and is named, for the record)');
   assert.deepEqual(parseSaid('停了 [表情包 sticker:31d44003ce]\n[face:178]', { has }), { lines: ['停了'], images: ['sticker:31d44003ce', 'face:178'], silent: false }, 'a marker inside a line is taken out of it');
   assert.deepEqual(parseSaid('[表情包 [sticker:31d44003cece 开心猫]\n都停啦', { has }).lines, ['都停啦'], 'a marker gone wrong is not said');
   assert.deepEqual(parseSaid('住这儿的人路过\n[表情包 sticker:31d44003ce]\n[face:14]', { has, pictures: false }), { lines: ['住这儿的人路过'], images: [], silent: false }, 'a place that takes words only');
@@ -198,4 +198,17 @@ test('say: the exchanges she looked at go down with the reply that went out', as
   });
   await say.speak({ facts: ['x'] });
   assert.deepEqual(used, [{ said: ['嗯'], past: [{ his: '累', her: '那歇会儿', at: 50 }] }]);
+});
+
+test('say: her stickers as the call sees them — her name, what it shows, picked or whose; one not among hers goes on record', async () => {
+  const { stickerLine } = await import('../src/dot/say.js');
+  assert.equal(stickerLine({ id: 'a1', note: '晚安亲亲', looks: '黄豆脸嘟嘴，配字 kiss kiss kiss', picked: true, from: 'awwaw', seen: 3 }), 'sticker:a1 晚安亲亲 · 画面：黄豆脸嘟嘴，配字 kiss kiss kiss · 你挑的');
+  assert.equal(stickerLine({ id: 'b2', note: '', looks: '', from: 'awwaw', seen: 2 }), 'sticker:b2 没起名 · awwaw 发的 ×2');
+  const log = [];
+  const say = createSay({
+    card: () => '# 你是 小点', call: async () => '[表情包 sticker:ffffffffff]', recent: () => [], stickers: () => [{ id: 'a1', note: '' }],
+    check: (t) => ({ lines: [t], hits: [] }), send: async (m) => ({ said: [m.text] }), audit: (e, d) => log.push([e, d]),
+  });
+  await say.speak({ facts: ['x'] });
+  assert.deepEqual(log.find(([e]) => e === 'sticker-unknown')?.[1], { ids: ['ffffffffff'] });
 });

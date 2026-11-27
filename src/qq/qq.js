@@ -1202,6 +1202,12 @@ export function apply(ctx, config = {}, deps = {}) {
   /** Keep an image as one of her stickers: from her phone (phone:latest | /sdcard/…) or a public web image. */
   qq.keepSticker = async (ref, note = '') => {
     const src = imageSource(ref);
+    // One already in her collection (sent to her, kept on its own): picking it is naming it and making it hers.
+    if (src?.kind === 'sticker') {
+      const got = await stickers.pick(src.ref, note);
+      audit({ kind: 'sticker-picked', id: got.id, note: String(note).slice(0, 40) });
+      return got;
+    }
     let buf;
     if (src?.kind === 'url') {
       const why = urlRefusal(src.ref);
@@ -1210,7 +1216,7 @@ export function apply(ctx, config = {}, deps = {}) {
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       buf = Buffer.from(await res.arrayBuffer());
     } else if (src && ['phone-latest', 'phone'].includes(src.kind)) buf = await phoneBytes(src);
-    else throw new Error(`keep a sticker from "phone:latest", a path on your phone (/sdcard/…) or a web image URL — not "${ref}"`);
+    else throw new Error(`keep a sticker from "sticker:<id>" (one sent to you), "phone:latest", a path on your phone (/sdcard/…) or a web image URL — not "${ref}"`);
     if (buf.length > STICKER_MAX_BYTES) throw new Error(`too big for a sticker (${Math.round(buf.length / 1048576)} MB > ${STICKER_MAX_BYTES / 1048576} MB)`);
     const got = stickers.keep(buf, { from: '自己存的', note });
     audit({ kind: 'sticker-kept', id: got.id, from: 'self', note: String(note).slice(0, 40), isNew: got.isNew });
@@ -1367,7 +1373,7 @@ export function apply(ctx, config = {}, deps = {}) {
     }), 'dsh-dot/qq: qq_send tool');
     scope.effect(() => scope.tools.register({
       name: 'qq_sticker_keep',
-      description: '把一张图存成你自己的表情包，以后说话时会自己挑着用。image："phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的一两个词（比如 "无语"、"偷笑"），方便以后挑。存下的也会同步到手机相册的 dot-stickers 里。',
+      description: '把一张图存成你自己的表情包，以后说话时会自己挑着用。image：别人发给你的表情包就写它的 "sticker:编号"（消息里 [表情包 sticker:…] 那个）；"phone:latest"（你手机里刚保存的图，在 App 里长按图片保存后用这个）、手机上的路径 "/sdcard/..."，或图片网址。note 是你给它起的名字，照你自己的叫法（比如 "无语"、"又在偷乐"），以后挑的时候看的就是它。你挑过的排在前面。存下的也会同步到手机相册的 dot-stickers 里。',
       parameters: { type: 'object', properties: { image: { type: 'string' }, note: { type: 'string' } }, required: ['image'], additionalProperties: false },
       output: { schema: { type: 'object', properties: { id: { type: 'string' }, isNew: { type: 'boolean' } }, required: ['id'], additionalProperties: true }, render: (_a, v) => [{ type: 'text', text: `sticker:${v?.id}${v?.isNew ? '' : ' (already kept)'}` }] },
       async execute(args) { return qq.keepSticker(args.image, args.note ?? ''); },

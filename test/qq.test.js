@@ -769,3 +769,27 @@ test('qq: her own messages as the backend reports them — what this plugin sent
   assert.equal(got.length, 1);
   h.stop();
 });
+
+test('stickers: one sent to her she can pick and name; the same picture twice is one; the list puts hers first, not only the newest', async () => {
+  const { createStickers } = await import('../src/qq/stickers.js');
+  const dir = mkdtempSync(join(tmpdir(), 'stk-'));
+  const bytes = { a: Buffer.from('GIF89a-kiss'), b: Buffer.from('GIF89a-ok') };
+  const fetch = async (url) => ({ ok: true, arrayBuffer: async () => bytes[url.at(-1)] });
+  const store = createStickers(join(dir, 'list.json'), { fetch });
+  const one = store.note({ file: 'q1', url: 'https://x/a', from: 'awwaw' });
+  await store.fetch(one.id);
+  const twice = store.note({ file: 'q2', url: 'https://x/a', from: 'awwaw' }); // the same picture, another QQ file name
+  await store.fetch(twice.id);
+  assert.equal(store.own(twice.id).id, one.id, 'the second is the first');
+  assert.equal(store.get(one.id).seen, 2);
+  assert.ok(store.read(twice.id)?.equals(bytes.a), 'its id still reads the picture');
+  for (let i = 0; i < 14; i++) { store.keep(Buffer.from(`PNG-${i}`)); await new Promise((r) => setTimeout(r, 2)); }
+  const ok = store.note({ file: 'q3', url: 'https://x/b', from: 'awwaw' });
+  await store.fetch(ok.id);
+  assert.ok(!store.saved(12).some((s) => s.id === one.id), 'before she picks it, fourteen kept ones and a newer one push it out');
+  await store.pick(`${twice.id}`, '晚安亲亲');
+  const list = store.saved(12);
+  assert.equal(list.length, 12);
+  assert.deepEqual(list[0], { id: one.id, note: '晚安亲亲', looks: '', from: 'awwaw', seen: 2, picked: true }, 'picked first, under its own id');
+  await assert.rejects(store.pick('ffffffffff', 'x'), /no sticker/);
+});
