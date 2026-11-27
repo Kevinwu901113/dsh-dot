@@ -100,9 +100,8 @@ export function createVoice(dot) {
     const going = (t?.opened ?? []).map((id) => dot.ledger.get(id)).filter((e) => e && e.state !== 'ended');
     if (going.length > 1) must.push(prompt('dot.plain.opened.many', { n: going.length }));
     else if (going.length) must.push(prompt('dot.plain.opened'));
-    // One thing, begun: the progress has sayings of hers to be said in (say.js leadInput). Otherwise the sentence itself.
-    const sayings = !said && going.length === 1 ? prompt('dot.plain.opened.sayings').split('\n').map((x) => x.trim()).filter(Boolean) : [];
-    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, sayings, things } : null;
+    // Only begun (nothing else to tell): her own line, which may be none (say.js leadInput).
+    return must.length ? { his: t?.hisWords ?? '', must: must.map((x) => x.trim()), may, underway: !said, things } : null;
   };
   const factsFor = (t) => {
     const out = [];

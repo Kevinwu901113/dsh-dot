@@ -1,6 +1,6 @@
 {
   "name": "dsh-dot-life",
-  "version": "0.26.2",
+  "version": "0.26.3",
   "description": "dot — a character with a persona and a memory who lives her own days, for DeepSeek Harness (dsh): she decides, her hands do things on her own Android phone, an optional microVM computer, the web and this machine (one thing a place, several places at once), and what she says is written from her persona card alone. Her own QQ, a ledger of things kept by code, what needs your yes asked in her words. Lives next to qq-bridge.",
   "type": "module",
   "license": "MIT",

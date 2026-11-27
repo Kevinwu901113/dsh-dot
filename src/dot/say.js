@@ -140,28 +140,21 @@ export function unfounded(lines, given) {
 }
 
 /**
- * Of things still being done, what she writes is not the progress. Said in her own words, a thing just begun was told
- * as done in 21 of 80 tries (11-24, the task: send a text), and nothing read afterwards could tell which: a list of
- * surface marks made from one day's replies caught 23 of 38 on the next day's, the same model asked about it 9 of 38
- * (shown the facts), 17 of 38 (not shown them), 30 of 38 with 14 of 62 wrongly caught. So the progress is not hers to
- * word here: it is one of the sayings she has for this (dot.plain.opened.sayings — hers, each read once when it went
- * into the file, none read again), or the book's own sentence when there is none; she picks the saying, and writes
- * only the line before it, which answers what he said (2 of 80 said more than that; picked: 80 of 80).
+ * Of a thing just given to her hands, what is known is that it is given and nothing has come back: that goes to her as
+ * a fact, and the line is hers — or none (11-27: a fixed progress saying was put after her own line, and with "我这就去
+ * 逛一圈" already said he got the same thing three times; six sayings in turn made it a set phrase). What keeps her
+ * from telling it as done is the one sentence that it is not known yet (11-24: told in her own words with the
+ * progress hers to give, 21 of 80 said it was done; with "not known, do not say" before her line, 2 of 80 said more).
+ * That it is told when it ends is the book's, not this line's: nothing is owed by staying quiet now.
  */
-export function leadInput({ his = '', sayings = [], status = [], about = '', stickers = null } = {}) {
+export function leadInput({ his = '', about = '', stickers = null } = {}) {
   const parts = [];
   if (stickers) parts.push(stickers.length ? prompt('dot.say.stickers', { list: stickers.map(stickerLine).join('；'), faces: prompt('dot.say.faces').trim() }) : prompt('dot.say.stickers.none', { faces: prompt('dot.say.faces').trim() }));
   const notes = [prompt('dot.say.report.his', { his: String(his).trim().replace(/\s*\n+\s*/g, ' / ') }).trim()];
   if (String(about).trim()) notes.push(prompt('dot.say.report.about', { about: String(about).trim() }).trim());
-  notes.push(sayings.length ? prompt('dot.say.lead.pick', { list: sayings.map((x, i) => `${i + 1}. ${x}`).join('\n') }).trim() : prompt('dot.say.lead', { status: status.join(' ') }).trim());
+  notes.push(prompt('dot.say.lead').trim());
   parts.push(notes.join('\n'));
   return parts.map((p) => p.trim()).join('\n\n');
-}
-/** What came back for leadInput: the number she picked (-1: none that is one of n), and the rest, which is her line. */
-export function parseLead(text, n) {
-  let pick = -1;
-  const rest = String(text ?? '').split('\n').filter((l) => { const m = /^\s*#\s*(\d+)\s*$/.exec(l); if (!m) return true; const k = Number(m[1]) - 1; if (pick < 0 && k >= 0 && k < n) pick = k; return false; }).join('\n');
-  return { pick, rest };
 }
 
 /**
@@ -228,7 +221,7 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
      * @param {string} [o.about] - what she knows that bears on it
      * @param {string[]} [o.images] - pictures her thinking wants sent with it (a screenshot, a file): not the call's to choose
      * @param {boolean} [o.unprompted] - nothing of his is waiting for an answer
-     * @param {{ his: string, must: string[], may?: string[], underway?: boolean, sayings?: string[] }} [o.plan] - a report from the book: said from these sentences (reportInput), or, of things just begun, her line and then a saying of hers (leadInput)
+     * @param {{ his: string, must: string[], may?: string[], underway?: boolean }} [o.plan] - a report from the book: said from these sentences (reportInput), or, of things just begun, her line alone, which may be none (leadInput)
      * @param {string} [o.context] - for someone else than him: what they said, where
      * @param {boolean} [o.again] - send again, as it was written, what did not go out last time (within 15 minutes)
      */
@@ -244,15 +237,9 @@ export function createSay({ card, call, recent, stickers, check, unread = () => 
         if (again && !kept) return { status: 'failed', why: '没有刚才没发出去的话可以再发' };
         if (kept) out = kept.out;
         else if (his && plan?.underway && plan.must?.length) {
-          // Things just begun: her line to what he said, then the progress in a saying of hers or the book's sentence.
-          const sayings = plan.sayings ?? [];
-          let pick = -1;
-          out = await write(leadInput({ his: plan.his, sayings, status: plan.must, about, stickers: mine }), { has, pictures: true, pre: (t) => { const r = parseLead(t, sayings.length); pick = r.pick; return r.rest; } });
-          if (sayings.length && pick < 0) pick = 0;
-          const status = tidy(parseSaid((sayings.length ? sayings[pick].split(' / ') : plan.must).join('\n'), { has, pictures: false })).lines;
-          const lead = out.silent ? [] : out.lines.filter((l) => !status.includes(l));
-          audit('say-lead', { lead: lead.length, pick, of: sayings.length });
-          out = { ...out, lines: [...lead, ...status], silent: false };
+          // A thing just begun: her line to what he said, knowing it is given and nothing has come back — or nothing.
+          out = await write(leadInput({ his: plan.his, about, stickers: mine }), { has, pictures: true });
+          audit('say-lead', { lines: out.silent ? 0 : out.lines.length });
         } else if (his && plan?.must?.length) {
           // A report: the book's sentences in her voice. A figure nobody gave it is written once more; the second
           // time the sentences go as they are — plain, and true.

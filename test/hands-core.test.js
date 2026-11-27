@@ -93,7 +93,7 @@ test('a thing of his goes to her hands whole; she is woken when they ask and whe
   h.emit('s1', 'assistant/message', { message: { content: [{ type: 'text', text: '交出去了' }] } });
   h.emit('s1', 'turn/end', { turn: 3 });
   await tick(30);
-  assert.deepEqual(h.qqSent, [['owner', '好\n去弄了，还没结果，有了跟你说', []]], 'only the answer to his own words went out: a thing of his she took further is not at its end');
+  assert.deepEqual(h.qqSent, [['owner', '好', []]], 'only the answer to his own words went out: a thing of his she took further is not at its end');
   // it is over: once
   // whether it was reached is theirs to say: left out, the thing is not ended either way
   assert.deepEqual(await h.tools.done.execute({ summary: '存好了' }), { status: 'unsaid' });
@@ -243,7 +243,7 @@ test('a turn he is in that ends is answered by the voice, from the book and her 
   h.replies.push('好');
   h.emit('s1', 'turn/end', { turn: 5, reason: { kind: 'completed' } });
   await tick(30);
-  assert.match(fed(3), /（他刚说：[^\n]*）\n（他要的这件事你已经交给自己的手去做了[^\n]*\n1\. [^\n]*\n[\s\S]*最后单独一行写你挑的编号[^\n]*$/, 'a thing just begun: his last words and her sayings for it, not the conversation');
+  assert.match(fed(3), /（他刚说：[^\n]*）\n（他要的这件事你已经交给自己的手去做了，刚开始，还没有任何东西回来[^\n]*$/, 'a thing just begun: his last words and that nothing has come back, not the conversation');
   assert.doesNotMatch(fed(3), /从不同帖子/, 'the task itself is not read out to the voice');
   // asked how it is going: the book says it is under way and has no result
   h.emit('s1', 'turn/start', { turn: 6 }); h.emit('s1', 'user/message', { source: ownerSource(), content: [{ type: 'text', text: '在干嘛呀' }] });
